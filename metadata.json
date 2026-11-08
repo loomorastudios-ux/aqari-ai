@@ -1,0 +1,6 @@
+{
+  "name": "AQARI GLOBAL TERMINAL",
+  "description": "Bloomberg-grade Terminal for Global Real Estate Intelligence, Cross-Border Capital Flows, and Investment Analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

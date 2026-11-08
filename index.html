@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AQARI GLOBAL TERMINAL</title>
+    <meta name="description" content="Bloomberg-grade Terminal for Global Real Estate Intelligence, Cross-Border Capital Flows, and Investment Analytics." />
+    <meta property="og:title" content="AQARI GLOBAL TERMINAL" />
+    <meta property="og:description" content="Bloomberg-grade Terminal for Global Real Estate Intelligence, Cross-Border Capital Flows, and Investment Analytics." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+      body {
+        font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background-color: #000000;
+        color: #f3f4f6;
+        overflow-x: hidden;
+      }
+      .font-mono-numbers {
+        font-family: 'JetBrains Mono', monospace;
+      }
+    </style>
+  </head>
+  <body class="bg-black text-slate-100 antialiased selection:bg-[#D4AF37]/30 selection:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      (function(){
+        function startTicker() {
+          const track = document.getElementById('bottomTickerTrack');
+          if (track && !track.getAttribute('data-running')) {
+            track.setAttribute('data-running', 'true');
+            track.innerHTML = track.innerHTML + track.innerHTML + track.innerHTML;
+            let x = 0;
+            function tick(){
+              x -= 1.2; // speed - same as top ticker
+              if (Math.abs(x) >= track.scrollWidth / 3) x = 0;
+              track.style.transform = 'translateX(' + x + 'px)';
+              requestAnimationFrame(tick);
+            }
+            requestAnimationFrame(tick);
+          }
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', startTicker);
+        } else {
+          startTicker();
+        }
+        const observer = new MutationObserver(function() {
+          if (document.getElementById('bottomTickerTrack')) {
+            startTicker();
+          }
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+      })();
+    </script>
+  </body>
+</html>
+
