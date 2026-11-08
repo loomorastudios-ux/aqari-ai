@@ -19,6 +19,7 @@ interface HeroProps {
   onSelectCity: (city: string) => void;
   onExploreProperties: () => void;
   onExploreSimulator: () => void;
+  onOpenAuth: () => void;
 }
 
 export const Hero: React.FC<HeroProps> = ({
@@ -27,6 +28,7 @@ export const Hero: React.FC<HeroProps> = ({
   onSelectCity,
   onExploreProperties,
   onExploreSimulator,
+  onOpenAuth,
 }) => {
   const [times, setTimes] = useState<{ mct: string; dxb: string; lon: string; nyc: string; ruh: string; sgp: string }>({
     mct: '',

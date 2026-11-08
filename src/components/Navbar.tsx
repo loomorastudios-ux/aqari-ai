@@ -134,29 +134,30 @@ export const Navbar: React.FC<NavbarProps> = ({
       )}
 
       {/* Main Navigation Bar */}
-      <nav className="bg-black/80 backdrop-blur-2xl border-b border-white/[0.08] px-4 lg:px-8 py-3.5 transition-all">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
+      <nav className="bg-black/80 backdrop-blur-2xl border-b border-white/[0.08] px-3 sm:px-4 lg:px-8 py-3 transition-all">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
           
           {/* Brand Logo & Bloomberg Status Indicator */}
-          <div className="flex items-center gap-4">
-            <a href="#" className="flex items-center gap-2.5 group">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#D4AF37] via-[#B8860B] to-[#996515] p-0.5 shadow-[0_0_15px_rgba(212,175,55,0.4)] group-hover:shadow-[0_0_25px_rgba(212,175,55,0.7)] transition-all duration-300">
+          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+            <a href="#" className="flex items-center gap-2 sm:gap-2.5 group">
+              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-br from-[#D4AF37] via-[#B8860B] to-[#996515] p-0.5 shadow-[0_0_15px_rgba(212,175,55,0.4)] group-hover:shadow-[0_0_25px_rgba(212,175,55,0.7)] transition-all duration-300 shrink-0">
                 <div className="w-full h-full bg-black rounded-[10px] flex items-center justify-center">
-                  <span className="font-mono font-black text-sm text-[#D4AF37] tracking-tighter">AQ</span>
+                  <span className="font-mono font-black text-xs sm:text-sm text-[#D4AF37] tracking-tighter">AQ</span>
                 </div>
               </div>
               <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-bold tracking-tight text-white text-base lg:text-lg group-hover:text-[#D4AF37] transition">
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <span className="font-bold tracking-tight text-white text-sm sm:text-base lg:text-lg group-hover:text-[#D4AF37] transition whitespace-nowrap">
                     AQARI
                   </span>
-                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-white/10 text-zinc-300 tracking-wider">
-                    GLOBAL TERMINAL
+                  <span className="text-[9px] sm:text-[10px] uppercase font-mono px-1 sm:px-1.5 py-0.5 rounded bg-white/10 text-zinc-300 tracking-wider hidden xs:inline-block">
+                    TERMINAL
                   </span>
                 </div>
-                <div className="text-[10px] text-zinc-400 font-mono flex items-center gap-1.5">
+                <div className="text-[9px] sm:text-[10px] text-zinc-400 font-mono flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span>BLOOMBERG EDITION v2.6 • LIVE</span>
+                  <span className="hidden sm:inline">BLOOMBERG EDITION v2.6 • </span>
+                  <span className="text-emerald-400 font-semibold">LIVE</span>
                 </div>
               </div>
             </a>
@@ -189,14 +190,14 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 type="button"
                 onClick={() => setCurrencyOpen(!currencyOpen)}
-                className="flex items-center gap-2 px-3 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#D4AF37]/50 text-xs font-medium text-white transition-all duration-200 cursor-pointer shadow-sm group"
+                className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#D4AF37]/50 text-xs font-medium text-white transition-all duration-200 cursor-pointer shadow-sm group min-h-[40px] sm:min-h-[44px]"
                 aria-label="Select currency"
               >
-                <Globe2 className="w-3.5 h-3.5 text-[#D4AF37]" />
+                <Globe2 className="w-3.5 h-3.5 text-[#D4AF37] hidden xs:inline-block" />
                 <span className="text-sm">{activeCurrencyInfo.flag}</span>
-                <span className="font-mono font-semibold tracking-wide">{currentCurrency}</span>
-                <span className="text-zinc-400 text-[11px] font-mono">({activeCurrencyInfo.symbol})</span>
-                <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform duration-200 ${currencyOpen ? 'rotate-180' : ''}`} />
+                <span className="font-mono font-semibold tracking-wide text-xs">{currentCurrency}</span>
+                <span className="text-zinc-400 text-[10px] font-mono hidden md:inline">({activeCurrencyInfo.symbol})</span>
+                <ChevronDown className={`w-3 h-3 sm:w-3.5 sm:h-3.5 text-zinc-400 transition-transform duration-200 ${currencyOpen ? 'rotate-180' : ''}`} />
               </button>
 
               {/* Glass Dropdown Menu */}
@@ -293,13 +294,15 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 type="button"
                 onClick={onOpenAuth}
-                className="relative inline-flex items-center justify-center p-0.5 overflow-hidden rounded-xl group cursor-pointer"
+                className="relative inline-flex items-center justify-center p-0.5 overflow-hidden rounded-xl group cursor-pointer min-h-[40px] sm:min-h-[44px] shrink-0"
+                title="Sign in to Terminal - تسجيل الدخول"
               >
                 <span className="w-full h-full bg-gradient-to-br from-[#D4AF37] via-[#C5A028] to-[#996515] group-hover:from-[#F3E5AB] group-hover:to-[#D4AF37] absolute"></span>
-                <span className="relative px-4 py-2 transition-all ease-out bg-black rounded-[10px] group-hover:bg-opacity-0 duration-300 flex items-center gap-2">
-                  <Sparkles className="w-3.5 h-3.5 text-[#D4AF37] group-hover:text-black transition" />
-                  <span className="text-xs font-bold text-white group-hover:text-black tracking-wide">
-                    Sign in to Terminal
+                <span className="relative px-2.5 sm:px-4 py-1.5 sm:py-2 transition-all ease-out bg-black rounded-[10px] group-hover:bg-opacity-0 duration-300 flex items-center gap-1.5 sm:gap-2">
+                  <Sparkles className="w-3.5 h-3.5 text-[#D4AF37] group-hover:text-black transition shrink-0" />
+                  <span className="text-xs font-bold text-white group-hover:text-black tracking-wide whitespace-nowrap">
+                    <span className="inline sm:hidden">Sign In / دخول</span>
+                    <span className="hidden sm:inline">Sign in to Terminal</span>
                   </span>
                 </span>
               </button>
@@ -408,7 +411,34 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Mobile Navigation Drawer / Menu (Collapsible) */}
         {mobileMenuOpen && (
           <div className="xl:hidden mt-3 pt-3 border-t border-white/[0.08] flex flex-col gap-2 pb-2 animate-in fade-in slide-in-from-top-2 duration-150">
-            {/* Install App prominent button on mobile inside drawer */}
+            {/* User Auth primary action inside mobile drawer */}
+            {!user ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onOpenAuth();
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#C5A028] text-black font-bold text-xs uppercase tracking-wider font-mono flex items-center justify-center gap-2 cursor-pointer shadow-md min-h-[44px]"
+              >
+                <Sparkles className="w-4 h-4 text-black shrink-0" />
+                <span>Sign In to Terminal - تسجيل الدخول</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onSignOut();
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 font-bold text-xs uppercase tracking-wider font-mono flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
+              >
+                <LogOut className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>Log Out / تسجيل الخروج</span>
+              </button>
+            )}
+
+            {/* Install App button on mobile inside drawer */}
             <div className="sm:hidden mb-1">
               <PWAInstallButton variant="navbar" className="w-full justify-center" />
             </div>
