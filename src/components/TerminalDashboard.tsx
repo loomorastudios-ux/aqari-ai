@@ -37,8 +37,11 @@ import {
   Key,
   ExternalLink,
   Flame,
-  ArrowRight
+  ArrowRight,
+  Menu,
+  X
 } from 'lucide-react';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface TerminalDashboardProps {
   user: User;
@@ -69,6 +72,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 }) => {
   // Navigation active tab
   const [activeTab, setActiveTab] = useState<'dashboard' | 'analyze' | 'saved' | 'portfolio' | 'radar' | 'settings'>('analyze');
+
+  // Mobile sidebar drawer state
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Currency dropdown open state
   const [currencyOpen, setCurrencyOpen] = useState(false);
@@ -410,16 +416,24 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       {/* Top Header */}
       <header className="h-16 border-b border-white/[0.08] bg-black/80 backdrop-blur-2xl px-4 lg:px-6 flex items-center justify-between shrink-0 sticky top-0 z-40">
         
-        {/* Brand / Logo */}
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#D4AF37] via-[#B8860B] to-[#996515] p-0.5 flex items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.4)]">
+        {/* Brand / Logo + Mobile Menu Toggle */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            onClick={() => setMobileSidebarOpen(!mobileSidebarOpen)}
+            className="md:hidden p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-white min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer transition"
+            aria-label="Toggle terminal menu"
+          >
+            {mobileSidebarOpen ? <X className="w-5 h-5 text-[#D4AF37]" /> : <Menu className="w-5 h-5 text-white" />}
+          </button>
+
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#D4AF37] via-[#B8860B] to-[#996515] p-0.5 flex items-center justify-center shadow-[0_0_15px_rgba(212,175,55,0.4)] shrink-0">
             <div className="w-full h-full bg-black rounded-[10px] flex items-center justify-center">
               <span className="font-mono font-black text-xs text-[#D4AF37]">AQ</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="font-bold text-white tracking-tight text-base">AQARI TERMINAL</span>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase font-semibold">
+            <span className="font-bold text-white tracking-tight text-sm sm:text-base whitespace-nowrap">AQARI TERMINAL</span>
+            <span className="hidden sm:inline-block text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase font-semibold">
               LIVE APP
             </span>
           </div>
@@ -513,10 +527,22 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       </header>
 
       {/* Main Terminal Layout: Sidebar + Content */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative">
         
-        {/* Left Sidebar (250px) */}
-        <aside className="w-64 border-r border-white/[0.08] bg-black/60 backdrop-blur-xl p-4 flex flex-col justify-between shrink-0">
+        {/* Mobile Sidebar Overlay Backdrop */}
+        {mobileSidebarOpen && (
+          <div
+            onClick={() => setMobileSidebarOpen(false)}
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm z-30 md:hidden animate-in fade-in duration-200"
+          />
+        )}
+
+        {/* Left Sidebar (Desktop fixed, Mobile sliding drawer) */}
+        <aside
+          className={`fixed md:static top-16 bottom-0 left-0 z-40 w-64 md:w-64 border-r border-white/[0.08] bg-black/95 md:bg-black/60 backdrop-blur-2xl md:backdrop-blur-xl p-4 flex flex-col justify-between shrink-0 transition-transform duration-300 ease-in-out ${
+            mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+          }`}
+        >
           
           <div className="space-y-6">
             
@@ -537,8 +563,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             {/* Navigation Tabs */}
             <nav className="space-y-1 text-xs font-mono">
               <button
-                onClick={() => setActiveTab('dashboard')}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer ${
+                onClick={() => { setActiveTab('dashboard'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
                   activeTab === 'dashboard'
                     ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
                     : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
@@ -549,8 +575,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
 
               <button
-                onClick={() => setActiveTab('analyze')}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer ${
+                onClick={() => { setActiveTab('analyze'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
                   activeTab === 'analyze'
                     ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
                     : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
@@ -561,8 +587,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
 
               <button
-                onClick={() => setActiveTab('saved')}
-                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition cursor-pointer ${
+                onClick={() => { setActiveTab('saved'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
                   activeTab === 'saved'
                     ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
                     : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
@@ -580,8 +606,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
 
               <button
-                onClick={() => setActiveTab('portfolio')}
-                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition cursor-pointer ${
+                onClick={() => { setActiveTab('portfolio'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
                   activeTab === 'portfolio'
                     ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
                     : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
@@ -599,8 +625,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
 
               <button
-                onClick={() => setActiveTab('radar')}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer ${
+                onClick={() => { setActiveTab('radar'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
                   activeTab === 'radar'
                     ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
                     : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
@@ -611,8 +637,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
 
               <button
-                onClick={() => setActiveTab('settings')}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer ${
+                onClick={() => { setActiveTab('settings'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
                   activeTab === 'settings'
                     ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
                     : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
@@ -625,11 +651,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
           </div>
 
-          {/* Bottom Upgrade / Renew Button - Always Visible Gold Button */}
-          <div className="pt-4 border-t border-white/[0.08] space-y-2">
+          {/* Install App Button in Terminal Sidebar */}
+          <div className="pt-3 border-t border-white/[0.08] space-y-2">
+            <PWAInstallButton variant="navbar" className="w-full justify-center" />
+            
+            {/* Bottom Upgrade / Renew Button - Always Visible Gold Button */}
             <button
               onClick={onOpenRenewal}
-              className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#D4AF37] text-black font-black text-xs font-mono uppercase tracking-wider shadow-[0_0_20px_rgba(212,175,55,0.35)] hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#D4AF37] text-black font-black text-xs font-mono uppercase tracking-wider shadow-[0_0_20px_rgba(212,175,55,0.35)] hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
             >
               <Zap className="w-4 h-4 fill-black" />
               <span>Upgrade / Renew Plan</span>

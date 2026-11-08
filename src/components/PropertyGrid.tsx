@@ -201,7 +201,7 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                 <button
                   type="button"
                   onClick={() => onAnalyze(property)}
-                  className={`w-full py-3 px-4 rounded-xl text-xs font-bold font-mono tracking-wider transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer shadow-md ${
+                  className={`w-full py-3 px-4 rounded-xl text-xs font-bold font-mono tracking-wider transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer shadow-md min-h-[44px] ${
                     isLockedForFree
                       ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400 border border-zinc-700'
                       : 'bg-white/[0.06] hover:bg-[#D4AF37] hover:text-black text-white border border-white/10 hover:border-[#D4AF37]'

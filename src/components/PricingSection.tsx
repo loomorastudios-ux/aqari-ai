@@ -237,7 +237,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                 <MagneticButton
                   type="button"
                   onClick={() => handleChoosePlan(tier.id)}
-                  className={`w-full py-4 px-6 rounded-2xl text-xs font-bold font-mono tracking-wider transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer shadow-lg ${
+                  className={`w-full py-4 px-6 rounded-2xl text-xs font-bold font-mono tracking-wider transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer shadow-lg min-h-[48px] ${
                     isCurrentPlan
                       ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 cursor-default'
                       : tier.popular

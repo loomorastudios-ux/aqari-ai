@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { CurrencyCode, User, RemoteConfig } from '../types';
 import { CURRENCY_SYMBOLS, LEMON_LINKS } from '../constants';
 import { getDaysRemaining } from '../utils/formatters';
+import { PWAInstallButton } from './PWAInstallButton';
 import { 
   Globe2, 
   ChevronDown, 
@@ -13,7 +14,9 @@ import {
   Flame,
   AlertTriangle,
   RefreshCw,
-  Zap
+  Zap,
+  Menu,
+  X
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -41,6 +44,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const [currencyOpen, setCurrencyOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const currencyRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
@@ -384,9 +388,82 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             )}
 
+            {/* Install App PWA Button (Prominent in navbar) */}
+            <PWAInstallButton variant="navbar" className="hidden sm:inline-flex" />
+
+            {/* Mobile Hamburger Toggle Button */}
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="xl:hidden p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-white min-h-[44px] min-w-[44px] flex items-center justify-center cursor-pointer transition"
+              aria-label="Toggle mobile navigation menu"
+            >
+              {mobileMenuOpen ? <X className="w-5 h-5 text-[#D4AF37]" /> : <Menu className="w-5 h-5 text-white" />}
+            </button>
+
           </div>
 
         </div>
+
+        {/* Mobile Navigation Drawer / Menu (Collapsible) */}
+        {mobileMenuOpen && (
+          <div className="xl:hidden mt-3 pt-3 border-t border-white/[0.08] flex flex-col gap-2 pb-2 animate-in fade-in slide-in-from-top-2 duration-150">
+            {/* Install App prominent button on mobile inside drawer */}
+            <div className="sm:hidden mb-1">
+              <PWAInstallButton variant="navbar" className="w-full justify-center" />
+            </div>
+
+            {/* Navigation links */}
+            <a
+              href="#properties"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3.5 py-2.5 rounded-xl text-sm text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center justify-between"
+            >
+              <span>Asset Intelligence</span>
+              <span className="text-[10px] font-mono text-zinc-500">PROPERTIES</span>
+            </a>
+            <a
+              href="#yield-simulator"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3.5 py-2.5 rounded-xl text-sm text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center justify-between"
+            >
+              <span>Yield Simulator</span>
+              <span className="text-[10px] font-mono text-zinc-500">CALCULATOR</span>
+            </a>
+            <a
+              href="#matrix"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3.5 py-2.5 rounded-xl text-sm text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center justify-between"
+            >
+              <span>Cross-Border Matrix</span>
+              <span className="text-[10px] font-mono text-zinc-500">RADAR</span>
+            </a>
+            <a
+              href="#portfolio"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3.5 py-2.5 rounded-xl text-sm text-zinc-300 hover:text-white hover:bg-white/[0.06] transition flex items-center justify-between"
+            >
+              <span>Portfolio AUM</span>
+              <span className="text-[10px] font-mono text-zinc-500">ALLOCATION</span>
+            </a>
+            <a
+              href="#pricing"
+              onClick={() => setMobileMenuOpen(false)}
+              className="px-3.5 py-2.5 rounded-xl text-sm text-[#D4AF37] bg-[#D4AF37]/10 hover:bg-[#D4AF37]/20 transition flex items-center justify-between font-semibold"
+            >
+              <span>Pricing Tiers</span>
+              <span className="text-[10px] font-mono text-[#D4AF37]">LEMONSQUEEZY</span>
+            </a>
+
+            {/* Trial count indicator on mobile */}
+            {user && user.plan === 'free' && (
+              <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-white/[0.03] border border-white/[0.06] text-xs font-mono">
+                <span className="text-zinc-400">Free analyses remaining:</span>
+                <span className="font-bold text-[#D4AF37]">{freeLeft} / 3</span>
+              </div>
+            )}
+          </div>
+        )}
       </nav>
     </header>
   );

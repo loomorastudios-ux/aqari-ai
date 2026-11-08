@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { CurrencyCode } from '../types';
 import { formatPrice } from '../utils/formatters';
 import { MagneticButton } from './MagneticButton';
+import { PWAInstallButton } from './PWAInstallButton';
 import { 
   Building2, 
   ArrowUpRight, 
@@ -145,24 +146,27 @@ export const Hero: React.FC<HeroProps> = ({
         </p>
 
         {/* Action CTAs with Magnetic Physics */}
-        <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
+        <div className="flex flex-col sm:flex-row flex-wrap items-center justify-center gap-3.5 sm:gap-4 pt-4">
           <MagneticButton
             onClick={onExploreProperties}
-            className="group px-7 py-3.5 rounded-2xl bg-gradient-to-r from-[#D4AF37] via-[#C99D28] to-[#A47614] text-black font-bold text-sm hover:shadow-[0_0_30px_rgba(212,175,55,0.4)] transition-all duration-300 flex items-center gap-2 cursor-pointer"
+            className="w-full sm:w-auto justify-center group px-6 sm:px-7 py-3.5 rounded-2xl bg-gradient-to-r from-[#D4AF37] via-[#C99D28] to-[#A47614] text-black font-bold text-sm hover:shadow-[0_0_30px_rgba(212,175,55,0.4)] transition-all duration-300 flex items-center gap-2 cursor-pointer min-h-[44px]"
           >
-            <Building2 className="w-4 h-4 text-black" />
+            <Building2 className="w-4 h-4 text-black shrink-0" />
             <span>Launch Asset Intelligence</span>
-            <ArrowUpRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+            <ArrowUpRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 shrink-0" />
           </MagneticButton>
 
           <MagneticButton
             onClick={onExploreSimulator}
-            className="px-7 py-3.5 rounded-2xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 hover:border-[#D4AF37]/50 text-white font-semibold text-sm transition-all duration-300 flex items-center gap-2 backdrop-blur-xl cursor-pointer"
+            className="w-full sm:w-auto justify-center px-6 sm:px-7 py-3.5 rounded-2xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 hover:border-[#D4AF37]/50 text-white font-semibold text-sm transition-all duration-300 flex items-center gap-2 backdrop-blur-xl cursor-pointer min-h-[44px]"
           >
-            <TrendingUp className="w-4 h-4 text-[#D4AF37]" />
+            <TrendingUp className="w-4 h-4 text-[#D4AF37] shrink-0" />
             <span>Open Yield Simulator</span>
-            <ChevronRight className="w-4 h-4 text-zinc-500" />
+            <ChevronRight className="w-4 h-4 text-zinc-500 shrink-0" />
           </MagneticButton>
+
+          {/* Prominent PWA Install App Button */}
+          <PWAInstallButton variant="hero" className="w-full sm:w-auto" />
         </div>
 
       </div>

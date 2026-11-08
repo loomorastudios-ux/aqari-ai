@@ -171,7 +171,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="investor@global-capital.io"
-                    className="w-full pl-10 pr-4 py-3 rounded-xl bg-white/[0.04] border border-white/10 focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] text-white text-xs placeholder:text-zinc-600 outline-none transition font-mono"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl bg-white/[0.04] border border-white/10 focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] text-white text-xs placeholder:text-zinc-600 outline-none transition font-mono min-h-[44px]"
                   />
                 </div>
               </div>
@@ -179,7 +179,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#C5A028] hover:brightness-110 text-black font-bold text-xs tracking-wider uppercase font-mono transition shadow-[0_0_20px_rgba(212,175,55,0.3)] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#C5A028] hover:brightness-110 text-black font-bold text-xs tracking-wider uppercase font-mono transition shadow-[0_0_20px_rgba(212,175,55,0.3)] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 min-h-[44px]"
               >
                 <span>{isLoading ? 'Authenticating...' : 'Continue with Email'}</span>
                 <ArrowRight className="w-4 h-4" />
@@ -199,7 +199,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 type="button"
                 onClick={handleGoogleSignInClick}
                 disabled={isLoading}
-                className="w-full py-3 px-4 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 text-white font-medium text-xs transition flex items-center justify-center gap-2.5 cursor-pointer"
+                className="w-full py-3 px-4 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/10 text-white font-medium text-xs transition flex items-center justify-center gap-2.5 cursor-pointer min-h-[44px]"
               >
                 <svg className="w-4 h-4" viewBox="0 0 24 24">
                   <path
@@ -226,7 +226,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 type="button"
                 onClick={handleGuestSignIn}
                 disabled={isLoading}
-                className="w-full py-2.5 px-4 rounded-xl bg-white/[0.02] hover:bg-white/[0.06] text-zinc-400 hover:text-white text-xs font-mono transition flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-2.5 px-4 rounded-xl bg-white/[0.02] hover:bg-white/[0.06] text-zinc-400 hover:text-white text-xs font-mono transition flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
               >
                 <UserCheck className="w-3.5 h-3.5 text-zinc-500" />
                 <span>Continue as Guest Investor</span>
