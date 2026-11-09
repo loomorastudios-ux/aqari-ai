@@ -49,7 +49,7 @@ interface TerminalDashboardProps {
   currentCurrency: CurrencyCode;
   onCurrencyChange: (c: CurrencyCode) => void;
   config: RemoteConfig;
-  onSignOut: () => void;
+  onSignOut: (forgetDevice?: boolean) => void;
   onGoToHome: () => void;
   onOpenRenewal: () => void;
   onUpdateUser: (u: User) => void;
@@ -691,19 +691,31 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
             </nav>
 
-            {/* PART 1: Danger / Red Sign Out Button directly below Settings & above Install App - ENGLISH ONLY */}
-            <div className="pt-2">
+            {/* PART 1 & 4: Sign Out and Forget Device options in sidebar menu - ENGLISH ONLY */}
+            <div className="pt-2 space-y-1.5">
               <button
                 type="button"
                 onClick={() => {
                   setMobileSidebarOpen(false);
-                  onSignOut();
+                  onSignOut(false);
                 }}
                 className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 active:bg-rose-500/30 border border-rose-500/30 hover:border-rose-500/60 text-rose-300 hover:text-rose-200 transition cursor-pointer min-h-[44px] font-mono text-xs font-bold"
                 aria-label="Sign Out"
               >
                 <span className="font-semibold tracking-wide">Sign Out</span>
                 <LogOut className="w-4 h-4 text-rose-400 shrink-0" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileSidebarOpen(false);
+                  onSignOut(true);
+                }}
+                className="w-full text-center py-1 text-[10px] font-mono text-zinc-500 hover:text-rose-400 hover:underline transition cursor-pointer"
+                title="Sign out and remove from remembered accounts on this device"
+              >
+                Sign out and forget this device
               </button>
             </div>
 

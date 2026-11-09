@@ -25,7 +25,7 @@ interface NavbarProps {
   user: User | null;
   config: RemoteConfig;
   onOpenAuth: () => void;
-  onSignOut: () => void;
+  onSignOut: (forgetDevice?: boolean) => void;
   onOpenAdmin: () => void;
   onGoToTerminal: () => void;
   onOpenPricing: () => void;
@@ -379,12 +379,22 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <button
                       onClick={() => {
                         setUserMenuOpen(false);
-                        onSignOut();
+                        onSignOut(false);
                       }}
                       className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
                     >
                       <LogOut className="w-3.5 h-3.5" />
                       <span>Sign Out</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        onSignOut(true);
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-[11px] font-mono text-zinc-500 hover:text-rose-400 transition cursor-pointer"
+                    >
+                      Sign out and forget this device
                     </button>
                   </div>
                 )}

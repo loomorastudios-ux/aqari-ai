@@ -71,6 +71,107 @@ export function clearSession(): void {
   localStorage.removeItem(SESSION_KEY);
 }
 
+export const REMEMBERED_ACCOUNTS_KEY = 'remembered_accounts';
+
+export interface RememberedAccount {
+  userId: string;
+  name: string;
+  email: string;
+  avatar?: string;
+  picture?: string;
+  lastLoginAt: number;
+  sessionExpiresAt: number; // 30-day persistent session timestamp
+}
+
+export function getRememberedAccounts(): RememberedAccount[] {
+  try {
+    const raw = localStorage.getItem(REMEMBERED_ACCOUNTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.sort((a: RememberedAccount, b: RememberedAccount) => (b.lastLoginAt || 0) - (a.lastLoginAt || 0));
+  } catch (e) {
+    console.error('Failed to parse remembered_accounts', e);
+    return [];
+  }
+}
+
+export function saveRememberedAccount(user: User): void {
+  try {
+    const norm = normalizeEmail(user.email);
+    if (!norm) return;
+    const existingList = getRememberedAccounts();
+    const sessionDuration = 30 * 24 * 60 * 60 * 1000; // 30 days valid session
+    const existingIndex = existingList.findIndex((item) => normalizeEmail(item.email) === norm);
+
+    const accountData: RememberedAccount = {
+      userId: user.id || 'usr_' + norm.replace(/[^a-zA-Z0-9]/g, '_'),
+      name: user.name || norm.split('@')[0],
+      email: norm,
+      avatar: user.avatar || user.name?.charAt(0).toUpperCase() || norm.charAt(0).toUpperCase(),
+      picture: user.picture,
+      lastLoginAt: Date.now(),
+      sessionExpiresAt: Date.now() + sessionDuration,
+    };
+
+    if (existingIndex >= 0) {
+      existingList[existingIndex] = accountData;
+    } else {
+      existingList.unshift(accountData);
+    }
+
+    localStorage.setItem(REMEMBERED_ACCOUNTS_KEY, JSON.stringify(existingList));
+  } catch (e) {
+    console.error('Failed to save remembered account', e);
+  }
+}
+
+export function removeRememberedAccount(email: string): void {
+  try {
+    const norm = normalizeEmail(email);
+    const existingList = getRememberedAccounts();
+    const filtered = existingList.filter((item) => normalizeEmail(item.email) !== norm);
+    localStorage.setItem(REMEMBERED_ACCOUNTS_KEY, JSON.stringify(filtered));
+  } catch (e) {
+    console.error('Failed to remove remembered account', e);
+  }
+}
+
+export function directLoginWithRememberedAccount(email: string): { user: User | null; isExpired: boolean } {
+  const norm = normalizeEmail(email);
+  const remembered = getRememberedAccounts().find((a) => normalizeEmail(a.email) === norm);
+
+  if (!remembered) {
+    return { user: null, isExpired: true };
+  }
+
+  // Check if session has expired
+  if (remembered.sessionExpiresAt && Date.now() > remembered.sessionExpiresAt) {
+    return { user: null, isExpired: true };
+  }
+
+  const existingUser = getUser(norm);
+  if (!existingUser) {
+    const { user } = loginOrCreateUser(norm, 'google', remembered.name, remembered.picture);
+    return { user, isExpired: false };
+  }
+
+  // Set active session in localStorage
+  localStorage.setItem(SESSION_KEY, norm);
+  const updatedUser: User = {
+    ...existingUser,
+    lastLoginAt: Date.now(),
+  };
+  saveUser(updatedUser);
+  saveRememberedAccount(updatedUser);
+  return { user: updatedUser, isExpired: false };
+}
+
+export function signOutAndForget(email: string): void {
+  clearSession();
+  removeRememberedAccount(email);
+}
+
 export function getUserEmail(): string | null {
   const user = getSessionUser();
   return user ? user.email : null;
@@ -101,6 +202,7 @@ export function loginOrCreateUser(
       portfolio: existing.portfolio || { totalValue: 0, monthlyCashflow: 0 },
     };
     saveUser(updated);
+    saveRememberedAccount(updated);
     return { user: updated, isNew: false };
   }
 
@@ -129,5 +231,6 @@ export function loginOrCreateUser(
   };
 
   saveUser(newUser);
+  saveRememberedAccount(newUser);
   return { user: newUser, isNew: true };
 }

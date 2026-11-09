@@ -7,9 +7,13 @@ export default defineConfig(() => {
   return {
     publicDir: 'public',
     plugins: [react(), tailwindcss()],
+    define: {
+      'process.env.GOOGLE_CLIENT_ID': JSON.stringify(process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || ''),
+      'process.env.GOOGLE_REDIRECT_URI': JSON.stringify(process.env.GOOGLE_REDIRECT_URI || process.env.VITE_GOOGLE_REDIRECT_URI || ''),
+    },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname || '.', '.'),
       },
     },
     server: {

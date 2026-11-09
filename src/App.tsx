@@ -8,7 +8,14 @@ import {
   PROPERTY_LISTINGS 
 } from './constants';
 import { fetchLiveExchangeRates, fetchMarketData } from './utils/marketDataService';
-import { getSessionUser, saveUser, clearSession, getUser } from './utils/userStorage';
+import { 
+  getSessionUser, 
+  saveUser, 
+  clearSession, 
+  getUser, 
+  getRememberedAccounts, 
+  removeRememberedAccount 
+} from './utils/userStorage';
 import { AmbientBackground } from './components/AmbientBackground';
 import { CustomCursor } from './components/CustomCursor';
 import { Navbar } from './components/Navbar';
@@ -90,8 +97,13 @@ export default function App() {
     return DEFAULT_CONFIG;
   });
 
-  // Modals State
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  // Modals State - Auto-login check: If no active session but remembered accounts exist, show login modal
+  const [isAuthOpen, setIsAuthOpen] = useState(() => {
+    const session = getSessionUser();
+    if (session) return false;
+    const remembered = getRememberedAccounts();
+    return remembered.length > 0;
+  });
   const [isLimitOpen, setIsLimitOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isRenewalOpen, setIsRenewalOpen] = useState(false);
@@ -310,8 +322,11 @@ export default function App() {
     }, 3000);
   };
 
-  // Sign Out (clears session ONLY, keeps DB)
-  const handleSignOut = () => {
+  // Sign Out (clears session ONLY, or optionally removes remembered account)
+  const handleSignOut = (forgetDevice = false) => {
+    if (user && forgetDevice) {
+      removeRememberedAccount(user.email);
+    }
     clearSession();
     setUser(null);
     setTerminalToast(null);
@@ -325,6 +340,9 @@ export default function App() {
     window.location.hash = '#/landing';
     setRoute('landing');
     window.scrollTo(0, 0);
+
+    // After logout, show login modal so user sees their email already listed in Remembered Accounts
+    setIsAuthOpen(true);
   };
 
   // Switch to Terminal Dashboard
