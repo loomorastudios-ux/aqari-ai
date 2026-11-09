@@ -7,7 +7,12 @@ import {
   directLoginWithRememberedAccount,
   RememberedAccount,
 } from '../utils/userStorage';
-import { getGoogleClientId, formatOAuthErrorMessage } from '../utils/oauthConfig';
+import {
+  getGoogleClientId,
+  isValidGoogleClientId,
+  setCustomGoogleClientId,
+  formatOAuthErrorMessage,
+} from '../utils/oauthConfig';
 import {
   X,
   Sparkles,
@@ -51,6 +56,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [typedGmail, setTypedGmail] = useState(initialEmail || 'loomorastudios@gmail.com');
   const [showManualVerify, setShowManualVerify] = useState(false);
+  const [customClientIdInput, setCustomClientIdInput] = useState('');
+  const [showClientIdConfig, setShowClientIdConfig] = useState(false);
 
   // Load remembered accounts when opening modal
   useEffect(() => {
@@ -159,13 +166,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     const clientId = getGoogleClientId();
 
-    // If client ID is missing in environment variables
-    if (!clientId) {
+    // If client ID is missing or set to placeholder XXXX
+    if (!clientId || !isValidGoogleClientId(clientId)) {
       setIsLoading(false);
       setErrorMsg(
-        'Google OAuth Error (401: invalid_client): GOOGLE_CLIENT_ID is not configured in your environment variables. Please add GOOGLE_CLIENT_ID to your environment or use the direct verified login below.'
+        'Google OAuth Client ID is currently set to placeholder ("XXXX"). Please update GOOGLE_CLIENT_ID in your .env or Vercel Environment Variables, or enter your real Google Client ID below to test.'
       );
       setShowManualVerify(true);
+      setShowClientIdConfig(true);
       return;
     }
 
@@ -478,6 +486,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </button>
               </form>
             )}
+
+            {/* Direct Client ID Tester / Configurator */}
+            <div className="pt-2 border-t border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setShowClientIdConfig(!showClientIdConfig)}
+                className="w-full text-left text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] transition flex items-center justify-between cursor-pointer py-1"
+              >
+                <span>⚙️ Configure / Test Client ID</span>
+                <span className="text-[10px] text-zinc-500">{showClientIdConfig ? '▲ Hide' : '▼ Update'}</span>
+              </button>
+
+              {showClientIdConfig && (
+                <div className="mt-2 p-3 rounded-xl bg-white/[0.02] border border-white/[0.08] space-y-2 animate-in fade-in duration-150">
+                  <div className="text-[10px] font-mono text-zinc-400">
+                    Paste your Google OAuth Client ID (.apps.googleusercontent.com):
+                  </div>
+                  <input
+                    type="text"
+                    value={customClientIdInput}
+                    onChange={(e) => setCustomClientIdInput(e.target.value)}
+                    placeholder="123456789-xyz.apps.googleusercontent.com"
+                    className="w-full px-3 py-2 rounded-lg bg-black/60 border border-white/10 focus:border-[#D4AF37] text-white text-xs font-mono outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!customClientIdInput.trim()) return;
+                      setCustomGoogleClientId(customClientIdInput);
+                      setInfoMsg('New Client ID saved! Click Continue with Google to authenticate.');
+                      setErrorMsg(null);
+                      setShowClientIdConfig(false);
+                    }}
+                    className="w-full py-1.5 rounded-lg bg-[#D4AF37]/20 hover:bg-[#D4AF37] text-[#D4AF37] hover:text-black font-mono text-xs font-bold transition cursor-pointer"
+                  >
+                    Save & Test Client ID
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Back to remembered accounts if any exist */}
             {hasRemembered && (

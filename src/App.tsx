@@ -14,7 +14,8 @@ import {
   clearSession, 
   getUser, 
   getRememberedAccounts, 
-  removeRememberedAccount 
+  removeRememberedAccount,
+  loginOrCreateUser 
 } from './utils/userStorage';
 import { AmbientBackground } from './components/AmbientBackground';
 import { CustomCursor } from './components/CustomCursor';
@@ -278,6 +279,43 @@ export default function App() {
 
       // Clean query params
       window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    // Check if returning from Google OAuth redirect (credential, id_token, or code)
+    const rawHash = window.location.hash.replace(/^#\/?/, '');
+    const hashParams = new URLSearchParams(rawHash.includes('=') ? rawHash : '');
+    const oauthCredential = urlParams.get('credential') || hashParams.get('id_token') || hashParams.get('credential');
+
+    if (oauthCredential) {
+      try {
+        const base64Url = oauthCredential.split('.')[1];
+        if (base64Url) {
+          const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+          const jsonPayload = decodeURIComponent(
+            atob(base64)
+              .split('')
+              .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+              .join('')
+          );
+          const payload = JSON.parse(jsonPayload);
+          if (payload?.email) {
+            const { user: authedUser } = loginOrCreateUser(
+              payload.email,
+              'google',
+              payload.name || payload.email.split('@')[0],
+              payload.picture
+            );
+            handleSaveUser(authedUser);
+            setIsAuthOpen(false);
+            window.location.hash = '#/terminal';
+            setRoute('terminal');
+            setTerminalToast(`Welcome, ${authedUser.name || authedUser.email}`);
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        }
+      } catch (err) {
+        console.warn('OAuth redirect token decode error:', err);
+      }
     }
   }, []);
 
