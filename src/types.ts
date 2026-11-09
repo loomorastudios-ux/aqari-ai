@@ -22,6 +22,7 @@ export interface User {
   email: string;
   name?: string;
   avatar?: string;
+  picture?: string;
   provider?: 'email' | 'google' | 'guest';
   plan: 'free' | 'starter' | 'pro' | 'enterprise';
   freeAnalysesLeft?: number;
@@ -29,6 +30,9 @@ export interface User {
   analysesLeft?: number;
   analysesUsed: number;
   subscriptionExpiry: number | null;
+  subscriptionStartAt?: number | null;
+  subscriptionEndsAt?: number | null;
+  expiryEmailSent?: boolean;
   createdAt: number;
   lastLoginAt?: number;
   lastReminderDate?: string;

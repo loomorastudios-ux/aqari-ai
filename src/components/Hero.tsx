@@ -174,16 +174,15 @@ export const Hero: React.FC<HeroProps> = ({
           {/* Prominent PWA Install App Button */}
           <PWAInstallButton variant="hero" className="w-full sm:w-auto" />
 
-          {/* TASK 1: Mobile-Only Login Button directly below Install App button when logged out */}
+          {/* PART 2: Sign in to Terminal button - visible on desktop (right of Install App) and mobile (below Install App) when logged out */}
           {!user && (
             <button
               type="button"
               onClick={onOpenAuth}
-              className="sm:hidden w-full flex items-center justify-center gap-2.5 px-6 py-3 rounded-2xl bg-transparent hover:bg-white/[0.04] active:bg-white/[0.08] border border-[#D4AF37]/60 hover:border-[#D4AF37] text-white font-bold text-sm tracking-wide transition-all duration-200 cursor-pointer min-h-[48px] shadow-[0_0_15px_rgba(212,175,55,0.15)]"
-              aria-label="تسجيل الدخول إلى تطبيق عقاري"
+              className="w-full sm:w-auto flex items-center justify-center gap-2.5 px-6 sm:px-7 py-3.5 rounded-2xl bg-transparent hover:bg-white/[0.05] active:bg-white/[0.1] border border-[#D4AF37]/60 hover:border-[#D4AF37] text-white font-semibold text-sm transition-all duration-300 backdrop-blur-xl cursor-pointer min-h-[44px] shadow-[0_0_15px_rgba(212,175,55,0.15)] hover:shadow-[0_0_25px_rgba(212,175,55,0.3)]"
             >
-              <span className="text-sm font-semibold tracking-wide">تسجيل الدخول</span>
               <LogIn className="w-4 h-4 text-[#D4AF37] shrink-0" />
+              <span>Sign in to Terminal</span>
             </button>
           )}
         </div>

@@ -51,8 +51,9 @@ export function getSessionUser(): User | null {
     if (!sessionEmail) return null;
     const user = getUser(sessionEmail);
     if (user) {
-      // Check subscription expiry
-      if (user.subscriptionExpiry && Date.now() > user.subscriptionExpiry) {
+      // Check subscription expiry (exact 30 x 24h)
+      const expiry = user.subscriptionEndsAt || user.subscriptionExpiry;
+      if (expiry && Date.now() >= expiry && user.plan !== 'free') {
         user.plan = 'free';
         user.freeAnalysesLeft = 0;
         user.freeAnalyses = 0;
@@ -70,10 +71,16 @@ export function clearSession(): void {
   localStorage.removeItem(SESSION_KEY);
 }
 
+export function getUserEmail(): string | null {
+  const user = getSessionUser();
+  return user ? user.email : null;
+}
+
 export function loginOrCreateUser(
   rawEmail: string,
-  provider: 'email' | 'google' | 'guest' = 'email',
-  displayName?: string
+  provider: 'email' | 'google' | 'guest' = 'google',
+  displayName?: string,
+  pictureUrl?: string
 ): { user: User; isNew: boolean } {
   const normEmail = normalizeEmail(rawEmail);
   const existing = getUser(normEmail);
@@ -85,7 +92,8 @@ export function loginOrCreateUser(
       lastLoginAt: Date.now(),
       name: displayName || existing.name || normEmail.split('@')[0],
       avatar: (displayName || existing.name || normEmail).charAt(0).toUpperCase(),
-      provider: existing.provider || provider,
+      picture: pictureUrl || existing.picture,
+      provider: 'google',
       freeAnalysesLeft: freeCount,
       freeAnalyses: freeCount,
       analysesUsed: existing.analysesUsed || 0,
@@ -97,19 +105,23 @@ export function loginOrCreateUser(
   }
 
   // Create BRAND NEW user with exactly 3 free analyses
-  const name = displayName || (provider === 'guest' ? 'Guest Investor' : normEmail.split('@')[0]);
+  const name = displayName || normEmail.split('@')[0];
   const newUser: User = {
     id: 'user_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
     email: normEmail,
     name,
     avatar: name.charAt(0).toUpperCase(),
-    provider,
+    picture: pictureUrl,
+    provider: 'google',
     plan: 'free',
     freeAnalysesLeft: 3,
     freeAnalyses: 3,
     analysesUsed: 0,
     analysesLeft: 0,
     subscriptionExpiry: null,
+    subscriptionStartAt: null,
+    subscriptionEndsAt: null,
+    expiryEmailSent: false,
     savedAnalyses: [],
     portfolio: { totalValue: 0, monthlyCashflow: 0 },
     createdAt: Date.now(),

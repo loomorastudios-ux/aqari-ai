@@ -7,6 +7,7 @@ import {
   CROSS_BORDER_DATA 
 } from '../constants';
 import { formatPrice, getDaysRemaining } from '../utils/formatters';
+import { formatTimeLeft } from '../utils/emailService';
 import { 
   Building2, 
   Calculator, 
@@ -97,12 +98,24 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Plan info
+  // Plan info & Live 1-minute countdown interval
   const planInfo = PLAN_LIMITS[user.plan] || PLAN_LIMITS.free;
-  const daysLeft = user.subscriptionExpiry ? getDaysRemaining(user.subscriptionExpiry) : null;
-  const msLeft = user.subscriptionExpiry ? user.subscriptionExpiry - Date.now() : 0;
-  const isExpired = Boolean(user.plan !== 'free' && user.subscriptionExpiry && Date.now() > user.subscriptionExpiry);
-  const isExpiringIn1Day = Boolean(user.plan !== 'free' && user.subscriptionExpiry && msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000);
+  const [, setMinuteTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setMinuteTick((t) => t + 1);
+    }, 60000); // Live countdown update every minute
+    return () => clearInterval(timer);
+  }, []);
+
+  const endsAt = user.subscriptionEndsAt || user.subscriptionExpiry;
+  const msRemaining = endsAt ? Math.max(0, endsAt - Date.now()) : 0;
+  const daysLeft = endsAt ? Math.ceil(msRemaining / (1000 * 60 * 60 * 24)) : null;
+  const isPlanEnded = Boolean(user.plan !== 'free' && endsAt && msRemaining <= 0);
+  const isExpired = isPlanEnded || Boolean(user.plan !== 'free' && user.subscriptionExpiry && Date.now() > user.subscriptionExpiry);
+  const isEndingIn24h = Boolean(user.plan !== 'free' && endsAt && msRemaining > 0 && msRemaining <= 24 * 60 * 60 * 1000);
+  const isExpiringIn1Day = isEndingIn24h;
+  const countdownText = endsAt ? formatTimeLeft(msRemaining) : null;
 
   const analysesRemaining = user.plan === 'enterprise'
     ? 9999
@@ -375,20 +388,38 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         </div>
       )}
 
-      {/* Subscription Expired Banner */}
-      {isExpired && (
-        <div className="bg-rose-950/90 border-b border-rose-500/40 text-rose-200 text-xs py-2 px-4 flex items-center justify-between backdrop-blur-md z-50">
+      {/* Subscription Expired / Plan Ended Lock Banner */}
+      {isPlanEnded && (
+        <div className="bg-rose-950/90 border-b border-rose-500/40 text-rose-200 text-xs py-2.5 px-4 flex items-center justify-between backdrop-blur-md z-50">
           <div className="flex items-center gap-2 max-w-4xl mx-auto">
             <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
             <span>
-              Your 30-day <strong className="uppercase text-white">{user.plan}</strong> access has expired. New analyses are locked. Renew now to restore full underwriting.
+              <strong>Your plan has ended.</strong> Renew to continue your underwriting analyses and portfolio tracking.
             </span>
           </div>
           <button
             onClick={onOpenRenewal}
-            className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold transition cursor-pointer"
+            className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold transition cursor-pointer shrink-0 ml-3 shadow-sm"
           >
-            Renew 30 Days
+            Renew Plan
+          </button>
+        </div>
+      )}
+
+      {/* Subscription Ending in 24 Hours Banner */}
+      {!isPlanEnded && isEndingIn24h && (
+        <div className="bg-amber-950/90 border-b border-amber-500/40 text-amber-200 text-xs py-2 px-4 flex items-center justify-between backdrop-blur-md z-50">
+          <div className="flex items-center gap-2 max-w-4xl mx-auto">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              Your plan ends tomorrow. Renew to keep your analyses.
+            </span>
+          </div>
+          <button
+            onClick={onOpenRenewal}
+            className="px-3 py-1 bg-[#D4AF37] hover:bg-[#F3E5AB] text-black rounded text-xs font-bold font-mono transition cursor-pointer shrink-0 ml-3"
+          >
+            Renew Now
           </button>
         </div>
       )}
@@ -510,18 +541,6 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </div>
             )}
           </div>
-
-          {/* Sign Out */}
-
-          <button
-            onClick={onSignOut}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-mono text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
-            title="Sign out of Terminal"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">Sign Out</span>
-          </button>
-
         </div>
 
       </header>
@@ -548,16 +567,39 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             
             {/* User Profile Overview */}
             <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#D4AF37] to-[#8B5CF6] flex items-center justify-center text-black font-black font-mono text-sm uppercase shadow-sm">
-                {user.email.charAt(0).toUpperCase()}
-              </div>
-              <div className="truncate">
+              {user.picture ? (
+                <img
+                  src={user.picture}
+                  alt={user.name || user.email}
+                  className="w-10 h-10 rounded-xl object-cover border border-[#D4AF37]/40 shadow-sm shrink-0"
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#D4AF37] to-[#8B5CF6] flex items-center justify-center text-black font-black font-mono text-sm uppercase shadow-sm shrink-0">
+                  {user.email.charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div className="truncate flex-1">
                 <div className="text-xs font-bold text-white truncate">{user.email}</div>
                 <div className="text-[10px] font-mono text-[#D4AF37] flex items-center gap-1 mt-0.5">
                   <ShieldCheck className="w-3 h-3" />
                   <span className="uppercase">{user.plan} TERMINAL</span>
                 </div>
               </div>
+            </div>
+
+            {/* Live 30-Day Subscription Countdown Widget */}
+            <div className="px-3.5 py-2.5 rounded-xl bg-white/[0.02] border border-white/[0.06] font-mono text-[11px]">
+              <div className="text-zinc-500 uppercase text-[9px] font-bold tracking-wider mb-1 flex items-center justify-between">
+                <span>Licensing Countdown</span>
+                <span className={`w-1.5 h-1.5 rounded-full ${isPlanEnded ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`} />
+              </div>
+              {user.plan === 'free' ? (
+                <div className="text-zinc-300 font-semibold">Free Tier • {analysesRemaining} analyses left</div>
+              ) : isPlanEnded ? (
+                <div className="text-rose-400 font-bold leading-tight">Your plan has ended. Renew to continue.</div>
+              ) : (
+                <div className="text-[#D4AF37] font-semibold tracking-tight">{countdownText}</div>
+              )}
             </div>
 
             {/* Navigation Tabs */}
@@ -649,7 +691,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
             </nav>
 
-            {/* TASK 2: Danger / Red Log Out Button directly below Settings & above Install App */}
+            {/* PART 1: Danger / Red Sign Out Button directly below Settings & above Install App - ENGLISH ONLY */}
             <div className="pt-2">
               <button
                 type="button"
@@ -658,12 +700,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   onSignOut();
                 }}
                 className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 active:bg-rose-500/30 border border-rose-500/30 hover:border-rose-500/60 text-rose-300 hover:text-rose-200 transition cursor-pointer min-h-[44px] font-mono text-xs font-bold"
-                aria-label="تسجيل الخروج من الحساب"
+                aria-label="Sign Out"
               >
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold tracking-wide">تسجيل الخروج</span>
-                  <span className="text-[10px] text-rose-400/80 font-normal hidden sm:inline">(Sign Out)</span>
-                </div>
+                <span className="font-semibold tracking-wide">Sign Out</span>
                 <LogOut className="w-4 h-4 text-rose-400 shrink-0" />
               </button>
             </div>
@@ -1687,10 +1726,19 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <span className="text-[#D4AF37] font-bold uppercase">{user.plan}</span>
                   </div>
                   <div>
-                    <span className="text-zinc-500 block mb-0.5">Licensing Expiry</span>
-                    <span className="text-white">
-                      {user.subscriptionExpiry ? new Date(user.subscriptionExpiry).toLocaleDateString() : 'Active Free Tier'}
+                    <span className="text-zinc-500 block mb-0.5">Licensing Expiry & Countdown</span>
+                    <span className={isPlanEnded ? "text-rose-400 font-bold" : "text-[#D4AF37] font-bold"}>
+                      {user.plan === 'free'
+                        ? 'Active Free Tier'
+                        : isPlanEnded
+                        ? 'Your plan has ended. Renew to continue.'
+                        : countdownText}
                     </span>
+                    {endsAt && user.plan !== 'free' && (
+                      <span className="text-[10px] text-zinc-500 block mt-0.5">
+                        Ends: {new Date(endsAt).toLocaleString()}
+                      </span>
+                    )}
                   </div>
                   <div>
                     <span className="text-zinc-500 block mb-0.5">Analyses Left</span>

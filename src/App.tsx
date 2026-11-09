@@ -25,6 +25,8 @@ import { AnalysisModal } from './components/AnalysisModal';
 import { AdminModal } from './components/AdminModal';
 import { RenewalModal } from './components/RenewalModal';
 import { TerminalDashboard } from './components/TerminalDashboard';
+import { AnnouncementBanner } from './components/AnnouncementBanner';
+import { checkAndSendExpiryEmail } from './utils/emailService';
 import { 
   Building2, 
   Sparkles, 
@@ -35,6 +37,9 @@ import {
   FileCode,
   CheckCircle2
 } from 'lucide-react';
+
+// Global Announcement Banner Text (Set to empty string "" to hide)
+export const ANNOUNCEMENT = "Institutional Spring Cycle: Muscat + Dubai Gross Yield Spread reaches +450bps. Sovereign Terminal 3.0 Live.";
 
 export default function App() {
   // Currency State (saved in localStorage)
@@ -224,10 +229,15 @@ export default function App() {
         lastLoginAt: Date.now(),
       };
 
+      const now = Date.now();
+      const subscriptionDuration = 30 * 24 * 60 * 60 * 1000;
       const updatedUser: User = {
         ...baseUser,
         plan: returnedPlan,
-        subscriptionExpiry: Date.now() + 30 * 24 * 60 * 60 * 1000,
+        subscriptionStartAt: now,
+        subscriptionEndsAt: now + subscriptionDuration,
+        subscriptionExpiry: now + subscriptionDuration,
+        expiryEmailSent: false,
         freeAnalyses: planQuota,
         freeAnalysesLeft: planQuota,
         analysesLeft: planQuota,
@@ -333,21 +343,39 @@ export default function App() {
     setRoute('landing');
   };
 
+  // Auto check and send 24h expiry notification email on mount and user update
+  useEffect(() => {
+    if (user && user.plan !== 'free') {
+      const { user: updatedUser } = checkAndSendExpiryEmail(user);
+      if (updatedUser.expiryEmailSent !== user.expiryEmailSent) {
+        setUser(updatedUser);
+      }
+    }
+  }, [user]);
+
   // Admin Testing Unlock (strictly kept for Admin in AdminModal)
   const handleAdminTestUnlock = (plan: 'starter' | 'pro' | 'enterprise') => {
     const planQuota = PLAN_LIMITS[plan]?.analyses || 400;
+    const now = Date.now();
+    const subscriptionDuration = 30 * 24 * 60 * 60 * 1000;
     const updated: User = user
       ? {
           ...user,
           plan,
-          subscriptionExpiry: Date.now() + 30 * 24 * 60 * 60 * 1000,
+          subscriptionStartAt: now,
+          subscriptionEndsAt: now + subscriptionDuration,
+          subscriptionExpiry: now + subscriptionDuration,
+          expiryEmailSent: false,
           freeAnalyses: planQuota,
         }
       : {
           id: 'user_' + Date.now(),
-          email: 'admin.tester@aqari.terminal',
+          email: 'admin.tester@gmail.com',
           plan,
-          subscriptionExpiry: Date.now() + 30 * 24 * 60 * 60 * 1000,
+          subscriptionStartAt: now,
+          subscriptionEndsAt: now + subscriptionDuration,
+          subscriptionExpiry: now + subscriptionDuration,
+          expiryEmailSent: false,
           freeAnalyses: planQuota,
           analysesUsed: 0,
           createdAt: Date.now(),
@@ -378,8 +406,9 @@ export default function App() {
     }
 
     const currentUser = getUser(user.email) || user;
+    const endsAt = currentUser.subscriptionEndsAt || currentUser.subscriptionExpiry;
 
-    if (currentUser.subscriptionExpiry && Date.now() > currentUser.subscriptionExpiry) {
+    if (currentUser.plan !== 'free' && endsAt && Date.now() >= endsAt) {
       const expiredUser: User = {
         ...currentUser,
         plan: 'free',
@@ -497,6 +526,9 @@ export default function App() {
 
   return (
     <>
+      {/* PART 5: Global Announcements Banner */}
+      <AnnouncementBanner text={ANNOUNCEMENT} />
+
       {/* Toast Notification Container */}
       {terminalToast && (
         <div id="terminalToast" className="fixed top-20 right-6 z-50 p-4 rounded-2xl bg-zinc-900 border border-[#D4AF37]/50 text-white text-xs font-mono shadow-[0_10px_35px_rgba(0,0,0,0.8)] animate-in fade-in slide-in-from-top-4 duration-200 flex items-center gap-2.5 backdrop-blur-xl">
