@@ -591,6 +591,7 @@ export default function App() {
         <Hero
           currentCurrency={currency}
           selectedCity={selectedCity}
+          user={user}
           onSelectCity={(city) => setSelectedCity(city)}
           onExploreProperties={() => {
             const el = document.getElementById('properties');
@@ -600,6 +601,7 @@ export default function App() {
             const el = document.getElementById('yield-simulator');
             el?.scrollIntoView({ behavior: 'smooth' });
           }}
+          onOpenAuth={() => setIsAuthOpen(true)}
         />
 
         {/* High-Conviction Institutional Property Listings */}

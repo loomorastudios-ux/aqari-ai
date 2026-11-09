@@ -649,6 +649,25 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
             </nav>
 
+            {/* TASK 2: Danger / Red Log Out Button directly below Settings & above Install App */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileSidebarOpen(false);
+                  onSignOut();
+                }}
+                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 active:bg-rose-500/30 border border-rose-500/30 hover:border-rose-500/60 text-rose-300 hover:text-rose-200 transition cursor-pointer min-h-[44px] font-mono text-xs font-bold"
+                aria-label="تسجيل الخروج من الحساب"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold tracking-wide">تسجيل الخروج</span>
+                  <span className="text-[10px] text-rose-400/80 font-normal hidden sm:inline">(Sign Out)</span>
+                </div>
+                <LogOut className="w-4 h-4 text-rose-400 shrink-0" />
+              </button>
+            </div>
+
           </div>
 
           {/* Install App Button in Terminal Sidebar */}

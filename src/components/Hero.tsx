@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CurrencyCode } from '../types';
+import { CurrencyCode, User } from '../types';
 import { formatPrice } from '../utils/formatters';
 import { MagneticButton } from './MagneticButton';
 import { PWAInstallButton } from './PWAInstallButton';
@@ -10,12 +10,15 @@ import {
   Shield, 
   Compass,
   Layers,
-  ChevronRight
+  ChevronRight,
+  LogIn,
+  User as UserIcon
 } from 'lucide-react';
 
 interface HeroProps {
   currentCurrency: CurrencyCode;
   selectedCity: string;
+  user?: User | null;
   onSelectCity: (city: string) => void;
   onExploreProperties: () => void;
   onExploreSimulator: () => void;
@@ -25,6 +28,7 @@ interface HeroProps {
 export const Hero: React.FC<HeroProps> = ({
   currentCurrency,
   selectedCity,
+  user,
   onSelectCity,
   onExploreProperties,
   onExploreSimulator,
@@ -169,6 +173,19 @@ export const Hero: React.FC<HeroProps> = ({
 
           {/* Prominent PWA Install App Button */}
           <PWAInstallButton variant="hero" className="w-full sm:w-auto" />
+
+          {/* TASK 1: Mobile-Only Login Button directly below Install App button when logged out */}
+          {!user && (
+            <button
+              type="button"
+              onClick={onOpenAuth}
+              className="sm:hidden w-full flex items-center justify-center gap-2.5 px-6 py-3 rounded-2xl bg-transparent hover:bg-white/[0.04] active:bg-white/[0.08] border border-[#D4AF37]/60 hover:border-[#D4AF37] text-white font-bold text-sm tracking-wide transition-all duration-200 cursor-pointer min-h-[48px] shadow-[0_0_15px_rgba(212,175,55,0.15)]"
+              aria-label="تسجيل الدخول إلى تطبيق عقاري"
+            >
+              <span className="text-sm font-semibold tracking-wide">تسجيل الدخول</span>
+              <LogIn className="w-4 h-4 text-[#D4AF37] shrink-0" />
+            </button>
+          )}
         </div>
 
       </div>
