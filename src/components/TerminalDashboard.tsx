@@ -182,6 +182,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
   // Run Analysis Action (Consumes 1 Credit) - Called ONLY when user clicks RUN ANALYSIS
   const handleRunAnalysis = () => {
+    if (isExpired) {
+      showToast('Subscription expired. Please renew your 30-day plan to continue running analyses.');
+      onOpenRenewal();
+      return;
+    }
+
     if (onConsumeAnalysis) {
       const ok = onConsumeAnalysis();
       if (ok) {
@@ -211,6 +217,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
   // Save Analysis to Portfolio
   const handleSaveAnalysis = () => {
+    if (isExpired) {
+      showToast('Subscription expired. Please renew your plan to save properties to portfolio.');
+      onOpenRenewal();
+      return;
+    }
+
     if (!hasRunAnalysis) {
       showToast('Please click RUN ANALYSIS first before saving to portfolio.');
       return;
@@ -1529,36 +1541,96 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           {activeTab === 'dashboard' && (
             <div className="space-y-6 max-w-6xl mx-auto">
               
-              {/* Welcome Card */}
-              <div className="glass-panel p-6 sm:p-8 relative overflow-hidden border border-[#D4AF37]/30 shadow-[0_0_30px_rgba(212,175,55,0.06)]">
-                <div className="max-w-2xl space-y-3">
-                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 text-xs font-mono text-[#D4AF37]">
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>ACTIVE INSTITUTIONAL LICENSE</span>
+              {/* Expiration Notice if subscription ended */}
+              {isExpired && (
+                <div className="p-4 sm:p-5 rounded-2xl bg-rose-950/40 border border-rose-500/50 text-rose-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-in fade-in duration-200">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-xl bg-rose-500/20 text-rose-400">
+                      <AlertTriangle className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-bold text-white">30-Day Subscription Has Expired</div>
+                      <div className="text-xs text-rose-300 font-mono mt-0.5">
+                        Premium underwriting features are locked. Renew your subscription to restore instant access.
+                      </div>
+                    </div>
                   </div>
-                  <h2 className="text-3xl font-bold text-white tracking-tight">
-                    Welcome to AQARI Terminal, {user.name || user.email.split('@')[0]}
-                  </h2>
-                  <p className="text-zinc-400 text-xs font-mono leading-relaxed">
-                    Your account is registered on the <strong className="uppercase text-white">{planInfo.label}</strong> tier. You have{' '}
-                    <strong className="text-[#D4AF37]">{user.plan === 'enterprise' ? 'Unlimited' : `${analysesRemaining} left`}</strong> for this 30-day licensing window.
-                  </p>
-                </div>
-
-                <div className="mt-6 flex flex-wrap gap-3">
-                  <button
-                    onClick={() => setActiveTab('analyze')}
-                    className="px-5 py-2.5 rounded-xl bg-[#D4AF37] hover:bg-amber-400 text-black font-bold text-xs font-mono cursor-pointer transition flex items-center gap-2"
-                  >
-                    <Calculator className="w-4 h-4" />
-                    <span>Launch Underwriter</span>
-                  </button>
                   <button
                     onClick={onOpenRenewal}
-                    className="px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-mono text-xs cursor-pointer transition"
+                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-xs font-mono uppercase tracking-wider shrink-0 cursor-pointer shadow-lg"
                   >
-                    Upgrade / Renew Plan
+                    Renew Subscription Now
                   </button>
+                </div>
+              )}
+
+              {/* Dedicated Subscription Details Card: Plan Name, Status, Days Left, End Date, Renew */}
+              <div className="glass-panel p-6 sm:p-8 rounded-3xl border border-white/10 relative overflow-hidden">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-white/[0.08] pb-6">
+                  <div>
+                    <div className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider">
+                      Aqari AI License Overview
+                    </div>
+                    <h3 className="text-2xl font-bold text-white mt-1">
+                      {user.plan === 'starter' ? 'Aqari AI - Starter ($89/mo)' :
+                       user.plan === 'pro' ? 'Aqari AI - Pro ($249/mo)' :
+                       user.plan === 'enterprise' ? 'Aqari AI - Enterprise ($749/mo)' :
+                       'Aqari AI - Free Tier (3 Analyses)'}
+                    </h3>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <span className={`px-3 py-1 rounded-full text-xs font-mono font-bold uppercase tracking-wider border ${
+                      isExpired
+                        ? 'bg-rose-500/20 text-rose-400 border-rose-500/40'
+                        : user.plan !== 'free'
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-zinc-500/20 text-zinc-300 border-zinc-500/40'
+                    }`}>
+                      {isExpired ? 'STATUS: EXPIRED' : user.plan !== 'free' ? 'STATUS: ACTIVE' : 'STATUS: FREE TIER'}
+                    </span>
+
+                    <button
+                      onClick={onOpenRenewal}
+                      className="px-4 py-2 rounded-xl bg-[#D4AF37] hover:bg-amber-400 text-black font-bold text-xs font-mono tracking-wide cursor-pointer transition flex items-center gap-1.5 shadow-[0_0_15px_rgba(212,175,55,0.3)]"
+                    >
+                      <Zap className="w-3.5 h-3.5 fill-black" />
+                      <span>Renew / Upgrade</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4 Metadata Metrics */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-6">
+                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">Plan Tier</span>
+                    <strong className="text-base font-bold font-mono text-white capitalize">{user.plan} Terminal</strong>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">Subscription Status</span>
+                    <strong className={`text-base font-bold font-mono ${
+                      isExpired ? 'text-rose-400' : user.plan !== 'free' ? 'text-emerald-400' : 'text-zinc-300'
+                    }`}>
+                      {isExpired ? 'Expired' : user.plan !== 'free' ? 'Active (30 Days)' : 'Trial'}
+                    </strong>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">Days Left</span>
+                    <strong className={`text-base font-bold font-mono ${
+                      isExpired ? 'text-rose-400' : isEndingIn24h ? 'text-amber-400' : 'text-white'
+                    }`}>
+                      {isExpired ? '0 days (Expired)' : daysLeft !== null ? `${daysLeft} days left` : '3 analyses'}
+                    </strong>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">End Date</span>
+                    <strong className="text-sm font-bold font-mono text-zinc-200">
+                      {endsAt ? new Date(endsAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 'No Expiry'}
+                    </strong>
+                  </div>
                 </div>
               </div>
 

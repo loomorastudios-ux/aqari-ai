@@ -34,16 +34,42 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   const isDiscountActive = config.discount.active && config.discount.percent > 0;
   const discountMultiplier = isDiscountActive ? 1 - config.discount.percent / 100 : 1;
 
-  const handleRenew = (plan: 'starter' | 'pro' | 'enterprise') => {
+  const handleRenew = async (plan: 'starter' | 'pro' | 'enterprise') => {
     const baseLink = LEMON_LINKS[plan];
-    const redirectUrl = LEMON_REDIRECT_URLS[plan];
+    const successUrl = `https://aqari-e4ku9f7u3-aqari2.vercel.app/payment-success?plan=${plan}&email=${encodeURIComponent(user?.email || '')}`;
+    const cancelUrl = 'https://aqari-e4ku9f7u3-aqari2.vercel.app/pricing';
+
+    // 1. Try serverless checkout generator
+    if (user?.email) {
+      try {
+        const res = await fetch('/api/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            plan,
+            email: user.email,
+            userId: user.id || user.googleId,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.url) {
+            window.location.href = data.url;
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Direct hosted checkout with prefilled parameters
     const params = new URLSearchParams();
     if (user) {
-      params.set('checkout[custom][user_id]', user.id);
+      params.set('checkout[custom][user_id]', user.id || user.googleId || '');
       params.set('checkout[custom][plan]', plan);
       params.set('checkout[email]', user.email);
     }
-    params.set('checkout[redirect_url]', redirectUrl);
+    params.set('checkout[redirect_url]', successUrl);
+    params.set('checkout[cancel_url]', cancelUrl);
     if (isDiscountActive && config.discount.code) {
       params.set('discount', config.discount.code);
     }

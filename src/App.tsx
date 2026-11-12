@@ -34,6 +34,7 @@ import { AnalysisModal } from './components/AnalysisModal';
 import { AdminModal } from './components/AdminModal';
 import { RenewalModal } from './components/RenewalModal';
 import { TerminalDashboard } from './components/TerminalDashboard';
+import { PaymentSuccessView } from './components/PaymentSuccessView';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { checkAndSendExpiryEmail } from './utils/emailService';
 import { 
@@ -65,8 +66,18 @@ export default function App() {
     return getSessionUser();
   });
 
-  // App Routing State: 'landing' vs 'terminal'
-  const [route, setRoute] = useState<'landing' | 'terminal'>(() => {
+  // App Routing State: 'landing' vs 'terminal' vs 'pricing' vs 'payment-success'
+  const [route, setRoute] = useState<'landing' | 'terminal' | 'pricing' | 'payment-success'>(() => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      const hash = window.location.hash;
+      if (path === '/payment-success' || hash.startsWith('#/payment-success')) {
+        return 'payment-success';
+      }
+      if (path === '/pricing' || hash === '#/pricing') {
+        return 'pricing';
+      }
+    }
     const sessionUser = getSessionUser();
     // Directly show Terminal if existing session exists
     if (sessionUser) {
@@ -123,11 +134,21 @@ export default function App() {
   // Terminal welcome toast state
   const [terminalToast, setTerminalToast] = useState<string | null>(null);
 
-  // Listen to hash changes
+  // Listen to hash and pathname changes
   useEffect(() => {
     const handleHashChange = () => {
       const hash = window.location.hash;
+      const path = window.location.pathname;
       const currentUser = getSessionUser();
+
+      if (path === '/payment-success' || hash.startsWith('#/payment-success')) {
+        setRoute('payment-success');
+        return;
+      }
+      if (path === '/pricing' || hash === '#/pricing') {
+        setRoute('pricing');
+        return;
+      }
       if (hash === '#/terminal') {
         if (currentUser) {
           setRoute('terminal');
@@ -147,7 +168,11 @@ export default function App() {
     };
 
     window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('popstate', handleHashChange);
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+      window.removeEventListener('popstate', handleHashChange);
+    };
   }, []);
 
   // Save Currency
@@ -587,6 +612,56 @@ export default function App() {
   }
 
   const isTerminal = route === 'terminal' && !!user;
+
+  // View: Payment Success
+  if (route === 'payment-success') {
+    return (
+      <PaymentSuccessView
+        currentUser={user}
+        onEnterTerminal={handleGoToTerminal}
+        onGoToHome={handleGoToHome}
+      />
+    );
+  }
+
+  // View: Standalone Pricing Page
+  if (route === 'pricing') {
+    return (
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#D4AF37]/30 selection:text-white relative">
+        <AmbientBackground />
+        <CustomCursor />
+        <Navbar
+          currentCurrency={currency}
+          onCurrencyChange={handleCurrencyChange}
+          user={user}
+          config={config}
+          onOpenAuth={() => setIsAuthOpen(true)}
+          onSignOut={handleSignOut}
+          onOpenAdmin={() => setIsAdminOpen(true)}
+          onGoToTerminal={handleGoToTerminal}
+          onOpenPricing={() => {
+            window.location.hash = '#/pricing';
+            setRoute('pricing');
+          }}
+        />
+        <PricingSection
+          isStandalonePage={true}
+          currentCurrency={currency}
+          config={config}
+          user={user}
+          onOpenAuth={() => setIsAuthOpen(true)}
+          onTestUnlock={handleAdminTestUnlock}
+        />
+        {isAuthOpen && (
+          <AuthModal
+            isOpen={isAuthOpen}
+            onClose={() => setIsAuthOpen(false)}
+            onSignIn={handleSignIn}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <>
