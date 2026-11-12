@@ -74,13 +74,12 @@ export function clearSession(): void {
 export const REMEMBERED_ACCOUNTS_KEY = 'remembered_accounts';
 
 export interface RememberedAccount {
-  userId: string;
   name: string;
   email: string;
   avatar?: string;
   picture?: string;
-  lastLoginAt: number;
-  sessionExpiresAt: number; // 30-day persistent session timestamp
+  googleId?: string;
+  lastLoginAt?: number;
 }
 
 export function getRememberedAccounts(): RememberedAccount[] {
@@ -101,17 +100,15 @@ export function saveRememberedAccount(user: User): void {
     const norm = normalizeEmail(user.email);
     if (!norm) return;
     const existingList = getRememberedAccounts();
-    const sessionDuration = 30 * 24 * 60 * 60 * 1000; // 30 days valid session
     const existingIndex = existingList.findIndex((item) => normalizeEmail(item.email) === norm);
 
     const accountData: RememberedAccount = {
-      userId: user.id || 'usr_' + norm.replace(/[^a-zA-Z0-9]/g, '_'),
       name: user.name || norm.split('@')[0],
       email: norm,
-      avatar: user.avatar || user.name?.charAt(0).toUpperCase() || norm.charAt(0).toUpperCase(),
+      avatar: user.picture || user.avatar || user.name?.charAt(0).toUpperCase() || norm.charAt(0).toUpperCase(),
       picture: user.picture,
+      googleId: user.googleId,
       lastLoginAt: Date.now(),
-      sessionExpiresAt: Date.now() + sessionDuration,
     };
 
     if (existingIndex >= 0) {
@@ -137,36 +134,6 @@ export function removeRememberedAccount(email: string): void {
   }
 }
 
-export function directLoginWithRememberedAccount(email: string): { user: User | null; isExpired: boolean } {
-  const norm = normalizeEmail(email);
-  const remembered = getRememberedAccounts().find((a) => normalizeEmail(a.email) === norm);
-
-  if (!remembered) {
-    return { user: null, isExpired: true };
-  }
-
-  // Check if session has expired
-  if (remembered.sessionExpiresAt && Date.now() > remembered.sessionExpiresAt) {
-    return { user: null, isExpired: true };
-  }
-
-  const existingUser = getUser(norm);
-  if (!existingUser) {
-    const { user } = loginOrCreateUser(norm, 'google', remembered.name, remembered.picture);
-    return { user, isExpired: false };
-  }
-
-  // Set active session in localStorage
-  localStorage.setItem(SESSION_KEY, norm);
-  const updatedUser: User = {
-    ...existingUser,
-    lastLoginAt: Date.now(),
-  };
-  saveUser(updatedUser);
-  saveRememberedAccount(updatedUser);
-  return { user: updatedUser, isExpired: false };
-}
-
 export function signOutAndForget(email: string): void {
   clearSession();
   removeRememberedAccount(email);
@@ -181,20 +148,30 @@ export function loginOrCreateUser(
   rawEmail: string,
   provider: 'email' | 'google' | 'guest' = 'google',
   displayName?: string,
-  pictureUrl?: string
+  pictureUrl?: string,
+  googleId?: string
 ): { user: User; isNew: boolean } {
   const normEmail = normalizeEmail(rawEmail);
   const existing = getUser(normEmail);
 
   if (existing) {
     const freeCount = existing.freeAnalysesLeft ?? existing.freeAnalyses ?? 3;
+    const endsAt = existing.subscriptionEndsAt || existing.subscriptionExpiry || null;
+    let subStatus = existing.subscriptionStatus || (existing.plan !== 'free' ? 'active' : 'free');
+    if (existing.plan !== 'free' && endsAt && Date.now() >= endsAt) {
+      subStatus = 'expired';
+    }
+
     const updated: User = {
       ...existing,
+      googleId: googleId || existing.googleId,
       lastLoginAt: Date.now(),
       name: displayName || existing.name || normEmail.split('@')[0],
-      avatar: (displayName || existing.name || normEmail).charAt(0).toUpperCase(),
+      avatar: pictureUrl || existing.avatar || (displayName || existing.name || normEmail).charAt(0).toUpperCase(),
       picture: pictureUrl || existing.picture,
       provider: 'google',
+      subscriptionStatus: subStatus,
+      subscriptionEndsAt: endsAt,
       freeAnalysesLeft: freeCount,
       freeAnalyses: freeCount,
       analysesUsed: existing.analysesUsed || 0,
@@ -209,20 +186,22 @@ export function loginOrCreateUser(
   // Create BRAND NEW user with exactly 3 free analyses
   const name = displayName || normEmail.split('@')[0];
   const newUser: User = {
-    id: 'user_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    id: googleId ? `google_${googleId}` : 'user_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    googleId: googleId || undefined,
     email: normEmail,
     name,
-    avatar: name.charAt(0).toUpperCase(),
+    avatar: pictureUrl || name.charAt(0).toUpperCase(),
     picture: pictureUrl,
     provider: 'google',
     plan: 'free',
+    subscriptionStatus: 'free',
+    subscriptionEndsAt: null,
     freeAnalysesLeft: 3,
     freeAnalyses: 3,
     analysesUsed: 0,
     analysesLeft: 0,
     subscriptionExpiry: null,
     subscriptionStartAt: null,
-    subscriptionEndsAt: null,
     expiryEmailSent: false,
     savedAnalyses: [],
     portfolio: { totalValue: 0, monthlyCashflow: 0 },

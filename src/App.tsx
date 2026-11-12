@@ -17,6 +17,7 @@ import {
   removeRememberedAccount,
   loginOrCreateUser 
 } from './utils/userStorage';
+import { verifyGoogleAccessToken, verifyGoogleIdToken } from './utils/oauthConfig';
 import { AmbientBackground } from './components/AmbientBackground';
 import { CustomCursor } from './components/CustomCursor';
 import { Navbar } from './components/Navbar';
@@ -247,6 +248,7 @@ export default function App() {
       const updatedUser: User = {
         ...baseUser,
         plan: returnedPlan,
+        subscriptionStatus: 'active',
         subscriptionStartAt: now,
         subscriptionEndsAt: now + subscriptionDuration,
         subscriptionExpiry: now + subscriptionDuration,
@@ -281,41 +283,46 @@ export default function App() {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
 
-    // Check if returning from Google OAuth redirect (credential, id_token, or code)
+    // Check if returning from Google OAuth redirect (access_token, id_token, or credential)
     const rawHash = window.location.hash.replace(/^#\/?/, '');
     const hashParams = new URLSearchParams(rawHash.includes('=') ? rawHash : '');
-    const oauthCredential = urlParams.get('credential') || hashParams.get('id_token') || hashParams.get('credential');
+    const accessToken = hashParams.get('access_token') || urlParams.get('access_token');
+    const idToken = hashParams.get('id_token') || urlParams.get('id_token');
+    const oauthCredential = urlParams.get('credential') || hashParams.get('credential');
 
-    if (oauthCredential) {
+    const handleVerifyRedirectToken = async () => {
       try {
-        const base64Url = oauthCredential.split('.')[1];
-        if (base64Url) {
-          const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-          const jsonPayload = decodeURIComponent(
-            atob(base64)
-              .split('')
-              .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-              .join('')
+        let verified: { googleId: string; email: string; name: string; avatar: string; picture?: string } | null = null;
+        if (accessToken) {
+          verified = await verifyGoogleAccessToken(accessToken);
+        } else if (idToken) {
+          verified = await verifyGoogleIdToken(idToken);
+        } else if (oauthCredential) {
+          verified = await verifyGoogleIdToken(oauthCredential);
+        }
+
+        if (verified && verified.email) {
+          const { user: authedUser } = loginOrCreateUser(
+            verified.email,
+            'google',
+            verified.name,
+            verified.picture || verified.avatar,
+            verified.googleId
           );
-          const payload = JSON.parse(jsonPayload);
-          if (payload?.email) {
-            const { user: authedUser } = loginOrCreateUser(
-              payload.email,
-              'google',
-              payload.name || payload.email.split('@')[0],
-              payload.picture
-            );
-            handleSaveUser(authedUser);
-            setIsAuthOpen(false);
-            window.location.hash = '#/terminal';
-            setRoute('terminal');
-            setTerminalToast(`Welcome, ${authedUser.name || authedUser.email}`);
-            window.history.replaceState({}, document.title, window.location.pathname);
-          }
+          handleSaveUser(authedUser);
+          setIsAuthOpen(false);
+          window.location.hash = '#/terminal';
+          setRoute('terminal');
+          setTerminalToast(`Welcome, ${authedUser.name || authedUser.email}`);
+          window.history.replaceState({}, document.title, window.location.pathname);
         }
       } catch (err) {
-        console.warn('OAuth redirect token decode error:', err);
+        console.warn('Google OAuth verification failed on redirect:', err);
       }
+    };
+
+    if (accessToken || idToken || oauthCredential) {
+      handleVerifyRedirectToken();
     }
   }, []);
 
@@ -464,10 +471,11 @@ export default function App() {
     const currentUser = getUser(user.email) || user;
     const endsAt = currentUser.subscriptionEndsAt || currentUser.subscriptionExpiry;
 
-    if (currentUser.plan !== 'free' && endsAt && Date.now() >= endsAt) {
+    if ((currentUser.plan !== 'free' && endsAt && Date.now() >= endsAt) || currentUser.subscriptionStatus === 'expired') {
       const expiredUser: User = {
         ...currentUser,
         plan: 'free',
+        subscriptionStatus: 'expired',
         freeAnalyses: 0,
         freeAnalysesLeft: 0,
         analysesLeft: 0,

@@ -24,7 +24,9 @@ export interface User {
   avatar?: string;
   picture?: string;
   provider?: 'email' | 'google' | 'guest';
+  googleId?: string;
   plan: 'free' | 'starter' | 'pro' | 'enterprise';
+  subscriptionStatus?: 'active' | 'expired' | 'trial' | 'free';
   freeAnalysesLeft?: number;
   freeAnalyses?: number; // fallback alias
   analysesLeft?: number;

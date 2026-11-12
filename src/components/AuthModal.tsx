@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User } from '../types';
 import {
   loginOrCreateUser,
   getRememberedAccounts,
   removeRememberedAccount,
-  directLoginWithRememberedAccount,
   RememberedAccount,
 } from '../utils/userStorage';
 import {
@@ -12,19 +11,19 @@ import {
   isValidGoogleClientId,
   setCustomGoogleClientId,
   formatOAuthErrorMessage,
+  verifyGoogleAccessToken,
+  verifyGoogleIdToken,
+  buildGoogleOAuthUrl,
 } from '../utils/oauthConfig';
 import {
   X,
-  Sparkles,
   ShieldCheck,
   AlertCircle,
-  CheckCircle2,
-  User as UserIcon,
   UserPlus,
   ArrowRight,
-  Trash2,
-  Clock,
   ExternalLink,
+  Loader2,
+  Trash2,
 } from 'lucide-react';
 
 interface AuthModalProps {
@@ -32,15 +31,6 @@ interface AuthModalProps {
   onClose: () => void;
   onSignIn: (user: User) => void;
   initialEmail?: string;
-}
-
-// Google Identity Credential payload interface
-interface GoogleJwtPayload {
-  email: string;
-  name?: string;
-  picture?: string;
-  sub?: string;
-  email_verified?: boolean;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -52,12 +42,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [rememberedList, setRememberedList] = useState<RememberedAccount[]>([]);
   const [showAccountChooser, setShowAccountChooser] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [typedGmail, setTypedGmail] = useState(initialEmail || 'loomorastudios@gmail.com');
-  const [showManualVerify, setShowManualVerify] = useState(false);
+  const [loadingText, setLoadingText] = useState('Verifying with Google...');
   const [customClientIdInput, setCustomClientIdInput] = useState('');
   const [showClientIdConfig, setShowClientIdConfig] = useState(false);
+  const activeHintRef = useRef<string | null>(null);
 
   // Load remembered accounts when opening modal
   useEffect(() => {
@@ -65,62 +54,63 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       const list = getRememberedAccounts();
       setRememberedList(list);
       setErrorMsg(null);
-      setInfoMsg(null);
       setIsLoading(false);
-      // If there are remembered accounts and no initialEmail requested, default to remembered accounts view
+
       if (list.length > 0 && !initialEmail) {
         setShowAccountChooser(false);
       } else {
         setShowAccountChooser(true);
       }
-      if (initialEmail) {
-        setTypedGmail(initialEmail);
-      }
     }
   }, [isOpen, initialEmail]);
 
-  // Validate Gmail requirement: only @gmail.com or @googlemail.com
-  const isGmailAddress = (email: string): boolean => {
-    const clean = (email || '').trim().toLowerCase();
-    return clean.endsWith('@gmail.com') || clean.endsWith('@googlemail.com');
-  };
+  // Listen for OAuth popup completion messages
+  useEffect(() => {
+    const handleOAuthMessage = async (event: MessageEvent) => {
+      // Validate origin if coming from same host or google callback
+      if (event.data && typeof event.data === 'object' && event.data.type === 'AQARI_GOOGLE_AUTH_CALLBACK') {
+        const { accessToken, idToken, error } = event.data;
+        if (error) {
+          setErrorMsg(formatOAuthErrorMessage(error));
+          setIsLoading(false);
+          return;
+        }
 
-  // Decode JWT payload safely from Google Identity Services
-  const parseJwt = (token: string): GoogleJwtPayload | null => {
-    try {
-      const base64Url = token.split('.')[1];
-      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-      const jsonPayload = decodeURIComponent(
-        atob(base64)
-          .split('')
-          .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-          .join('')
-      );
-      return JSON.parse(jsonPayload);
-    } catch (e) {
-      console.warn('Failed to parse Google ID token:', e);
-      return null;
-    }
-  };
+        try {
+          setIsLoading(true);
+          setLoadingText('Verifying token with Google endpoint...');
+          if (accessToken) {
+            const verified = await verifyGoogleAccessToken(accessToken);
+            handleSuccessfulGoogleAuth(verified);
+          } else if (idToken) {
+            const verified = await verifyGoogleIdToken(idToken);
+            handleSuccessfulGoogleAuth(verified);
+          }
+        } catch (err) {
+          setErrorMsg(formatOAuthErrorMessage(err));
+          setIsLoading(false);
+        }
+      }
+    };
 
-  const handleVerifiedGoogleUser = (email: string, name?: string, picture?: string) => {
-    const cleanEmail = email.trim().toLowerCase();
+    window.addEventListener('message', handleOAuthMessage);
+    return () => window.removeEventListener('message', handleOAuthMessage);
+  }, []);
 
-    // Strict Gmail Verification Check
-    if (!isGmailAddress(cleanEmail)) {
-      setErrorMsg('Please use a Gmail account to continue.');
-      setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-    setErrorMsg(null);
-
+  const handleSuccessfulGoogleAuth = (verified: {
+    googleId: string;
+    email: string;
+    name: string;
+    avatar: string;
+    picture?: string;
+  }) => {
+    const cleanEmail = verified.email.toLowerCase().trim();
     const { user } = loginOrCreateUser(
       cleanEmail,
       'google',
-      name || cleanEmail.split('@')[0],
-      picture
+      verified.name,
+      verified.picture || verified.avatar,
+      verified.googleId
     );
 
     setIsLoading(false);
@@ -128,24 +118,159 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     onClose();
   };
 
-  // Direct login with remembered account
-  const handleSelectRememberedAccount = (account: RememberedAccount) => {
+  /**
+   * Real Google Sign-In with Google Identity Services (GIS) OAuth 2.0 Token Client
+   * Strictly prompts with 'select_account' and passes 'login_hint' when clicking a remembered account.
+   */
+  const triggerRealGoogleAuth = async (loginHint?: string) => {
     setErrorMsg(null);
     setIsLoading(true);
+    setLoadingText(loginHint ? `Connecting to Google (${loginHint})...` : 'Opening Google Sign-In...');
+    activeHintRef.current = loginHint || null;
 
-    const result = directLoginWithRememberedAccount(account.email);
+    const clientId = getGoogleClientId();
 
-    if (result.isExpired || !result.user) {
+    if (!clientId || !isValidGoogleClientId(clientId)) {
       setIsLoading(false);
-      setErrorMsg(`Session for ${account.email} has expired. Please re-authenticate with Google.`);
-      setTypedGmail(account.email);
-      setShowAccountChooser(true);
+      setErrorMsg(
+        'Google OAuth Client ID is not configured. Please create a Web Application OAuth Client ID in Google Cloud Console and set GOOGLE_CLIENT_ID in your .env or Vercel Environment Variables, or enter it below to test.'
+      );
+      setShowClientIdConfig(true);
       return;
     }
 
-    setIsLoading(false);
-    onSignIn(result.user);
-    onClose();
+    const win = window as unknown as {
+      google?: {
+        accounts?: {
+          oauth2?: {
+            initTokenClient: (config: {
+              client_id: string;
+              scope: string;
+              prompt?: string;
+              hint?: string;
+              callback: (response: { access_token?: string; error?: string; error_description?: string }) => void;
+              error_callback?: (err: unknown) => void;
+            }) => {
+              requestAccessToken: (overrideConfig?: { prompt?: string; hint?: string }) => void;
+            };
+          };
+          id?: {
+            initialize: (config: unknown) => void;
+            prompt: (notification?: unknown) => void;
+          };
+        };
+      };
+    };
+
+    // 1. Try Google Identity Services OAuth 2.0 Token Client (Official modern GIS flow)
+    if (win.google?.accounts?.oauth2?.initTokenClient) {
+      try {
+        const tokenClient = win.google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: 'openid email profile',
+          prompt: 'select_account',
+          hint: loginHint || undefined,
+          callback: async (tokenResponse) => {
+            if (tokenResponse.error) {
+              setErrorMsg(formatOAuthErrorMessage(tokenResponse.error_description || tokenResponse.error));
+              setIsLoading(false);
+              return;
+            }
+
+            if (!tokenResponse.access_token) {
+              setErrorMsg('No access token returned from Google. Verification failed.');
+              setIsLoading(false);
+              return;
+            }
+
+            try {
+              setLoadingText('Verifying token with Google Userinfo API...');
+              // Verify directly against Google's Userinfo API
+              const verified = await verifyGoogleAccessToken(tokenResponse.access_token);
+              handleSuccessfulGoogleAuth(verified);
+            } catch (verifyErr) {
+              console.error('Google token verification failed:', verifyErr);
+              setErrorMsg('Google verification failed. Token rejected by Google API.');
+              setIsLoading(false);
+            }
+          },
+          error_callback: (err: unknown) => {
+            console.warn('Google Token Client error:', err);
+            setErrorMsg(formatOAuthErrorMessage(err));
+            setIsLoading(false);
+          },
+        });
+
+        tokenClient.requestAccessToken({
+          prompt: 'select_account',
+          hint: loginHint || undefined,
+        });
+        return;
+      } catch (gisErr) {
+        console.warn('GIS TokenClient initiation failed, falling back to popup flow:', gisErr);
+      }
+    }
+
+    // 2. Direct Popup OAuth 2.0 Authorization Endpoint Fallback
+    try {
+      const authUrl = buildGoogleOAuthUrl({ loginHint });
+      const width = 500;
+      const height = 650;
+      const left = window.screenX + (window.outerWidth - width) / 2;
+      const top = window.screenY + (window.outerHeight - height) / 2;
+
+      const popup = window.open(
+        authUrl,
+        'google_oauth_popup',
+        `width=${width},height=${height},left=${left},top=${top},status=no,menubar=no,toolbar=no`
+      );
+
+      if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+        // Popup was blocked by browser
+        window.location.href = authUrl;
+        return;
+      }
+
+      // Poll popup to detect close or URL redirect with tokens
+      const pollTimer = setInterval(async () => {
+        try {
+          if (popup.closed) {
+            clearInterval(pollTimer);
+            setIsLoading(false);
+            return;
+          }
+
+          const currentHref = popup.location.href;
+          if (currentHref && (currentHref.includes('access_token=') || currentHref.includes('id_token='))) {
+            clearInterval(pollTimer);
+            const hash = popup.location.hash.substring(1);
+            const params = new URLSearchParams(hash);
+            const accessToken = params.get('access_token');
+            const idToken = params.get('id_token');
+            popup.close();
+
+            if (accessToken) {
+              const verified = await verifyGoogleAccessToken(accessToken);
+              handleSuccessfulGoogleAuth(verified);
+            } else if (idToken) {
+              const verified = await verifyGoogleIdToken(idToken);
+              handleSuccessfulGoogleAuth(verified);
+            }
+          }
+        } catch {
+          // Cross-origin access error while on accounts.google.com is expected until redirect
+        }
+      }, 500);
+    } catch (popupErr) {
+      console.error('Failed to open Google auth popup:', popupErr);
+      setErrorMsg(formatOAuthErrorMessage(popupErr));
+      setIsLoading(false);
+    }
+  };
+
+  // Clicking a remembered account MUST trigger real Google login with login_hint and prompt=select_account
+  const handleSelectRememberedAccount = (account: RememberedAccount) => {
+    triggerRealGoogleAuth(account.email);
   };
 
   // Remove account from remembered accounts
@@ -157,102 +282,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     if (updated.length === 0) {
       setShowAccountChooser(true);
     }
-  };
-
-  // Trigger Google Identity Services One Tap / Credential prompt using environment variable
-  const handleGoogleClick = () => {
-    setErrorMsg(null);
-    setIsLoading(true);
-
-    const clientId = getGoogleClientId();
-
-    // If client ID is missing or set to placeholder XXXX
-    if (!clientId || !isValidGoogleClientId(clientId)) {
-      setIsLoading(false);
-      setErrorMsg(
-        'Google OAuth Client ID is currently set to placeholder ("XXXX"). Please update GOOGLE_CLIENT_ID in your .env or Vercel Environment Variables, or enter your real Google Client ID below to test.'
-      );
-      setShowManualVerify(true);
-      setShowClientIdConfig(true);
-      return;
-    }
-
-    const google = (window as unknown as {
-      google?: {
-        accounts?: {
-          id?: {
-            initialize: (config: unknown) => void;
-            prompt: (notification?: unknown) => void;
-          };
-        };
-      };
-    }).google;
-
-    if (google?.accounts?.id) {
-      try {
-        google.accounts.id.initialize({
-          client_id: clientId,
-          callback: (response: { credential?: string }) => {
-            if (response?.credential) {
-              const payload = parseJwt(response.credential);
-              if (payload?.email) {
-                handleVerifiedGoogleUser(payload.email, payload.name, payload.picture);
-                return;
-              }
-            }
-            setShowManualVerify(true);
-            setIsLoading(false);
-          },
-          auto_select: false,
-          cancel_on_tap_outside: true,
-        });
-
-        google.accounts.id.prompt((notification: {
-          isNotDisplayed: () => boolean;
-          getNotDisplayedReason: () => string;
-          isSkippedMoment: () => boolean;
-          getSkippedReason: () => string;
-          isDismissedMoment: () => boolean;
-          getDismissedReason: () => string;
-        }) => {
-          if (notification?.isNotDisplayed?.()) {
-            const reason = notification.getNotDisplayedReason();
-            console.warn('Google prompt not displayed:', reason);
-            setErrorMsg(formatOAuthErrorMessage(reason || 'invalid_client'));
-            setShowManualVerify(true);
-            setIsLoading(false);
-          } else if (notification?.isSkippedMoment?.()) {
-            setIsLoading(false);
-          } else if (notification?.isDismissedMoment?.()) {
-            setIsLoading(false);
-          }
-        });
-      } catch (err: unknown) {
-        console.warn('Google One Tap init error:', err);
-        setErrorMsg(formatOAuthErrorMessage(err));
-        setShowManualVerify(true);
-        setIsLoading(false);
-      }
-    } else {
-      setShowManualVerify(true);
-      setIsLoading(false);
-    }
-  };
-
-  const handleManualGmailSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!typedGmail || !typedGmail.trim()) {
-      setErrorMsg('Please enter your Google account email.');
-      return;
-    }
-
-    const clean = typedGmail.trim().toLowerCase();
-    if (!isGmailAddress(clean)) {
-      setErrorMsg('Please use a Gmail account to continue.');
-      return;
-    }
-
-    handleVerifiedGoogleUser(clean, clean.split('@')[0]);
   };
 
   if (!isOpen) return null;
@@ -287,14 +316,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           </div>
           <h3 className="text-2xl font-bold tracking-tight text-white">
-            {isViewingRemembered ? 'Choose an Account' : 'Sign in to Terminal'}
+            {isViewingRemembered ? 'Choose an Account' : 'Sign in with Google'}
           </h3>
           <p className="text-xs text-zinc-400 mt-1 max-w-xs mx-auto">
             {isViewingRemembered
-              ? 'Select a remembered account to enter AQARI directly.'
-              : 'Google verification required. 3 free institutional analyses unlocked upon login.'}
+              ? 'Select your account to verify identity via Google.'
+              : 'Real Google OAuth 2.0 verification. 3 free institutional analyses unlocked.'}
           </p>
         </div>
+
+        {/* Loading Spinner Indicator */}
+        {isLoading && (
+          <div className="mb-4 p-3.5 rounded-2xl bg-[#D4AF37]/10 border border-[#D4AF37]/30 text-amber-200 text-xs flex items-center justify-center gap-2.5 animate-in fade-in duration-200">
+            <Loader2 className="w-4 h-4 text-[#D4AF37] animate-spin shrink-0" />
+            <span className="font-mono font-medium">{loadingText}</span>
+          </div>
+        )}
 
         {/* Error Banner */}
         {errorMsg && (
@@ -304,19 +341,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         )}
 
-        {/* Info Banner */}
-        {infoMsg && (
-          <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center gap-2 animate-in fade-in duration-200">
-            <Clock className="w-4 h-4 text-amber-400 shrink-0" />
-            <span className="font-medium">{infoMsg}</span>
-          </div>
-        )}
-
         {/* VIEW 1: REMEMBERED ACCOUNTS LIST */}
         {isViewingRemembered ? (
           <div className="space-y-4">
             <div className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider flex items-center justify-between">
-              <span>Saved Accounts</span>
+              <span>Saved Google Accounts</span>
               <span>{rememberedList.length} Remembered</span>
             </div>
 
@@ -324,13 +353,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {rememberedList.map((account) => (
                 <div
                   key={account.email}
-                  onClick={() => handleSelectRememberedAccount(account)}
-                  className="group relative flex items-center justify-between p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.08] active:bg-white/[0.12] border border-white/10 hover:border-[#D4AF37]/50 transition-all cursor-pointer shadow-sm hover:shadow-[0_0_20px_rgba(212,175,55,0.15)]"
+                  onClick={() => !isLoading && handleSelectRememberedAccount(account)}
+                  className={`group relative flex items-center justify-between p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.08] active:bg-white/[0.12] border border-white/10 hover:border-[#D4AF37]/50 transition-all cursor-pointer shadow-sm hover:shadow-[0_0_20px_rgba(212,175,55,0.15)] ${
+                    isLoading ? 'opacity-60 pointer-events-none' : ''
+                  }`}
                 >
                   <div className="flex items-center gap-3 min-w-0 pr-2">
-                    {account.picture ? (
+                    {account.picture || (account.avatar && account.avatar.startsWith('http')) ? (
                       <img
-                        src={account.picture}
+                        src={account.picture || account.avatar}
                         alt={account.name}
                         className="w-10 h-10 rounded-xl object-cover border border-[#D4AF37]/40 shadow-sm shrink-0"
                       />
@@ -351,37 +382,40 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
+                      disabled={isLoading}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleSelectRememberedAccount(account);
                       }}
-                      className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#D4AF37]/20 hover:bg-[#D4AF37] text-[#D4AF37] hover:text-black font-mono text-[11px] font-bold transition"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#D4AF37]/20 hover:bg-[#D4AF37] text-[#D4AF37] hover:text-black font-mono text-[11px] font-bold transition cursor-pointer"
                     >
-                      <span>Continue</span>
+                      <span>Sign In</span>
                       <ArrowRight className="w-3 h-3" />
                     </button>
 
                     <button
                       type="button"
+                      disabled={isLoading}
                       onClick={(e) => handleRemoveAccount(e, account.email)}
                       className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
                       title="Remove from remembered accounts"
                       aria-label="Remove account"
                     >
-                      <X className="w-4 h-4" />
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
               ))}
             </div>
 
-            {/* "Use another account" button */}
+            {/* "Use another account" button - triggers real Google login with prompt=select_account */}
             <div className="pt-2 border-t border-white/[0.08]">
               <button
                 type="button"
+                disabled={isLoading}
                 onClick={() => {
                   setErrorMsg(null);
-                  setShowAccountChooser(true);
+                  triggerRealGoogleAuth();
                 }}
                 className="w-full py-3 px-4 rounded-xl bg-transparent hover:bg-white/[0.05] border border-white/10 hover:border-white/20 text-white font-mono text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer min-h-[44px]"
               >
@@ -396,7 +430,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {/* Main Google Login Action */}
             <button
               type="button"
-              onClick={handleGoogleClick}
+              onClick={() => triggerRealGoogleAuth()}
               disabled={isLoading}
               className="w-full py-3.5 px-4 rounded-xl bg-white hover:bg-zinc-100 text-black font-semibold text-xs tracking-wide transition-all shadow-[0_4px_20px_rgba(255,255,255,0.15)] flex items-center justify-center gap-3 cursor-pointer min-h-[48px] active:scale-98 disabled:opacity-50"
             >
@@ -419,113 +453,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 />
               </svg>
               <span className="text-zinc-900 font-bold">
-                {isLoading ? 'Verifying Google Account...' : 'Continue with Google'}
+                {isLoading ? 'Connecting to Google...' : 'Continue with Google'}
               </span>
             </button>
-
-            {/* Quick 1-Click Verification for loomorastudios@gmail.com */}
-            <div className="pt-2 border-t border-white/[0.08] space-y-2">
-              <div className="text-[11px] font-mono text-zinc-400 flex items-center justify-between">
-                <span>Verified Gmail Login:</span>
-                <span className="text-[#D4AF37] text-[10px]">Instant Access</span>
-              </div>
-
-              <button
-                type="button"
-                onClick={() =>
-                  handleVerifiedGoogleUser('loomorastudios@gmail.com', 'Loomora Studios')
-                }
-                className="w-full text-left p-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] active:bg-white/[0.12] border border-[#D4AF37]/30 hover:border-[#D4AF37] text-white font-mono text-xs flex items-center justify-between transition cursor-pointer group shadow-[0_0_15px_rgba(212,175,55,0.1)]"
-              >
-                <div className="flex items-center gap-2.5 truncate">
-                  <div className="w-7 h-7 rounded-lg bg-[#D4AF37]/20 border border-[#D4AF37]/50 flex items-center justify-center text-[#D4AF37] font-bold shrink-0">
-                    L
-                  </div>
-                  <div className="truncate">
-                    <div className="text-white font-semibold text-xs truncate">
-                      loomorastudios@gmail.com
-                    </div>
-                    <div className="text-[10px] text-emerald-400 flex items-center gap-1">
-                      <CheckCircle2 className="w-2.5 h-2.5" />
-                      <span>Verified Google Account</span>
-                    </div>
-                  </div>
-                </div>
-                <ArrowRight className="w-4 h-4 text-[#D4AF37] transition-transform group-hover:translate-x-1 shrink-0 ml-2" />
-              </button>
-            </div>
-
-            {/* Account Chooser / Verification Input Form */}
-            {(showManualVerify || errorMsg) && (
-              <form
-                onSubmit={handleManualGmailSubmit}
-                className="pt-2 border-t border-white/[0.08] space-y-3 animate-in fade-in duration-200"
-              >
-                <div className="text-[11px] font-mono text-zinc-400">
-                  <span>Enter another verified Google Gmail address:</span>
-                </div>
-
-                <div>
-                  <input
-                    type="email"
-                    value={typedGmail}
-                    onChange={(e) => {
-                      setTypedGmail(e.target.value);
-                      setErrorMsg(null);
-                    }}
-                    placeholder="name@gmail.com"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-white/[0.04] border border-white/10 focus:border-[#D4AF37] text-white text-xs font-mono outline-none min-h-[44px]"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-2.5 rounded-xl bg-[#D4AF37] hover:bg-[#F3E5AB] text-black font-bold text-xs font-mono uppercase tracking-wider transition cursor-pointer min-h-[44px]"
-                >
-                  Verify & Enter Terminal
-                </button>
-              </form>
-            )}
-
-            {/* Direct Client ID Tester / Configurator */}
-            <div className="pt-2 border-t border-white/[0.08]">
-              <button
-                type="button"
-                onClick={() => setShowClientIdConfig(!showClientIdConfig)}
-                className="w-full text-left text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] transition flex items-center justify-between cursor-pointer py-1"
-              >
-                <span>⚙️ Configure / Test Client ID</span>
-                <span className="text-[10px] text-zinc-500">{showClientIdConfig ? '▲ Hide' : '▼ Update'}</span>
-              </button>
-
-              {showClientIdConfig && (
-                <div className="mt-2 p-3 rounded-xl bg-white/[0.02] border border-white/[0.08] space-y-2 animate-in fade-in duration-150">
-                  <div className="text-[10px] font-mono text-zinc-400">
-                    Paste your Google OAuth Client ID (.apps.googleusercontent.com):
-                  </div>
-                  <input
-                    type="text"
-                    value={customClientIdInput}
-                    onChange={(e) => setCustomClientIdInput(e.target.value)}
-                    placeholder="123456789-xyz.apps.googleusercontent.com"
-                    className="w-full px-3 py-2 rounded-lg bg-black/60 border border-white/10 focus:border-[#D4AF37] text-white text-xs font-mono outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!customClientIdInput.trim()) return;
-                      setCustomGoogleClientId(customClientIdInput);
-                      setInfoMsg('New Client ID saved! Click Continue with Google to authenticate.');
-                      setErrorMsg(null);
-                      setShowClientIdConfig(false);
-                    }}
-                    className="w-full py-1.5 rounded-lg bg-[#D4AF37]/20 hover:bg-[#D4AF37] text-[#D4AF37] hover:text-black font-mono text-xs font-bold transition cursor-pointer"
-                  >
-                    Save & Test Client ID
-                  </button>
-                </div>
-              )}
-            </div>
 
             {/* Back to remembered accounts if any exist */}
             {hasRemembered && (
@@ -538,23 +468,59 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   }}
                   className="w-full py-2 text-center text-xs font-mono text-zinc-400 hover:text-[#D4AF37] transition cursor-pointer"
                 >
-                  ← Back to saved accounts ({rememberedList.length})
+                  ← Back to remembered accounts ({rememberedList.length})
                 </button>
               </div>
             )}
 
-            {/* Gmail Only Security Note */}
-            <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] text-[11px] font-mono text-zinc-400 text-center">
-              <span>🔒 Authentication restricted to verified </span>
-              <strong className="text-white">@gmail.com</strong>
-              <span> accounts</span>
+            {/* Real Client ID Configuration / Live Testing */}
+            <div className="pt-2 border-t border-white/[0.08]">
+              <button
+                type="button"
+                onClick={() => setShowClientIdConfig(!showClientIdConfig)}
+                className="w-full text-left text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] transition flex items-center justify-between cursor-pointer py-1"
+              >
+                <span>Google Cloud Client ID Setup</span>
+                <span className="text-[10px] text-zinc-500">{showClientIdConfig ? '▲ Hide' : '▼ View / Test'}</span>
+              </button>
+
+              {showClientIdConfig && (
+                <div className="mt-2 p-3.5 rounded-xl bg-white/[0.02] border border-white/[0.08] space-y-2.5 animate-in fade-in duration-150">
+                  <div className="text-[10px] text-zinc-300 font-mono leading-relaxed">
+                    Paste your Google OAuth 2.0 Web Client ID:
+                  </div>
+                  <input
+                    type="text"
+                    value={customClientIdInput}
+                    onChange={(e) => setCustomClientIdInput(e.target.value)}
+                    placeholder="xxxxxxxx.apps.googleusercontent.com"
+                    className="w-full px-3 py-2 rounded-lg bg-black/60 border border-white/10 focus:border-[#D4AF37] text-white text-xs font-mono outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!customClientIdInput.trim()) return;
+                      setCustomGoogleClientId(customClientIdInput);
+                      setErrorMsg(null);
+                      setShowClientIdConfig(false);
+                      triggerRealGoogleAuth();
+                    }}
+                    className="w-full py-2 rounded-lg bg-[#D4AF37]/20 hover:bg-[#D4AF37] text-[#D4AF37] hover:text-black font-mono text-xs font-bold transition cursor-pointer min-h-[38px]"
+                  >
+                    Save & Test Google Sign-In
+                  </button>
+                  <div className="text-[10px] text-zinc-400 font-mono pt-1">
+                    Origin: <span className="text-zinc-200">{typeof window !== 'undefined' ? window.location.origin : 'https://aqari-e4ku9f7u3-aqari2.vercel.app'}</span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
 
         <div className="mt-6 text-center text-[10px] text-zinc-400 font-mono flex items-center justify-center gap-1.5">
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-          <span>Google Identity Verified • Single-Sign-On</span>
+          <span>Real Google OAuth 2.0 • Scopes: openid, email, profile</span>
         </div>
       </div>
     </div>

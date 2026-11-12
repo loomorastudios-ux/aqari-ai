@@ -112,7 +112,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const msRemaining = endsAt ? Math.max(0, endsAt - Date.now()) : 0;
   const daysLeft = endsAt ? Math.ceil(msRemaining / (1000 * 60 * 60 * 24)) : null;
   const isPlanEnded = Boolean(user.plan !== 'free' && endsAt && msRemaining <= 0);
-  const isExpired = isPlanEnded || Boolean(user.plan !== 'free' && user.subscriptionExpiry && Date.now() > user.subscriptionExpiry);
+  const isExpired = user.subscriptionStatus === 'expired' || isPlanEnded || Boolean(user.plan !== 'free' && user.subscriptionExpiry && Date.now() > user.subscriptionExpiry);
   const isEndingIn24h = Boolean(user.plan !== 'free' && endsAt && msRemaining > 0 && msRemaining <= 24 * 60 * 60 * 1000);
   const isExpiringIn1Day = isEndingIn24h;
   const countdownText = endsAt ? formatTimeLeft(msRemaining) : null;
