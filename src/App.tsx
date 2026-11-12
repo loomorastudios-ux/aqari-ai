@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
-import { CurrencyCode, PropertyListing, RemoteConfig, User } from './types';
+import { CurrencyCode, PropertyListing, RemoteConfig, User, MarketMatrixRow } from './types';
 import { 
   CONFIG_URL, 
   DEFAULT_CONFIG, 
   PLAN_LIMITS, 
-  PROPERTY_LISTINGS 
+  PROPERTY_LISTINGS,
+  FALLBACK_CROSS_BORDER_DATA 
 } from './constants';
 import { fetchLiveExchangeRates, fetchMarketData } from './utils/marketDataService';
 import { 
@@ -36,6 +37,7 @@ import { RenewalModal } from './components/RenewalModal';
 import { TerminalDashboard } from './components/TerminalDashboard';
 import { PaymentSuccessView } from './components/PaymentSuccessView';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
+import { DemoAnalysisView } from './components/DemoAnalysisView';
 import { checkAndSendExpiryEmail } from './utils/emailService';
 import { 
   Building2, 
@@ -66,8 +68,22 @@ export default function App() {
     return getSessionUser();
   });
 
-  // App Routing State: 'landing' vs 'terminal' vs 'pricing' vs 'payment-success'
-  const [route, setRoute] = useState<'landing' | 'terminal' | 'pricing' | 'payment-success'>(() => {
+  // App Routing State: 'landing' vs 'terminal' vs 'pricing' vs 'payment-success' vs 'demo'
+  const [demoSlug, setDemoSlug] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      const hash = window.location.hash;
+      if (path.startsWith('/demo/')) {
+        return path.replace('/demo/', '').split('?')[0] || 'tribeca';
+      }
+      if (hash.startsWith('#/demo/')) {
+        return hash.replace('#/demo/', '').split('?')[0] || 'tribeca';
+      }
+    }
+    return 'tribeca';
+  });
+
+  const [route, setRoute] = useState<'landing' | 'terminal' | 'pricing' | 'payment-success' | 'demo'>(() => {
     if (typeof window !== 'undefined') {
       const path = window.location.pathname;
       const hash = window.location.hash;
@@ -77,14 +93,13 @@ export default function App() {
       if (path === '/pricing' || hash === '#/pricing') {
         return 'pricing';
       }
-    }
-    const sessionUser = getSessionUser();
-    // Directly show Terminal if existing session exists
-    if (sessionUser) {
-      if (typeof window !== 'undefined' && window.location.hash !== '#/terminal') {
-        window.location.hash = '#/terminal';
+      if (path.startsWith('/demo/') || hash.startsWith('#/demo/')) {
+        return 'demo';
       }
-      return 'terminal';
+      if (hash === '#/terminal') {
+        const sessionUser = getSessionUser();
+        if (sessionUser) return 'terminal';
+      }
     }
     return 'landing';
   });
@@ -110,13 +125,8 @@ export default function App() {
     return DEFAULT_CONFIG;
   });
 
-  // Modals State - Auto-login check: If no active session but remembered accounts exist, show login modal
-  const [isAuthOpen, setIsAuthOpen] = useState(() => {
-    const session = getSessionUser();
-    if (session) return false;
-    const remembered = getRememberedAccounts();
-    return remembered.length > 0;
-  });
+  // Modals State - Do NOT auto-open login on initial landing page load
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isLimitOpen, setIsLimitOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isRenewalOpen, setIsRenewalOpen] = useState(false);
@@ -124,6 +134,7 @@ export default function App() {
 
   // Filter state for landing page
   const [selectedCity, setSelectedCity] = useState<string>('All');
+  const [matrixData, setMatrixData] = useState<MarketMatrixRow[]>(FALLBACK_CROSS_BORDER_DATA);
 
   // Announcement Toast state
   const [showToast, setShowToast] = useState(true);
@@ -149,6 +160,12 @@ export default function App() {
         setRoute('pricing');
         return;
       }
+      if (path.startsWith('/demo/') || hash.startsWith('#/demo/')) {
+        const s = (path.startsWith('/demo/') ? path.replace('/demo/', '') : hash.replace('#/demo/', '')).split('?')[0] || 'tribeca';
+        setDemoSlug(s);
+        setRoute('demo');
+        return;
+      }
       if (hash === '#/terminal') {
         if (currentUser) {
           setRoute('terminal');
@@ -156,14 +173,11 @@ export default function App() {
           setIsAuthOpen(true);
           setRoute('landing');
         }
-      } else if (hash === '#/landing' || hash === '' || hash === '#') {
-        if (!currentUser) {
-          setRoute('landing');
-        } else {
-          // If session exists, stay on terminal
-          window.location.hash = '#/terminal';
-          setRoute('terminal');
-        }
+        return;
+      }
+      if (hash === '#/landing' || hash === '' || hash === '#') {
+        setRoute('landing');
+        return;
       }
     };
 
@@ -212,11 +226,15 @@ export default function App() {
   // Poll live exchange rates and market data (every 5 min)
   useEffect(() => {
     fetchLiveExchangeRates();
-    fetchMarketData();
+    fetchMarketData().then((data) => {
+      if (data && data.length > 0) setMatrixData(data);
+    });
 
     const intervalId = setInterval(() => {
       fetchLiveExchangeRates();
-      fetchMarketData();
+      fetchMarketData().then((data) => {
+        if (data && data.length > 0) setMatrixData(data);
+      });
     }, 5 * 60 * 1000);
 
     return () => clearInterval(intervalId);
@@ -611,7 +629,33 @@ export default function App() {
     );
   }
 
-  const isTerminal = route === 'terminal' && !!user;
+  // View: Public Demo Analyses (No Login Required)
+  if (route === 'demo') {
+    return (
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#D4AF37]/30 selection:text-white relative">
+        <AmbientBackground />
+        <CustomCursor />
+        <DemoAnalysisView
+          slug={demoSlug}
+          currentCurrency={currency}
+          onCurrencyChange={handleCurrencyChange}
+          onOpenAuth={() => setIsAuthOpen(true)}
+          onGoHome={handleGoToHome}
+          onSelectOtherDemo={(s) => {
+            setDemoSlug(s);
+            window.location.hash = `#/demo/${s}`;
+          }}
+        />
+        {isAuthOpen && (
+          <AuthModal
+            isOpen={isAuthOpen}
+            onClose={() => setIsAuthOpen(false)}
+            onSignIn={handleSignIn}
+          />
+        )}
+      </div>
+    );
+  }
 
   // View: Payment Success
   if (route === 'payment-success') {
@@ -662,6 +706,8 @@ export default function App() {
       </div>
     );
   }
+
+  const isTerminal = route === 'terminal' && !!user;
 
   return (
     <>
@@ -773,6 +819,8 @@ export default function App() {
             el?.scrollIntoView({ behavior: 'smooth' });
           }}
           onOpenAuth={() => setIsAuthOpen(true)}
+          onSignOut={() => handleSignOut(false)}
+          onGoToTerminal={handleGoToTerminal}
         />
 
         {/* High-Conviction Institutional Property Listings */}
@@ -786,6 +834,11 @@ export default function App() {
             const el = document.getElementById('pricing');
             el?.scrollIntoView({ behavior: 'smooth' });
           }}
+          onOpenDemo={(slug) => {
+            setDemoSlug(slug);
+            setRoute('demo');
+            window.location.hash = `#/demo/${slug}`;
+          }}
         />
 
         {/* Interactive Yield Simulator */}
@@ -796,7 +849,7 @@ export default function App() {
         />
 
         {/* Sovereign Cross-Border Capital Matrix */}
-        <CrossBorderMatrix currentCurrency={currency} />
+        <CrossBorderMatrix currentCurrency={currency} matrixData={matrixData} />
 
         {/* Multi-Market Institutional Portfolio Dashboard */}
         <PortfolioSummary
@@ -814,6 +867,7 @@ export default function App() {
           user={user}
           onOpenAuth={() => setIsAuthOpen(true)}
           onTestUnlock={handleAdminTestUnlock}
+          onGoToTerminal={handleGoToTerminal}
         />
 
       </main>

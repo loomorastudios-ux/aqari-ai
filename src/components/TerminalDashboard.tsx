@@ -575,7 +575,27 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           }`}
         >
           
-          <div className="space-y-6">
+          <div className="space-y-4">
+            
+            {/* Top Navigation: Back to Homepage */}
+            <button
+              type="button"
+              onClick={() => {
+                setMobileSidebarOpen(false);
+                onGoToHome();
+              }}
+              className="w-full flex items-center justify-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] active:bg-white/[0.12] border border-white/10 hover:border-[#D4AF37]/50 text-white font-mono text-xs font-semibold transition cursor-pointer shadow-sm group min-h-[44px]"
+            >
+              <span className="text-sm transition-transform group-hover:-translate-x-0.5">🏠</span>
+              <span>Back to Homepage</span>
+            </button>
+
+            {/* Test Mode Badge in Sidebar if active */}
+            {(import.meta.env.VITE_LEMON_TEST_MODE === 'true' || import.meta.env.VITE_LEMON_TEST_MODE === true) && (
+              <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono text-center leading-tight">
+                ⚠️ TEST MODE: Use card 4242 4242 4242 4242
+              </div>
+            )}
             
             {/* User Profile Overview */}
             <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center gap-3">
@@ -1788,9 +1808,17 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           {/* TAB 6: SETTINGS & ENTITLEMENTS */}
           {activeTab === 'settings' && (
             <div className="space-y-6 max-w-4xl mx-auto">
-              <div className="border-b border-white/[0.08] pb-4">
-                <h2 className="text-2xl font-bold text-white tracking-tight">Account & Entitlements</h2>
-                <p className="text-xs text-zinc-400 font-mono mt-0.5">Manage your active subscription and institutional credentials.</p>
+              <div className="border-b border-white/[0.08] pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-2xl font-bold text-white tracking-tight">Account & Entitlements</h2>
+                  <p className="text-xs text-zinc-400 font-mono mt-0.5">Manage your active subscription and institutional credentials.</p>
+                </div>
+                {(import.meta.env.VITE_LEMON_TEST_MODE === 'true' || import.meta.env.VITE_LEMON_TEST_MODE === true) && (
+                  <div className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 font-mono text-xs flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                    <span>TEST MODE - Use card 4242 4242 4242 4242</span>
+                  </div>
+                )}
               </div>
 
               {/* Account Card */}

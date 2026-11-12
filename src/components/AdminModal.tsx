@@ -198,6 +198,13 @@ export const AdminModal: React.FC<AdminModalProps> = ({
               </p>
             </div>
 
+            {(import.meta.env.VITE_LEMON_TEST_MODE === 'true' || import.meta.env.VITE_LEMON_TEST_MODE === true) && (
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs font-mono flex items-center justify-between gap-2">
+                <span>⚠️ LEMON SQUEEZY TEST MODE ACTIVE</span>
+                <span className="font-bold underline">Use test card: 4242 4242 4242 4242</span>
+              </div>
+            )}
+
             {savedSuccess && (
               <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-mono flex items-center gap-2">
                 <Check className="w-4 h-4 text-emerald-400 shrink-0" />

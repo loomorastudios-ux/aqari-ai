@@ -21,7 +21,23 @@ interface PropertyGridProps {
   user: User | null;
   onAnalyze: (property: PropertyListing) => void;
   onOpenPricing: () => void;
+  onOpenDemo?: (slug: string) => void;
 }
+
+export const getPropertyDemoSlug = (p: PropertyListing): string => {
+  if (p.id === 'prop-nyc-01') return 'tribeca';
+  if (p.id === 'prop-dxb-02') return 'dubai-marina';
+  if (p.id === 'prop-mct-03') return 'muscat-wave';
+  if (p.id === 'prop-lon-05') return 'london-mayfair';
+  if (p.id === 'prop-ruh-04') return 'riyadh-singapore-portfolio';
+  const c = p.city?.toLowerCase() || '';
+  if (c.includes('muscat')) return 'muscat-wave';
+  if (c.includes('dubai')) return 'dubai-marina';
+  if (c.includes('york')) return 'tribeca';
+  if (c.includes('london')) return 'london-mayfair';
+  if (c.includes('riyadh')) return 'riyadh-singapore-portfolio';
+  return 'cross-border-portfolio';
+};
 
 export const PropertyGrid: React.FC<PropertyGridProps> = ({
   properties,
@@ -30,6 +46,7 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
   user,
   onAnalyze,
   onOpenPricing,
+  onOpenDemo,
 }) => {
   const filtered = selectedCity === 'All'
     ? properties
@@ -197,28 +214,21 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                   </div>
                 </div>
 
-                {/* ANALYZE Action Button */}
+                {/* ANALYZE Action Button - Opens Demo Analysis directly without login gate */}
                 <button
                   type="button"
-                  onClick={() => onAnalyze(property)}
-                  className={`w-full py-3 px-4 rounded-xl text-xs font-bold font-mono tracking-wider transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer shadow-md min-h-[44px] ${
-                    isLockedForFree
-                      ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400 border border-zinc-700'
-                      : 'bg-white/[0.06] hover:bg-[#D4AF37] hover:text-black text-white border border-white/10 hover:border-[#D4AF37]'
-                  }`}
+                  onClick={() => {
+                    if (onOpenDemo) {
+                      onOpenDemo(getPropertyDemoSlug(property));
+                    } else {
+                      onAnalyze(property);
+                    }
+                  }}
+                  className="w-full py-3 px-4 rounded-xl text-xs font-bold font-mono tracking-wider transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer shadow-md min-h-[44px] bg-white/[0.06] hover:bg-[#D4AF37] hover:text-black text-white border border-white/10 hover:border-[#D4AF37] group"
                 >
-                  {isLockedForFree ? (
-                    <>
-                      <Lock className="w-3.5 h-3.5 text-amber-400" />
-                      <span>LOCKED (0/3 LEFT) • UPGRADE</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-3.5 h-3.5 text-[#D4AF37] group-hover:text-black transition" />
-                      <span>ANALYZE PROPERTY</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </>
-                  )}
+                  <Sparkles className="w-3.5 h-3.5 text-[#D4AF37] group-hover:text-black transition" />
+                  <span>ANALYZE PROPERTY</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
                 </button>
 
               </div>

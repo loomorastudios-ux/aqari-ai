@@ -23,6 +23,8 @@ interface HeroProps {
   onExploreProperties: () => void;
   onExploreSimulator: () => void;
   onOpenAuth: () => void;
+  onSignOut?: () => void;
+  onGoToTerminal?: () => void;
 }
 
 export const Hero: React.FC<HeroProps> = ({
@@ -33,6 +35,8 @@ export const Hero: React.FC<HeroProps> = ({
   onExploreProperties,
   onExploreSimulator,
   onOpenAuth,
+  onSignOut,
+  onGoToTerminal,
 }) => {
   const [times, setTimes] = useState<{ mct: string; dxb: string; lon: string; nyc: string; ruh: string; sgp: string }>({
     mct: '',
@@ -174,8 +178,17 @@ export const Hero: React.FC<HeroProps> = ({
           {/* Prominent PWA Install App Button */}
           <PWAInstallButton variant="hero" className="w-full sm:w-auto" />
 
-          {/* PART 2: Sign in to Terminal button - visible on desktop (right of Install App) and mobile (below Install App) when logged out */}
-          {!user && (
+          {/* Dynamic Auth Button: Logged In -> Sign Out | Logged Out -> Sign in to Terminal */}
+          {user ? (
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="w-full sm:w-auto flex items-center justify-center gap-2.5 px-6 sm:px-7 py-3.5 rounded-2xl bg-rose-500/10 hover:bg-rose-500/20 active:bg-rose-500/30 border border-rose-500/40 hover:border-rose-500 text-rose-300 font-semibold text-sm transition-all duration-300 backdrop-blur-xl cursor-pointer min-h-[44px] shadow-[0_0_15px_rgba(244,63,94,0.15)]"
+            >
+              <LogIn className="w-4 h-4 text-rose-400 rotate-180 shrink-0" />
+              <span>Sign Out</span>
+            </button>
+          ) : (
             <button
               type="button"
               onClick={onOpenAuth}

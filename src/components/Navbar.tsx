@@ -289,15 +289,15 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             ) : null}
 
-            {/* User Auth Button / User Dropdown */}
+            {/* User Auth Button / User Controls */}
             {!user ? (
               <button
                 type="button"
                 onClick={onOpenAuth}
-                className="relative inline-flex items-center justify-center p-0.5 overflow-hidden rounded-xl group cursor-pointer min-h-[40px] sm:min-h-[44px] shrink-0"
+                className="relative inline-flex items-center justify-center p-0.5 overflow-hidden rounded-xl group cursor-pointer min-h-[38px] sm:min-h-[44px] shrink-0 border border-[#D4AF37]/60 hover:border-[#D4AF37]"
                 title="Sign in to Terminal - تسجيل الدخول"
               >
-                <span className="w-full h-full bg-gradient-to-br from-[#D4AF37] via-[#C5A028] to-[#996515] group-hover:from-[#F3E5AB] group-hover:to-[#D4AF37] absolute"></span>
+                <span className="w-full h-full bg-gradient-to-br from-[#D4AF37] via-[#C5A028] to-[#996515] group-hover:from-[#F3E5AB] group-hover:to-[#D4AF37] absolute opacity-20 group-hover:opacity-100 transition"></span>
                 <span className="relative px-2.5 sm:px-4 py-1.5 sm:py-2 transition-all ease-out bg-black rounded-[10px] group-hover:bg-opacity-0 duration-300 flex items-center gap-1.5 sm:gap-2">
                   <Sparkles className="w-3.5 h-3.5 text-[#D4AF37] group-hover:text-black transition shrink-0" />
                   <span className="text-xs font-bold text-white group-hover:text-black tracking-wide whitespace-nowrap">
@@ -307,97 +307,132 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </span>
               </button>
             ) : (
-              <div className="relative" ref={userMenuRef}>
-                <button
-                  type="button"
-                  onClick={() => setUserMenuOpen(!userMenuOpen)}
-                  className="flex items-center gap-2.5 p-1.5 pr-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#D4AF37]/50 text-xs text-white transition cursor-pointer"
-                >
-                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#D4AF37] to-[#8B5CF6] flex items-center justify-center text-black font-bold text-xs uppercase shadow-sm">
-                    {user.email.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="text-left hidden md:block">
-                    <div className="text-xs font-semibold leading-tight text-zinc-200">Terminal</div>
-                    <div className="text-[10px] text-zinc-400 truncate max-w-[110px]">
-                      {user.email}
+              <div className="flex items-center gap-2" ref={userMenuRef}>
+                {/* Avatar with dropdown trigger */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setUserMenuOpen(!userMenuOpen)}
+                    className="flex items-center gap-2 p-1 sm:p-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#D4AF37]/50 text-xs text-white transition cursor-pointer"
+                    title={user.email}
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#D4AF37] to-[#8B5CF6] flex items-center justify-center text-black font-bold text-xs uppercase shadow-sm overflow-hidden shrink-0">
+                      {user.picture ? (
+                        <img src={user.picture} alt={user.email} className="w-full h-full object-cover" />
+                      ) : (
+                        user.email.charAt(0).toUpperCase()
+                      )}
                     </div>
-                  </div>
-                  <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform ${userMenuOpen ? 'rotate-180' : ''}`} />
-                </button>
-
-                {/* User Dropdown Menu */}
-                {userMenuOpen && (
-                  <div className="absolute right-0 mt-2 w-64 rounded-2xl glass-dropdown p-2 z-50 animate-in fade-in zoom-in-95 duration-150">
-                    <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.05] mb-2">
-                      <div className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider">
-                        Active Profile
-                      </div>
-                      <div className="text-xs font-medium text-white truncate mt-0.5">
+                    <div className="text-left hidden lg:block pr-1">
+                      <div className="text-[11px] font-semibold text-white truncate max-w-[120px] leading-tight">
                         {user.email}
                       </div>
-                      <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center justify-between text-xs">
-                        <span className="text-zinc-400">Subscription:</span>
-                        {user.plan === 'free' ? (
-                          <span className="text-amber-400 font-semibold font-mono">
-                            Free ({freeLeft} left)
-                          </span>
-                        ) : (
-                          <span className="text-emerald-400 font-bold uppercase font-mono">
-                            {user.plan} • {daysLeft}d left
-                          </span>
-                        )}
+                      <div className="text-[9px] font-mono text-[#D4AF37] uppercase font-bold">
+                        {user.plan}
                       </div>
                     </div>
+                    <ChevronDown className={`w-3 h-3 text-zinc-400 transition-transform ${userMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
 
-                    {/* Quick Plan Upgrade */}
-                    {user.plan === 'free' && (
+                  {/* User Dropdown Menu */}
+                  {userMenuOpen && (
+                    <div className="absolute right-0 mt-2 w-64 rounded-2xl glass-dropdown p-2 z-50 animate-in fade-in zoom-in-95 duration-150">
+                      <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.05] mb-2">
+                        <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">
+                          Active Profile
+                        </div>
+                        <div className="text-xs font-medium text-white truncate mt-0.5">
+                          {user.email}
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center justify-between text-xs">
+                          <span className="text-zinc-400">Subscription:</span>
+                          <span className="text-[#D4AF37] font-bold uppercase font-mono">
+                            {user.plan} • {user.plan === 'free' ? `${freeLeft} credits` : `${daysLeft}d left`}
+                          </span>
+                        </div>
+                      </div>
+
                       <button
                         onClick={() => {
                           setUserMenuOpen(false);
-                          onOpenPricing();
+                          onGoToTerminal();
                         }}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-white bg-white/[0.06] hover:bg-white/[0.12] transition mb-1 cursor-pointer"
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-black bg-[#D4AF37] hover:brightness-110 transition mb-1 cursor-pointer font-mono font-bold"
                       >
-                        <Zap className="w-3.5 h-3.5 text-[#D4AF37]" />
-                        <span>Upgrade Subscription</span>
+                        <Sparkles className="w-3.5 h-3.5 fill-black" />
+                        <span>Enter Terminal</span>
                       </button>
-                    )}
 
-                    <div className="border-t border-white/[0.06] my-1" />
+                      {user.plan === 'free' && (
+                        <button
+                          onClick={() => {
+                            setUserMenuOpen(false);
+                            onOpenPricing();
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-white bg-white/[0.06] hover:bg-white/[0.12] transition mb-1 cursor-pointer"
+                        >
+                          <Zap className="w-3.5 h-3.5 text-[#D4AF37]" />
+                          <span>Upgrade Subscription</span>
+                        </button>
+                      )}
 
-                    <button
-                      onClick={() => {
-                        setUserMenuOpen(false);
-                        onOpenAdmin();
-                      }}
-                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-zinc-300 hover:bg-white/[0.06] transition cursor-pointer"
-                    >
-                      <Settings className="w-3.5 h-3.5 text-zinc-400" />
-                      <span>Terminal Admin Config</span>
-                    </button>
+                      <div className="border-t border-white/[0.06] my-1" />
 
-                    <button
-                      onClick={() => {
-                        setUserMenuOpen(false);
-                        onSignOut(false);
-                      }}
-                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>Sign Out</span>
-                    </button>
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          onOpenAdmin();
+                        }}
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-zinc-300 hover:bg-white/[0.06] transition cursor-pointer"
+                      >
+                        <Settings className="w-3.5 h-3.5 text-zinc-400" />
+                        <span>Terminal Admin Config</span>
+                      </button>
 
-                    <button
-                      onClick={() => {
-                        setUserMenuOpen(false);
-                        onSignOut(true);
-                      }}
-                      className="w-full text-left px-3 py-1.5 text-[11px] font-mono text-zinc-500 hover:text-rose-400 transition cursor-pointer"
-                    >
-                      Sign out and forget this device
-                    </button>
-                  </div>
-                )}
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          onSignOut(false);
+                        }}
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                      >
+                        <LogOut className="w-3.5 h-3.5" />
+                        <span>Sign Out</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          onSignOut(true);
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-[10px] font-mono text-zinc-500 hover:text-rose-400 transition cursor-pointer"
+                      >
+                        Sign out and forget this device
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Enter App Button next to Avatar */}
+                <button
+                  type="button"
+                  onClick={onGoToTerminal}
+                  className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#D4AF37] text-black font-mono font-bold text-xs hover:brightness-110 transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-sm min-h-[38px] sm:min-h-[40px]"
+                >
+                  <Sparkles className="w-3.5 h-3.5 fill-black shrink-0" />
+                  <span className="whitespace-nowrap">Enter App</span>
+                </button>
+
+                {/* Sign Out Button in Header */}
+                <button
+                  type="button"
+                  onClick={() => onSignOut(false)}
+                  className="px-2 sm:px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 hover:text-rose-200 text-xs font-mono font-semibold transition flex items-center gap-1 shrink-0 cursor-pointer min-h-[38px] sm:min-h-[40px]"
+                  title="Sign Out"
+                >
+                  <LogOut className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                  <span className="hidden sm:inline">Sign Out</span>
+                </button>
               </div>
             )}
 
