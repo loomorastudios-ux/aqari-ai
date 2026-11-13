@@ -1,16 +1,5 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 
-/**
- * Single Source of Truth for Global Real Estate & Macro Market Data
- * GET /api/market/live
- *
- * Fetches real public data with 6-hour server-side cache:
- * - World Bank API: Inflation CPI (FP.CPI.TOTL.ZG) for USA, ARE, GBR, SGP, SAU, OMN
- * - FRED CSV: DGS10 (US 10Y Treasury Yield), DGS2 (US 2Y Treasury Yield)
- * - ExchangeRate API: USD -> OMR, AED, SAR, GBP, SGD
- * - Curated official Real Estate baselines with explicit institutional source labels (no fake random numbers)
- */
-
 export interface LiveMarketCity {
   city: string;
   country: string;
@@ -65,7 +54,6 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 let cachedMarketResponse: LiveMarketResponse | null = null;
 let cachedAt = 0;
 
-// Official curated baselines (never random)
 const OFFICIAL_CITIES = [
   {
     city: 'Muscat',
@@ -406,17 +394,4 @@ export async function getLiveMarketDataWithCache(forceRefresh = false): Promise<
   cachedMarketResponse = built;
   cachedAt = now;
   return built;
-}
-
-export default async function handler(req: any, res: any) {
-  try {
-    const force = req.query?.refresh === 'true';
-    const data = await getLiveMarketDataWithCache(force);
-    res.setHeader('Cache-Control', 'public, max-age=21600, stale-while-revalidate=86400');
-    return res.status(200).json(data);
-  } catch (error: any) {
-    console.error('Market live API error:', error);
-    const fallback = getDeterministicMarketData();
-    return res.status(200).json(fallback);
-  }
 }

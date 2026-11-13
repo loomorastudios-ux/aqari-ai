@@ -67,7 +67,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   // Always fetch fresh /api/pricing on mount, focus, and admin update event (no hardcoded pricing)
   const refreshPricing = async () => {
     try {
-      const res = await fetch(`/api/pricing?t=${Date.now()}`, { cache: 'no-store' });
+      const res = await fetch(`/api/app?action=pricing&t=${Date.now()}`, { cache: 'no-store' });
       if (res.ok) {
         const data: PricingPublicPayload = await res.json();
         setLivePricing(data);
@@ -114,7 +114,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 6000);
 
-      const res = await fetch('/api/checkout', {
+      const res = await fetch('/api/app?action=checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -181,7 +181,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       cached.pricingVersion === pricingVersion &&
       Date.now() - cached.timestamp < 5 * 60 * 1000
     ) {
-      fetch('/api/checkout', {
+      fetch('/api/app?action=checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -202,7 +202,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
       try {
-        const res = await fetch('/api/checkout', {
+        const res = await fetch('/api/app?action=checkout', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

@@ -7,24 +7,10 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const SSR_ROUTE_MAP: Record<string, string> = {
-  '/api/me': '/api/me.ts',
-  '/api/auth/session': '/api/auth/session.ts',
-  '/api/checkout': '/api/checkout.ts',
-  '/api/checkout/verify': '/api/checkout/verify.ts',
-  '/api/analyze': '/api/analyze.ts',
-  '/api/save': '/api/save.ts',
-  '/api/export': '/api/export.ts',
-  '/api/portfolio': '/api/portfolio.ts',
-  '/api/user/license': '/api/user/license.ts',
-  '/api/debug/my-plan': '/api/debug/my-plan.ts',
-  '/api/news': '/api/news.ts',
-  '/api/cron/check-expiry': '/api/cron/check-expiry.ts',
-  '/api/test/email-day29': '/api/test/email-day29.ts',
+  '/api/app': '/api/app.ts',
+  '/api/admin': '/api/admin.ts',
   '/api/webhooks/lemonsqueezy': '/api/webhooks/lemonsqueezy.ts',
-  '/api/webhooks/logs': '/api/webhooks/logs.ts',
-  '/api/admin/users': '/api/admin/users.ts',
-  '/api/admin/pricing': '/api/admin/pricing.ts',
-  '/api/pricing': '/api/pricing.ts',
+  '/api/cron/check-expiry': '/api/cron/check-expiry.ts',
 };
 
 function readRequestBody(req: any): Promise<string> {
@@ -81,74 +67,16 @@ function devApiPlugin(): Plugin {
         }
 
         const parsedUrl = new URL(req.url, `http://${req.headers?.host || 'localhost:3000'}`);
-        const pathname = parsedUrl.pathname;
+        let pathname = parsedUrl.pathname;
         req.query = Object.fromEntries(parsedUrl.searchParams.entries());
         attachResponseShims(res);
         res.setHeader('X-Content-Type-Options', 'nosniff');
 
-        // 1. /api/market/live (async live fetch with 6h server cache)
-        if (pathname === '/api/market/live') {
-          try {
-            const mod = await server.ssrLoadModule('/api/market/live.ts');
-            if (typeof mod.default === 'function') {
-              await mod.default(req, res);
-              return;
-            }
-          } catch (e: any) {
-            console.error('API /api/market/live dev error:', e);
-            return res.status(500).json({ error: e?.message || 'Market feed failed' });
-          }
+        if (pathname === '/api/auth/callback/google') {
+          pathname = '/api/app';
+          req.query.action = 'google-callback';
         }
 
-        // 2. /api/demo/:slug
-        if (pathname.startsWith('/api/demo/')) {
-          try {
-            const slug = pathname.replace('/api/demo/', '').split('/')[0];
-            const mod = await server.ssrLoadModule('/src/constants/demoAnalyses.ts');
-            const demo = mod.DEMO_ANALYSES?.[slug];
-            if (demo) {
-              return res.status(200).json({ success: true, demo });
-            }
-            return res.status(404).json({ error: 'Demo not found', available: Object.keys(mod.DEMO_ANALYSES || {}) });
-          } catch (e: any) {
-            console.error('API /api/demo dev error:', e);
-            return res.status(500).json({ error: e?.message || 'Demo route failed' });
-          }
-        }
-
-        // 3. Dynamic Admin User / Evidence PDF routes
-        if (pathname.startsWith('/api/admin/user/')) {
-          try {
-            req.query.email = decodeURIComponent(pathname.replace('/api/admin/user/', '').split('/')[0]);
-            const rawBody = await readRequestBody(req);
-            req.rawBody = rawBody;
-            try {
-              req.body = rawBody ? JSON.parse(rawBody) : {};
-            } catch {
-              req.body = rawBody;
-            }
-            const mod = await server.ssrLoadModule('/api/admin/user/[email].ts');
-            await mod.default(req, res);
-            return;
-          } catch (err: any) {
-            console.error(`API ${pathname} dev error:`, err);
-            return res.status(500).json({ error: err?.message || 'Admin user API error' });
-          }
-        }
-
-        if (pathname.startsWith('/api/admin/export/')) {
-          try {
-            req.query.email = decodeURIComponent(pathname.replace('/api/admin/export/', '').split('/')[0]);
-            const mod = await server.ssrLoadModule('/api/admin/export/[email].ts');
-            await mod.default(req, res);
-            return;
-          } catch (err: any) {
-            console.error(`API ${pathname} dev error:`, err);
-            return res.status(500).json({ error: err?.message || 'Admin export API error' });
-          }
-        }
-
-        // 4. Static Mapped API handlers
         const modulePath = SSR_ROUTE_MAP[pathname];
         if (modulePath) {
           try {

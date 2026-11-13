@@ -55,7 +55,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
 
     if (user?.email) {
       try {
-        const res = await fetch('/api/checkout', {
+        const res = await fetch('/api/app?action=checkout', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

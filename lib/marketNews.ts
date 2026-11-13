@@ -99,9 +99,3 @@ export async function fetchGoogleMarketNews(): Promise<{
     clearTimeout(timer);
   }
 }
-
-export default async function handler(req: any, res: any) {
-  const result = await fetchGoogleMarketNews();
-  res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=7200');
-  return res.status(200).json(result);
-}

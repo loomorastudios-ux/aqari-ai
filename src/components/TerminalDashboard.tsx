@@ -169,7 +169,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   // Load webhook & email audit logs when Settings tab opens
   useEffect(() => {
     if (activeTab === 'settings') {
-      fetch('/api/webhooks/logs')
+      fetch('/api/app?action=webhook-logs')
         .then((r) => (r.ok ? r.json() : null))
         .then((data) => {
           if (data?.success) {
@@ -184,7 +184,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   // Verify portfolio endpoint when opening Portfolio tab if entitled
   useEffect(() => {
     if (activeTab === 'portfolio' && canPortfolioAgg && user?.email) {
-      fetch('/api/portfolio', {
+      fetch('/api/app?action=portfolio', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -273,7 +273,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
     setIsAnalyzingApi(true);
     try {
-      const res = await fetch('/api/analyze', {
+      const res = await fetch('/api/app?action=underwrite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -339,7 +339,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/analyze', {
+      const res = await fetch('/api/app?action=underwrite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -410,7 +410,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     };
 
     try {
-      const res = await fetch('/api/save', {
+      const res = await fetch('/api/app?action=save-property', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -536,7 +536,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/export', {
+      const res = await fetch('/api/app?action=export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

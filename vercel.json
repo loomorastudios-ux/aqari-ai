@@ -16,6 +16,10 @@
   ],
   "rewrites": [
     {
+      "source": "/api/auth/callback/google",
+      "destination": "/api/app?action=google-callback"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }

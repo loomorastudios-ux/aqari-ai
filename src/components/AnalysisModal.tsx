@@ -57,7 +57,7 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
       return;
     }
     try {
-      const res = await fetch('/api/export', {
+      const res = await fetch('/api/app?action=export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

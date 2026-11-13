@@ -104,7 +104,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const loadPricingControl = async () => {
     try {
-      const res = await fetch('/api/admin/pricing', { credentials: 'include' });
+      const res = await fetch('/api/admin?action=pricing', { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         if (data?.pricing) hydratePricingDrafts(data.pricing);
@@ -116,7 +116,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/admin/users', { credentials: 'include' });
+      const res = await fetch('/api/admin?action=users', { credentials: 'include' });
       if (res.status === 403 || res.status === 401) {
         onRedirectHome('403 Forbidden: Owner admin access only');
         return;
@@ -147,7 +147,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setSavingPricingKey('global');
     setPricingMsg(null);
     try {
-      const res = await fetch('/api/admin/pricing', {
+      const res = await fetch('/api/admin?action=toggle-discount', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -180,7 +180,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setSavingPricingKey(planKey);
     setPricingMsg(null);
     try {
-      const res = await fetch('/api/admin/pricing', {
+      const res = await fetch('/api/admin?action=pricing-update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -215,7 +215,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const openUserDetail = async (email: string) => {
     try {
-      const res = await fetch(`/api/admin/user/${encodeURIComponent(email)}`, {
+      const res = await fetch(`/api/admin?action=user&email=${encodeURIComponent(email)}`, {
         credentials: 'include',
       });
       if (res.ok) {
@@ -235,12 +235,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return;
     }
     try {
-      const res = await fetch(`/api/admin/user/${encodeURIComponent(selectedUser.email)}`, {
+      const res = await fetch('/api/admin?action=change-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          action: 'change_plan',
+          email: selectedUser.email,
           newPlan,
           reason: planReason.trim(),
         }),
@@ -262,12 +262,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleRefundDecision = async (status: 'denied' | 'approved' | 'pending') => {
     if (!selectedUser) return;
     try {
-      const res = await fetch(`/api/admin/user/${encodeURIComponent(selectedUser.email)}`, {
+      const res = await fetch('/api/admin?action=refund-decision', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          action: 'refund_decision',
+          email: selectedUser.email,
           status,
           notes: refundNotes.trim() || selectedUser.refundEvaluation?.verdict || '',
         }),
@@ -730,7 +730,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               <div className="flex items-center gap-2">
                 <a
-                  href={`/api/admin/export/${encodeURIComponent(selectedUser.email)}`}
+                  href={`/api/admin?action=export&email=${encodeURIComponent(selectedUser.email)}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono flex items-center gap-2 hover:brightness-110"

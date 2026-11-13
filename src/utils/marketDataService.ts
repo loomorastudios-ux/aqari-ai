@@ -9,8 +9,8 @@ import {
   getDeterministicMarketData,
   LiveMarketResponse,
   LiveMarketCity,
-} from '../../api/market/live';
-import type { MarketNewsArticle } from '../../api/news';
+} from '../../lib/marketData';
+import type { MarketNewsArticle } from '../../lib/marketNews';
 
 const FX_CACHE_KEY = 'aqari_fx_rates_cache_v2';
 const MARKET_CACHE_KEY = 'aqari_live_market_cache_v2';
@@ -73,7 +73,7 @@ export async function fetchLiveMarketData(): Promise<LiveMarketResponse> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 6000);
-    const res = await fetch('/api/market/live', { signal: controller.signal });
+    const res = await fetch('/api/app?action=market-live', { signal: controller.signal });
     clearTimeout(timeout);
 
     if (res.ok) {
@@ -121,7 +121,7 @@ export async function fetchLiveNews(): Promise<{
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch('/api/news', { signal: controller.signal });
+    const res = await fetch('/api/app?action=news', { signal: controller.signal });
     clearTimeout(timeout);
     if (res.ok) {
       const json = await res.json();

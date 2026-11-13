@@ -75,7 +75,7 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
     saveUser(updatedUser);
     setActivatedUser(updatedUser);
 
-    fetch('/api/user/license', {
+    fetch('/api/app?action=license', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

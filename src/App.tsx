@@ -296,7 +296,7 @@ export default function App() {
   useEffect(() => {
     const fetchDynamicPricing = async () => {
       try {
-        const res = await fetch(`/api/pricing?t=${Date.now()}`, { cache: 'no-store' });
+        const res = await fetch(`/api/app?action=pricing&t=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
           const data: PricingPublicPayload = await res.json();
           setPricingData(data);
@@ -389,7 +389,7 @@ export default function App() {
     const testModeParam = urlParams.get('test_mode') || '';
 
     try {
-      const res = await fetch('/api/checkout/verify', {
+      const res = await fetch('/api/app?action=verify-checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -408,7 +408,7 @@ export default function App() {
         const data = await res.json();
         if (data?.verified && data?.user) {
           // Force refresh session directly from authoritative /api/me
-          const meRes = await fetch(`/api/me?t=${Date.now()}`, {
+          const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {
             credentials: 'include',
             cache: 'no-store',
           });
@@ -560,7 +560,7 @@ export default function App() {
     let resolvedUser = newUser;
     // Issue server HttpOnly signed session cookie & sync server-authoritative plan
     try {
-      const res = await fetch('/api/auth/session', {
+      const res = await fetch('/api/app?action=session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -614,7 +614,7 @@ export default function App() {
     setUser(null);
     setTerminalToast(null);
     try {
-      await fetch('/api/auth/session', { method: 'DELETE', credentials: 'include' });
+      await fetch('/api/app?action=session', { method: 'DELETE', credentials: 'include' });
     } catch {}
     window.history.pushState({}, '', '/');
     setRoute('landing');
@@ -625,20 +625,20 @@ export default function App() {
   useEffect(() => {
     const syncMeFromServer = async () => {
       try {
-        let res = await fetch(`/api/me?t=${Date.now()}`, {
+        let res = await fetch(`/api/app?action=me&t=${Date.now()}`, {
           credentials: 'include',
           cache: 'no-store',
         });
 
         // If cookie hasn't been established for this signed-in user yet, establish HttpOnly cookie first
         if (res.status === 401 && user?.email) {
-          await fetch('/api/auth/session', {
+          await fetch('/api/app?action=session', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
             body: JSON.stringify({ email: user.email, name: user.name }),
           });
-          res = await fetch(`/api/me?t=${Date.now()}`, {
+          res = await fetch(`/api/app?action=me&t=${Date.now()}`, {
             credentials: 'include',
             cache: 'no-store',
           });
@@ -799,7 +799,7 @@ export default function App() {
       setIsAuthOpen(true);
       return;
     }
-    fetch('/api/analyze', {
+    fetch('/api/app?action=underwrite', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
@@ -1405,7 +1405,7 @@ export default function App() {
             ...user,
             savedAnalyses: [newAnalysis, ...currentSaved],
           });
-          fetch('/api/save', {
+          fetch('/api/app?action=save-property', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'include',
