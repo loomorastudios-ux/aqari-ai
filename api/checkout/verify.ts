@@ -1,26 +1,28 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import { PLANS, PlanKey, normalizePlanKey } from '../../lib/plans';
 import { getSessionEmailFromReq, setSessionCookie } from '../../lib/security';
-import { activatePaidPlanOnServer, appendWebhookLog, getOrCreateServerUser } from '../../lib/serverStore';
-import { computeLicenseStatus } from '../../lib/plans';
+import {
+  activatePaidPlanOnServer,
+  appendWebhookLog,
+  computeServerLicenseStatus,
+  getOrCreateServerUser,
+  getPricingPublicPayload,
+} from '../../lib/serverStore';
 
 /**
  * Post-Payment Verification Endpoint
  * GET /api/checkout/verify?session_id=...&order_id=...&plan=...&email=...
  * POST /api/checkout/verify
- *
- * Re-fetches order/checkout from Lemon Squeezy REST API when API key is present,
- * updates DB user.plan, license_start, license_end, analyses_used=0, and syncs session.
  */
 function resolvePlanFromLemonName(rawName?: string | null, fallbackPlan?: PlanKey): PlanKey {
   const s = (rawName || '').toLowerCase();
-  if (s.includes('sovereign') || s.includes('enterprise') || s.includes('agency') || s.includes('749')) {
+  if (s.includes('sovereign') || s.includes('enterprise') || s.includes('agency') || s.includes('599') || s.includes('999')) {
     return 'enterprise';
   }
-  if (s.includes('pro') || s.includes('professional') || s.includes('249')) {
+  if (s.includes('pro') || s.includes('professional') || s.includes('199') || s.includes('349')) {
     return 'pro';
   }
-  if (s.includes('starter') || s.includes('standard') || s.includes('89')) {
+  if (s.includes('starter') || s.includes('standard') || s.includes('79') || s.includes('129')) {
     return 'starter';
   }
   return fallbackPlan && fallbackPlan !== 'free' ? fallbackPlan : 'pro';
@@ -43,27 +45,24 @@ export default async function handler(req: any, res: any) {
     }
 
     let dbUser = getOrCreateServerUser(email);
+    const pricing = getPricingPublicPayload();
 
-    // 1. If webhook already upgraded the user within the last 10 minutes, return synced DB state
+    // 1. If webhook already upgraded the user, return synced DB state
     if (
       dbUser.plan !== 'free' &&
       dbUser.license_end &&
       dbUser.license_end > Date.now() &&
       dbUser.payments.length > 0
     ) {
-      const license = computeLicenseStatus({
-        plan: dbUser.plan,
-        licenseStart: dbUser.license_start,
-        licenseEnd: dbUser.license_end,
-        analysesUsed: dbUser.analyses_used,
-      });
+      const license = computeServerLicenseStatus(dbUser);
       setSessionCookie(res, dbUser.email);
       return res.status(200).json({
         success: true,
+        verified: true,
         source: 'webhook_db_synced',
         user: dbUser,
         license,
-        features: PLANS[license.planKey].features,
+        features: pricing.plans[license.planKey]?.features || PLANS[license.planKey].features,
       });
     }
 
@@ -75,12 +74,18 @@ export default async function handler(req: any, res: any) {
     let verifiedPaid = false;
     let verifiedPlan: PlanKey = requestedPlan === 'free' ? 'pro' : requestedPlan;
     let verifiedOrderId = orderId || sessionId || `ord_${Date.now()}`;
-    let verifiedAmount = PLANS[verifiedPlan].priceUSD;
+    const dynamicDefaultPrice = pricing.plans[verifiedPlan]?.activePrice ?? PLANS[verifiedPlan].launchPrice;
+    let verifiedAmount = Number(src.charged_price) > 0 ? Number(src.charged_price) : dynamicDefaultPrice;
     let verifiedTestMode = isTestEnv || isTestQuery;
+    let verifiedLockedLaunch: number | null =
+      Number(src.launch_locked) > 0
+        ? Number(src.launch_locked)
+        : pricing.launchDiscountActive
+        ? pricing.plans[verifiedPlan]?.launchPrice ?? verifiedAmount
+        : null;
 
     if (apiKey) {
       try {
-        // Check specific order ID first
         if (orderId) {
           const orderRes = await fetch(`https://api.lemonsqueezy.com/v1/orders/${encodeURIComponent(orderId)}`, {
             headers: {
@@ -98,13 +103,17 @@ export default async function handler(req: any, res: any) {
                 attrs?.first_order_item?.product_name || attrs?.first_order_item?.variant_name,
                 verifiedPlan
               );
-              verifiedAmount = attrs.total ? Number(attrs.total) / 100 : PLANS[verifiedPlan].priceUSD;
+              verifiedAmount = attrs.total
+                ? Number(attrs.total) / 100
+                : pricing.plans[verifiedPlan]?.activePrice ?? PLANS[verifiedPlan].launchPrice;
               verifiedTestMode = Boolean(attrs.test_mode);
+              if (pricing.launchDiscountActive) {
+                verifiedLockedLaunch = pricing.plans[verifiedPlan]?.launchPrice ?? verifiedAmount;
+              }
             }
           }
         }
 
-        // Or check checkout object if session_id passed
         if (!verifiedPaid && sessionId) {
           const chkRes = await fetch(
             `https://api.lemonsqueezy.com/v1/checkouts/${encodeURIComponent(sessionId)}`,
@@ -125,7 +134,6 @@ export default async function handler(req: any, res: any) {
           }
         }
 
-        // Or query latest paid order by user_email from Lemon Squeezy API
         if (!verifiedPaid) {
           const listRes = await fetch(
             `https://api.lemonsqueezy.com/v1/orders?filter[user_email]=${encodeURIComponent(email)}`,
@@ -148,8 +156,13 @@ export default async function handler(req: any, res: any) {
                 attrs?.first_order_item?.product_name || attrs?.first_order_item?.variant_name,
                 verifiedPlan
               );
-              verifiedAmount = attrs.total ? Number(attrs.total) / 100 : PLANS[verifiedPlan].priceUSD;
+              verifiedAmount = attrs.total
+                ? Number(attrs.total) / 100
+                : pricing.plans[verifiedPlan]?.activePrice ?? PLANS[verifiedPlan].launchPrice;
               verifiedTestMode = Boolean(attrs.test_mode);
+              if (pricing.launchDiscountActive) {
+                verifiedLockedLaunch = pricing.plans[verifiedPlan]?.launchPrice ?? verifiedAmount;
+              }
             }
           }
         }
@@ -169,6 +182,7 @@ export default async function handler(req: any, res: any) {
         currency: 'USD',
         testMode: verifiedTestMode,
         refundPolicyAcceptedAt: src.refundAcceptedAt || new Date().toISOString(),
+        lockedLaunchPrice: verifiedLockedLaunch,
       });
 
       appendWebhookLog({
@@ -182,36 +196,28 @@ export default async function handler(req: any, res: any) {
       });
 
       setSessionCookie(res, dbUser.email);
-      const license = computeLicenseStatus({
-        plan: dbUser.plan,
-        licenseStart: dbUser.license_start,
-        licenseEnd: dbUser.license_end,
-        analysesUsed: dbUser.analyses_used,
-      });
+      const license = computeServerLicenseStatus(dbUser);
 
       return res.status(200).json({
         success: true,
+        verified: true,
         source: verifiedPaid ? 'lemon_api_verified' : 'lemon_test_verified',
         user: dbUser,
         license,
-        features: PLANS[license.planKey].features,
+        features: pricing.plans[license.planKey]?.features || PLANS[license.planKey].features,
       });
     }
 
     // If not verified in live mode, return current DB state without elevating plan
-    const license = computeLicenseStatus({
-      plan: dbUser.plan,
-      licenseStart: dbUser.license_start,
-      licenseEnd: dbUser.license_end,
-      analysesUsed: dbUser.analyses_used,
-    });
+    const license = computeServerLicenseStatus(dbUser);
     return res.status(200).json({
       success: true,
+      verified: dbUser.plan !== 'free',
       pendingVerification: dbUser.plan === 'free',
       source: 'db_authoritative',
       user: dbUser,
       license,
-      features: PLANS[license.planKey].features,
+      features: pricing.plans[license.planKey]?.features || PLANS[license.planKey].features,
     });
   } catch (err: any) {
     console.error('/api/checkout/verify error:', err);

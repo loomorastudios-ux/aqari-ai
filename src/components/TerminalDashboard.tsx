@@ -9,6 +9,8 @@ import {
 } from '../constants';
 import {
   PLANS,
+  PricingPublicPayload,
+  normalizePlanKey,
   computeLicenseStatus,
   canUseFeature,
   getUpgradeMessage,
@@ -58,6 +60,7 @@ interface TerminalDashboardProps {
   currentCurrency: CurrencyCode;
   onCurrencyChange: (c: CurrencyCode) => void;
   config: RemoteConfig;
+  pricingData?: PricingPublicPayload | null;
   marketLive?: LiveMarketResponse | null;
   onSignOut: (forgetDevice?: boolean) => void;
   onGoToHome: () => void;
@@ -73,6 +76,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   currentCurrency,
   onCurrencyChange,
   config,
+  pricingData,
   marketLive,
   onSignOut,
   onGoToHome,
@@ -130,6 +134,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const endsAt = user.subscriptionEndsAt || user.subscriptionExpiry;
   const msRemaining = endsAt ? Math.max(0, endsAt - Date.now()) : 0;
 
+  const dynamicPlanPricing = pricingData?.plans?.[normalizePlanKey(user.plan)];
   const license = computeLicenseStatus({
     plan: user.plan,
     licenseStart: user.subscriptionStartAt,
@@ -137,6 +142,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     analysesUsed: user.analysesUsed,
     freeAnalysesLeft: user.freeAnalysesLeft ?? user.freeAnalyses,
     analysesLeft: user.analysesLeft,
+    analysesLimitOverride: dynamicPlanPricing?.analysesLimit,
+    savedLimitOverride:
+      dynamicPlanPricing?.savedLimit === null ? Infinity : dynamicPlanPricing?.savedLimit,
   });
 
   const planInfo = PLAN_LIMITS[license.planKey] || PLAN_LIMITS.free;
@@ -1009,6 +1017,19 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
         {/* Main Content Area */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-8">
+          {license.planKey !== 'free' && !isExpired && user.lockedLaunchPrice && (
+            <div className="max-w-6xl mx-auto p-3.5 rounded-2xl bg-gradient-to-r from-[#D4AF37]/15 via-emerald-500/10 to-[#D4AF37]/15 border border-[#D4AF37]/40 text-xs font-mono text-amber-200 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Flame className="w-4 h-4 text-[#D4AF37] shrink-0" />
+                <span>
+                  You locked Launch Price <strong className="text-white">{user.lockedLaunchPrice}$</strong> - Your next renewal will be at same launch price if you renew before expiry
+                </span>
+              </div>
+              <span className="text-[10px] text-emerald-300 font-bold shrink-0">
+                {daysLeft}d left
+              </span>
+            </div>
+          )}
           
           {/* TAB 1: ANALYZE NEW PROPERTY */}
           {activeTab === 'analyze' && (

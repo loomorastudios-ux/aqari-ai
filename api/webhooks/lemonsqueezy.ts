@@ -5,6 +5,7 @@ import { getClientIp } from '../../lib/security';
 import {
   activatePaidPlanOnServer,
   appendWebhookLog,
+  getPricingPublicPayload,
   recordFailedWebhook,
   updateServerUser,
 } from '../../lib/serverStore';
@@ -89,21 +90,23 @@ export default async function handler(req: any, res: any) {
     if (
       lowerProduct.includes('starter') ||
       lowerProduct.includes('standard') ||
-      lowerProduct.includes('50') ||
-      lowerProduct.includes('89')
+      lowerProduct.includes('79') ||
+      lowerProduct.includes('129')
     ) {
       planCode = 'starter';
     } else if (
       lowerProduct.includes('enterprise') ||
       lowerProduct.includes('sovereign') ||
       lowerProduct.includes('agency') ||
-      lowerProduct.includes('749')
+      lowerProduct.includes('599') ||
+      lowerProduct.includes('999')
     ) {
       planCode = 'enterprise';
     } else if (
       lowerProduct.includes('pro') ||
       lowerProduct.includes('professional') ||
-      lowerProduct.includes('249')
+      lowerProduct.includes('199') ||
+      lowerProduct.includes('349')
     ) {
       planCode = 'pro';
     }
@@ -123,14 +126,18 @@ export default async function handler(req: any, res: any) {
         process.env.LEMON_TEST_MODE === 'true'
     );
 
+    const pricing = getPricingPublicPayload();
+    const fallbackPlanPrice =
+      pricing.plans[planCode]?.activePrice ?? PLANS[planCode]?.launchPrice ?? 199;
+
     const rawTotal =
       attributes?.total ??
       attributes?.subtotal ??
-      (PLANS[planCode]?.priceUSD ? PLANS[planCode].priceUSD * 100 : 0);
+      (fallbackPlanPrice ? fallbackPlanPrice * 100 : 0);
     const amountUSD =
       Number(rawTotal) > 1000
         ? Number(rawTotal) / 100
-        : Number(rawTotal || PLANS[planCode]?.priceUSD || 0);
+        : Number(rawTotal || fallbackPlanPrice || 0);
     const currency = (attributes?.currency || 'USD').toString().toUpperCase();
 
     const paymentDateStr =
@@ -138,6 +145,14 @@ export default async function handler(req: any, res: any) {
     const paymentTimestamp = new Date(paymentDateStr).getTime();
     const duration30Days = 30 * 24 * 60 * 60 * 1000;
     const subscriptionEndsAt = paymentTimestamp + duration30Days;
+
+    const customLockedLaunch = Number(customData?.launch_price_locked || 0);
+    const lockedLaunchPrice =
+      customLockedLaunch > 0
+        ? customLockedLaunch
+        : customData?.is_launch_price === 'true' || pricing.launchDiscountActive
+        ? amountUSD
+        : null;
 
     let subscriptionStatus: 'active' | 'cancelled' | 'expired' | 'past_due' = 'active';
     let persistedUser = null;
@@ -159,6 +174,7 @@ export default async function handler(req: any, res: any) {
             currency,
             testMode: isTestMode,
             refundPolicyAcceptedAt: customData?.refund_accepted_at || new Date(paymentTimestamp).toISOString(),
+            lockedLaunchPrice,
           });
         }
         break;

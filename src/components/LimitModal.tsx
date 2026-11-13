@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
 import { LEMON_LINKS, LEMON_REDIRECT_URLS } from '../constants';
+import { PLANS, PricingPublicPayload } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
 import { 
   X, 
@@ -18,6 +19,7 @@ interface LimitModalProps {
   onClose: () => void;
   user: User | null;
   config: RemoteConfig;
+  pricingData?: PricingPublicPayload | null;
   currentCurrency: CurrencyCode;
   onTestUnlock: (plan: 'starter' | 'pro' | 'enterprise') => void;
   onOpenPricing: () => void;
@@ -28,6 +30,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
   onClose,
   user,
   config,
+  pricingData,
   currentCurrency,
   onTestUnlock,
   onOpenPricing,
@@ -37,8 +40,15 @@ export const LimitModal: React.FC<LimitModalProps> = ({
 
   if (!isOpen) return null;
 
-  const isDiscountActive = config.discount.active && config.discount.percent > 0;
-  const discountMultiplier = isDiscountActive ? 1 - config.discount.percent / 100 : 1;
+  const launchActive = pricingData?.launchDiscountActive ?? true;
+  const starterPlan = pricingData?.plans?.starter;
+  const proPlan = pricingData?.plans?.pro;
+  const starterUSD = starterPlan?.activePrice ?? (launchActive ? PLANS.starter.launchPrice : PLANS.starter.originalPrice);
+  const proUSD = proPlan?.activePrice ?? (launchActive ? PLANS.pro.launchPrice : PLANS.pro.originalPrice);
+  const starterOrigUSD = starterPlan?.originalPrice ?? PLANS.starter.originalPrice;
+  const proOrigUSD = proPlan?.originalPrice ?? PLANS.pro.originalPrice;
+  const starterAnalyses = starterPlan?.analysesLimit ?? PLANS.starter.analysesLimit;
+  const proAnalyses = proPlan?.analysesLimit ?? PLANS.pro.analysesLimit;
 
   const handleCheckout = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
@@ -79,9 +89,6 @@ export const LimitModal: React.FC<LimitModalProps> = ({
     }
     params.set('checkout[redirect_url]', redirectUrl);
     params.set('checkout[cancel_url]', 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled');
-    if (isDiscountActive && config.discount.code) {
-      params.set('discount', config.discount.code);
-    }
     window.location.href = `${baseLink}?${params.toString()}`;
   };
 
@@ -131,16 +138,16 @@ export const LimitModal: React.FC<LimitModalProps> = ({
                 <Zap className="w-4 h-4 text-[#D4AF37]" />
               </div>
               <div className="text-2xl font-black font-mono text-white mb-2">
-                {formatPrice(
-                  isDiscountActive
-                    ? Math.round(config.prices.pro * discountMultiplier)
-                    : config.prices.pro,
-                  currentCurrency
+                {launchActive && proOrigUSD > proUSD && (
+                  <span className="text-xs text-zinc-500 line-through mr-2">
+                    {formatPrice(proOrigUSD, currentCurrency)}
+                  </span>
                 )}
+                {formatPrice(proUSD, currentCurrency)}
                 <span className="text-xs font-normal text-zinc-400 font-sans"> / 30 days</span>
               </div>
               <p className="text-xs text-zinc-300 font-mono mb-3">
-                400 Deep Analyses • Monte Carlo Stress Tests • Export Memoranda
+                {proAnalyses} Deep Analyses • Monte Carlo Stress Tests • Export Memoranda
               </p>
             </div>
 
@@ -158,19 +165,19 @@ export const LimitModal: React.FC<LimitModalProps> = ({
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="font-bold text-white text-base">Starter</span>
-                <span className="text-[10px] text-zinc-400 font-mono">50 ANALYSES</span>
+                <span className="text-[10px] text-zinc-400 font-mono">{starterAnalyses} ANALYSES</span>
               </div>
               <div className="text-2xl font-black font-mono text-white mb-2">
-                {formatPrice(
-                  isDiscountActive
-                    ? Math.round(config.prices.starter * discountMultiplier)
-                    : config.prices.starter,
-                  currentCurrency
+                {launchActive && starterOrigUSD > starterUSD && (
+                  <span className="text-xs text-zinc-500 line-through mr-2">
+                    {formatPrice(starterOrigUSD, currentCurrency)}
+                  </span>
                 )}
+                {formatPrice(starterUSD, currentCurrency)}
                 <span className="text-xs font-normal text-zinc-400 font-sans"> / 30 days</span>
               </div>
               <p className="text-xs text-zinc-400 font-mono mb-3">
-                Essential cross-border yields & tax rates across all 7 cities.
+                Essential cross-border yields &amp; tax rates across all 7 cities.
               </p>
             </div>
 

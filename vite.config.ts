@@ -22,6 +22,8 @@ const SSR_ROUTE_MAP: Record<string, string> = {
   '/api/webhooks/lemonsqueezy': '/api/webhooks/lemonsqueezy.ts',
   '/api/webhooks/logs': '/api/webhooks/logs.ts',
   '/api/admin/users': '/api/admin/users.ts',
+  '/api/admin/pricing': '/api/admin/pricing.ts',
+  '/api/pricing': '/api/pricing.ts',
 };
 
 function readRequestBody(req: any): Promise<string> {

@@ -49,7 +49,7 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
     const now = Date.now();
     const duration30Days = 30 * 24 * 60 * 60 * 1000;
     const endsAt = now + duration30Days;
-    const planQuota = PLAN_LIMITS[planParam]?.analyses || 400;
+    const planQuota = PLAN_LIMITS[planParam]?.analyses || 150;
 
     let userToUpdate = currentUser || getUser(emailParam);
     if (!userToUpdate) {

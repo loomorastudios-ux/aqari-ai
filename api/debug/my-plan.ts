@@ -1,7 +1,11 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
-import { PLANS, computeLicenseStatus } from '../../lib/plans';
+import { PLANS } from '../../lib/plans';
 import { getSessionEmailFromReq, isAdminEmail } from '../../lib/security';
-import { getOrCreateServerUser } from '../../lib/serverStore';
+import {
+  computeServerLicenseStatus,
+  getOrCreateServerUser,
+  getPricingPublicPayload,
+} from '../../lib/serverStore';
 
 export default async function handler(req: any, res: any) {
   try {
@@ -22,12 +26,8 @@ export default async function handler(req: any, res: any) {
     }
 
     const userRecord = getOrCreateServerUser(email);
-    const license = computeLicenseStatus({
-      plan: userRecord.plan,
-      licenseStart: userRecord.license_start,
-      licenseEnd: userRecord.license_end,
-      analysesUsed: userRecord.analyses_used,
-    });
+    const license = computeServerLicenseStatus(userRecord);
+    const pricing = getPricingPublicPayload();
 
     return res.status(200).json({
       email: userRecord.email,
@@ -38,7 +38,8 @@ export default async function handler(req: any, res: any) {
       analyses_used: license.analysesUsed,
       analyses_left: license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLeft,
       days_left: license.daysLeft,
-      features: PLANS[license.planKey].features,
+      locked_launch_price: userRecord.locked_launch_price ?? null,
+      features: pricing.plans[license.planKey]?.features || PLANS[license.planKey].features,
       capabilities: PLANS[license.planKey].capabilities,
     });
   } catch (err: any) {

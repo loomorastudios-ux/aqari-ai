@@ -20,8 +20,10 @@ export type GatedFeature =
 export interface PlanDefinition {
   key: PlanKey;
   displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  originalPrice: number;
+  launchPrice: number;
   priceUSD: number;
-  analysesLimit: number; // Infinity for Sovereign
+  analysesLimit: number; // 3 for Free, 30 for Starter, 150 for Pro, 400 for Sovereign
   savedLimit: number; // 0 for Free, 50 for Starter, 200 for Professional, Infinity for Sovereign
   licensingDays: number;
   features: string[];
@@ -29,18 +31,42 @@ export interface PlanDefinition {
   capabilities: Record<GatedFeature, boolean>;
 }
 
+export interface DynamicPlanPublic {
+  key: PlanKey;
+  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  originalPrice: number;
+  launchPrice: number;
+  activePrice: number;
+  analysesLimit: number;
+  savedLimit: number | null; // null = Unlimited
+  features: string[];
+}
+
+export interface PricingPublicPayload {
+  success?: boolean;
+  launchDiscountActive: boolean;
+  launchBadgeText: string;
+  launchEndsAt: number;
+  daysRemaining: number;
+  updatedAt: number;
+  plans: Record<PlanKey, DynamicPlanPublic>;
+}
+
 export const PRODUCTION_URL = 'https://aqari-ai-rho.vercel.app';
 export const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+export const DEFAULT_LAUNCH_BADGE = 'LAUNCH -40% - First 30 users only';
 
 export const PLANS: Record<PlanKey, PlanDefinition> = {
   free: {
     key: 'free',
     displayName: 'FREE',
+    originalPrice: 0,
+    launchPrice: 0,
     priceUSD: 0,
     analysesLimit: 3,
     savedLimit: 0,
     licensingDays: 30,
-    features: ['Basic Cap Rate', 'Cash-on-Cash only'],
+    features: ['3 Analyses / 30 Days', 'Basic Cap Rate', 'Cash-on-Cash only'],
     hiddenFeatures: [
       'Monte Carlo Stress Tests',
       'PDF Memorandum Export',
@@ -65,11 +91,14 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
   starter: {
     key: 'starter',
     displayName: 'STARTER',
-    priceUSD: 89,
-    analysesLimit: 50,
+    originalPrice: 129,
+    launchPrice: 79,
+    priceUSD: 79,
+    analysesLimit: 30,
     savedLimit: 50,
     licensingDays: 30,
     features: [
+      '30 Analyses / 30 Days',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
       'Save 50',
@@ -96,11 +125,14 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
   pro: {
     key: 'pro',
     displayName: 'PROFESSIONAL',
-    priceUSD: 249,
-    analysesLimit: 400,
+    originalPrice: 349,
+    launchPrice: 199,
+    priceUSD: 199,
+    analysesLimit: 150,
     savedLimit: 200,
     licensingDays: 30,
     features: [
+      '150 Analyses / 30 Days',
       'Monte Carlo Stress Tests +200bps',
       'PDF Memorandum Export',
       'Multi-asset Portfolio Aggregation',
@@ -129,11 +161,14 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
   enterprise: {
     key: 'enterprise',
     displayName: 'SOVEREIGN',
-    priceUSD: 749,
-    analysesLimit: Infinity,
+    originalPrice: 999,
+    launchPrice: 599,
+    priceUSD: 599,
+    analysesLimit: 400,
     savedLimit: Infinity,
     licensingDays: 30,
     features: [
+      '400 Analyses / 30 Days',
       'Full REST API Credentials',
       '1-on-1 Dedicated Analyst Desk',
       'White-glove Custom Underwriting',
@@ -219,6 +254,8 @@ export function computeLicenseStatus(params: {
   analysesUsed?: number;
   freeAnalysesLeft?: number;
   analysesLeft?: number;
+  analysesLimitOverride?: number;
+  savedLimitOverride?: number;
   now?: number;
 }): ComputedLicenseStatus {
   const now = params.now ?? Date.now();
@@ -229,8 +266,17 @@ export function computeLicenseStatus(params: {
   // If expired, treat effective plan as FREE
   const effectivePlanKey: PlanKey = isExpired ? 'free' : rawPlanKey;
   const planCfg = PLANS[effectivePlanKey];
-  const isUnlimitedAnalyses = !Number.isFinite(planCfg.analysesLimit);
-  const isUnlimitedSaved = !Number.isFinite(planCfg.savedLimit);
+  const effectiveAnalysesLimit =
+    typeof params.analysesLimitOverride === 'number' && params.analysesLimitOverride > 0
+      ? params.analysesLimitOverride
+      : planCfg.analysesLimit;
+  const effectiveSavedLimit =
+    typeof params.savedLimitOverride === 'number'
+      ? params.savedLimitOverride
+      : planCfg.savedLimit;
+
+  const isUnlimitedAnalyses = !Number.isFinite(effectiveAnalysesLimit);
+  const isUnlimitedSaved = !Number.isFinite(effectiveSavedLimit);
 
   let daysLeft = 30;
   if (effectivePlanKey !== 'free' && params.licenseEnd) {
@@ -242,7 +288,7 @@ export function computeLicenseStatus(params: {
   let analysesUsed = Math.max(0, params.analysesUsed ?? 0);
   let analysesLeft = isUnlimitedAnalyses
     ? Infinity
-    : Math.max(0, planCfg.analysesLimit - analysesUsed);
+    : Math.max(0, effectiveAnalysesLimit - analysesUsed);
 
   // Reconcile if explicit remaining credits were passed and analysesUsed was 0
   if (!isUnlimitedAnalyses) {
@@ -250,19 +296,18 @@ export function computeLicenseStatus(params: {
       effectivePlanKey === 'free'
         ? params.freeAnalysesLeft
         : params.analysesLeft ?? params.freeAnalysesLeft;
-    if (typeof explicitLeft === 'number' && analysesUsed === 0 && explicitLeft <= planCfg.analysesLimit) {
+    if (typeof explicitLeft === 'number' && analysesUsed === 0 && explicitLeft <= effectiveAnalysesLimit) {
       analysesLeft = Math.max(0, explicitLeft);
-      analysesUsed = Math.max(0, planCfg.analysesLimit - analysesLeft);
+      analysesUsed = Math.max(0, effectiveAnalysesLimit - analysesLeft);
     }
   }
 
-  // Progress bar percentage (time remaining or analyses remaining)
   const timeProgress =
     effectivePlanKey !== 'free' && params.licenseEnd
       ? Math.min(100, Math.max(0, Math.round((daysLeft / 30) * 100)))
       : isUnlimitedAnalyses
       ? 100
-      : Math.min(100, Math.max(0, Math.round((analysesLeft / planCfg.analysesLimit) * 100)));
+      : Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)));
 
   const planLabelTitle =
     planCfg.displayName === 'FREE'
@@ -282,10 +327,10 @@ export function computeLicenseStatus(params: {
     isExpired,
     daysLeft,
     daysTotal: 30,
-    analysesLimit: planCfg.analysesLimit,
+    analysesLimit: effectiveAnalysesLimit,
     analysesUsed,
     analysesLeft,
-    savedLimit: planCfg.savedLimit,
+    savedLimit: effectiveSavedLimit,
     isUnlimitedAnalyses,
     isUnlimitedSaved,
     progressPct: timeProgress,

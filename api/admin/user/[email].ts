@@ -1,8 +1,9 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
-import { computeLicenseStatus, normalizePlanKey, PLANS } from '../../../lib/plans';
+import { normalizePlanKey } from '../../../lib/plans';
 import { getSessionEmailFromReq, isAdminEmail } from '../../../lib/security';
 import {
   adminChangeUserPlan,
+  computeServerLicenseStatus,
   evaluateRefundEligibility,
   getOrCreateServerUser,
   recordRefundDecision,
@@ -26,12 +27,7 @@ export default async function handler(req: any, res: any) {
 
     if (req.method === 'GET') {
       const user = getOrCreateServerUser(targetEmail);
-      const license = computeLicenseStatus({
-        plan: user.plan,
-        licenseStart: user.license_start,
-        licenseEnd: user.license_end,
-        analysesUsed: user.analyses_used,
-      });
+      const license = computeServerLicenseStatus(user);
       const refundEvaluation = evaluateRefundEligibility(user);
       return res.status(200).json({
         success: true,
@@ -40,7 +36,7 @@ export default async function handler(req: any, res: any) {
           displayPlan: license.displayName,
           daysLeft: license.daysLeft,
           isExpired: license.isExpired,
-          analysesLimit: license.isUnlimitedAnalyses ? 'Unlimited' : PLANS[license.planKey].analysesLimit,
+          analysesLimit: license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLimit,
           refundEvaluation,
         },
       });

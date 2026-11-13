@@ -29,6 +29,7 @@ import {
   canUseFeature,
   normalizePlanKey,
   PLANS,
+  PricingPublicPayload,
   PRODUCTION_URL,
 } from '../lib/plans';
 import { AmbientBackground } from './components/AmbientBackground';
@@ -76,7 +77,9 @@ type AppRoute =
   | 'admin'
   | 'checkout-verifying';
 
-const OWNER_ADMIN_EMAIL = 'loomora.studios@gmail.com';
+const OWNER_ADMIN_EMAILS = ['loomora.studios@gmail.com', 'loomorastudios@gmail.com'];
+const isOwnerAdminEmail = (email?: string | null) =>
+  Boolean(email && OWNER_ADMIN_EMAILS.includes(email.trim().toLowerCase()));
 
 export default function App() {
   const [currency, setCurrency] = useState<CurrencyCode>(() => {
@@ -155,6 +158,7 @@ export default function App() {
   const [activePropertyAnalysis, setActivePropertyAnalysis] = useState<PropertyListing | null>(null);
 
   const [selectedCity, setSelectedCity] = useState<string>('All');
+  const [pricingData, setPricingData] = useState<PricingPublicPayload | null>(null);
   const [marketLive, setMarketLive] = useState<LiveMarketResponse | null>(null);
   const [matrixData, setMatrixData] = useState<MarketMatrixRow[]>(FALLBACK_CROSS_BORDER_DATA);
   const [newsArticles, setNewsArticles] = useState<MarketNewsArticle[]>([]);
@@ -255,7 +259,7 @@ export default function App() {
   // Protect /admin route strictly for owner email
   useEffect(() => {
     if (route === 'admin') {
-      if (!user || user.email.toLowerCase() !== OWNER_ADMIN_EMAIL) {
+      if (!isOwnerAdminEmail(user?.email)) {
         window.history.replaceState({}, document.title, '/');
         setRoute('landing');
         showTempToast('403 Forbidden: Restricted access', 4000);
@@ -267,6 +271,28 @@ export default function App() {
     setCurrency(newCurrency);
     localStorage.setItem('aqari_currency', newCurrency);
   };
+
+  // Fetch Dynamic Pricing from /api/pricing (single source) immediately on mount, focus, or admin update
+  useEffect(() => {
+    const fetchDynamicPricing = async () => {
+      try {
+        const res = await fetch(`/api/pricing?t=${Date.now()}`, { cache: 'no-store' });
+        if (res.ok) {
+          const data: PricingPublicPayload = await res.json();
+          setPricingData(data);
+        }
+      } catch {}
+    };
+    fetchDynamicPricing();
+    const onUpdated = () => fetchDynamicPricing();
+    const onFocus = () => fetchDynamicPricing();
+    window.addEventListener('aqari:pricing-updated', onUpdated);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('aqari:pricing-updated', onUpdated);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
 
   // Fetch Remote Config on load
   useEffect(() => {
@@ -346,6 +372,9 @@ export default function App() {
       const targetEmail = (sessionUser?.email || urlParams.get('email') || '').trim().toLowerCase();
       const checkoutId = urlParams.get('checkout_id') || '';
       const orderId = urlParams.get('order_id') || '';
+      const chargedPrice = urlParams.get('charged_price') || '';
+      const launchLocked = urlParams.get('launch_locked') || '';
+      const testModeParam = urlParams.get('test_mode') || '';
 
       const verifyCheckout = async () => {
         try {
@@ -358,6 +387,9 @@ export default function App() {
               plan: returnedPlan,
               checkout_id: checkoutId,
               order_id: orderId,
+              charged_price: chargedPrice ? Number(chargedPrice) : undefined,
+              launch_locked: launchLocked ? Number(launchLocked) : undefined,
+              test_mode: testModeParam || undefined,
             }),
           });
 
@@ -366,12 +398,13 @@ export default function App() {
             if (data?.verified && data?.user) {
               const verifiedPlan = normalizePlanKey(data.user.plan);
               const verifiedCfg = PLANS[verifiedPlan];
-              const serverLimit = verifiedCfg.analysesLimit;
+              const serverLimit = data.license?.analysesLimit ?? verifiedCfg.analysesLimit;
               const serverLeft = Number.isFinite(serverLimit)
                 ? Math.max(0, serverLimit - Number(data.user.analyses_used || 0))
                 : 999999;
 
               const existing = (targetEmail && getUser(targetEmail)) || sessionUser;
+              const lockedPriceVal = data.user.locked_launch_price ?? null;
               const updatedUser: User = {
                 ...(existing || {
                   id: 'user_' + Date.now(),
@@ -393,6 +426,7 @@ export default function App() {
                 freeAnalyses: serverLeft,
                 freeAnalysesLeft: serverLeft,
                 analysesLeft: serverLeft,
+                lockedLaunchPrice: lockedPriceVal,
                 expiryEmailSent: false,
               };
 
@@ -409,7 +443,9 @@ export default function App() {
               } catch {}
 
               setUnlockSuccessMsg(
-                `Welcome to ${verifiedCfg.displayName} — Payment Successful! Your Terminal is unlocked.`
+                lockedPriceVal
+                  ? `Welcome to ${verifiedCfg.displayName} — You locked Launch Price ${lockedPriceVal}$ - Your next renewal will be at same launch price if you renew before expiry`
+                  : `Welcome to ${verifiedCfg.displayName} — Payment Successful! Your Terminal is unlocked.`
               );
               showTempToast(`Welcome to AQARI ${verifiedCfg.displayName} — Unlocked for 30 Days!`, 5000);
               window.history.replaceState({}, document.title, '/app');
@@ -496,10 +532,10 @@ export default function App() {
         const data = await res.json();
         if (data?.user) {
           const serverPlan = normalizePlanKey(data.user.plan);
-          const serverCfg = PLANS[serverPlan];
+          const serverLimit = data.license?.analysesLimit ?? PLANS[serverPlan].analysesLimit;
           const serverUsed = Number(data.user.analyses_used ?? 0);
-          const serverLeft = Number.isFinite(serverCfg.analysesLimit)
-            ? Math.max(0, serverCfg.analysesLimit - serverUsed)
+          const serverLeft = Number.isFinite(serverLimit)
+            ? Math.max(0, serverLimit - serverUsed)
             : 999999;
           const syncedUser: User = {
             ...newUser,
@@ -513,6 +549,7 @@ export default function App() {
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
+            lockedLaunchPrice: data.user.locked_launch_price ?? null,
           };
           handleSaveUser(syncedUser);
         }
@@ -525,7 +562,7 @@ export default function App() {
 
     const left = newUser.plan === 'free'
       ? (newUser.freeAnalysesLeft ?? newUser.freeAnalyses ?? 3)
-      : (newUser.analysesLeft ?? 50);
+      : (newUser.analysesLeft ?? 30);
     showTempToast(`Welcome back, ${newUser.name || newUser.email.split('@')[0]} - ${left} analyses left`, 3000);
   };
 
@@ -545,7 +582,7 @@ export default function App() {
     window.scrollTo(0, 0);
   };
 
-  // Server-authoritative License Sync: ALWAYS trust server DB plan over tampered localStorage
+  // Server-authoritative License Sync: ALWAYS trust server DB plan & dynamic limits over tampered localStorage
   useEffect(() => {
     if (!user?.email) return;
 
@@ -567,13 +604,15 @@ export default function App() {
         const serverPlan = normalizePlanKey(data.user.plan);
         const serverUsed = Number(data.user.analyses_used ?? 0);
         const serverEnd = data.user.license_end ?? null;
-        const serverLimit = PLANS[serverPlan].analysesLimit;
+        const serverLimit = data.license?.analysesLimit ?? PLANS[serverPlan].analysesLimit;
         const serverLeft = Number.isFinite(serverLimit) ? Math.max(0, serverLimit - serverUsed) : 999999;
+        const serverLockedLaunch = data.user.locked_launch_price ?? null;
 
         const changed =
           normalizePlanKey(user.plan) !== serverPlan ||
           (user.analysesUsed ?? 0) !== serverUsed ||
           (user.subscriptionEndsAt ?? null) !== serverEnd ||
+          (user.lockedLaunchPrice ?? null) !== serverLockedLaunch ||
           (Number.isFinite(serverLimit) && (user.analysesLeft ?? -1) !== serverLeft);
 
         if (changed) {
@@ -589,6 +628,7 @@ export default function App() {
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
+            lockedLaunchPrice: serverLockedLaunch,
           };
           saveUser(syncedUser);
           setUser(syncedUser);
@@ -600,7 +640,7 @@ export default function App() {
     const onFocus = () => syncLicenseFromServer();
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [user?.email, route]);
+  }, [user?.email, route, pricingData?.updatedAt]);
 
   // 24h expiry email check
   useEffect(() => {
@@ -613,12 +653,14 @@ export default function App() {
   }, [user]);
 
   const handleAdminTestUnlock = (plan: 'starter' | 'pro' | 'enterprise') => {
-    if (!user || user.email.toLowerCase() !== OWNER_ADMIN_EMAIL) {
+    if (!user || !isOwnerAdminEmail(user.email)) {
       showTempToast('Admin sandbox unlock is restricted to owner email.', 4000);
       return;
     }
+    const dynamicPlan = pricingData?.plans?.[plan];
     const planCfg = PLANS[plan];
-    const planQuota = Number.isFinite(planCfg.analysesLimit) ? planCfg.analysesLimit : 999999;
+    const limit = dynamicPlan ? (dynamicPlan.analysesLimit === null ? Infinity : dynamicPlan.analysesLimit) : planCfg.analysesLimit;
+    const planQuota = Number.isFinite(limit) ? limit : 999999;
     const now = Date.now();
     const subscriptionDuration = 30 * 24 * 60 * 60 * 1000;
     const updated: User = {
@@ -862,7 +904,7 @@ export default function App() {
 
   // View: Owner-Only Forensic Admin Dashboard (/admin)
   if (route === 'admin') {
-    if (!user || user.email.toLowerCase() !== OWNER_ADMIN_EMAIL) {
+    if (!isOwnerAdminEmail(user?.email)) {
       return null;
     }
     return (
@@ -874,6 +916,7 @@ export default function App() {
             if (reason) showTempToast(reason, 4000);
             handleGoToHome();
           }}
+          onPricingUpdated={(updated) => setPricingData(updated)}
         />
       </div>
     );
@@ -942,6 +985,7 @@ export default function App() {
             isStandalonePage={true}
             currentCurrency={currency}
             config={config}
+            pricingData={pricingData}
             user={user}
             onOpenAuth={() => setIsAuthOpen(true)}
             onTestUnlock={handleAdminTestUnlock}
@@ -989,6 +1033,7 @@ export default function App() {
               currentCurrency={currency}
               onCurrencyChange={handleCurrencyChange}
               config={config}
+              pricingData={pricingData}
               marketLive={marketLive}
               onSignOut={handleSignOut}
               onGoToHome={handleGoToHome}
@@ -1159,6 +1204,7 @@ export default function App() {
           <PricingSection
             currentCurrency={currency}
             config={config}
+            pricingData={pricingData}
             user={user}
             onOpenAuth={() => setIsAuthOpen(true)}
             onTestUnlock={handleAdminTestUnlock}
@@ -1207,6 +1253,7 @@ export default function App() {
         onClose={() => setIsLimitOpen(false)}
         user={user}
         config={config}
+        pricingData={pricingData}
         currentCurrency={currency}
         onTestUnlock={handleAdminTestUnlock}
         onOpenPricing={() => {
@@ -1220,6 +1267,7 @@ export default function App() {
         onClose={() => setIsRenewalOpen(false)}
         user={user}
         config={config}
+        pricingData={pricingData}
         currentCurrency={currency}
       />
 

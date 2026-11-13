@@ -1,28 +1,42 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
+import { PricingPublicPayload, PlanKey } from '../../lib/plans';
 import {
   ShieldCheck,
   Search,
   Download,
   ArrowLeft,
   AlertTriangle,
-  FileText,
   X,
   Clock,
   CheckCircle2,
   XCircle,
+  DollarSign,
+  Flame,
+  Save,
+  Users,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
   currentUser: User | null;
   onRedirectHome: (reason?: string) => void;
+  onPricingUpdated?: (pricing: PricingPublicPayload) => void;
+}
+
+interface EditablePlanDraft {
+  originalPrice: string;
+  launchPrice: string;
+  analysesLimit: string;
+  featuresText: string;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   currentUser,
   onRedirectHome,
+  onPricingUpdated,
 }) => {
+  const [adminTab, setAdminTab] = useState<'users' | 'pricing'>('users');
   const [users, setUsers] = useState<any[]>([]);
   const [failedWebhooks, setFailedWebhooks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,6 +51,63 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [planReason, setPlanReason] = useState('');
   const [refundNotes, setRefundNotes] = useState('');
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+
+  // Dynamic Pricing Control state
+  const [pricingState, setPricingState] = useState<PricingPublicPayload | null>(null);
+  const [pricingLogs, setPricingLogs] = useState<any[]>([]);
+  const [launchBadgeInput, setLaunchBadgeInput] = useState('LAUNCH -40% - First 30 users only');
+  const [countdownDaysInput, setCountdownDaysInput] = useState('7');
+  const [planDrafts, setPlanDrafts] = useState<Record<PlanKey, EditablePlanDraft>>({
+    free: { originalPrice: '0', launchPrice: '0', analysesLimit: '3', featuresText: '' },
+    starter: { originalPrice: '129', launchPrice: '79', analysesLimit: '30', featuresText: '' },
+    pro: { originalPrice: '349', launchPrice: '199', analysesLimit: '150', featuresText: '' },
+    enterprise: { originalPrice: '999', launchPrice: '599', analysesLimit: '400', featuresText: '' },
+  });
+  const [pricingMsg, setPricingMsg] = useState<string | null>(null);
+  const [savingPricingKey, setSavingPricingKey] = useState<string | null>(null);
+
+  const hydratePricingDrafts = (p: PricingPublicPayload) => {
+    setPricingState(p);
+    setLaunchBadgeInput(p.launchBadgeText);
+    setCountdownDaysInput(String(p.daysRemaining));
+    setPlanDrafts({
+      free: {
+        originalPrice: String(p.plans.free.originalPrice),
+        launchPrice: String(p.plans.free.launchPrice),
+        analysesLimit: String(p.plans.free.analysesLimit),
+        featuresText: (p.plans.free.features || []).join('\n'),
+      },
+      starter: {
+        originalPrice: String(p.plans.starter.originalPrice),
+        launchPrice: String(p.plans.starter.launchPrice),
+        analysesLimit: String(p.plans.starter.analysesLimit),
+        featuresText: (p.plans.starter.features || []).join('\n'),
+      },
+      pro: {
+        originalPrice: String(p.plans.pro.originalPrice),
+        launchPrice: String(p.plans.pro.launchPrice),
+        analysesLimit: String(p.plans.pro.analysesLimit),
+        featuresText: (p.plans.pro.features || []).join('\n'),
+      },
+      enterprise: {
+        originalPrice: String(p.plans.enterprise.originalPrice),
+        launchPrice: String(p.plans.enterprise.launchPrice),
+        analysesLimit: String(p.plans.enterprise.analysesLimit),
+        featuresText: (p.plans.enterprise.features || []).join('\n'),
+      },
+    });
+  };
+
+  const loadPricingControl = async () => {
+    try {
+      const res = await fetch('/api/admin/pricing', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.pricing) hydratePricingDrafts(data.pricing);
+        if (Array.isArray(data?.logs)) setPricingLogs(data.logs);
+      }
+    } catch {}
+  };
 
   const loadUsers = async () => {
     setLoading(true);
@@ -59,12 +130,84 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   useEffect(() => {
-    if (!currentUser || currentUser.email.toLowerCase() !== 'loomora.studios@gmail.com') {
+    const em = (currentUser?.email || '').toLowerCase();
+    if (!em || (em !== 'loomora.studios@gmail.com' && em !== 'loomorastudios@gmail.com')) {
       onRedirectHome('403 Forbidden: Restricted to loomora.studios@gmail.com');
       return;
     }
     loadUsers();
+    loadPricingControl();
   }, [currentUser?.email]);
+
+  const handleToggleLaunchDiscount = async (nextActive: boolean) => {
+    setSavingPricingKey('global');
+    setPricingMsg(null);
+    try {
+      const res = await fetch('/api/admin/pricing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          action: 'toggle_launch_discount',
+          launchDiscountActive: nextActive,
+          launchBadgeText: launchBadgeInput,
+          countdownDays: Number(countdownDaysInput || 7),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.pricing) {
+        hydratePricingDrafts(data.pricing);
+        if (Array.isArray(data?.logs)) setPricingLogs(data.logs);
+        onPricingUpdated?.(data.pricing);
+        window.dispatchEvent(new Event('aqari:pricing-updated'));
+        setPricingMsg(data.log?.message || 'Launch discount settings saved & live.');
+      } else {
+        setPricingMsg(data?.error || 'Failed to update launch discount');
+      }
+    } catch {
+      setPricingMsg('Network error updating launch discount');
+    } finally {
+      setSavingPricingKey(null);
+    }
+  };
+
+  const handleSavePlanPricing = async (planKey: PlanKey) => {
+    const draft = planDrafts[planKey];
+    setSavingPricingKey(planKey);
+    setPricingMsg(null);
+    try {
+      const res = await fetch('/api/admin/pricing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          action: 'update_plan',
+          planKey,
+          originalPrice: Number(draft.originalPrice),
+          launchPrice: Number(draft.launchPrice),
+          analysesLimit: Number(draft.analysesLimit),
+          features: draft.featuresText
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.pricing) {
+        hydratePricingDrafts(data.pricing);
+        if (Array.isArray(data?.logs)) setPricingLogs(data.logs);
+        onPricingUpdated?.(data.pricing);
+        window.dispatchEvent(new Event('aqari:pricing-updated'));
+        setPricingMsg(data.log?.message || 'Plan pricing updated & live.');
+      } else {
+        setPricingMsg(data?.error || 'Failed to save plan pricing');
+      }
+    } catch {
+      setPricingMsg('Network error saving plan pricing');
+    } finally {
+      setSavingPricingKey(null);
+    }
+  };
 
   const openUserDetail = async (email: string) => {
     try {
@@ -162,16 +305,257 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => onRedirectHome()}
-            className="px-4 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-mono text-white flex items-center gap-2 cursor-pointer self-start"
-          >
-            <ArrowLeft className="w-4 h-4 text-[#D4AF37]" />
-            <span>Return to App</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 self-start">
+            <button
+              type="button"
+              onClick={() => setAdminTab('users')}
+              className={`px-4 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
+                adminTab === 'users'
+                  ? 'bg-[#D4AF37] text-black border-[#D4AF37]'
+                  : 'bg-white/[0.05] text-zinc-300 border-white/10 hover:bg-white/10'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>Users &amp; Evidence ({users.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdminTab('pricing')}
+              className={`px-4 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
+                adminTab === 'pricing'
+                  ? 'bg-[#D4AF37] text-black border-[#D4AF37]'
+                  : 'bg-white/[0.05] text-zinc-300 border-white/10 hover:bg-white/10'
+              }`}
+            >
+              <DollarSign className="w-4 h-4" />
+              <span>Pricing Control</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onRedirectHome()}
+              className="px-4 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-mono text-white flex items-center gap-2 cursor-pointer"
+            >
+              <ArrowLeft className="w-4 h-4 text-[#D4AF37]" />
+              <span>Return to App</span>
+            </button>
+          </div>
         </div>
 
+        {/* PRICING CONTROL TAB */}
+        {adminTab === 'pricing' && (
+          <div className="space-y-6">
+            {pricingMsg && (
+              <div className="p-3.5 rounded-2xl bg-emerald-950/50 border border-emerald-500/40 text-xs font-mono text-emerald-200 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{pricingMsg}</span>
+              </div>
+            )}
+
+            {/* Global Launch Discount Control */}
+            <div className="glass-panel p-5 border border-[#D4AF37]/30 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-mono text-[#D4AF37] font-bold uppercase">
+                    <Flame className="w-4 h-4" />
+                    <span>Launch Discount Control (Live Checkout &amp; Pricing Page)</span>
+                  </div>
+                  <p className="text-xs font-mono text-zinc-400 mt-1">
+                    When ON, checkout uses launchPrice. Toggle OFF to switch checkout and pricing page to originalPrice immediately without redeploy.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={savingPricingKey === 'global'}
+                  onClick={() => handleToggleLaunchDiscount(!(pricingState?.launchDiscountActive ?? true))}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-mono font-black uppercase tracking-wider cursor-pointer transition shrink-0 ${
+                    pricingState?.launchDiscountActive ?? true
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 hover:bg-rose-950/60 hover:text-rose-300 hover:border-rose-500/50'
+                      : 'bg-rose-950/60 text-rose-300 border border-rose-500/50 hover:bg-emerald-500/20 hover:text-emerald-300'
+                  }`}
+                >
+                  {pricingState?.launchDiscountActive ?? true
+                    ? 'Launch Discount ON (Click to Turn OFF)'
+                    : 'Launch Discount OFF (Click to Turn ON)'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
+                <div className="sm:col-span-2">
+                  <label className="block text-[10px] text-zinc-400 uppercase mb-1">
+                    Launch Badge Text
+                  </label>
+                  <input
+                    type="text"
+                    value={launchBadgeInput}
+                    onChange={(e) => setLaunchBadgeInput(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-zinc-400 uppercase mb-1">
+                    Countdown Days Remaining
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      value={countdownDaysInput}
+                      onChange={(e) => setCountdownDaysInput(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white"
+                    />
+                    <button
+                      type="button"
+                      disabled={savingPricingKey === 'global'}
+                      onClick={() => handleToggleLaunchDiscount(pricingState?.launchDiscountActive ?? true)}
+                      className="px-3 py-2 rounded-xl bg-[#D4AF37] text-black font-bold cursor-pointer shrink-0"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Per-Plan Editors */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              {(['starter', 'pro', 'enterprise'] as const).map((planKey) => {
+                const draft = planDrafts[planKey];
+                const title =
+                  planKey === 'starter'
+                    ? 'STARTER'
+                    : planKey === 'pro'
+                    ? 'PROFESSIONAL'
+                    : 'SOVEREIGN';
+                return (
+                  <div
+                    key={planKey}
+                    className="glass-panel p-5 border border-white/10 space-y-3.5 text-xs font-mono"
+                  >
+                    <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+                      <span className="text-sm font-bold text-[#D4AF37]">{title}</span>
+                      <span className="text-[10px] text-zinc-400">
+                        Active: $
+                        {(pricingState?.launchDiscountActive ?? true)
+                          ? draft.launchPrice
+                          : draft.originalPrice}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] text-zinc-400 uppercase mb-1">
+                          Original Price ($)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={draft.originalPrice}
+                          onChange={(e) =>
+                            setPlanDrafts((prev) => ({
+                              ...prev,
+                              [planKey]: { ...prev[planKey], originalPrice: e.target.value },
+                            }))
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-zinc-400 uppercase mb-1">
+                          Launch Price ($)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={draft.launchPrice}
+                          onChange={(e) =>
+                            setPlanDrafts((prev) => ({
+                              ...prev,
+                              [planKey]: { ...prev[planKey], launchPrice: e.target.value },
+                            }))
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-black/60 border border-[#D4AF37]/40 text-[#D4AF37] font-bold"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] text-zinc-400 uppercase mb-1">
+                        Analyses Limit (30 Days)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={draft.analysesLimit}
+                        onChange={(e) =>
+                          setPlanDrafts((prev) => ({
+                            ...prev,
+                            [planKey]: { ...prev[planKey], analysesLimit: e.target.value },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] text-zinc-400 uppercase mb-1">
+                        Features List (one per line)
+                      </label>
+                      <textarea
+                        rows={5}
+                        value={draft.featuresText}
+                        onChange={(e) =>
+                          setPlanDrafts((prev) => ({
+                            ...prev,
+                            [planKey]: { ...prev[planKey], featuresText: e.target.value },
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-zinc-200 text-[11px] leading-relaxed"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={savingPricingKey === planKey}
+                      onClick={() => handleSavePlanPricing(planKey)}
+                      className="w-full py-2.5 px-4 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      <span>
+                        {savingPricingKey === planKey ? 'Saving...' : `Save ${title} Pricing`}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Pricing Change Audit Log */}
+            <div className="glass-panel p-5 border border-white/10 space-y-3">
+              <div className="text-xs font-mono font-bold text-white uppercase flex items-center gap-2">
+                <Clock className="w-4 h-4 text-[#D4AF37]" />
+                <span>Pricing Change Audit Log ({pricingLogs.length})</span>
+              </div>
+              <div className="rounded-2xl bg-black/60 border border-white/10 p-4 max-h-60 overflow-y-auto space-y-2 text-xs font-mono">
+                {pricingLogs.length === 0 ? (
+                  <div className="text-zinc-500">No pricing changes recorded yet.</div>
+                ) : (
+                  pricingLogs.map((log: any) => (
+                    <div
+                      key={log.id}
+                      className="py-1.5 border-b border-white/[0.05] last:border-0 text-zinc-200"
+                    >
+                      {log.message}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {adminTab === 'users' && (
+          <>
         {/* Search & Filters */}
         <div className="glass-panel p-4 flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[220px]">
@@ -319,6 +703,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </table>
           </div>
         </div>
+          </>
+        )}
       </div>
 
       {/* User Detail Forensic Modal */}

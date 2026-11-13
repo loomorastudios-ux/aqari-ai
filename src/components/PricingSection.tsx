@@ -1,25 +1,27 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
+import { PLANS, PricingPublicPayload, PlanKey, DEFAULT_LAUNCH_BADGE } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
-import { MagneticButton } from './MagneticButton';
-import { 
-  Check, 
-  Sparkles, 
-  Zap, 
-  ShieldCheck, 
-  Building2, 
+import {
+  Check,
+  Sparkles,
+  Zap,
+  ShieldCheck,
+  Building2,
   Crown,
   ArrowRight,
   Loader2,
   AlertCircle,
   CreditCard,
-  CheckCircle2,
-  Lock
+  Lock,
+  Clock,
+  Flame,
 } from 'lucide-react';
 
 interface PricingSectionProps {
   currentCurrency: CurrencyCode;
   config: RemoteConfig;
+  pricingData?: PricingPublicPayload | null;
   user: User | null;
   onOpenAuth: () => void;
   onTestUnlock?: (plan: 'starter' | 'pro' | 'enterprise') => void;
@@ -28,41 +30,83 @@ interface PricingSectionProps {
   isStandalonePage?: boolean;
 }
 
-// 5-minute prefetch cache stored in client memory
 interface CachedCheckout {
   url: string;
   timestamp: number;
+  pricingVersion: number;
 }
 const checkoutPrefetchCache: Record<string, CachedCheckout> = {};
 
 export const PricingSection: React.FC<PricingSectionProps> = ({
   currentCurrency,
-  config,
+  pricingData: externalPricing,
   user,
   onOpenAuth,
   onGoToTerminal,
   onOpenLegal,
   isStandalonePage = false,
 }) => {
+  const [livePricing, setLivePricing] = useState<PricingPublicPayload | null>(externalPricing || null);
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const [refundAccepted, setRefundAccepted] = useState<boolean>(false);
   const [highlightPolicy, setHighlightPolicy] = useState<boolean>(false);
 
-  // Check if Lemon Squeezy test mode is active
   const isTestMode =
     typeof window !== 'undefined' &&
-    (import.meta.env.VITE_LEMON_TEST_MODE === 'true' || import.meta.env.VITE_LEMON_TEST_MODE === true);
+    (import.meta.env.VITE_LEMON_TEST_MODE === 'true' ||
+      (import.meta.env.VITE_LEMON_TEST_MODE as unknown) === true);
+
+  // Sync externalPricing prop whenever parent updates
+  useEffect(() => {
+    if (externalPricing) {
+      setLivePricing(externalPricing);
+    }
+  }, [externalPricing]);
+
+  // Always fetch fresh /api/pricing on mount, focus, and admin update event (no hardcoded pricing)
+  const refreshPricing = async () => {
+    try {
+      const res = await fetch(`/api/pricing?t=${Date.now()}`, { cache: 'no-store' });
+      if (res.ok) {
+        const data: PricingPublicPayload = await res.json();
+        setLivePricing(data);
+      }
+    } catch {
+      // Fall back gracefully if offline
+    }
+  };
+
+  useEffect(() => {
+    refreshPricing();
+    const onUpdated = () => refreshPricing();
+    const onFocus = () => refreshPricing();
+    window.addEventListener('aqari:pricing-updated', onUpdated);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('aqari:pricing-updated', onUpdated);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
 
   const showError = (msg: string) => {
     setErrorToast(msg);
     setTimeout(() => setErrorToast(null), 6000);
   };
 
-  // Prefetch a plan checkout URL in background
+  const pricingVersion = livePricing?.updatedAt || 0;
+  const launchActive = livePricing?.launchDiscountActive ?? true;
+  const launchBadgeText = livePricing?.launchBadgeText || DEFAULT_LAUNCH_BADGE;
+  const daysRemaining = livePricing?.daysRemaining ?? 7;
+
+  // Prefetch a plan checkout URL in background (invalidates when pricingVersion updates)
   const prefetchPlan = async (plan: 'starter' | 'pro' | 'enterprise') => {
     const cached = checkoutPrefetchCache[plan];
-    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+    if (
+      cached &&
+      cached.pricingVersion === pricingVersion &&
+      Date.now() - cached.timestamp < 5 * 60 * 1000
+    ) {
       return cached.url;
     }
 
@@ -88,25 +132,24 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
           checkoutPrefetchCache[plan] = {
             url: data.url,
             timestamp: Date.now(),
+            pricingVersion,
           };
           return data.url;
         }
       }
     } catch {
-      // Prefetch fails silently without disturbing user
+      // Prefetch fails silently
     }
     return null;
   };
 
-  // Prefetch on mount for all 3 paid plans in parallel
   useEffect(() => {
     const plans: Array<'starter' | 'pro' | 'enterprise'> = ['starter', 'pro', 'enterprise'];
     plans.forEach((p) => {
       prefetchPlan(p);
     });
-  }, [user]);
+  }, [user?.email, pricingVersion]);
 
-  // Handle plan selection with refund agreement enforcement + 8s timeout + 1 retry
   const handleChoosePlan = async (planId: 'free' | 'starter' | 'pro' | 'enterprise') => {
     if (planId === 'free') {
       if (!user) {
@@ -132,12 +175,12 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     }
 
     const acceptedAt = new Date().toISOString();
-
-    // Check if immediate cached checkout URL is ready
     const cached = checkoutPrefetchCache[planId];
-    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
-      console.log(`[Aqari Checkout] Using prefetch cache for plan: ${planId}`);
-      // Fire background consent timestamp record
+    if (
+      cached &&
+      cached.pricingVersion === pricingVersion &&
+      Date.now() - cached.timestamp < 5 * 60 * 1000
+    ) {
       fetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -152,14 +195,12 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       return;
     }
 
-    // Immediate button loading state: "Creating Secure Checkout..." disabled with spinner
     setLoadingPlan(planId);
     setErrorToast(null);
 
     const callCheckoutApi = async (): Promise<string | null> => {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
-
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
       try {
         const res = await fetch('/api/checkout', {
           method: 'POST',
@@ -173,50 +214,40 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
           signal: controller.signal,
         });
         clearTimeout(timeoutId);
-
         if (res.ok) {
           const data = await res.json();
           if (data.url) {
             checkoutPrefetchCache[planId] = {
               url: data.url,
               timestamp: Date.now(),
+              pricingVersion,
             };
             return data.url;
           }
         }
-      } catch (err: any) {
+      } catch (err) {
         clearTimeout(timeoutId);
         throw err;
       }
       return null;
     };
 
-    const startTime = Date.now();
-
     try {
-      // Attempt 1
       const url = await callCheckoutApi();
       if (url) {
-        console.log(`[Aqari Checkout] Generated in ${Date.now() - startTime}ms, Test Mode: ${isTestMode}`);
         window.location.href = url;
         return;
       }
     } catch {
-      // Attempt 2 (Retry once with fresh 8s timeout)
       try {
-        console.warn(`[Aqari Checkout] Attempt 1 timed out or failed. Retrying once...`);
         const retryUrl = await callCheckoutApi();
         if (retryUrl) {
-          console.log(`[Aqari Checkout] Retry successful in ${Date.now() - startTime}ms`);
           window.location.href = retryUrl;
           return;
         }
-      } catch (retryErr) {
-        console.error(`[Aqari Checkout] Retry failed:`, retryErr);
-      }
+      } catch {}
     }
 
-    // Direct fallback to hosted Lemon Squeezy URL with production redirect
     try {
       const buyUrls: Record<'starter' | 'pro' | 'enterprise', string> = {
         starter: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/da826632-dcb4-4885-966e-aac1fab84cb3',
@@ -235,13 +266,38 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     }
   };
 
+  const getTierData = (key: PlanKey) => {
+    const dyn = livePricing?.plans?.[key];
+    const fallback = PLANS[key];
+    const originalPrice = dyn ? dyn.originalPrice : fallback.originalPrice;
+    const launchPrice = dyn ? dyn.launchPrice : fallback.launchPrice;
+    const activePrice =
+      key === 'free'
+        ? 0
+        : dyn
+        ? dyn.activePrice
+        : launchActive
+        ? fallback.launchPrice
+        : fallback.originalPrice;
+    const analysesLimit = dyn ? dyn.analysesLimit : fallback.analysesLimit;
+    const features = dyn ? dyn.features : fallback.features;
+    return { originalPrice, launchPrice, activePrice, analysesLimit, features };
+  };
+
+  const starter = getTierData('starter');
+  const pro = getTierData('pro');
+  const enterprise = getTierData('enterprise');
+  const free = getTierData('free');
+
   const tiers: Array<{
-    id: 'free' | 'starter' | 'pro' | 'enterprise';
+    id: PlanKey;
     name: string;
     subtitle: string;
-    baseUSD: number;
+    originalPrice: number;
+    launchPrice: number;
+    activePrice: number;
     popular?: boolean;
-    analysesLimit: string;
+    analysesLimitText: string;
     icon: React.ReactNode;
     features: string[];
     lockedFeatures?: string[];
@@ -251,78 +307,61 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       id: 'free',
       name: 'FREE',
       subtitle: 'For exploratory underwriting checks',
-      baseUSD: 0,
-      analysesLimit: '3 Analyses / 30 Days',
+      originalPrice: free.originalPrice,
+      launchPrice: free.launchPrice,
+      activePrice: 0,
+      analysesLimitText: `${free.analysesLimit} Analyses / 30 Days`,
       icon: <Building2 className="w-5 h-5 text-zinc-400" />,
-      features: [
-        '3 Analyses / 30 Days',
-        'Basic Cap Rate',
-        'Cash-on-Cash only',
-        '0 Saved Properties',
-      ],
+      features: free.features,
       lockedFeatures: [
         'Monte Carlo, PDF Export, API, Analyst Desk, Portfolio Aggregation & Full Matrix',
       ],
-      ctaLabel: user ? 'Current FREE Plan' : 'Start FREE (3 Analyses)',
+      ctaLabel: user ? 'Current FREE Plan' : `Start FREE (${free.analysesLimit} Analyses)`,
     },
     {
       id: 'starter',
       name: 'STARTER',
       subtitle: 'For individual cross-border investors',
-      baseUSD: 89,
-      analysesLimit: '50 Analyses / 30 Days',
+      originalPrice: starter.originalPrice,
+      launchPrice: starter.launchPrice,
+      activePrice: starter.activePrice,
+      analysesLimitText: `${starter.analysesLimit} Analyses / 30 Days`,
       icon: <Building2 className="w-5 h-5 text-zinc-300" />,
-      features: [
-        '50 Analyses / 30 Days',
-        'Yield & Sensitivity Calculator',
-        'Cross-border Tax & Visa Matrix',
-        'Save 50 properties',
-      ],
-      ctaLabel: 'Upgrade to STARTER ($89)',
+      features: starter.features,
+      ctaLabel: `Upgrade to STARTER (${formatPrice(starter.activePrice, currentCurrency)})`,
     },
     {
       id: 'pro',
       name: 'PROFESSIONAL',
       subtitle: 'For family offices, active syndicators & brokers',
-      baseUSD: 249,
+      originalPrice: pro.originalPrice,
+      launchPrice: pro.launchPrice,
+      activePrice: pro.activePrice,
       popular: true,
-      analysesLimit: '400 Analyses / 30 Days',
+      analysesLimitText: `${pro.analysesLimit} Analyses / 30 Days`,
       icon: <Zap className="w-5 h-5 text-[#D4AF37]" />,
-      features: [
-        '400 Analyses / 30 Days',
-        'Monte Carlo Stress Tests +200bps',
-        'PDF Memorandum Export',
-        'Multi-asset Portfolio Aggregation',
-        'Yield & Sensitivity Calculator',
-        'Cross-border Tax & Visa Matrix',
-        'Save 200 properties',
-      ],
-      ctaLabel: 'Upgrade to PROFESSIONAL ($249)',
+      features: pro.features,
+      ctaLabel: `Upgrade to PROFESSIONAL (${formatPrice(pro.activePrice, currentCurrency)})`,
     },
     {
       id: 'enterprise',
       name: 'SOVEREIGN',
       subtitle: 'For institutional funds, REITs & sovereign wealth',
-      baseUSD: 749,
-      analysesLimit: 'Unlimited Analyses / 30 Days',
+      originalPrice: enterprise.originalPrice,
+      launchPrice: enterprise.launchPrice,
+      activePrice: enterprise.activePrice,
+      analysesLimitText: `${enterprise.analysesLimit} Analyses / 30 Days`,
       icon: <Crown className="w-5 h-5 text-purple-400" />,
-      features: [
-        'Unlimited Analyses / 30 Days',
-        'Full REST API Credentials',
-        '1-on-1 Dedicated Analyst Desk',
-        'White-glove Custom Underwriting',
-        'Monte Carlo +200bps & PDF Export',
-        'Multi-asset Portfolio Aggregation',
-        'Unlimited Saved properties',
-      ],
-      ctaLabel: 'Upgrade to SOVEREIGN ($749)',
+      features: enterprise.features,
+      ctaLabel: `Upgrade to SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`,
     },
   ];
 
   return (
-    <section id="pricing" className={`py-16 px-4 lg:px-8 max-w-7xl mx-auto relative z-10 ${isStandalonePage ? 'pt-24' : ''}`}>
-      
-      {/* Test Mode Badge Header if active */}
+    <section
+      id="pricing"
+      className={`py-16 px-4 lg:px-8 max-w-7xl mx-auto relative z-10 ${isStandalonePage ? 'pt-24' : ''}`}
+    >
       {isTestMode && (
         <div className="mb-6 mx-auto max-w-xl p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs font-mono flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(245,158,11,0.2)]">
           <CreditCard className="w-4 h-4 text-amber-400 shrink-0" />
@@ -330,17 +369,21 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         </div>
       )}
 
-      {/* Error Toast if checkout is taking long */}
       {errorToast && (
         <div className="fixed bottom-6 right-6 z-50 p-4 rounded-xl bg-rose-950/95 border border-rose-500 text-white text-xs font-mono flex items-center gap-3 shadow-2xl animate-in slide-in-from-bottom-4 duration-200">
           <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
           <span>{errorToast}</span>
-          <button onClick={() => setErrorToast(null)} className="text-zinc-400 hover:text-white ml-2 text-sm font-bold">×</button>
+          <button
+            onClick={() => setErrorToast(null)}
+            className="text-zinc-400 hover:text-white ml-2 text-sm font-bold"
+          >
+            ×
+          </button>
         </div>
       )}
 
       {/* Section Header */}
-      <div className="text-center max-w-2xl mx-auto mb-14">
+      <div className="text-center max-w-3xl mx-auto mb-12">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/25 text-xs font-mono text-[#D4AF37] mb-3">
           <Sparkles className="w-3.5 h-3.5" />
           <span>INSTITUTIONAL SUBSCRIPTION ACCESS</span>
@@ -351,20 +394,37 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         <p className="text-zinc-400 text-sm mt-3 leading-relaxed">
           Unlock institutional real estate underwriting. Real Lemon Squeezy payment with 30-day automated licensing.
         </p>
+
+        {/* Live Launch Discount Banner + Countdown */}
+        {launchActive && (
+          <div className="mt-5 inline-flex flex-wrap items-center justify-center gap-3 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-[#D4AF37]/20 via-amber-500/15 to-[#D4AF37]/20 border border-[#D4AF37]/50 shadow-[0_0_30px_rgba(212,175,55,0.2)]">
+            <span className="inline-flex items-center gap-1.5 text-xs font-mono font-black text-[#D4AF37] uppercase tracking-wider">
+              <Flame className="w-4 h-4 text-amber-400" />
+              <span>{launchBadgeText}</span>
+            </span>
+            <span className="text-zinc-500">•</span>
+            <span className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-emerald-300">
+              <Clock className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Offer ends in {daysRemaining} {daysRemaining === 1 ? 'day' : 'days'}</span>
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* Pricing Cards Grid - 4 Tiers: Free / Standard / Pro / Agency */}
+      {/* Pricing Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-stretch">
         {tiers.map((tier) => {
-          const isCurrentPlan = user?.plan === tier.id && (tier.id === 'free' || user?.subscriptionStatus === 'active');
+          const isCurrentPlan =
+            user?.plan === tier.id && (tier.id === 'free' || user?.subscriptionStatus === 'active');
           const isLoadingThis = loadingPlan === tier.id;
-          const isAnyLoading = Boolean(loadingPlan);
+          const showLaunchStrike =
+            launchActive && tier.id !== 'free' && tier.originalPrice > tier.activePrice;
 
           return (
             <div
               key={tier.id}
               onMouseEnter={() => {
-                if (tier.id !== 'free') prefetchPlan(tier.id);
+                if (tier.id !== 'free') prefetchPlan(tier.id as 'starter' | 'pro' | 'enterprise');
               }}
               className={`glass-panel relative rounded-[28px] p-6 flex flex-col justify-between transition-all duration-300 ${
                 tier.popular
@@ -372,7 +432,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   : 'hover:border-white/20'
               }`}
             >
-              {/* Popular Badge */}
               {tier.popular && (
                 <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#D4AF37] text-black text-[10px] font-mono font-black tracking-wider uppercase shadow-md flex items-center gap-1">
                   <Sparkles className="w-3 h-3 text-black fill-black" />
@@ -380,7 +439,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                 </div>
               )}
 
-              {/* Skeleton Loader overlay when this card is loading checkout (does NOT freeze UI) */}
               {isLoadingThis && (
                 <div className="absolute inset-0 bg-black/60 backdrop-blur-sm rounded-[28px] z-20 flex flex-col items-center justify-center p-6 text-center space-y-3">
                   <Loader2 className="w-8 h-8 animate-spin text-[#D4AF37]" />
@@ -398,7 +456,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
 
               <div>
                 {/* Tier Title & Subtitle */}
-                <div className="flex items-center gap-2.5 mb-4">
+                <div className="flex items-center gap-2.5 mb-3">
                   <div className="p-2 rounded-xl bg-white/[0.04] border border-white/10">
                     {tier.icon}
                   </div>
@@ -408,17 +466,42 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   </div>
                 </div>
 
+                {/* Launch Discount Badge on Paid Cards */}
+                {launchActive && tier.id !== 'free' && (
+                  <div className="mb-3 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[10px] font-mono font-bold text-[#D4AF37]">
+                    <Flame className="w-3 h-3 text-amber-400 shrink-0" />
+                    <span>{launchBadgeText}</span>
+                  </div>
+                )}
+
                 {/* Price Display */}
-                <div className="my-5 pb-5 border-b border-white/[0.08]">
+                <div className="my-4 pb-4 border-b border-white/[0.08]">
+                  {showLaunchStrike && (
+                    <div className="text-sm font-mono text-zinc-500 line-through mb-0.5">
+                      {formatPrice(tier.originalPrice, currentCurrency)}
+                    </div>
+                  )}
+
                   <div className="flex items-baseline gap-1.5">
                     <span className="text-3xl sm:text-4xl font-black font-mono text-white tracking-tight">
-                      {tier.baseUSD === 0 ? 'FREE' : formatPrice(tier.baseUSD, currentCurrency)}
+                      {tier.activePrice === 0
+                        ? 'FREE'
+                        : formatPrice(tier.activePrice, currentCurrency)}
                     </span>
-                    {tier.baseUSD > 0 && <span className="text-xs font-mono text-zinc-400">/ 30 days</span>}
+                    {tier.activePrice > 0 && (
+                      <span className="text-xs font-mono text-zinc-400">/ 30 days</span>
+                    )}
                   </div>
 
+                  {launchActive && tier.id !== 'free' && (
+                    <div className="text-[10px] font-mono text-emerald-300 mt-1 flex items-center gap-1">
+                      <Clock className="w-3 h-3 shrink-0" />
+                      <span>Offer ends in {daysRemaining} {daysRemaining === 1 ? 'day' : 'days'}</span>
+                    </div>
+                  )}
+
                   <div className="text-[11px] font-mono text-[#D4AF37] mt-1.5 font-semibold">
-                    {tier.analysesLimit}
+                    {tier.analysesLimitText}
                   </div>
                 </div>
 
@@ -428,19 +511,26 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     Included Capabilities:
                   </div>
                   {tier.features.map((feature, i) => (
-                    <div key={i} className="flex items-start gap-2 text-[11px] text-zinc-300 font-sans leading-tight">
+                    <div
+                      key={i}
+                      className="flex items-start gap-2 text-[11px] text-zinc-300 font-sans leading-tight"
+                    >
                       <div className="p-0.5 rounded-full bg-emerald-500/10 text-emerald-400 mt-0.5 shrink-0">
                         <Check className="w-3 h-3" />
                       </div>
                       <span>{feature}</span>
                     </div>
                   ))}
-                  {tier.lockedFeatures && tier.lockedFeatures.map((locked, idx) => (
-                    <div key={`locked_${idx}`} className="flex items-start gap-2 text-[10px] text-zinc-500 font-mono leading-tight pt-1">
-                      <Lock className="w-3 h-3 text-zinc-600 mt-0.5 shrink-0" />
-                      <span>No {locked}</span>
-                    </div>
-                  ))}
+                  {tier.lockedFeatures &&
+                    tier.lockedFeatures.map((locked, idx) => (
+                      <div
+                        key={`locked_${idx}`}
+                        className="flex items-start gap-2 text-[10px] text-zinc-500 font-mono leading-tight pt-1"
+                      >
+                        <Lock className="w-3 h-3 text-zinc-600 mt-0.5 shrink-0" />
+                        <span>No {locked}</span>
+                      </div>
+                    ))}
                 </div>
               </div>
 
@@ -475,24 +565,25 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     </>
                   )}
                 </button>
-                {tier.baseUSD > 0 && (
+                {tier.activePrice > 0 && (
                   <p className="text-[10px] font-mono text-zinc-400 text-center leading-snug">
                     5-7 Day Refund - If technical issue, max 3 analyses
                   </p>
                 )}
               </div>
-
             </div>
           );
         })}
       </div>
 
       {/* Required Checkout Policy Checkbox */}
-      <div className={`mt-8 max-w-xl mx-auto p-4 rounded-2xl border transition-all ${
-        highlightPolicy
-          ? 'bg-rose-950/40 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.3)]'
-          : 'bg-white/[0.03] border-white/10'
-      }`}>
+      <div
+        className={`mt-8 max-w-xl mx-auto p-4 rounded-2xl border transition-all ${
+          highlightPolicy
+            ? 'bg-rose-950/40 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.3)]'
+            : 'bg-white/[0.03] border-white/10'
+        }`}
+      >
         <label className="flex items-start gap-3 cursor-pointer select-none">
           <input
             type="checkbox"
@@ -544,7 +635,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         <span className="text-zinc-600">•</span>
         <span>5-7 Day Refund - If technical issue, max 3 analyses</span>
       </div>
-
     </section>
   );
 };

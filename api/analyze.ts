@@ -1,12 +1,12 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import {
   PLANS,
-  computeLicenseStatus,
   canUseFeature,
   getUpgradeMessage,
 } from '../lib/plans';
 import { checkRateLimit, getSessionEmailFromReq } from '../lib/security';
 import {
+  computeServerLicenseStatus,
   getOrCreateServerUser,
   recordUserAnalysis,
 } from '../lib/serverStore';
@@ -39,12 +39,7 @@ export default async function handler(req: any, res: any) {
       timezone: body.timezone,
     });
 
-    const license = computeLicenseStatus({
-      plan: userRecord.plan,
-      licenseStart: userRecord.license_start,
-      licenseEnd: userRecord.license_end,
-      analysesUsed: userRecord.analyses_used,
-    });
+    const license = computeServerLicenseStatus(userRecord);
 
     // 1. Check expired or analyses quota exhausted
     if (license.isExpired || (!license.isUnlimitedAnalyses && license.analysesLeft <= 0)) {
@@ -121,12 +116,7 @@ export default async function handler(req: any, res: any) {
       resultSummary: `Cap ${capRate}% | CoC ${cashOnCash}%`,
     });
 
-    const nextLicense = computeLicenseStatus({
-      plan: updatedUser.plan,
-      licenseStart: updatedUser.license_start,
-      licenseEnd: updatedUser.license_end,
-      analysesUsed: updatedUser.analyses_used,
-    });
+    const nextLicense = computeServerLicenseStatus(updatedUser);
 
     return res.status(200).json({
       success: true,

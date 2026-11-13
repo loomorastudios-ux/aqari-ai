@@ -1,7 +1,11 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
-import { computeLicenseStatus, PLANS } from '../../lib/plans';
 import { getSessionEmailFromReq, isAdminEmail } from '../../lib/security';
-import { evaluateRefundEligibility, getAllServerUsers, getFailedWebhookLogs } from '../../lib/serverStore';
+import {
+  computeServerLicenseStatus,
+  evaluateRefundEligibility,
+  getAllServerUsers,
+  getFailedWebhookLogs,
+} from '../../lib/serverStore';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'GET') {
@@ -25,19 +29,14 @@ export default async function handler(req: any, res: any) {
 
     const users = getAllServerUsers()
       .map((u) => {
-        const license = computeLicenseStatus({
-          plan: u.plan,
-          licenseStart: u.license_start,
-          licenseEnd: u.license_end,
-          analysesUsed: u.analyses_used,
-        });
+        const license = computeServerLicenseStatus(u);
         const refundEval = evaluateRefundEligibility(u);
         return {
           ...u,
           displayPlan: license.displayName,
           daysLeft: license.daysLeft,
           isExpired: license.isExpired,
-          analysesLimit: license.isUnlimitedAnalyses ? 'Unlimited' : PLANS[license.planKey].analysesLimit,
+          analysesLimit: license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLimit,
           refundEvaluation: refundEval,
         };
       })

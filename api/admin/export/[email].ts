@@ -1,8 +1,11 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
-import { computeLicenseStatus, PLANS } from '../../../lib/plans';
 import { buildPdfDocument } from '../../../lib/pdfGenerator';
 import { getSessionEmailFromReq, isAdminEmail } from '../../../lib/security';
-import { evaluateRefundEligibility, getOrCreateServerUser } from '../../../lib/serverStore';
+import {
+  computeServerLicenseStatus,
+  evaluateRefundEligibility,
+  getOrCreateServerUser,
+} from '../../../lib/serverStore';
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'GET') {
@@ -25,12 +28,7 @@ export default async function handler(req: any, res: any) {
     }
 
     const user = getOrCreateServerUser(targetEmail);
-    const license = computeLicenseStatus({
-      plan: user.plan,
-      licenseStart: user.license_start,
-      licenseEnd: user.license_end,
-      analysesUsed: user.analyses_used,
-    });
+    const license = computeServerLicenseStatus(user);
     const refundEval = evaluateRefundEligibility(user);
     const nowIso = new Date().toISOString();
     const latestPayment = user.payments[0];
@@ -49,9 +47,10 @@ export default async function handler(req: any, res: any) {
       `Purchase Date: ${purchaseDate}`,
       `Order ID: ${latestPayment ? latestPayment.order_id : 'N/A'}`,
       `Total Paid: $${user.total_paid_usd} USD`,
+      `Locked Launch Price: ${user.locked_launch_price ? `$${user.locked_launch_price}` : 'N/A'}`,
       `Checkout Policy Accepted At: ${user.refund_policy_accepted_at || 'Recorded at checkout'}`,
       `Last Login: ${user.last_login_at ? new Date(user.last_login_at).toISOString() : 'N/A'}`,
-      `Total Analyses Executed: ${user.analyses_used} / ${license.isUnlimitedAnalyses ? 'Unlimited' : PLANS[license.planKey].analysesLimit}`,
+      `Total Analyses Executed: ${user.analyses_used} / ${license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLimit}`,
       `Total PDF Memoranda Downloaded: ${user.pdf_downloads.length}`,
       '',
       '=== OFFICIAL REFUND POLICY & ELIGIBILITY VERDICT ===',

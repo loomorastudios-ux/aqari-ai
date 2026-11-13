@@ -168,7 +168,7 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
                 className="px-4 py-2 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono uppercase tracking-wider flex items-center gap-1.5 cursor-pointer shrink-0"
               >
                 <Zap className="w-3.5 h-3.5 fill-black" />
-                <span>Upgrade to Starter ($89)</span>
+                <span>Upgrade to Starter</span>
               </button>
             )}
           </div>

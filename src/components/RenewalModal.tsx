@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
-import { LEMON_LINKS, LEMON_REDIRECT_URLS, PLAN_LIMITS } from '../constants';
+import { LEMON_LINKS } from '../constants';
+import { PLANS, PricingPublicPayload } from '../../lib/plans';
 import { formatPrice, getDaysRemaining } from '../utils/formatters';
 import { 
   X, 
@@ -19,6 +20,7 @@ interface RenewalModalProps {
   onClose: () => void;
   user: User | null;
   config: RemoteConfig;
+  pricingData?: PricingPublicPayload | null;
   currentCurrency: CurrencyCode;
 }
 
@@ -27,6 +29,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   onClose,
   user,
   config,
+  pricingData,
   currentCurrency,
 }) => {
   const [refundAccepted, setRefundAccepted] = useState(false);
@@ -34,8 +37,10 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
 
   if (!isOpen) return null;
 
-  const isDiscountActive = config.discount.active && config.discount.percent > 0;
-  const discountMultiplier = isDiscountActive ? 1 - config.discount.percent / 100 : 1;
+  const launchActive = pricingData?.launchDiscountActive ?? true;
+  const starterPricing = pricingData?.plans?.starter;
+  const proPricing = pricingData?.plans?.pro;
+  const enterprisePricing = pricingData?.plans?.enterprise;
 
   const handleRenew = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
@@ -48,7 +53,6 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     const successUrl = `https://aqari-ai-rho.vercel.app/app?checkout=success&plan=${plan}&email=${encodeURIComponent(user?.email || '')}`;
     const cancelUrl = 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled';
 
-    // 1. Try serverless checkout generator
     if (user?.email) {
       try {
         const res = await fetch('/api/checkout', {
@@ -71,7 +75,6 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
       } catch {}
     }
 
-    // 2. Direct hosted checkout with prefilled parameters
     const params = new URLSearchParams();
     if (user) {
       params.set('checkout[custom][user_id]', user.id || user.googleId || '');
@@ -80,16 +83,14 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     }
     params.set('checkout[redirect_url]', successUrl);
     params.set('checkout[cancel_url]', cancelUrl);
-    if (isDiscountActive && config.discount.code) {
-      params.set('discount', config.discount.code);
-    }
     window.location.href = `${baseLink}?${params.toString()}`;
   };
 
   const plans: Array<{
     id: 'starter' | 'pro' | 'enterprise';
     name: string;
-    baseUSD: number;
+    originalUSD: number;
+    activeUSD: number;
     popular?: boolean;
     icon: React.ReactNode;
     features: string[];
@@ -98,44 +99,30 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     {
       id: 'starter',
       name: 'Starter Terminal',
-      baseUSD: config.prices.starter,
+      originalUSD: starterPricing?.originalPrice ?? PLANS.starter.originalPrice,
+      activeUSD: starterPricing?.activePrice ?? (launchActive ? PLANS.starter.launchPrice : PLANS.starter.originalPrice),
       icon: <Building2 className="w-5 h-5 text-zinc-300" />,
-      limits: '50 Analyses / 30 Days',
-      features: [
-        '50 Deep Analyses per 30 days',
-        'Save up to 50 properties',
-        'Yield & sensitivity calculator',
-        'Cross-border tax & visa matrix',
-      ],
+      limits: `${starterPricing?.analysesLimit ?? PLANS.starter.analysesLimit} Analyses / 30 Days`,
+      features: starterPricing?.features ?? PLANS.starter.features,
     },
     {
       id: 'pro',
       name: 'Professional Terminal',
-      baseUSD: config.prices.pro,
+      originalUSD: proPricing?.originalPrice ?? PLANS.pro.originalPrice,
+      activeUSD: proPricing?.activePrice ?? (launchActive ? PLANS.pro.launchPrice : PLANS.pro.originalPrice),
       popular: true,
       icon: <Zap className="w-5 h-5 text-[#D4AF37]" />,
-      limits: '400 Analyses / 30 Days',
-      features: [
-        '400 Institutional Analyses',
-        'Save up to 200 properties',
-        'Monte Carlo stress tests (+200bps)',
-        'PDF Memorandum export',
-        'Multi-asset portfolio aggregation',
-      ],
+      limits: `${proPricing?.analysesLimit ?? PLANS.pro.analysesLimit} Analyses / 30 Days`,
+      features: proPricing?.features ?? PLANS.pro.features,
     },
     {
       id: 'enterprise',
       name: 'Sovereign Enterprise',
-      baseUSD: config.prices.enterprise,
+      originalUSD: enterprisePricing?.originalPrice ?? PLANS.enterprise.originalPrice,
+      activeUSD: enterprisePricing?.activePrice ?? (launchActive ? PLANS.enterprise.launchPrice : PLANS.enterprise.originalPrice),
       icon: <Crown className="w-5 h-5 text-purple-400" />,
-      limits: 'Unlimited Analyses / 30 Days',
-      features: [
-        'Unlimited institutional analyses',
-        'Unlimited saved properties',
-        'Full REST API credentials',
-        '1-on-1 Dedicated Analyst Desk',
-        'White-glove custom underwriting',
-      ],
+      limits: `${enterprisePricing?.analysesLimit ?? PLANS.enterprise.analysesLimit} Analyses / 30 Days`,
+      features: enterprisePricing?.features ?? PLANS.enterprise.features,
     },
   ];
 
@@ -167,10 +154,10 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
             Choose your institutional tier. Payments process through LemonSqueezy 256-bit SSL encryption and immediately extend your licensing +30 days from today.
           </p>
 
-          {isDiscountActive && (
+          {launchActive && (
             <div className="mt-3 inline-flex items-center gap-2 px-4 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono">
               <Flame className="w-3.5 h-3.5" />
-              <span>Promo applied: {config.discount.percent}% OFF with code <strong>{config.discount.code}</strong></span>
+              <span>{pricingData?.launchBadgeText || 'LAUNCH -40% - First 30 users only'} • Offer ends in {pricingData?.daysRemaining ?? 7} days</span>
             </div>
           )}
         </div>
@@ -178,10 +165,8 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
         {/* 3 Tier Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-6 overflow-y-auto pr-1">
           {plans.map((p) => {
-            const originalUSD = p.baseUSD;
-            const discountedUSD = isDiscountActive
-              ? Math.round(originalUSD * discountMultiplier)
-              : originalUSD;
+            const originalUSD = p.originalUSD;
+            const discountedUSD = p.activeUSD;
             const isCurrent = user?.plan === p.id;
             const daysRemaining = user?.subscriptionExpiry ? getDaysRemaining(user.subscriptionExpiry) : 30;
 
@@ -262,15 +247,15 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
 
                   {/* Price */}
                   <div className="pb-4 mb-4 border-b border-white/[0.08]">
+                    {launchActive && originalUSD > discountedUSD && (
+                      <div className="text-[11px] font-mono text-zinc-500 line-through mb-0.5">
+                        {formatPrice(originalUSD, currentCurrency)}
+                      </div>
+                    )}
                     <div className="text-3xl font-black font-mono text-white">
                       {formatPrice(discountedUSD, currentCurrency)}
                     </div>
                     <div className="text-[10px] font-mono text-zinc-400 mt-0.5">30-day licensing window</div>
-                    {isDiscountActive && (
-                      <div className="text-[11px] font-mono text-zinc-500 line-through mt-0.5">
-                        {formatPrice(originalUSD, currentCurrency)}
-                      </div>
-                    )}
                   </div>
 
                   {/* Features */}

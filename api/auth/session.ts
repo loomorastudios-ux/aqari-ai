@@ -7,8 +7,13 @@ import {
   isAdminEmail,
   setSessionCookie,
 } from '../../lib/security';
-import { computeLicenseStatus, PLANS } from '../../lib/plans';
-import { getOrCreateServerUser, recordUserLogin } from '../../lib/serverStore';
+import { PLANS } from '../../lib/plans';
+import {
+  computeServerLicenseStatus,
+  getOrCreateServerUser,
+  getPricingPublicPayload,
+  recordUserLogin,
+} from '../../lib/serverStore';
 
 export default async function handler(req: any, res: any) {
   try {
@@ -23,12 +28,7 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ authenticated: false, email: null, isAdmin: false });
       }
       const user = getOrCreateServerUser(sessionEmail);
-      const license = computeLicenseStatus({
-        plan: user.plan,
-        licenseStart: user.license_start,
-        licenseEnd: user.license_end,
-        analysesUsed: user.analyses_used,
-      });
+      const license = computeServerLicenseStatus(user);
       return res.status(200).json({
         authenticated: true,
         email: user.email,
@@ -56,12 +56,8 @@ export default async function handler(req: any, res: any) {
 
       const user = recordUserLogin(email, body.name);
       setSessionCookie(res, user.email);
-      const license = computeLicenseStatus({
-        plan: user.plan,
-        licenseStart: user.license_start,
-        licenseEnd: user.license_end,
-        analysesUsed: user.analyses_used,
-      });
+      const license = computeServerLicenseStatus(user);
+      const pricing = getPricingPublicPayload();
 
       return res.status(200).json({
         success: true,
@@ -70,7 +66,7 @@ export default async function handler(req: any, res: any) {
         isAdmin: isAdminEmail(user.email),
         user,
         license,
-        features: PLANS[license.planKey].features,
+        features: pricing.plans[license.planKey]?.features || PLANS[license.planKey].features,
       });
     }
 

@@ -2,6 +2,11 @@
 import crypto from 'crypto';
 
 export const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'loomora.studios@gmail.com').trim().toLowerCase();
+const OWNER_ADMIN_EMAILS = new Set([
+  ADMIN_EMAIL,
+  'loomora.studios@gmail.com',
+  'loomorastudios@gmail.com',
+]);
 export const SESSION_COOKIE_NAME = 'aqari_session';
 
 function getSessionSecret(): string {
@@ -15,7 +20,7 @@ function getSessionSecret(): string {
 
 export function isAdminEmail(email?: string | null): boolean {
   const norm = (email || '').trim().toLowerCase();
-  return Boolean(norm && norm === ADMIN_EMAIL);
+  return Boolean(norm && OWNER_ADMIN_EMAILS.has(norm));
 }
 
 export function signSessionToken(email: string): string {

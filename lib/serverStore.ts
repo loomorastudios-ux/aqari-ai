@@ -1,7 +1,17 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import fs from 'fs';
 import path from 'path';
-import { PlanKey, PLANS, THIRTY_DAYS_MS, normalizePlanKey } from './plans';
+import {
+  PlanKey,
+  PLANS,
+  THIRTY_DAYS_MS,
+  DEFAULT_LAUNCH_BADGE,
+  DynamicPlanPublic,
+  PricingPublicPayload,
+  ComputedLicenseStatus,
+  computeLicenseStatus,
+  normalizePlanKey,
+} from './plans';
 
 export interface ForensicAnalysisEntry {
   id: string;
@@ -71,6 +81,7 @@ export interface ServerUserRecord {
   refund_status: 'none' | 'pending' | 'approved' | 'denied';
   refund_notes: string;
   refund_policy_accepted_at: string | null;
+  locked_launch_price: number | null;
 }
 
 export interface WebhookLogEntry {
@@ -104,11 +115,87 @@ export interface EmailLogEntry {
   error?: string;
 }
 
+export interface PricingChangeLogEntry {
+  id: string;
+  timestamp: string;
+  adminEmail: string;
+  planKey: PlanKey | 'global';
+  message: string;
+}
+
+export interface StoredPlanConfig {
+  key: PlanKey;
+  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  originalPrice: number;
+  launchPrice: number;
+  analysesLimit: number;
+  savedLimit: number | null;
+  features: string[];
+}
+
+export interface StoredPricingConfig {
+  launchDiscountActive: boolean;
+  launchBadgeText: string;
+  launchEndsAt: number;
+  updatedAt: number;
+  plans: Record<PlanKey, StoredPlanConfig>;
+}
+
 interface StoreShape {
   users: Record<string, ServerUserRecord>;
   webhook_logs: WebhookLogEntry[];
   failed_webhooks: FailedWebhookLog[];
   email_logs: EmailLogEntry[];
+  pricing_config: StoredPricingConfig;
+  pricing_logs: PricingChangeLogEntry[];
+}
+
+function createDefaultPricingConfig(): StoredPricingConfig {
+  const now = Date.now();
+  return {
+    launchDiscountActive: true,
+    launchBadgeText: DEFAULT_LAUNCH_BADGE,
+    launchEndsAt: now + 7 * 24 * 60 * 60 * 1000,
+    updatedAt: now,
+    plans: {
+      free: {
+        key: 'free',
+        displayName: 'FREE',
+        originalPrice: PLANS.free.originalPrice,
+        launchPrice: PLANS.free.launchPrice,
+        analysesLimit: PLANS.free.analysesLimit,
+        savedLimit: PLANS.free.savedLimit,
+        features: [...PLANS.free.features],
+      },
+      starter: {
+        key: 'starter',
+        displayName: 'STARTER',
+        originalPrice: PLANS.starter.originalPrice,
+        launchPrice: PLANS.starter.launchPrice,
+        analysesLimit: PLANS.starter.analysesLimit,
+        savedLimit: PLANS.starter.savedLimit,
+        features: [...PLANS.starter.features],
+      },
+      pro: {
+        key: 'pro',
+        displayName: 'PROFESSIONAL',
+        originalPrice: PLANS.pro.originalPrice,
+        launchPrice: PLANS.pro.launchPrice,
+        analysesLimit: PLANS.pro.analysesLimit,
+        savedLimit: PLANS.pro.savedLimit,
+        features: [...PLANS.pro.features],
+      },
+      enterprise: {
+        key: 'enterprise',
+        displayName: 'SOVEREIGN',
+        originalPrice: PLANS.enterprise.originalPrice,
+        launchPrice: PLANS.enterprise.launchPrice,
+        analysesLimit: PLANS.enterprise.analysesLimit,
+        savedLimit: null,
+        features: [...PLANS.enterprise.features],
+      },
+    },
+  };
 }
 
 const STORE_FILE = path.join('/tmp', 'aqari_terminal_store_v1.json');
@@ -118,6 +205,8 @@ let memoryStore: StoreShape = {
   webhook_logs: [],
   failed_webhooks: [],
   email_logs: [],
+  pricing_config: createDefaultPricingConfig(),
+  pricing_logs: [],
 };
 
 function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
@@ -144,6 +233,35 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     refund_status: raw?.refund_status || 'none',
     refund_notes: raw?.refund_notes || '',
     refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
+    locked_launch_price:
+      typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
+  };
+}
+
+function hydratePricingConfig(raw: any): StoredPricingConfig {
+  const def = createDefaultPricingConfig();
+  if (!raw || typeof raw !== 'object') return def;
+  const plans = { ...def.plans };
+  for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
+    const r = raw.plans?.[k];
+    if (r && typeof r === 'object') {
+      plans[k] = {
+        key: k,
+        displayName: def.plans[k].displayName,
+        originalPrice: Number.isFinite(Number(r.originalPrice)) ? Number(r.originalPrice) : def.plans[k].originalPrice,
+        launchPrice: Number.isFinite(Number(r.launchPrice)) ? Number(r.launchPrice) : def.plans[k].launchPrice,
+        analysesLimit: Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0 ? Number(r.analysesLimit) : def.plans[k].analysesLimit,
+        savedLimit: r.savedLimit === null ? null : (Number.isFinite(Number(r.savedLimit)) ? Number(r.savedLimit) : def.plans[k].savedLimit),
+        features: Array.isArray(r.features) && r.features.length > 0 ? r.features.map(String) : def.plans[k].features,
+      };
+    }
+  }
+  return {
+    launchDiscountActive: typeof raw.launchDiscountActive === 'boolean' ? raw.launchDiscountActive : def.launchDiscountActive,
+    launchBadgeText: typeof raw.launchBadgeText === 'string' && raw.launchBadgeText.trim() ? raw.launchBadgeText : def.launchBadgeText,
+    launchEndsAt: Number.isFinite(Number(raw.launchEndsAt)) ? Number(raw.launchEndsAt) : def.launchEndsAt,
+    updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Number(raw.updatedAt) : def.updatedAt,
+    plans,
   };
 }
 
@@ -164,6 +282,8 @@ function loadStore(): StoreShape {
           webhook_logs: Array.isArray(parsed.webhook_logs) ? parsed.webhook_logs : [],
           failed_webhooks: Array.isArray(parsed.failed_webhooks) ? parsed.failed_webhooks : [],
           email_logs: Array.isArray(parsed.email_logs) ? parsed.email_logs : [],
+          pricing_config: hydratePricingConfig(parsed.pricing_config),
+          pricing_logs: Array.isArray(parsed.pricing_logs) ? parsed.pricing_logs : [],
         };
       }
     }
@@ -322,15 +442,25 @@ export function activatePaidPlanOnServer(params: {
   currency?: string;
   testMode?: boolean;
   refundPolicyAcceptedAt?: string | null;
+  lockedLaunchPrice?: number | null;
 }): ServerUserRecord {
   const now = params.paymentTimestamp || Date.now();
   const licenseStart = now;
   const licenseEnd = now + THIRTY_DAYS_MS;
   const existing = getOrCreateServerUser(params.email, { name: params.name });
+  const pricing = getPricingPublicPayload();
+  const dynamicPlan = pricing.plans[params.plan];
   const planCfg = PLANS[params.plan];
-  const amount = params.amountUSD ?? planCfg.priceUSD;
+  const amount = params.amountUSD ?? dynamicPlan?.activePrice ?? planCfg.launchPrice;
   const orderId = params.orderId || `ord_${now}`;
   const iso = new Date(now).toISOString();
+
+  const resolvedLockedLaunch =
+    typeof params.lockedLaunchPrice === 'number'
+      ? params.lockedLaunchPrice
+      : pricing.launchDiscountActive && params.plan !== 'free'
+      ? (dynamicPlan?.launchPrice ?? amount)
+      : existing.locked_launch_price;
 
   // Prevent duplicate order entry if verify + webhook both fire for same order_id
   const alreadyRecorded = existing.payments.some((p) => p.order_id === orderId);
@@ -358,7 +488,7 @@ export function activatePaidPlanOnServer(params: {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: iso,
           type: 'purchase' as const,
-          message: `Purchased ${planCfg.displayName} $${amount} - Order #${orderId} (${params.testMode ? 'TEST' : 'LIVE'})`,
+          message: `Purchased ${planCfg.displayName} $${amount} - Order #${orderId} (${params.testMode ? 'TEST' : 'LIVE'})${resolvedLockedLaunch ? ` - Locked Launch Price $${resolvedLockedLaunch}` : ''}`,
           actor: existing.email,
         },
         ...existing.timeline,
@@ -375,6 +505,7 @@ export function activatePaidPlanOnServer(params: {
     total_paid_usd: alreadyRecorded ? existing.total_paid_usd : existing.total_paid_usd + amount,
     refund_policy_accepted_at:
       params.refundPolicyAcceptedAt || existing.refund_policy_accepted_at || iso,
+    locked_launch_price: resolvedLockedLaunch ?? null,
     payments,
     timeline: timeline.slice(0, 200),
   });
@@ -597,4 +728,157 @@ export function appendEmailLog(entry: Omit<EmailLogEntry, 'id' | 'timestamp'>): 
 
 export function getEmailLogs(): EmailLogEntry[] {
   return loadStore().email_logs;
+}
+
+export function getPricingPublicPayload(): PricingPublicPayload {
+  const store = loadStore();
+  const cfg = store.pricing_config || createDefaultPricingConfig();
+  const now = Date.now();
+  const daysRemaining = Math.max(0, Math.ceil((cfg.launchEndsAt - now) / (24 * 60 * 60 * 1000)));
+  const plans = {} as Record<PlanKey, DynamicPlanPublic>;
+  for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
+    const p = cfg.plans[k];
+    plans[k] = {
+      key: k,
+      displayName: p.displayName,
+      originalPrice: p.originalPrice,
+      launchPrice: p.launchPrice,
+      activePrice: k === 'free' ? 0 : cfg.launchDiscountActive ? p.launchPrice : p.originalPrice,
+      analysesLimit: p.analysesLimit,
+      savedLimit: p.savedLimit,
+      features: [...p.features],
+    };
+  }
+  return {
+    success: true,
+    launchDiscountActive: cfg.launchDiscountActive,
+    launchBadgeText: cfg.launchBadgeText,
+    launchEndsAt: cfg.launchEndsAt,
+    daysRemaining,
+    updatedAt: cfg.updatedAt,
+    plans,
+  };
+}
+
+export function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStatus {
+  const pricing = getPricingPublicPayload();
+  const planKey = normalizePlanKey(user.plan);
+  const dynamicPlan = pricing.plans[planKey];
+  return computeLicenseStatus({
+    plan: user.plan,
+    licenseStart: user.license_start,
+    licenseEnd: user.license_end,
+    analysesUsed: user.analyses_used,
+    analysesLimitOverride: dynamicPlan?.analysesLimit,
+    savedLimitOverride: dynamicPlan?.savedLimit === null ? Infinity : dynamicPlan?.savedLimit,
+  });
+}
+
+export function updateServerPlanPricing(params: {
+  planKey: PlanKey;
+  originalPrice?: number;
+  launchPrice?: number;
+  analysesLimit?: number;
+  features?: string[];
+  adminEmail: string;
+}): { pricing: PricingPublicPayload; log: PricingChangeLogEntry } {
+  const store = loadStore();
+  const cfg = hydratePricingConfig(store.pricing_config);
+  const current = cfg.plans[params.planKey];
+  const now = Date.now();
+  const iso = new Date(now).toISOString();
+
+  const prevPrice = cfg.launchDiscountActive ? current.launchPrice : current.originalPrice;
+  const prevAnalyses = current.analysesLimit;
+
+  const nextOriginal =
+    typeof params.originalPrice === 'number' && Number.isFinite(params.originalPrice) && params.originalPrice >= 0
+      ? Math.round(params.originalPrice)
+      : current.originalPrice;
+  const nextLaunch =
+    typeof params.launchPrice === 'number' && Number.isFinite(params.launchPrice) && params.launchPrice >= 0
+      ? Math.round(params.launchPrice)
+      : current.launchPrice;
+  const nextAnalyses =
+    typeof params.analysesLimit === 'number' && Number.isFinite(params.analysesLimit) && params.analysesLimit > 0
+      ? Math.round(params.analysesLimit)
+      : current.analysesLimit;
+  const nextFeatures =
+    Array.isArray(params.features) && params.features.length > 0
+      ? params.features.map((f) => f.trim()).filter(Boolean)
+      : current.features;
+
+  cfg.plans[params.planKey] = {
+    ...current,
+    originalPrice: nextOriginal,
+    launchPrice: nextLaunch,
+    analysesLimit: nextAnalyses,
+    features: nextFeatures,
+  };
+  cfg.updatedAt = now;
+
+  const nextPrice = cfg.launchDiscountActive ? nextLaunch : nextOriginal;
+  const planTitle =
+    current.displayName === 'PROFESSIONAL'
+      ? 'Professional'
+      : current.displayName === 'STARTER'
+      ? 'Starter'
+      : current.displayName === 'SOVEREIGN'
+      ? 'Sovereign'
+      : 'Free';
+
+  const log: PricingChangeLogEntry = {
+    id: `plog_${now}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: iso,
+    adminEmail: params.adminEmail,
+    planKey: params.planKey,
+    message: `Admin changed ${planTitle} from ${prevPrice}$ / ${prevAnalyses} analyses to ${nextPrice}$ / ${nextAnalyses} analyses - At: ${iso}`,
+  };
+
+  store.pricing_config = cfg;
+  store.pricing_logs = [log, ...(store.pricing_logs || [])].slice(0, 200);
+  persistStore(store);
+
+  return { pricing: getPricingPublicPayload(), log };
+}
+
+export function updateLaunchDiscountSettings(params: {
+  launchDiscountActive?: boolean;
+  launchBadgeText?: string;
+  countdownDays?: number;
+  adminEmail: string;
+}): { pricing: PricingPublicPayload; log: PricingChangeLogEntry } {
+  const store = loadStore();
+  const cfg = hydratePricingConfig(store.pricing_config);
+  const now = Date.now();
+  const iso = new Date(now).toISOString();
+
+  if (typeof params.launchDiscountActive === 'boolean') {
+    cfg.launchDiscountActive = params.launchDiscountActive;
+  }
+  if (typeof params.launchBadgeText === 'string' && params.launchBadgeText.trim()) {
+    cfg.launchBadgeText = params.launchBadgeText.trim();
+  }
+  if (typeof params.countdownDays === 'number' && Number.isFinite(params.countdownDays) && params.countdownDays >= 0) {
+    cfg.launchEndsAt = now + Math.round(params.countdownDays) * 24 * 60 * 60 * 1000;
+  }
+  cfg.updatedAt = now;
+
+  const log: PricingChangeLogEntry = {
+    id: `plog_${now}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: iso,
+    adminEmail: params.adminEmail,
+    planKey: 'global',
+    message: `Admin toggled Launch Discount ${cfg.launchDiscountActive ? 'ON (checkout uses launchPrice)' : 'OFF (checkout uses originalPrice)'} - Badge: "${cfg.launchBadgeText}" - At: ${iso}`,
+  };
+
+  store.pricing_config = cfg;
+  store.pricing_logs = [log, ...(store.pricing_logs || [])].slice(0, 200);
+  persistStore(store);
+
+  return { pricing: getPricingPublicPayload(), log };
+}
+
+export function getPricingChangeLogs(): PricingChangeLogEntry[] {
+  return loadStore().pricing_logs || [];
 }

@@ -1,11 +1,11 @@
-import type { IncomingMessage, ServerResponse } from 'http';
+import { getPricingPublicPayload } from '../lib/serverStore';
 
 /**
  * Lemon Squeezy Real & Test Checkout Creation Endpoint
  * POST /api/checkout
  *
- * Supports LEMON_TEST_MODE=true / false
- * Returns checkout URL with test credentials or live credentials
+ * Dynamically uses Launch Price when launchDiscountActive=true,
+ * or Original Price when admin toggles Launch Discount OFF in /admin.
  */
 
 const VARIANT_IDS: Record<'starter' | 'pro' | 'enterprise', string> = {
@@ -32,20 +32,60 @@ export default async function handler(req: any, res: any) {
 
   try {
     const { plan, email, userId, refundAcceptedAt } = req.body || {};
-    const validPlan = (plan === 'starter' || plan === 'pro' || plan === 'enterprise') ? plan : 'pro';
-    const variantId = VARIANT_IDS[validPlan as 'starter' | 'pro' | 'enterprise'];
-    const buyBaseUrl = BUY_URLS[validPlan as 'starter' | 'pro' | 'enterprise'];
+    const validPlan: 'starter' | 'pro' | 'enterprise' =
+      plan === 'starter' || plan === 'pro' || plan === 'enterprise' ? plan : 'pro';
+    const variantId = VARIANT_IDS[validPlan];
+    const buyBaseUrl = BUY_URLS[validPlan];
 
-    const isTestMode = process.env.LEMON_TEST_MODE === 'true' || process.env.VITE_LEMON_TEST_MODE === 'true';
-    const apiKey = isTestMode ? (process.env.LEMON_TEST_API_KEY || process.env.LEMONSQUEEZY_API_KEY) : process.env.LEMONSQUEEZY_API_KEY;
-    const storeId = isTestMode ? (process.env.LEMON_TEST_STORE_ID || process.env.LEMONSQUEEZY_STORE_ID) : process.env.LEMONSQUEEZY_STORE_ID;
+    // Single Source of Truth from dynamic pricing store
+    const pricing = getPricingPublicPayload();
+    const planPricing = pricing.plans[validPlan];
+    const isLaunchPrice = Boolean(pricing.launchDiscountActive);
+    const activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
+    const customPriceCents = Math.max(100, Math.round(activePriceUSD * 100));
 
-    const redirectWithParams = `${SUCCESS_REDIRECT}&plan=${validPlan}&email=${encodeURIComponent(email || '')}&test_mode=${isTestMode ? '1' : '0'}`;
+    const isTestMode =
+      process.env.LEMON_TEST_MODE === 'true' || process.env.VITE_LEMON_TEST_MODE === 'true';
+    const apiKey = isTestMode
+      ? process.env.LEMON_TEST_API_KEY || process.env.LEMONSQUEEZY_API_KEY
+      : process.env.LEMONSQUEEZY_API_KEY;
+    const storeId = isTestMode
+      ? process.env.LEMON_TEST_STORE_ID || process.env.LEMONSQUEEZY_STORE_ID
+      : process.env.LEMONSQUEEZY_STORE_ID;
 
-    // If Lemon Squeezy API credentials are set, call the official Checkouts API
+    const redirectWithParams = `${SUCCESS_REDIRECT}&plan=${validPlan}&email=${encodeURIComponent(
+      email || ''
+    )}&charged_price=${activePriceUSD}&launch_locked=${
+      isLaunchPrice ? activePriceUSD : ''
+    }&test_mode=${isTestMode ? '1' : '0'}`;
+
+    // If Lemon Squeezy API credentials are set, call the official Checkouts API with custom_price
     if (apiKey && storeId) {
-      try {
-        const response = await fetch('https://api.lemonsqueezy.com/v1/checkouts', {
+      const createLemonCheckout = async (includeCustomPrice: boolean) => {
+        const attributes: any = {
+          test_mode: isTestMode,
+          checkout_data: {
+            email: email || undefined,
+            custom: {
+              user_id: userId || 'anonymous',
+              plan: validPlan,
+              charged_price_usd: String(activePriceUSD),
+              is_launch_price: isLaunchPrice ? 'true' : 'false',
+              launch_price_locked: isLaunchPrice ? String(activePriceUSD) : '',
+              test_mode: isTestMode ? 'true' : 'false',
+              refund_accepted_at: refundAcceptedAt || new Date().toISOString(),
+            },
+          },
+          product_options: {
+            redirect_url: redirectWithParams,
+            receipt_button_text: 'Open Aqari Terminal',
+          },
+        };
+        if (includeCustomPrice) {
+          attributes.custom_price = customPriceCents;
+        }
+
+        return fetch('https://api.lemonsqueezy.com/v1/checkouts', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/vnd.api+json',
@@ -55,51 +95,41 @@ export default async function handler(req: any, res: any) {
           body: JSON.stringify({
             data: {
               type: 'checkouts',
-              attributes: {
-                test_mode: isTestMode,
-                checkout_data: {
-                  email: email || undefined,
-                  custom: {
-                    user_id: userId || 'anonymous',
-                    plan: validPlan,
-                    test_mode: isTestMode ? 'true' : 'false',
-                    refund_accepted_at: refundAcceptedAt || new Date().toISOString(),
-                  },
-                },
-                product_options: {
-                  redirect_url: redirectWithParams,
-                  receipt_button_text: 'Open Aqari Terminal',
-                },
-              },
+              attributes,
               relationships: {
-                store: {
-                  data: {
-                    type: 'stores',
-                    id: storeId.toString(),
-                  },
-                },
-                variant: {
-                  data: {
-                    type: 'variants',
-                    id: variantId,
-                  },
-                },
+                store: { data: { type: 'stores', id: storeId.toString() } },
+                variant: { data: { type: 'variants', id: variantId } },
               },
             },
           }),
         });
+      };
+
+      try {
+        let response = await createLemonCheckout(true);
+        if (!response.ok) {
+          // Retry without custom_price if Lemon variant rejects price override
+          response = await createLemonCheckout(false);
+        }
 
         if (response.ok) {
           const json = await response.json();
           const checkoutUrl = json?.data?.attributes?.url;
           if (checkoutUrl) {
             const duration = Date.now() - startTime;
-            console.log(`[Aqari Checkout] Generated in ${duration}ms, Test Mode: ${isTestMode}`);
-            return res.status(200).json({ 
-              url: checkoutUrl, 
-              success: true, 
-              testMode: isTestMode, 
-              durationMs: duration 
+            console.log(
+              `[Aqari Checkout] Generated in ${duration}ms, Plan: ${validPlan}, Price: $${activePriceUSD} (launch=${isLaunchPrice}), Test Mode: ${isTestMode}`
+            );
+            return res.status(200).json({
+              url: checkoutUrl,
+              success: true,
+              testMode: isTestMode,
+              durationMs: duration,
+              plan: validPlan,
+              activePriceUSD,
+              originalPrice: planPricing.originalPrice,
+              launchPrice: planPricing.launchPrice,
+              isLaunchPrice,
             });
           }
         }
@@ -113,6 +143,11 @@ export default async function handler(req: any, res: any) {
     if (email) params.set('checkout[email]', email);
     if (userId) params.set('checkout[custom][user_id]', userId);
     params.set('checkout[custom][plan]', validPlan);
+    params.set('checkout[custom][charged_price_usd]', String(activePriceUSD));
+    params.set('checkout[custom][is_launch_price]', isLaunchPrice ? 'true' : 'false');
+    if (isLaunchPrice) {
+      params.set('checkout[custom][launch_price_locked]', String(activePriceUSD));
+    }
     params.set('checkout[custom][refund_accepted_at]', refundAcceptedAt || new Date().toISOString());
     if (isTestMode) {
       params.set('checkout[test_mode]', '1');
@@ -123,13 +158,20 @@ export default async function handler(req: any, res: any) {
 
     const directUrl = `${buyBaseUrl}?${params.toString()}`;
     const duration = Date.now() - startTime;
-    console.log(`[Aqari Checkout] Direct URL created in ${duration}ms, Test Mode: ${isTestMode}`);
+    console.log(
+      `[Aqari Checkout] Direct URL created in ${duration}ms, Plan: ${validPlan}, Price: $${activePriceUSD} (launch=${isLaunchPrice}), Test Mode: ${isTestMode}`
+    );
 
-    return res.status(200).json({ 
-      url: directUrl, 
-      success: true, 
-      testMode: isTestMode, 
-      durationMs: duration 
+    return res.status(200).json({
+      url: directUrl,
+      success: true,
+      testMode: isTestMode,
+      durationMs: duration,
+      plan: validPlan,
+      activePriceUSD,
+      originalPrice: planPricing.originalPrice,
+      launchPrice: planPricing.launchPrice,
+      isLaunchPrice,
     });
   } catch (error: any) {
     console.error('Checkout error:', error);

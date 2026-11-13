@@ -39,6 +39,7 @@ export interface User {
   createdAt: number;
   lastLoginAt?: number;
   lastReminderDate?: string;
+  lockedLaunchPrice?: number | null;
   savedAnalyses?: SavedAnalysis[];
   portfolio?: {
     totalValue: number;

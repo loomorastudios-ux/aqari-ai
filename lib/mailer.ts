@@ -37,7 +37,7 @@ export function buildDay29RenewalEmail(params: {
     `Your ${planName} ends tomorrow (${params.endDateFormatted}). You have ${leftText} analyses left.`,
     '',
     `Renew same plan: ${renewUrl}`,
-    `Or Upgrade to Professional ($249) / Sovereign ($749): ${renewUrl}`,
+    `Or Upgrade to Professional ($${PLANS.pro.launchPrice}) / Sovereign ($${PLANS.enterprise.launchPrice}): ${renewUrl}`,
     '',
     `If you don't renew, you will return to FREE (3 analyses).`,
     '',

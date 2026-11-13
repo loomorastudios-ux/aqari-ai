@@ -1,11 +1,8 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
-import {
-  PLANS,
-  computeLicenseStatus,
-  canUseFeature,
-} from '../lib/plans';
+import { PLANS, canUseFeature } from '../lib/plans';
 import { getSessionEmailFromReq } from '../lib/security';
 import {
+  computeServerLicenseStatus,
   getOrCreateServerUser,
   updateServerUser,
 } from '../lib/serverStore';
@@ -28,12 +25,7 @@ export default async function handler(req: any, res: any) {
       name: body.name,
     });
 
-    const license = computeLicenseStatus({
-      plan: userRecord.plan,
-      licenseStart: userRecord.license_start,
-      licenseEnd: userRecord.license_end,
-      analysesUsed: userRecord.analyses_used,
-    });
+    const license = computeServerLicenseStatus(userRecord);
 
     if (license.isExpired) {
       return res.status(403).json({
