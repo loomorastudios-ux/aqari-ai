@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const SSR_ROUTE_MAP: Record<string, string> = {
+  '/api/me': '/api/me.ts',
   '/api/auth/session': '/api/auth/session.ts',
   '/api/checkout': '/api/checkout.ts',
   '/api/checkout/verify': '/api/checkout/verify.ts',

@@ -1,7 +1,7 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
-import { PricingPublicPayload, PlanKey } from '../../lib/plans';
+import { PricingPublicPayload, PlanKey, findPlanPricing } from '../../lib/plans';
 import {
   ShieldCheck,
   Search,
@@ -70,30 +70,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setPricingState(p);
     setLaunchBadgeInput(p.launchBadgeText);
     setCountdownDaysInput(String(p.daysRemaining));
+    const freeP = findPlanPricing(p, 'free');
+    const starterP = findPlanPricing(p, 'starter');
+    const proP = findPlanPricing(p, 'pro');
+    const enterpriseP = findPlanPricing(p, 'enterprise');
     setPlanDrafts({
       free: {
-        originalPrice: String(p.plans.free.originalPrice),
-        launchPrice: String(p.plans.free.launchPrice),
-        analysesLimit: String(p.plans.free.analysesLimit),
-        featuresText: (p.plans.free.features || []).join('\n'),
+        originalPrice: String(freeP?.originalPrice ?? 0),
+        launchPrice: String(freeP?.launchPrice ?? 0),
+        analysesLimit: String(freeP?.analysesLimit ?? 3),
+        featuresText: (freeP?.features || []).join('\n'),
       },
       starter: {
-        originalPrice: String(p.plans.starter.originalPrice),
-        launchPrice: String(p.plans.starter.launchPrice),
-        analysesLimit: String(p.plans.starter.analysesLimit),
-        featuresText: (p.plans.starter.features || []).join('\n'),
+        originalPrice: String(starterP?.originalPrice ?? 129),
+        launchPrice: String(starterP?.launchPrice ?? 79),
+        analysesLimit: String(starterP?.analysesLimit ?? 30),
+        featuresText: (starterP?.features || []).join('\n'),
       },
       pro: {
-        originalPrice: String(p.plans.pro.originalPrice),
-        launchPrice: String(p.plans.pro.launchPrice),
-        analysesLimit: String(p.plans.pro.analysesLimit),
-        featuresText: (p.plans.pro.features || []).join('\n'),
+        originalPrice: String(proP?.originalPrice ?? 349),
+        launchPrice: String(proP?.launchPrice ?? 199),
+        analysesLimit: String(proP?.analysesLimit ?? 150),
+        featuresText: (proP?.features || []).join('\n'),
       },
       enterprise: {
-        originalPrice: String(p.plans.enterprise.originalPrice),
-        launchPrice: String(p.plans.enterprise.launchPrice),
-        analysesLimit: String(p.plans.enterprise.analysesLimit),
-        featuresText: (p.plans.enterprise.features || []).join('\n'),
+        originalPrice: String(enterpriseP?.originalPrice ?? 999),
+        launchPrice: String(enterpriseP?.launchPrice ?? 599),
+        analysesLimit: String(enterpriseP?.analysesLimit ?? 400),
+        featuresText: (enterpriseP?.features || []).join('\n'),
       },
     });
   };

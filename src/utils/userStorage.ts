@@ -51,15 +51,17 @@ export function getSessionUser(): User | null {
     if (!sessionEmail) return null;
     const user = getUser(sessionEmail);
     if (user) {
-      // Check subscription expiry (exact 30 x 24h)
-      const expiry = user.subscriptionEndsAt || user.subscriptionExpiry;
-      if (expiry && Date.now() >= expiry && user.plan !== 'free') {
-        user.plan = 'free';
-        user.freeAnalysesLeft = 0;
-        user.freeAnalyses = 0;
-        user.analysesLeft = 0;
-        saveUser(user);
-      }
+      // Security: NEVER trust localStorage plan/credits on initial load; /api/me restores authoritative server plan.
+      return {
+        ...user,
+        plan: 'free',
+        subscriptionPlan: 'free',
+        subscriptionStatus: 'free',
+        analysesUsed: 0,
+        freeAnalyses: 3,
+        freeAnalysesLeft: 3,
+        analysesLeft: 3,
+      };
     }
     return user;
   } catch {

@@ -32,9 +32,9 @@ export const LEMON_LINKS: Record<'starter' | 'pro' | 'enterprise', string> = {
 import { PLANS, PRODUCTION_URL } from '../lib/plans';
 
 export const LEMON_REDIRECT_URLS: Record<'starter' | 'pro' | 'enterprise', string> = {
-  starter: `${PRODUCTION_URL}/app?checkout=success&plan=starter`,
-  pro: `${PRODUCTION_URL}/app?checkout=success&plan=pro`,
-  enterprise: `${PRODUCTION_URL}/app?checkout=success&plan=enterprise`,
+  starter: `${PRODUCTION_URL}/app?checkout=success`,
+  pro: `${PRODUCTION_URL}/app?checkout=success`,
+  enterprise: `${PRODUCTION_URL}/app?checkout=success`,
 };
 
 // Plan specifications synced from lib/plans.ts single source of truth
@@ -266,7 +266,7 @@ export const PROPERTY_LISTINGS: PropertyListing[] = [
     capRate: 4.3,
     capitalGrowthForecast: 5.1,
     tenantRiskScore: 'AAA',
-    liquidityScore: 89,
+    liquidityScore: 88,
     noiUSD: 120400,
     vacancyPct: 2,
     vacancyUSD: 2280,

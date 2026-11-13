@@ -10,6 +10,7 @@ import {
 import {
   PLANS,
   PricingPublicPayload,
+  findPlanPricing,
   normalizePlanKey,
   computeLicenseStatus,
   canUseFeature,
@@ -134,7 +135,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const endsAt = user.subscriptionEndsAt || user.subscriptionExpiry;
   const msRemaining = endsAt ? Math.max(0, endsAt - Date.now()) : 0;
 
-  const dynamicPlanPricing = pricingData?.plans?.[normalizePlanKey(user.plan)];
+  const dynamicPlanPricing = findPlanPricing(pricingData, normalizePlanKey(user.plan));
   const license = computeLicenseStatus({
     plan: user.plan,
     licenseStart: user.subscriptionStartAt,
@@ -155,7 +156,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const countdownText = endsAt ? formatTimeLeft(msRemaining) : null;
 
   const analysesRemaining = license.isUnlimitedAnalyses ? 9999 : license.analysesLeft;
-  const analysesLeftStr = license.isUnlimitedAnalyses ? 'Credits remaining: Unlimited' : `Credits remaining: ${license.analysesLeft}`;
+  const analysesLeftStr = license.isUnlimitedAnalyses ? 'Unlimited analyses left' : `${license.analysesLeft} analyses left`;
 
   const canSensitivity = canUseFeature(license.planKey, 'yieldSensitivity');
   const canMonteCarlo = canUseFeature(license.planKey, 'monteCarlo');
@@ -1896,10 +1897,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       Aqari AI License Overview
                     </div>
                     <h3 className="text-2xl font-bold text-white mt-1">
-                      {user.plan === 'starter' ? 'Aqari AI - Starter ($89/mo)' :
-                       user.plan === 'pro' ? 'Aqari AI - Pro ($249/mo)' :
-                       user.plan === 'enterprise' ? 'Aqari AI - Enterprise ($749/mo)' :
-                       'Aqari AI - Free Tier (3 Analyses)'}
+                      {license.planKey === 'free'
+                        ? 'Aqari AI - FREE Tier (3 Analyses)'
+                        : `Aqari AI - ${license.displayName} ($${dynamicPlanPricing?.activePrice ?? PLANS[license.planKey].launchPrice}/30d)`}
                     </h3>
                   </div>
 

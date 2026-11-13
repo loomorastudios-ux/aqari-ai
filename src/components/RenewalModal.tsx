@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
 import { LEMON_LINKS } from '../constants';
-import { PLANS, PricingPublicPayload } from '../../lib/plans';
+import { PLANS, PricingPublicPayload, findPlanPricing } from '../../lib/plans';
 import { formatPrice, getDaysRemaining } from '../utils/formatters';
 import { 
   X, 
@@ -38,9 +38,9 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   if (!isOpen) return null;
 
   const launchActive = pricingData?.launchDiscountActive ?? true;
-  const starterPricing = pricingData?.plans?.starter;
-  const proPricing = pricingData?.plans?.pro;
-  const enterprisePricing = pricingData?.plans?.enterprise;
+  const starterPricing = findPlanPricing(pricingData, 'starter');
+  const proPricing = findPlanPricing(pricingData, 'pro');
+  const enterprisePricing = findPlanPricing(pricingData, 'enterprise');
 
   const handleRenew = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
@@ -50,7 +50,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     setPolicyError(false);
 
     const baseLink = LEMON_LINKS[plan];
-    const successUrl = `https://aqari-ai-rho.vercel.app/app?checkout=success&plan=${plan}&email=${encodeURIComponent(user?.email || '')}`;
+    const successUrl = 'https://aqari-ai-rho.vercel.app/app?checkout=success';
     const cancelUrl = 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled';
 
     if (user?.email) {

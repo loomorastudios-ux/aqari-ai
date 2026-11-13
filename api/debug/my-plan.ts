@@ -1,5 +1,5 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
-import { PLANS } from '../../lib/plans';
+import { PLANS, findPlanPricing } from '../../lib/plans';
 import { getSessionEmailFromReq, isAdminEmail } from '../../lib/security';
 import {
   computeServerLicenseStatus,
@@ -39,7 +39,7 @@ export default async function handler(req: any, res: any) {
       analyses_left: license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLeft,
       days_left: license.daysLeft,
       locked_launch_price: userRecord.locked_launch_price ?? null,
-      features: pricing.plans[license.planKey]?.features || PLANS[license.planKey].features,
+      features: findPlanPricing(pricing, license.planKey)?.features || PLANS[license.planKey].features,
       capabilities: PLANS[license.planKey].capabilities,
     });
   } catch (err: any) {

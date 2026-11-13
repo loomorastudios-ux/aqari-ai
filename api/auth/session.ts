@@ -7,7 +7,7 @@ import {
   isAdminEmail,
   setSessionCookie,
 } from '../../lib/security';
-import { PLANS } from '../../lib/plans';
+import { PLANS, findPlanPricing } from '../../lib/plans';
 import {
   computeServerLicenseStatus,
   getOrCreateServerUser,
@@ -66,7 +66,7 @@ export default async function handler(req: any, res: any) {
         isAdmin: isAdminEmail(user.email),
         user,
         license,
-        features: pricing.plans[license.planKey]?.features || PLANS[license.planKey].features,
+        features: findPlanPricing(pricing, license.planKey)?.features || PLANS[license.planKey].features,
       });
     }
 

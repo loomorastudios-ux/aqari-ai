@@ -1,5 +1,5 @@
-import { PLANS, computeLicenseStatus, THIRTY_DAYS_MS } from '../../lib/plans';
-import { getAllServerUsers, updateServerUser } from '../../lib/serverStore';
+import { THIRTY_DAYS_MS } from '../../lib/plans';
+import { computeServerLicenseStatus, getAllServerUsers, updateServerUser } from '../../lib/serverStore';
 import { buildDay29RenewalEmail, buildExpiredEmail, dispatchEmail } from '../../lib/mailer';
 
 function getLocalHourAndDate(timestamp: number, timeZone: string): { hour: number; dateStr: string } {
@@ -68,25 +68,22 @@ export default async function handler(req: any, res: any) {
         continue;
       }
 
-      // 2. Check Day-29 renewal trigger (tomorrow is expiry date, ideally 09:00 user timezone)
+      // 2. Daily 09:00 UTC cron check for Day-29 renewal reminder (if license_end is tomorrow)
       const msLeft = u.license_end - now;
-      const isTomorrow = msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000 * 1.5;
+      const isTomorrow = msLeft > 0 && msLeft <= 36 * 60 * 60 * 1000;
       const tz = u.timezone || 'Asia/Muscat';
-      const userNow = getLocalHourAndDate(now, tz);
       const userEnd = getLocalHourAndDate(u.license_end, tz);
       const userTomorrow = getLocalHourAndDate(now + 24 * 60 * 60 * 1000, tz);
+      const utcTomorrow = new Date(now + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const utcEnd = new Date(u.license_end).toISOString().slice(0, 10);
 
-      const endsTomorrowInTz = userEnd.dateStr === userTomorrow.dateStr || isTomorrow;
-      const isNineAMOrLater = userNow.hour >= 9 || force;
+      const endsTomorrow =
+        userEnd.dateStr === userTomorrow.dateStr ||
+        utcEnd === utcTomorrow ||
+        isTomorrow;
 
-      if (endsTomorrowInTz && isNineAMOrLater && !u.day29_email_sent) {
-        const license = computeLicenseStatus({
-          plan: u.plan,
-          licenseStart: u.license_start,
-          licenseEnd: u.license_end,
-          analysesUsed: u.analyses_used,
-          now,
-        });
+      if ((endsTomorrow || force) && !u.day29_email_sent) {
+        const license = computeServerLicenseStatus(u);
 
         const formattedEnd = new Date(u.license_end).toLocaleDateString('en-US', {
           year: 'numeric',

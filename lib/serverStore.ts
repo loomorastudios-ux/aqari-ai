@@ -141,6 +141,16 @@ export interface StoredPricingConfig {
   plans: Record<PlanKey, StoredPlanConfig>;
 }
 
+export interface PendingCheckoutEntry {
+  email: string;
+  plan: PlanKey;
+  amountUSD: number;
+  isLaunchPrice: boolean;
+  testMode: boolean;
+  createdAt: number;
+  checkoutId?: string;
+}
+
 interface StoreShape {
   users: Record<string, ServerUserRecord>;
   webhook_logs: WebhookLogEntry[];
@@ -148,6 +158,7 @@ interface StoreShape {
   email_logs: EmailLogEntry[];
   pricing_config: StoredPricingConfig;
   pricing_logs: PricingChangeLogEntry[];
+  pending_checkouts: Record<string, PendingCheckoutEntry>;
 }
 
 function createDefaultPricingConfig(): StoredPricingConfig {
@@ -207,6 +218,7 @@ let memoryStore: StoreShape = {
   email_logs: [],
   pricing_config: createDefaultPricingConfig(),
   pricing_logs: [],
+  pending_checkouts: {},
 };
 
 function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
@@ -284,6 +296,10 @@ function loadStore(): StoreShape {
           email_logs: Array.isArray(parsed.email_logs) ? parsed.email_logs : [],
           pricing_config: hydratePricingConfig(parsed.pricing_config),
           pricing_logs: Array.isArray(parsed.pricing_logs) ? parsed.pricing_logs : [],
+          pending_checkouts:
+            parsed.pending_checkouts && typeof parsed.pending_checkouts === 'object'
+              ? parsed.pending_checkouts
+              : {},
         };
       }
     }
@@ -449,7 +465,7 @@ export function activatePaidPlanOnServer(params: {
   const licenseEnd = now + THIRTY_DAYS_MS;
   const existing = getOrCreateServerUser(params.email, { name: params.name });
   const pricing = getPricingPublicPayload();
-  const dynamicPlan = pricing.plans[params.plan];
+  const dynamicPlan = pricing.plansMap?.[params.plan];
   const planCfg = PLANS[params.plan];
   const amount = params.amountUSD ?? dynamicPlan?.activePrice ?? planCfg.launchPrice;
   const orderId = params.orderId || `ord_${now}`;
@@ -730,24 +746,115 @@ export function getEmailLogs(): EmailLogEntry[] {
   return loadStore().email_logs;
 }
 
+export function recordPendingCheckout(entry: PendingCheckoutEntry): void {
+  const store = loadStore();
+  const norm = normalizeEmail(entry.email);
+  if (norm) {
+    store.pending_checkouts[norm] = { ...entry, email: norm };
+  }
+  if (entry.checkoutId) {
+    store.pending_checkouts[`chk:${entry.checkoutId}`] = { ...entry, email: norm };
+  }
+  persistStore(store);
+}
+
+export function consumePendingCheckout(
+  email?: string,
+  checkoutId?: string
+): PendingCheckoutEntry | null {
+  const store = loadStore();
+  const norm = normalizeEmail(email || '');
+  const byId = checkoutId ? store.pending_checkouts[`chk:${checkoutId}`] : undefined;
+  const byEmail = norm ? store.pending_checkouts[norm] : undefined;
+  const match = byId || byEmail || null;
+  if (match) {
+    if (norm) delete store.pending_checkouts[norm];
+    if (checkoutId) delete store.pending_checkouts[`chk:${checkoutId}`];
+    if (match.checkoutId) delete store.pending_checkouts[`chk:${match.checkoutId}`];
+    persistStore(store);
+  }
+  return match;
+}
+
+export function recordOrderRefunded(params: {
+  email: string;
+  orderId: string;
+  amountUSD?: number;
+}): ServerUserRecord {
+  const user = getOrCreateServerUser(params.email);
+  const now = Date.now();
+  const iso = new Date(now).toISOString();
+  const timelineEntry: ForensicTimelineEntry = {
+    id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: iso,
+    type: 'refund_request',
+    message: `Order #${params.orderId} refunded ($${params.amountUSD ?? 0}) -> License revoked to FREE`,
+    actor: 'lemonsqueezy',
+  };
+  return updateServerUser(user.email, {
+    plan: 'free',
+    analyses_used: 0,
+    license_end: now,
+    refund_requested: true,
+    refund_status: 'approved',
+    refund_notes: `Refunded via Lemon Squeezy webhook (Order #${params.orderId})`,
+    timeline: [timelineEntry, ...user.timeline].slice(0, 200),
+  });
+}
+
+export function recordSubscriptionUpdated(params: {
+  email: string;
+  plan?: PlanKey;
+  licenseEndMs?: number | null;
+  status?: string;
+}): ServerUserRecord {
+  const user = getOrCreateServerUser(params.email);
+  const nextPlan =
+    params.status === 'expired'
+      ? 'free'
+      : params.plan && params.plan !== 'free'
+      ? params.plan
+      : user.plan;
+  const now = Date.now();
+  const nextEnd =
+    params.licenseEndMs && Number.isFinite(params.licenseEndMs)
+      ? params.licenseEndMs
+      : user.license_end || now + THIRTY_DAYS_MS;
+
+  return updateServerUser(user.email, {
+    plan: nextPlan,
+    license_end: nextEnd,
+    day29_email_sent: false,
+    expired_email_sent: false,
+  });
+}
+
 export function getPricingPublicPayload(): PricingPublicPayload {
   const store = loadStore();
   const cfg = store.pricing_config || createDefaultPricingConfig();
   const now = Date.now();
   const daysRemaining = Math.max(0, Math.ceil((cfg.launchEndsAt - now) / (24 * 60 * 60 * 1000)));
-  const plans = {} as Record<PlanKey, DynamicPlanPublic>;
+  const plansMap = {} as Record<PlanKey, DynamicPlanPublic>;
+  const plansList: DynamicPlanPublic[] = [];
+
   for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
     const p = cfg.plans[k];
-    plans[k] = {
+    const entry: DynamicPlanPublic = {
+      id: k,
       key: k,
       displayName: p.displayName,
       originalPrice: p.originalPrice,
       launchPrice: p.launchPrice,
       activePrice: k === 'free' ? 0 : cfg.launchDiscountActive ? p.launchPrice : p.originalPrice,
+      analyses: p.analysesLimit,
       analysesLimit: p.analysesLimit,
+      saved: p.savedLimit,
       savedLimit: p.savedLimit,
       features: [...p.features],
+      launchDiscountActive: cfg.launchDiscountActive,
     };
+    plansMap[k] = entry;
+    plansList.push(entry);
   }
   return {
     success: true,
@@ -756,14 +863,15 @@ export function getPricingPublicPayload(): PricingPublicPayload {
     launchEndsAt: cfg.launchEndsAt,
     daysRemaining,
     updatedAt: cfg.updatedAt,
-    plans,
+    plans: plansList,
+    plansMap,
   };
 }
 
 export function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStatus {
   const pricing = getPricingPublicPayload();
   const planKey = normalizePlanKey(user.plan);
-  const dynamicPlan = pricing.plans[planKey];
+  const dynamicPlan = pricing.plansMap?.[planKey];
   return computeLicenseStatus({
     plan: user.plan,
     licenseStart: user.license_start,

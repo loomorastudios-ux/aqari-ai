@@ -27,6 +27,7 @@ import {
 import { verifyGoogleAccessToken, verifyGoogleIdToken } from './utils/oauthConfig';
 import {
   canUseFeature,
+  findPlanPricing,
   normalizePlanKey,
   PLANS,
   PricingPublicPayload,
@@ -164,19 +165,38 @@ export default function App() {
   const [newsArticles, setNewsArticles] = useState<MarketNewsArticle[]>([]);
 
   const [showToast, setShowToast] = useState(true);
-  const [unlockSuccessMsg, setUnlockSuccessMsg] = useState<string | null>(null);
-  const [terminalToast, setTerminalToast] = useState<string | null>(null);
+  const [unlockSuccessMsg, setUnlockSuccessMsg] = useState<string | null>(() => {
+    try {
+      const msg = sessionStorage.getItem('aqari_unlock_msg');
+      if (msg) sessionStorage.removeItem('aqari_unlock_msg');
+      return msg;
+    } catch {
+      return null;
+    }
+  });
+  const [terminalToast, setTerminalToast] = useState<string | null>(() => {
+    try {
+      const msg = sessionStorage.getItem('aqari_unlock_toast');
+      if (msg) sessionStorage.removeItem('aqari_unlock_toast');
+      return msg;
+    } catch {
+      return null;
+    }
+  });
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [isRetryingVerify, setIsRetryingVerify] = useState(false);
+  const [serverSynced, setServerSynced] = useState<boolean>(() => !getSessionUser());
 
   const showTempToast = (msg: string, duration = 3500) => {
     setTerminalToast(msg);
     setTimeout(() => setTerminalToast(null), duration);
   };
 
-  // Force production Vercel domain redirect if accessed via any preview .vercel.app host
+  // Force production Vercel domain redirect immediately if accessed via any preview .vercel.app host
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const host = window.location.hostname;
-      if (host.endsWith('.vercel.app') && host !== 'aqari-ai-rho.vercel.app') {
+      if (host.includes('vercel.app') && host !== 'aqari-ai-rho.vercel.app') {
         window.location.replace(
           `${PRODUCTION_URL}${window.location.pathname}${window.location.search}${window.location.hash}`
         );
@@ -350,6 +370,124 @@ export default function App() {
     }
   }, [user]);
 
+  const runCheckoutVerification = async () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const parsedPlan = normalizePlanKey(urlParams.get('plan'));
+    const returnedPlan: 'starter' | 'pro' | 'enterprise' =
+      parsedPlan === 'free' ? 'pro' : parsedPlan;
+    const planCfg = PLANS[returnedPlan];
+    setVerifyingPlanName(urlParams.get('plan') ? planCfg.displayName : 'TERMINAL');
+    setVerifyError(null);
+    setIsRetryingVerify(true);
+
+    const sessionUser = getSessionUser();
+    const targetEmail = (sessionUser?.email || urlParams.get('email') || '').trim().toLowerCase();
+    const checkoutId = urlParams.get('checkout_id') || '';
+    const orderId = urlParams.get('order_id') || '';
+    const chargedPrice = urlParams.get('charged_price') || '';
+    const launchLocked = urlParams.get('launch_locked') || '';
+    const testModeParam = urlParams.get('test_mode') || '';
+
+    try {
+      const res = await fetch('/api/checkout/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: targetEmail || undefined,
+          plan: urlParams.get('plan') ? returnedPlan : undefined,
+          checkout_id: checkoutId || undefined,
+          order_id: orderId || undefined,
+          charged_price: chargedPrice ? Number(chargedPrice) : undefined,
+          launch_locked: launchLocked ? Number(launchLocked) : undefined,
+          test_mode: testModeParam || undefined,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.verified && data?.user) {
+          // Force refresh session directly from authoritative /api/me
+          const meRes = await fetch(`/api/me?t=${Date.now()}`, {
+            credentials: 'include',
+            cache: 'no-store',
+          });
+          const meData = meRes.ok ? await meRes.json() : data;
+
+          const verifiedPlan = normalizePlanKey(meData?.planKey || data.user.plan);
+          const verifiedCfg = PLANS[verifiedPlan];
+          const serverLimit = meData?.license?.analysesLimit ?? data.license?.analysesLimit ?? verifiedCfg.analysesLimit;
+          const serverUsed = Number(meData?.analyses_used ?? data.user.analyses_used ?? 0);
+          const serverLeft = Number.isFinite(serverLimit)
+            ? Math.max(0, serverLimit - serverUsed)
+            : 999999;
+
+          const existing = (data.user.email && getUser(data.user.email)) || sessionUser;
+          const lockedPriceVal = meData?.locked_launch_price ?? data.user.locked_launch_price ?? null;
+          const updatedUser: User = {
+            ...(existing || {
+              id: 'user_' + Date.now(),
+              email: data.user.email,
+              name: data.user.name || data.user.email.split('@')[0],
+              avatar: data.user.email.charAt(0).toUpperCase(),
+              provider: 'google',
+              createdAt: Date.now(),
+              savedAnalyses: [],
+            }),
+            email: data.user.email,
+            plan: verifiedPlan,
+            subscriptionPlan: verifiedPlan,
+            subscriptionStatus: verifiedPlan === 'free' ? 'free' : 'active',
+            subscriptionStartAt: meData?.license_start ?? data.user.license_start ?? Date.now(),
+            subscriptionEndsAt: meData?.license_end ?? data.user.license_end ?? null,
+            subscriptionExpiry: meData?.license_end ?? data.user.license_end ?? null,
+            analysesUsed: serverUsed,
+            freeAnalyses: serverLeft,
+            freeAnalysesLeft: serverLeft,
+            analysesLeft: serverLeft,
+            lockedLaunchPrice: lockedPriceVal,
+            expiryEmailSent: false,
+          };
+
+          saveUser(updatedUser);
+          setUser(updatedUser);
+          setVerifyingPlanName(verifiedCfg.displayName);
+
+          try {
+            confetti({
+              particleCount: 160,
+              spread: 85,
+              origin: { y: 0.6 },
+              colors: ['#D4AF37', '#F3E5AB', '#8B5CF6', '#06B6D4'],
+            });
+          } catch {}
+
+          const unlockBanner = lockedPriceVal
+            ? `Welcome to ${verifiedCfg.displayName} — You locked Launch Price ${lockedPriceVal}$ - Your next renewal will be at same launch price if you renew before expiry`
+            : `Welcome to ${verifiedCfg.displayName} — Payment Successful! Your Terminal is unlocked.`;
+          const unlockToast = `Welcome to AQARI ${verifiedCfg.displayName} — Unlocked for 30 Days!`;
+          try {
+            sessionStorage.setItem('aqari_unlock_msg', unlockBanner);
+            sessionStorage.setItem('aqari_unlock_toast', unlockToast);
+          } catch {}
+
+          setIsRetryingVerify(false);
+          window.history.replaceState({}, document.title, '/app');
+          window.location.reload();
+          return;
+        }
+      }
+
+      const errData = await res.json().catch(() => ({}));
+      setVerifyError(errData?.error || 'Verification is still syncing with Lemon Squeezy. Click below to unlock your terminal.');
+    } catch (err) {
+      console.error('Checkout verification error:', err);
+      setVerifyError('Unable to reach verification server. Click below to retry.');
+    } finally {
+      setIsRetryingVerify(false);
+    }
+  };
+
   // Verify post-checkout success & Google OAuth redirect tokens on mount
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -361,109 +499,8 @@ export default function App() {
     }
 
     if (urlParams.get('success') === 'true' || urlParams.get('checkout') === 'success') {
-      const parsedPlan = normalizePlanKey(urlParams.get('plan'));
-      const returnedPlan: 'starter' | 'pro' | 'enterprise' =
-        parsedPlan === 'free' ? 'pro' : parsedPlan;
-      const planCfg = PLANS[returnedPlan];
-      setVerifyingPlanName(planCfg.displayName);
       setRoute('checkout-verifying');
-
-      const sessionUser = getSessionUser();
-      const targetEmail = (sessionUser?.email || urlParams.get('email') || '').trim().toLowerCase();
-      const checkoutId = urlParams.get('checkout_id') || '';
-      const orderId = urlParams.get('order_id') || '';
-      const chargedPrice = urlParams.get('charged_price') || '';
-      const launchLocked = urlParams.get('launch_locked') || '';
-      const testModeParam = urlParams.get('test_mode') || '';
-
-      const verifyCheckout = async () => {
-        try {
-          const res = await fetch('/api/checkout/verify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-              email: targetEmail,
-              plan: returnedPlan,
-              checkout_id: checkoutId,
-              order_id: orderId,
-              charged_price: chargedPrice ? Number(chargedPrice) : undefined,
-              launch_locked: launchLocked ? Number(launchLocked) : undefined,
-              test_mode: testModeParam || undefined,
-            }),
-          });
-
-          if (res.ok) {
-            const data = await res.json();
-            if (data?.verified && data?.user) {
-              const verifiedPlan = normalizePlanKey(data.user.plan);
-              const verifiedCfg = PLANS[verifiedPlan];
-              const serverLimit = data.license?.analysesLimit ?? verifiedCfg.analysesLimit;
-              const serverLeft = Number.isFinite(serverLimit)
-                ? Math.max(0, serverLimit - Number(data.user.analyses_used || 0))
-                : 999999;
-
-              const existing = (targetEmail && getUser(targetEmail)) || sessionUser;
-              const lockedPriceVal = data.user.locked_launch_price ?? null;
-              const updatedUser: User = {
-                ...(existing || {
-                  id: 'user_' + Date.now(),
-                  email: data.user.email,
-                  name: data.user.name || data.user.email.split('@')[0],
-                  avatar: data.user.email.charAt(0).toUpperCase(),
-                  provider: 'google',
-                  createdAt: Date.now(),
-                  savedAnalyses: [],
-                }),
-                email: data.user.email,
-                plan: verifiedPlan,
-                subscriptionPlan: verifiedPlan,
-                subscriptionStatus: verifiedPlan === 'free' ? 'free' : 'active',
-                subscriptionStartAt: data.user.license_start ?? Date.now(),
-                subscriptionEndsAt: data.user.license_end ?? null,
-                subscriptionExpiry: data.user.license_end ?? null,
-                analysesUsed: Number(data.user.analyses_used || 0),
-                freeAnalyses: serverLeft,
-                freeAnalysesLeft: serverLeft,
-                analysesLeft: serverLeft,
-                lockedLaunchPrice: lockedPriceVal,
-                expiryEmailSent: false,
-              };
-
-              saveUser(updatedUser);
-              setUser(updatedUser);
-
-              try {
-                confetti({
-                  particleCount: 160,
-                  spread: 85,
-                  origin: { y: 0.6 },
-                  colors: ['#D4AF37', '#F3E5AB', '#8B5CF6', '#06B6D4'],
-                });
-              } catch {}
-
-              setUnlockSuccessMsg(
-                lockedPriceVal
-                  ? `Welcome to ${verifiedCfg.displayName} — You locked Launch Price ${lockedPriceVal}$ - Your next renewal will be at same launch price if you renew before expiry`
-                  : `Welcome to ${verifiedCfg.displayName} — Payment Successful! Your Terminal is unlocked.`
-              );
-              showTempToast(`Welcome to AQARI ${verifiedCfg.displayName} — Unlocked for 30 Days!`, 5000);
-              window.history.replaceState({}, document.title, '/app');
-              setRoute('terminal');
-              return;
-            }
-          }
-        } catch (err) {
-          console.error('Checkout verification error:', err);
-        }
-
-        // If verification pending webhook or email missing, prompt or route cleanly without granting unearned client access
-        showTempToast('Payment verification in progress. Please refresh or sign in with your checkout email.', 5000);
-        window.history.replaceState({}, document.title, '/app');
-        setRoute(sessionUser ? 'terminal' : 'landing');
-      };
-
-      verifyCheckout();
+      runCheckoutVerification();
     }
 
     // Check if returning from Google OAuth redirect
@@ -520,6 +557,7 @@ export default function App() {
     handleSaveUser(newUser);
     setIsAuthOpen(false);
 
+    let resolvedUser = newUser;
     // Issue server HttpOnly signed session cookie & sync server-authoritative plan
     try {
       const res = await fetch('/api/auth/session', {
@@ -552,6 +590,7 @@ export default function App() {
             lockedLaunchPrice: data.user.locked_launch_price ?? null,
           };
           handleSaveUser(syncedUser);
+          resolvedUser = syncedUser;
         }
       }
     } catch {}
@@ -560,10 +599,10 @@ export default function App() {
     setRoute('terminal');
     window.scrollTo(0, 0);
 
-    const left = newUser.plan === 'free'
-      ? (newUser.freeAnalysesLeft ?? newUser.freeAnalyses ?? 3)
-      : (newUser.analysesLeft ?? 30);
-    showTempToast(`Welcome back, ${newUser.name || newUser.email.split('@')[0]} - ${left} analyses left`, 3000);
+    const left = resolvedUser.plan === 'free'
+      ? (resolvedUser.freeAnalysesLeft ?? resolvedUser.freeAnalyses ?? 3)
+      : (resolvedUser.analysesLeft ?? 30);
+    showTempToast(`Welcome back, ${resolvedUser.name || resolvedUser.email.split('@')[0]} - ${left} analyses left`, 3000);
   };
 
   // Sign Out (clears session cookie & localStorage session, stays cleanly on '/')
@@ -582,33 +621,64 @@ export default function App() {
     window.scrollTo(0, 0);
   };
 
-  // Server-authoritative License Sync: ALWAYS trust server DB plan & dynamic limits over tampered localStorage
+  // Server-authoritative /api/me Sync: ALWAYS read plan & limits from server DB, NEVER localStorage
   useEffect(() => {
-    if (!user?.email) return;
-
-    const syncLicenseFromServer = async () => {
+    const syncMeFromServer = async () => {
       try {
-        const res = await fetch('/api/user/license', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        let res = await fetch(`/api/me?t=${Date.now()}`, {
           credentials: 'include',
-          body: JSON.stringify({
-            email: user.email,
-            name: user.name,
-          }),
+          cache: 'no-store',
         });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!data?.user) return;
 
-        const serverPlan = normalizePlanKey(data.user.plan);
-        const serverUsed = Number(data.user.analyses_used ?? 0);
-        const serverEnd = data.user.license_end ?? null;
+        // If cookie hasn't been established for this signed-in user yet, establish HttpOnly cookie first
+        if (res.status === 401 && user?.email) {
+          await fetch('/api/auth/session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ email: user.email, name: user.name }),
+          });
+          res = await fetch(`/api/me?t=${Date.now()}`, {
+            credentials: 'include',
+            cache: 'no-store',
+          });
+        }
+
+        if (!res.ok) {
+          setServerSynced(true);
+          return;
+        }
+        const data = await res.json();
+        if (!data?.authenticated || !data?.email) {
+          setServerSynced(true);
+          return;
+        }
+
+        const serverPlan = normalizePlanKey(data.planKey || data.user?.plan);
+        const serverUsed = Number(data.analyses_used ?? 0);
+        const serverEnd = data.license_end ?? null;
         const serverLimit = data.license?.analysesLimit ?? PLANS[serverPlan].analysesLimit;
         const serverLeft = Number.isFinite(serverLimit) ? Math.max(0, serverLimit - serverUsed) : 999999;
-        const serverLockedLaunch = data.user.locked_launch_price ?? null;
+        const serverLockedLaunch = data.locked_launch_price ?? null;
+
+        const baseUser: User = user || {
+          id: 'user_' + Date.now(),
+          email: data.email,
+          name: data.name || data.email.split('@')[0],
+          avatar: data.email.charAt(0).toUpperCase(),
+          provider: 'google',
+          createdAt: Date.now(),
+          savedAnalyses: [],
+          plan: 'free',
+          subscriptionExpiry: null,
+          analysesUsed: 0,
+          freeAnalyses: 3,
+          freeAnalysesLeft: 3,
+          analysesLeft: 3,
+        };
 
         const changed =
+          !user ||
           normalizePlanKey(user.plan) !== serverPlan ||
           (user.analysesUsed ?? 0) !== serverUsed ||
           (user.subscriptionEndsAt ?? null) !== serverEnd ||
@@ -617,11 +687,13 @@ export default function App() {
 
         if (changed) {
           const syncedUser: User = {
-            ...user,
+            ...baseUser,
+            email: data.email,
+            name: baseUser.name || data.name || data.email.split('@')[0],
             plan: serverPlan,
             subscriptionPlan: serverPlan,
-            subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : 'active',
-            subscriptionStartAt: data.user.license_start ?? undefined,
+            subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : serverPlan === 'free' ? 'free' : 'active',
+            subscriptionStartAt: data.license_start ?? undefined,
             subscriptionEndsAt: serverEnd,
             subscriptionExpiry: serverEnd,
             analysesUsed: serverUsed,
@@ -633,11 +705,14 @@ export default function App() {
           saveUser(syncedUser);
           setUser(syncedUser);
         }
-      } catch {}
+      } catch {
+      } finally {
+        setServerSynced(true);
+      }
     };
 
-    syncLicenseFromServer();
-    const onFocus = () => syncLicenseFromServer();
+    syncMeFromServer();
+    const onFocus = () => syncMeFromServer();
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [user?.email, route, pricingData?.updatedAt]);
@@ -657,7 +732,7 @@ export default function App() {
       showTempToast('Admin sandbox unlock is restricted to owner email.', 4000);
       return;
     }
-    const dynamicPlan = pricingData?.plans?.[plan];
+    const dynamicPlan = findPlanPricing(pricingData, plan);
     const planCfg = PLANS[plan];
     const limit = dynamicPlan ? (dynamicPlan.analysesLimit === null ? Infinity : dynamicPlan.analysesLimit) : planCfg.analysesLimit;
     const planQuota = Number.isFinite(limit) ? limit : 999999;
@@ -850,16 +925,26 @@ export default function App() {
       <div className="min-h-screen bg-black text-white flex items-center justify-center p-6 relative overflow-hidden">
         <AmbientBackground />
         <div className="z-10 max-w-md w-full glass-panel p-8 sm:p-10 rounded-[32px] border border-[#D4AF37]/40 text-center space-y-5 shadow-[0_0_60px_rgba(212,175,55,0.2)]">
-          <Loader2 className="w-12 h-12 text-[#D4AF37] animate-spin mx-auto" />
+          <Loader2 className={`w-12 h-12 text-[#D4AF37] mx-auto ${isRetryingVerify ? 'animate-spin' : ''}`} />
           <div className="text-xs font-mono uppercase tracking-wider text-emerald-400 font-bold">
-            PAYMENT SUCCESSFUL • VERIFYING LICENSE
+            {verifyError ? 'VERIFICATION PENDING' : 'PAYMENT SUCCESSFUL • VERIFYING LICENSE'}
           </div>
           <h1 className="text-2xl font-bold text-white tracking-tight">
             Welcome to AQARI {verifyingPlanName}
           </h1>
           <p className="text-xs font-mono text-zinc-400 leading-relaxed">
-            Payment Successful - Unlocking your Terminal and synchronizing your 30-day entitlements with Lemon Squeezy...
+            {verifyError || 'Payment Successful - Unlocking your Terminal...'}
           </p>
+          {verifyError && (
+            <button
+              type="button"
+              disabled={isRetryingVerify}
+              onClick={runCheckoutVerification}
+              className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-xs font-mono uppercase tracking-wider transition cursor-pointer shadow-lg disabled:opacity-60"
+            >
+              {isRetryingVerify ? 'Unlocking Terminal...' : 'Click to Unlock - Retry'}
+            </button>
+          )}
         </div>
       </div>
     );
@@ -1024,7 +1109,16 @@ export default function App() {
         style={{ display: isTerminal ? 'block' : 'none' }}
         className="min-h-screen bg-black text-slate-100 selection:bg-[#D4AF37]/30 selection:text-white relative"
       >
-        {user && (
+        {user && !serverSynced ? (
+          <div className="min-h-screen bg-black text-white flex items-center justify-center p-6">
+            <div className="text-center space-y-3">
+              <Loader2 className="w-10 h-10 text-[#D4AF37] animate-spin mx-auto" />
+              <div className="text-xs font-mono uppercase tracking-wider text-zinc-400">
+                Synchronizing Server License Entitlements...
+              </div>
+            </div>
+          </div>
+        ) : user ? (
           <>
             <AmbientBackground />
             <CustomCursor />
@@ -1044,7 +1138,7 @@ export default function App() {
               initialToast={terminalToast}
             />
           </>
-        )}
+        ) : null}
       </div>
 
       {/* VIEW: LANDING PAGE */}

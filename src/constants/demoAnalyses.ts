@@ -208,7 +208,7 @@ export const DEMO_ANALYSES: Record<string, DemoAnalysisItem> = {
     goldenVisa: 'UK Innovator Founder Route (Alternative)',
     occupancyRate: 98,
     tenantRisk: 'AAA',
-    liquidityScore: 89,
+    liquidityScore: 88,
     featuresUnlocked: [
       'Stamp Duty Land Tax (SDLT) Cross-Border Surcharge Calculator',
       'Non-Resident CGT & Inheritance Tax Risk Modeling',

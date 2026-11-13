@@ -1,4 +1,5 @@
-import { getPricingPublicPayload } from '../lib/serverStore';
+import { findPlanPricing } from '../lib/plans';
+import { getPricingPublicPayload, recordPendingCheckout } from '../lib/serverStore';
 
 /**
  * Lemon Squeezy Real & Test Checkout Creation Endpoint
@@ -6,12 +7,13 @@ import { getPricingPublicPayload } from '../lib/serverStore';
  *
  * Dynamically uses Launch Price when launchDiscountActive=true,
  * or Original Price when admin toggles Launch Discount OFF in /admin.
+ * Forces exact production success_url & cancel_url (no preview URLs).
  */
 
 const VARIANT_IDS: Record<'starter' | 'pro' | 'enterprise', string> = {
-  starter: 'da826632-dcb4-4885-966e-aac1fab84cb3',
-  pro: '404c54cb-29c5-477a-b8c2-772092f5459a',
-  enterprise: 'ce8dfbdb-cedd-4445-a947-e821522472bb',
+  starter: process.env.LEMON_STARTER_VARIANT_ID || 'da826632-dcb4-4885-966e-aac1fab84cb3',
+  pro: process.env.LEMON_PRO_VARIANT_ID || '404c54cb-29c5-477a-b8c2-772092f5459a',
+  enterprise: process.env.LEMON_SOVEREIGN_VARIANT_ID || 'ce8dfbdb-cedd-4445-a947-e821522472bb',
 };
 
 const BUY_URLS: Record<'starter' | 'pro' | 'enterprise', string> = {
@@ -39,7 +41,7 @@ export default async function handler(req: any, res: any) {
 
     // Single Source of Truth from dynamic pricing store
     const pricing = getPricingPublicPayload();
-    const planPricing = pricing.plans[validPlan];
+    const planPricing = findPlanPricing(pricing, validPlan)!;
     const isLaunchPrice = Boolean(pricing.launchDiscountActive);
     const activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
     const customPriceCents = Math.max(100, Math.round(activePriceUSD * 100));
@@ -47,17 +49,23 @@ export default async function handler(req: any, res: any) {
     const isTestMode =
       process.env.LEMON_TEST_MODE === 'true' || process.env.VITE_LEMON_TEST_MODE === 'true';
     const apiKey = isTestMode
-      ? process.env.LEMON_TEST_API_KEY || process.env.LEMONSQUEEZY_API_KEY
-      : process.env.LEMONSQUEEZY_API_KEY;
+      ? process.env.LEMON_TEST_API_KEY || process.env.LEMON_API_KEY || process.env.LEMONSQUEEZY_API_KEY
+      : process.env.LEMON_API_KEY || process.env.LEMONSQUEEZY_API_KEY;
     const storeId = isTestMode
-      ? process.env.LEMON_TEST_STORE_ID || process.env.LEMONSQUEEZY_STORE_ID
-      : process.env.LEMONSQUEEZY_STORE_ID;
+      ? process.env.LEMON_TEST_STORE_ID || process.env.LEMON_STORE_ID || process.env.LEMONSQUEEZY_STORE_ID
+      : process.env.LEMON_STORE_ID || process.env.LEMONSQUEEZY_STORE_ID;
 
-    const redirectWithParams = `${SUCCESS_REDIRECT}&plan=${validPlan}&email=${encodeURIComponent(
-      email || ''
-    )}&charged_price=${activePriceUSD}&launch_locked=${
-      isLaunchPrice ? activePriceUSD : ''
-    }&test_mode=${isTestMode ? '1' : '0'}`;
+    // Record pending checkout intent so /api/checkout/verify can reconcile exact URL return
+    if (email) {
+      recordPendingCheckout({
+        email,
+        plan: validPlan,
+        amountUSD: activePriceUSD,
+        isLaunchPrice,
+        testMode: isTestMode,
+        createdAt: Date.now(),
+      });
+    }
 
     // If Lemon Squeezy API credentials are set, call the official Checkouts API with custom_price
     if (apiKey && storeId) {
@@ -77,8 +85,8 @@ export default async function handler(req: any, res: any) {
             },
           },
           product_options: {
-            redirect_url: redirectWithParams,
-            receipt_button_text: 'Open Aqari Terminal',
+            redirect_url: SUCCESS_REDIRECT,
+            receipt_button_text: 'Go to My Terminal',
           },
         };
         if (includeCustomPrice) {
@@ -108,20 +116,34 @@ export default async function handler(req: any, res: any) {
       try {
         let response = await createLemonCheckout(true);
         if (!response.ok) {
-          // Retry without custom_price if Lemon variant rejects price override
           response = await createLemonCheckout(false);
         }
 
         if (response.ok) {
           const json = await response.json();
           const checkoutUrl = json?.data?.attributes?.url;
+          const checkoutId = json?.data?.id ? String(json.data.id) : undefined;
           if (checkoutUrl) {
+            if (email) {
+              recordPendingCheckout({
+                email,
+                plan: validPlan,
+                amountUSD: activePriceUSD,
+                isLaunchPrice,
+                testMode: isTestMode,
+                createdAt: Date.now(),
+                checkoutId,
+              });
+            }
             const duration = Date.now() - startTime;
             console.log(
               `[Aqari Checkout] Generated in ${duration}ms, Plan: ${validPlan}, Price: $${activePriceUSD} (launch=${isLaunchPrice}), Test Mode: ${isTestMode}`
             );
             return res.status(200).json({
               url: checkoutUrl,
+              checkoutId,
+              success_url: SUCCESS_REDIRECT,
+              cancel_url: CANCEL_REDIRECT,
               success: true,
               testMode: isTestMode,
               durationMs: duration,
@@ -138,7 +160,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Direct Hosted Lemon Squeezy Checkout URL with prefilled parameters
+    // Direct Hosted Lemon Squeezy Checkout URL with exact production redirect URLs
     const params = new URLSearchParams();
     if (email) params.set('checkout[email]', email);
     if (userId) params.set('checkout[custom][user_id]', userId);
@@ -153,7 +175,7 @@ export default async function handler(req: any, res: any) {
       params.set('checkout[test_mode]', '1');
       params.set('checkout[custom][test_mode]', 'true');
     }
-    params.set('checkout[redirect_url]', redirectWithParams);
+    params.set('checkout[redirect_url]', SUCCESS_REDIRECT);
     params.set('checkout[cancel_url]', CANCEL_REDIRECT);
 
     const directUrl = `${buyBaseUrl}?${params.toString()}`;
@@ -164,6 +186,8 @@ export default async function handler(req: any, res: any) {
 
     return res.status(200).json({
       url: directUrl,
+      success_url: SUCCESS_REDIRECT,
+      cancel_url: CANCEL_REDIRECT,
       success: true,
       testMode: isTestMode,
       durationMs: duration,

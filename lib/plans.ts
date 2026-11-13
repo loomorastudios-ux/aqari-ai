@@ -32,14 +32,18 @@ export interface PlanDefinition {
 }
 
 export interface DynamicPlanPublic {
+  id?: PlanKey;
   key: PlanKey;
   displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
   originalPrice: number;
   launchPrice: number;
   activePrice: number;
+  analyses?: number;
   analysesLimit: number;
+  saved?: number | null;
   savedLimit: number | null; // null = Unlimited
   features: string[];
+  launchDiscountActive?: boolean;
 }
 
 export interface PricingPublicPayload {
@@ -49,7 +53,20 @@ export interface PricingPublicPayload {
   launchEndsAt: number;
   daysRemaining: number;
   updatedAt: number;
-  plans: Record<PlanKey, DynamicPlanPublic>;
+  plans: DynamicPlanPublic[] | Record<PlanKey, DynamicPlanPublic>;
+  plansMap?: Record<PlanKey, DynamicPlanPublic>;
+}
+
+export function findPlanPricing(
+  payload: PricingPublicPayload | null | undefined,
+  key: PlanKey
+): DynamicPlanPublic | undefined {
+  if (!payload) return undefined;
+  if (payload.plansMap && payload.plansMap[key]) return payload.plansMap[key];
+  if (Array.isArray(payload.plans)) {
+    return payload.plans.find((p) => p.key === key || p.id === key);
+  }
+  return payload.plans?.[key];
 }
 
 export const PRODUCTION_URL = 'https://aqari-ai-rho.vercel.app';
@@ -309,17 +326,8 @@ export function computeLicenseStatus(params: {
       ? 100
       : Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)));
 
-  const planLabelTitle =
-    planCfg.displayName === 'FREE'
-      ? 'Free'
-      : planCfg.displayName === 'STARTER'
-      ? 'Starter'
-      : planCfg.displayName === 'PROFESSIONAL'
-      ? 'Professional'
-      : 'Sovereign';
-
   const leftStr = isUnlimitedAnalyses ? 'Unlimited analyses left' : `${analysesLeft} analyses left`;
-  const sidebarText = `LICENSING COUNTDOWN - ${planLabelTitle} - ${daysLeft} days left - ${leftStr}`;
+  const sidebarText = `LICENSING COUNTDOWN - ${planCfg.displayName} - ${daysLeft} days left - ${leftStr}`;
 
   return {
     planKey: effectivePlanKey,

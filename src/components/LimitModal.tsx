@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
 import { LEMON_LINKS, LEMON_REDIRECT_URLS } from '../constants';
-import { PLANS, PricingPublicPayload } from '../../lib/plans';
+import { PLANS, PricingPublicPayload, findPlanPricing } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
 import { 
   X, 
@@ -41,8 +41,8 @@ export const LimitModal: React.FC<LimitModalProps> = ({
   if (!isOpen) return null;
 
   const launchActive = pricingData?.launchDiscountActive ?? true;
-  const starterPlan = pricingData?.plans?.starter;
-  const proPlan = pricingData?.plans?.pro;
+  const starterPlan = findPlanPricing(pricingData, 'starter');
+  const proPlan = findPlanPricing(pricingData, 'pro');
   const starterUSD = starterPlan?.activePrice ?? (launchActive ? PLANS.starter.launchPrice : PLANS.starter.originalPrice);
   const proUSD = proPlan?.activePrice ?? (launchActive ? PLANS.pro.launchPrice : PLANS.pro.originalPrice);
   const starterOrigUSD = starterPlan?.originalPrice ?? PLANS.starter.originalPrice;

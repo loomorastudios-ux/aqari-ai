@@ -1,20 +1,97 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import crypto from 'crypto';
-import { PLANS, PlanKey, normalizePlanKey } from '../../lib/plans';
+import { PLANS, PlanKey, findPlanPricing, normalizePlanKey } from '../../lib/plans';
 import { getClientIp } from '../../lib/security';
 import {
   activatePaidPlanOnServer,
   appendWebhookLog,
   getPricingPublicPayload,
   recordFailedWebhook,
+  recordOrderRefunded,
+  recordSubscriptionUpdated,
   updateServerUser,
 } from '../../lib/serverStore';
 
 /**
  * Lemon Squeezy Official Webhook Handler
  * Endpoint: https://aqari-ai-rho.vercel.app/api/webhooks/lemonsqueezy
- * Strictly enforces HMAC-SHA256 signature verification on EVERY webhook.
+ * Handles all 6 events:
+ *   - order_created
+ *   - order_refunded
+ *   - subscription_created
+ *   - subscription_updated
+ *   - subscription_cancelled
+ *   - subscription_expired
+ * Strictly enforces HMAC-SHA256 signature verification on EVERY request.
  */
+
+const VARIANT_ID_TO_PLAN: Record<string, PlanKey> = {
+  'da826632-dcb4-4885-966e-aac1fab84cb3': 'starter',
+  '404c54cb-29c5-477a-b8c2-772092f5459a': 'pro',
+  'ce8dfbdb-cedd-4445-a947-e821522472bb': 'enterprise',
+};
+
+function mapVariantOrProductToPlan(
+  attributes: any,
+  customData: any,
+  payload: any
+): PlanKey {
+  const variantId = String(
+    attributes?.first_order_item?.variant_id || attributes?.variant_id || ''
+  ).trim();
+  const productId = String(
+    attributes?.first_order_item?.product_id || attributes?.product_id || ''
+  ).trim();
+
+  if (variantId && process.env.LEMON_STARTER_VARIANT_ID && variantId === process.env.LEMON_STARTER_VARIANT_ID) return 'starter';
+  if (variantId && process.env.LEMON_PRO_VARIANT_ID && variantId === process.env.LEMON_PRO_VARIANT_ID) return 'pro';
+  if (variantId && process.env.LEMON_SOVEREIGN_VARIANT_ID && variantId === process.env.LEMON_SOVEREIGN_VARIANT_ID) return 'enterprise';
+  if (productId && process.env.LEMON_STARTER_PRODUCT_ID && productId === process.env.LEMON_STARTER_PRODUCT_ID) return 'starter';
+  if (productId && process.env.LEMON_PRO_PRODUCT_ID && productId === process.env.LEMON_PRO_PRODUCT_ID) return 'pro';
+  if (productId && process.env.LEMON_SOVEREIGN_PRODUCT_ID && productId === process.env.LEMON_SOVEREIGN_PRODUCT_ID) return 'enterprise';
+  if (variantId && VARIANT_ID_TO_PLAN[variantId]) return VARIANT_ID_TO_PLAN[variantId];
+
+  const productName = (
+    attributes?.first_order_item?.product_name ||
+    attributes?.first_order_item?.variant_name ||
+    attributes?.product_name ||
+    attributes?.variant_name ||
+    customData?.plan ||
+    payload?.plan ||
+    ''
+  )
+    .toString()
+    .toLowerCase();
+
+  if (
+    productName.includes('starter') ||
+    productName.includes('standard') ||
+    productName.includes('79') ||
+    productName.includes('129')
+  ) {
+    return 'starter';
+  }
+  if (
+    productName.includes('enterprise') ||
+    productName.includes('sovereign') ||
+    productName.includes('agency') ||
+    productName.includes('599') ||
+    productName.includes('999')
+  ) {
+    return 'enterprise';
+  }
+  if (
+    productName.includes('pro') ||
+    productName.includes('professional') ||
+    productName.includes('199') ||
+    productName.includes('349')
+  ) {
+    return 'pro';
+  }
+
+  const normalized = normalizePlanKey(customData?.plan || payload?.plan);
+  return normalized === 'free' ? 'pro' : normalized;
+}
 
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -27,7 +104,9 @@ export default async function handler(req: any, res: any) {
 
   try {
     // 1. Mandatory Signature Verification
-    const signature = (req.headers?.['x-signature'] || req.headers?.['X-Signature'] || '').toString().trim();
+    const signature = (req.headers?.['x-signature'] || req.headers?.['X-Signature'] || '')
+      .toString()
+      .trim();
 
     let rawBody = '';
     if (typeof req.body === 'string') {
@@ -85,31 +164,7 @@ export default async function handler(req: any, res: any) {
       'Aqari AI - Pro'
     ).toString();
 
-    let planCode: PlanKey = normalizePlanKey(customData?.plan || payload?.plan);
-    const lowerProduct = productName.toLowerCase();
-    if (
-      lowerProduct.includes('starter') ||
-      lowerProduct.includes('standard') ||
-      lowerProduct.includes('79') ||
-      lowerProduct.includes('129')
-    ) {
-      planCode = 'starter';
-    } else if (
-      lowerProduct.includes('enterprise') ||
-      lowerProduct.includes('sovereign') ||
-      lowerProduct.includes('agency') ||
-      lowerProduct.includes('599') ||
-      lowerProduct.includes('999')
-    ) {
-      planCode = 'enterprise';
-    } else if (
-      lowerProduct.includes('pro') ||
-      lowerProduct.includes('professional') ||
-      lowerProduct.includes('199') ||
-      lowerProduct.includes('349')
-    ) {
-      planCode = 'pro';
-    }
+    const planCode = mapVariantOrProductToPlan(attributes, customData, payload);
 
     const orderId = (
       payload?.data?.id ||
@@ -127,8 +182,9 @@ export default async function handler(req: any, res: any) {
     );
 
     const pricing = getPricingPublicPayload();
+    const dynamicPlan = findPlanPricing(pricing, planCode);
     const fallbackPlanPrice =
-      pricing.plans[planCode]?.activePrice ?? PLANS[planCode]?.launchPrice ?? 199;
+      dynamicPlan?.activePrice ?? PLANS[planCode]?.launchPrice ?? 199;
 
     const rawTotal =
       attributes?.total ??
@@ -154,7 +210,7 @@ export default async function handler(req: any, res: any) {
         ? amountUSD
         : null;
 
-    let subscriptionStatus: 'active' | 'cancelled' | 'expired' | 'past_due' = 'active';
+    let subscriptionStatus: 'active' | 'cancelled' | 'expired' | 'refunded' | 'past_due' = 'active';
     let persistedUser = null;
 
     switch (eventName) {
@@ -167,20 +223,59 @@ export default async function handler(req: any, res: any) {
           persistedUser = activatePaidPlanOnServer({
             email: customerEmail,
             name: customerName,
-            plan: planCode === 'free' ? 'pro' : planCode,
+            plan: planCode,
             paymentTimestamp,
             orderId,
             amountUSD,
             currency,
             testMode: isTestMode,
-            refundPolicyAcceptedAt: customData?.refund_accepted_at || new Date(paymentTimestamp).toISOString(),
+            refundPolicyAcceptedAt:
+              customData?.refund_accepted_at || new Date(paymentTimestamp).toISOString(),
             lockedLaunchPrice,
+          });
+        }
+        break;
+
+      case 'subscription_updated': {
+        const subStatus = (attributes?.status || '').toString().toLowerCase();
+        subscriptionStatus =
+          subStatus === 'expired'
+            ? 'expired'
+            : subStatus === 'cancelled'
+            ? 'cancelled'
+            : 'active';
+        const renewsOrEndsStr = attributes?.renews_at || attributes?.ends_at;
+        const licenseEndMs = renewsOrEndsStr ? new Date(renewsOrEndsStr).getTime() : null;
+        if (customerEmail) {
+          persistedUser = recordSubscriptionUpdated({
+            email: customerEmail,
+            plan: planCode,
+            licenseEndMs,
+            status: subStatus,
+          });
+        }
+        break;
+      }
+
+      case 'order_refunded':
+        subscriptionStatus = 'refunded';
+        if (customerEmail) {
+          persistedUser = recordOrderRefunded({
+            email: customerEmail,
+            orderId,
+            amountUSD,
           });
         }
         break;
 
       case 'subscription_cancelled':
         subscriptionStatus = 'cancelled';
+        if (customerEmail) {
+          const endsAtStr = attributes?.ends_at;
+          persistedUser = updateServerUser(customerEmail, {
+            license_end: endsAtStr ? new Date(endsAtStr).getTime() : undefined,
+          });
+        }
         break;
 
       case 'subscription_expired':
@@ -212,6 +307,10 @@ export default async function handler(req: any, res: any) {
       test_mode: isTestMode,
     });
 
+    console.log(
+      `[Lemon Webhook] event=${eventName} order_id=${orderId} email=${customerEmail || 'unknown'} plan=${planCode} amount=$${amountUSD} test_mode=${isTestMode}`
+    );
+
     return res.status(200).json({
       success: true,
       eventName,
@@ -227,10 +326,13 @@ export default async function handler(req: any, res: any) {
       subscriptionStatus,
       paymentDate: new Date(paymentTimestamp).toISOString(),
       license_start: paymentTimestamp,
-      license_end: subscriptionEndsAt,
-      subscriptionEndsAt,
+      license_end: persistedUser?.license_end ?? subscriptionEndsAt,
+      subscriptionEndsAt: persistedUser?.license_end ?? subscriptionEndsAt,
       analyses_used: persistedUser?.analyses_used ?? 0,
-      expiryDateFormatted: new Date(subscriptionEndsAt).toISOString().slice(0, 10),
+      total_paid_usd: persistedUser?.total_paid_usd ?? amountUSD,
+      expiryDateFormatted: new Date(persistedUser?.license_end ?? subscriptionEndsAt)
+        .toISOString()
+        .slice(0, 10),
       log: logEntry,
     });
   } catch (error: any) {

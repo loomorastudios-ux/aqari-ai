@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CurrencyCode, User, RemoteConfig } from '../types';
-import { CURRENCY_SYMBOLS, LEMON_LINKS } from '../constants';
+import { CURRENCY_SYMBOLS } from '../constants';
 import { computeLicenseStatus } from '../../lib/plans';
 import { PWAInstallButton } from './PWAInstallButton';
 import { 
@@ -114,14 +114,13 @@ export const Navbar: React.FC<NavbarProps> = ({
               ⚠️ Your <strong className="uppercase">{license?.displayName}</strong> ends tomorrow — Renew now to keep terminal access without interruption.
             </span>
           </div>
-          <a
-            href={LEMON_LINKS[user?.plan === 'free' ? 'pro' : (user?.plan || 'pro')]}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-3 py-1 bg-black text-[#D4AF37] hover:bg-zinc-900 rounded text-xs font-mono font-bold transition shrink-0 ml-2"
+          <button
+            type="button"
+            onClick={onOpenPricing}
+            className="px-3 py-1 bg-black text-[#D4AF37] hover:bg-zinc-900 rounded text-xs font-mono font-bold transition shrink-0 ml-2 cursor-pointer"
           >
             Renew Now &rarr;
-          </a>
+          </button>
         </div>
       )}
 
@@ -151,14 +150,13 @@ export const Navbar: React.FC<NavbarProps> = ({
               Subscription expired — Renew to continue accessing institutional feeds and underwriting.
             </span>
           </div>
-          <a
-            href={LEMON_LINKS[user?.plan === 'free' ? 'pro' : (user?.plan || 'pro')]}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold transition shrink-0 ml-2"
+          <button
+            type="button"
+            onClick={onOpenPricing}
+            className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold transition shrink-0 ml-2 cursor-pointer"
           >
             Renew Subscription
-          </a>
+          </button>
         </div>
       )}
 

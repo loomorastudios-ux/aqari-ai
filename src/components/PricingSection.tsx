@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
-import { PLANS, PricingPublicPayload, PlanKey, DEFAULT_LAUNCH_BADGE } from '../../lib/plans';
+import { PLANS, PricingPublicPayload, PlanKey, DEFAULT_LAUNCH_BADGE, findPlanPricing } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
 import {
   Check,
@@ -254,7 +254,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         pro: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/404c54cb-29c5-477a-b8c2-772092f5459a',
         enterprise: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/ce8dfbdb-cedd-4445-a947-e821522472bb',
       };
-      const redirectUrl = `https://aqari-ai-rho.vercel.app/app?checkout=success&plan=${planId}&email=${encodeURIComponent(user.email)}`;
+      const redirectUrl = `https://aqari-ai-rho.vercel.app/app?checkout=success`;
       const cancelUrl = `https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled`;
       const direct = `${buyUrls[planId]}?checkout[email]=${encodeURIComponent(user.email)}&checkout[custom][user_id]=${encodeURIComponent(user.id || user.googleId || '')}&checkout[custom][plan]=${planId}&checkout[redirect_url]=${encodeURIComponent(redirectUrl)}&checkout[cancel_url]=${encodeURIComponent(cancelUrl)}${isTestMode ? '&checkout[test_mode]=1' : ''}`;
       window.location.href = direct;
@@ -267,7 +267,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   };
 
   const getTierData = (key: PlanKey) => {
-    const dyn = livePricing?.plans?.[key];
+    const dyn = findPlanPricing(livePricing, key);
     const fallback = PLANS[key];
     const originalPrice = dyn ? dyn.originalPrice : fallback.originalPrice;
     const launchPrice = dyn ? dyn.launchPrice : fallback.launchPrice;
