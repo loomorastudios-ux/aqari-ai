@@ -1,16 +1,21 @@
+// © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import { CurrencyCode, MarketMatrixRow } from '../types';
-import { 
-  FALLBACK_CURRENCY_RATES, 
-  FALLBACK_CROSS_BORDER_DATA, 
+import {
+  FALLBACK_CURRENCY_RATES,
   CURRENCY_RATES,
-  EXCHANGE_RATE_API_URL 
+  EXCHANGE_RATE_API_URL,
 } from '../constants';
-import { getDeterministicMarketData, LiveMarketResponse, LiveMarketCity } from '../../api/market/live';
+import {
+  getDeterministicMarketData,
+  LiveMarketResponse,
+  LiveMarketCity,
+} from '../../api/market/live';
+import type { MarketNewsArticle } from '../../api/news';
 
-const FX_CACHE_KEY = 'aqari_fx_rates_cache';
-const MARKET_CACHE_KEY = 'aqari_live_market_cache';
+const FX_CACHE_KEY = 'aqari_fx_rates_cache_v2';
+const MARKET_CACHE_KEY = 'aqari_live_market_cache_v2';
 
-export type { LiveMarketResponse, LiveMarketCity };
+export type { LiveMarketResponse, LiveMarketCity, MarketNewsArticle };
 
 export async function fetchLiveExchangeRates(): Promise<Record<CurrencyCode, number>> {
   try {
@@ -22,7 +27,7 @@ export async function fetchLiveExchangeRates(): Promise<Record<CurrencyCode, num
         return parsed.rates;
       }
     }
-  } catch (e) {
+  } catch {
     // Ignore cache error
   }
 
@@ -43,23 +48,18 @@ export async function fetchLiveExchangeRates(): Promise<Record<CurrencyCode, num
         };
 
         Object.assign(CURRENCY_RATES, liveRates);
-        localStorage.setItem(FX_CACHE_KEY, JSON.stringify({
-          rates: liveRates,
-          timestamp: Date.now(),
-        }));
-
-        if (typeof window !== 'undefined') {
-          const win = window as unknown as { AQARI_DATA?: { rates: Record<CurrencyCode, number>; lastUpdated: number } };
-          if (win.AQARI_DATA) {
-            win.AQARI_DATA.rates = liveRates;
-            win.AQARI_DATA.lastUpdated = Date.now();
-          }
-        }
+        localStorage.setItem(
+          FX_CACHE_KEY,
+          JSON.stringify({
+            rates: liveRates,
+            timestamp: Date.now(),
+          })
+        );
         return liveRates;
       }
     }
   } catch (err) {
-    console.warn('Live FX fetch failed, falling back to pegged rates', err);
+    console.warn('Live FX fetch failed, using last cached/pegged rates', err);
   }
 
   return FALLBACK_CURRENCY_RATES;
@@ -67,62 +67,73 @@ export async function fetchLiveExchangeRates(): Promise<Record<CurrencyCode, num
 
 /**
  * Single source of truth for live market metrics across 7 cities
- * GET /api/market/live
+ * GET /api/market/live (backed by World Bank, FRED, ExchangeRate API, DLD, ONS, JLL, Savills, IRAS, StreetEasy)
  */
 export async function fetchLiveMarketData(): Promise<LiveMarketResponse> {
-  // 1. Check in-memory/localStorage cache (valid for 5 minutes)
-  try {
-    const cached = localStorage.getItem(MARKET_CACHE_KEY);
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Date.now() - parsed.timestamp < 5 * 60 * 1000 && parsed.data?.cities) {
-        return parsed.data as LiveMarketResponse;
-      }
-    }
-  } catch (e) {
-    // Ignore
-  }
-
-  // 2. Fetch from /api/market/live
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
+    const timeout = setTimeout(() => controller.abort(), 6000);
     const res = await fetch('/api/market/live', { signal: controller.signal });
     clearTimeout(timeout);
 
     if (res.ok) {
       const data: LiveMarketResponse = await res.json();
       if (data && Array.isArray(data.cities) && data.cities.length > 0) {
-        localStorage.setItem(MARKET_CACHE_KEY, JSON.stringify({
-          data,
-          timestamp: Date.now(),
-        }));
+        if (data.macro?.fx_rates) {
+          CURRENCY_RATES.OMR = data.macro.fx_rates.OMR || CURRENCY_RATES.OMR;
+          CURRENCY_RATES.AED = data.macro.fx_rates.AED || CURRENCY_RATES.AED;
+          CURRENCY_RATES.GBP = data.macro.fx_rates.GBP || CURRENCY_RATES.GBP;
+        }
+        try {
+          localStorage.setItem(
+            MARKET_CACHE_KEY,
+            JSON.stringify({
+              data,
+              timestamp: Date.now(),
+            })
+          );
+        } catch {}
         return data;
       }
     }
   } catch (err) {
-    console.warn('Could not reach /api/market/live, using deterministic client data', err);
+    console.warn('Could not reach /api/market/live, checking last cached snapshot', err);
   }
 
-  // 3. Fallback to deterministic function
-  const fallback = getDeterministicMarketData();
   try {
-    localStorage.setItem(MARKET_CACHE_KEY, JSON.stringify({
-      data: fallback,
-      timestamp: Date.now(),
-    }));
-  } catch (e) {
-    // Ignore
-  }
-  return fallback;
+    const cached = localStorage.getItem(MARKET_CACHE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed?.data?.cities) {
+        return { ...(parsed.data as LiveMarketResponse), stale: true };
+      }
+    }
+  } catch {}
+
+  return getDeterministicMarketData();
 }
 
-/**
- * Returns MarketMatrixRow[] powered by the single source of truth
- */
-export async function fetchMarketData(): Promise<MarketMatrixRow[]> {
-  const live = await fetchLiveMarketData();
-  
+export async function fetchLiveNews(): Promise<{
+  success: boolean;
+  articles: MarketNewsArticle[];
+  lastSyncedIso?: string;
+}> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch('/api/news', { signal: controller.signal });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const json = await res.json();
+      if (json?.success && Array.isArray(json.articles) && json.articles.length > 0) {
+        return json;
+      }
+    }
+  } catch {}
+  return { success: false, articles: [] };
+}
+
+export function mapLiveCitiesToMatrix(live: LiveMarketResponse): MarketMatrixRow[] {
   const foreignOwnershipMap: Record<string, string> = {
     Muscat: '100% Freehold in ITC Zones',
     Dubai: '100% Freehold Designated Areas',
@@ -154,5 +165,13 @@ export async function fetchMarketData(): Promise<MarketMatrixRow[]> {
     capitalGainsTax: c.capital_gains_tax,
     goldenVisaUSD: goldenVisaMap[c.city] ?? null,
     rentalGrowthYoY: c.rental_yoy,
+    inflationPct: c.inflation_pct,
+    benchmarkLabel: c.benchmark_label,
+    source: c.source,
   }));
+}
+
+export async function fetchMarketData(): Promise<MarketMatrixRow[]> {
+  const live = await fetchLiveMarketData();
+  return mapLiveCitiesToMatrix(live);
 }

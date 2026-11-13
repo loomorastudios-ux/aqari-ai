@@ -125,4 +125,8 @@ export interface MarketMatrixRow {
   capitalGainsTax: string;
   goldenVisaUSD: number | null;
   rentalGrowthYoY: number;
+  inflationPct?: number | null;
+  benchmarkLabel?: string;
+  source?: string;
 }
+

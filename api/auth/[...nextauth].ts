@@ -58,7 +58,7 @@ export default async function handler(req: any, res: any) {
         name: 'Google',
         type: 'oauth',
         signinUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-        callbackUrl: 'https://aqari-e4ku9f7u3-aqari2.vercel.app/api/auth/callback/google',
+        callbackUrl: 'https://aqari-ai-rho.vercel.app/api/auth/callback/google',
       },
     });
   }

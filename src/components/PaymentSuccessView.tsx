@@ -65,6 +65,7 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
       subscriptionStartAt: now,
       subscriptionEndsAt: endsAt,
       subscriptionExpiry: endsAt,
+      analysesUsed: 0,
       freeAnalyses: planQuota,
       freeAnalysesLeft: planQuota,
       analysesLeft: planQuota,
@@ -73,6 +74,19 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
 
     saveUser(updatedUser);
     setActivatedUser(updatedUser);
+
+    fetch('/api/user/license', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: updatedUser.email,
+        name: updatedUser.name,
+        plan: planParam,
+        license_start: now,
+        license_end: endsAt,
+        analyses_used: 0,
+      }),
+    }).catch(() => {});
   }, []);
 
   const planInfo = PLAN_LIMITS[planKey] || PLAN_LIMITS.pro;

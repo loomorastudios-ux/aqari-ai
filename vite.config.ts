@@ -6,6 +6,68 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+const SSR_ROUTE_MAP: Record<string, string> = {
+  '/api/auth/session': '/api/auth/session.ts',
+  '/api/checkout': '/api/checkout.ts',
+  '/api/checkout/verify': '/api/checkout/verify.ts',
+  '/api/analyze': '/api/analyze.ts',
+  '/api/save': '/api/save.ts',
+  '/api/export': '/api/export.ts',
+  '/api/portfolio': '/api/portfolio.ts',
+  '/api/user/license': '/api/user/license.ts',
+  '/api/debug/my-plan': '/api/debug/my-plan.ts',
+  '/api/news': '/api/news.ts',
+  '/api/cron/check-expiry': '/api/cron/check-expiry.ts',
+  '/api/test/email-day29': '/api/test/email-day29.ts',
+  '/api/webhooks/lemonsqueezy': '/api/webhooks/lemonsqueezy.ts',
+  '/api/webhooks/logs': '/api/webhooks/logs.ts',
+  '/api/admin/users': '/api/admin/users.ts',
+};
+
+function readRequestBody(req: any): Promise<string> {
+  return new Promise((resolve) => {
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      resolve('');
+      return;
+    }
+    let body = '';
+    req.on('data', (chunk: any) => {
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', () => resolve(''));
+  });
+}
+
+function attachResponseShims(res: any) {
+  res.status = (code: number) => {
+    res.statusCode = code;
+    return res;
+  };
+  res.json = (data: any) => {
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'application/json');
+    }
+    res.end(JSON.stringify(data));
+    return res;
+  };
+  res.send = (data: any) => {
+    if (Buffer.isBuffer(data) || data instanceof Uint8Array) {
+      res.end(data);
+      return res;
+    }
+    if (typeof data === 'object') {
+      return res.json(data);
+    }
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    }
+    res.end(String(data));
+    return res;
+  };
+  return res;
+}
+
 function devApiPlugin(): Plugin {
   return {
     name: 'dev-api-middleware',
@@ -15,67 +77,93 @@ function devApiPlugin(): Plugin {
           return next();
         }
 
-        const url = req.url.split('?')[0];
+        const parsedUrl = new URL(req.url, `http://${req.headers?.host || 'localhost:3000'}`);
+        const pathname = parsedUrl.pathname;
+        req.query = Object.fromEntries(parsedUrl.searchParams.entries());
+        attachResponseShims(res);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
 
-        // 1. /api/market/live
-        if (url === '/api/market/live') {
+        // 1. /api/market/live (async live fetch with 6h server cache)
+        if (pathname === '/api/market/live') {
           try {
             const mod = await server.ssrLoadModule('/api/market/live.ts');
-            const data = mod.getDeterministicMarketData ? mod.getDeterministicMarketData() : {};
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify(data));
-            return;
+            if (typeof mod.default === 'function') {
+              await mod.default(req, res);
+              return;
+            }
           } catch (e: any) {
             console.error('API /api/market/live dev error:', e);
+            return res.status(500).json({ error: e?.message || 'Market feed failed' });
           }
         }
 
         // 2. /api/demo/:slug
-        if (url.startsWith('/api/demo/')) {
+        if (pathname.startsWith('/api/demo/')) {
           try {
-            const slug = url.replace('/api/demo/', '').split('/')[0];
+            const slug = pathname.replace('/api/demo/', '').split('/')[0];
             const mod = await server.ssrLoadModule('/src/constants/demoAnalyses.ts');
             const demo = mod.DEMO_ANALYSES?.[slug];
             if (demo) {
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: true, demo }));
-              return;
-            } else {
-              res.statusCode = 404;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ error: 'Demo not found', available: Object.keys(mod.DEMO_ANALYSES || {}) }));
-              return;
+              return res.status(200).json({ success: true, demo });
             }
+            return res.status(404).json({ error: 'Demo not found', available: Object.keys(mod.DEMO_ANALYSES || {}) });
           } catch (e: any) {
             console.error('API /api/demo dev error:', e);
+            return res.status(500).json({ error: e?.message || 'Demo route failed' });
           }
         }
 
-        // 3. /api/checkout
-        if (url === '/api/checkout') {
+        // 3. Dynamic Admin User / Evidence PDF routes
+        if (pathname.startsWith('/api/admin/user/')) {
           try {
-            let body = '';
-            req.on('data', (chunk: any) => { body += chunk; });
-            req.on('end', async () => {
-              try {
-                const parsedBody = body ? JSON.parse(body) : {};
-                req.body = parsedBody;
-                const mod = await server.ssrLoadModule('/api/checkout.ts');
-                res.status = (code: number) => { res.statusCode = code; return res; };
-                res.json = (data: any) => {
-                  res.setHeader('Content-Type', 'application/json');
-                  res.end(JSON.stringify(data));
-                  return res;
-                };
-                await mod.default(req, res);
-              } catch (err: any) {
-                res.statusCode = 500;
-                res.end(JSON.stringify({ error: err?.message || 'Checkout failed' }));
-              }
-            });
+            req.query.email = decodeURIComponent(pathname.replace('/api/admin/user/', '').split('/')[0]);
+            const rawBody = await readRequestBody(req);
+            req.rawBody = rawBody;
+            try {
+              req.body = rawBody ? JSON.parse(rawBody) : {};
+            } catch {
+              req.body = rawBody;
+            }
+            const mod = await server.ssrLoadModule('/api/admin/user/[email].ts');
+            await mod.default(req, res);
             return;
-          } catch (e: any) {
-            console.error('API /api/checkout dev error:', e);
+          } catch (err: any) {
+            console.error(`API ${pathname} dev error:`, err);
+            return res.status(500).json({ error: err?.message || 'Admin user API error' });
+          }
+        }
+
+        if (pathname.startsWith('/api/admin/export/')) {
+          try {
+            req.query.email = decodeURIComponent(pathname.replace('/api/admin/export/', '').split('/')[0]);
+            const mod = await server.ssrLoadModule('/api/admin/export/[email].ts');
+            await mod.default(req, res);
+            return;
+          } catch (err: any) {
+            console.error(`API ${pathname} dev error:`, err);
+            return res.status(500).json({ error: err?.message || 'Admin export API error' });
+          }
+        }
+
+        // 4. Static Mapped API handlers
+        const modulePath = SSR_ROUTE_MAP[pathname];
+        if (modulePath) {
+          try {
+            const rawBody = await readRequestBody(req);
+            req.rawBody = rawBody;
+            try {
+              req.body = rawBody ? JSON.parse(rawBody) : {};
+            } catch {
+              req.body = rawBody;
+            }
+            const mod = await server.ssrLoadModule(modulePath);
+            if (typeof mod.default === 'function') {
+              await mod.default(req, res);
+              return;
+            }
+          } catch (err: any) {
+            console.error(`API ${pathname} dev error:`, err);
+            return res.status(500).json({ error: err?.message || 'Internal API error' });
           }
         }
 

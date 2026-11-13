@@ -1,3 +1,4 @@
+// © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import React, { useState, useMemo, useEffect } from 'react';
 import { CurrencyCode, RemoteConfig, User, SavedAnalysis, MarketMatrixRow } from '../types';
 import { 
@@ -6,8 +7,16 @@ import {
   PROPERTY_LISTINGS,
   CROSS_BORDER_DATA 
 } from '../constants';
-import { formatPrice, getDaysRemaining } from '../utils/formatters';
+import {
+  PLANS,
+  computeLicenseStatus,
+  canUseFeature,
+  getUpgradeMessage,
+} from '../../lib/plans';
+import { formatPrice } from '../utils/formatters';
 import { formatTimeLeft } from '../utils/emailService';
+import { downloadMemorandumPdf } from '../utils/pdfExport';
+import type { LiveMarketResponse } from '../utils/marketDataService';
 import { 
   Building2, 
   Calculator, 
@@ -49,6 +58,7 @@ interface TerminalDashboardProps {
   currentCurrency: CurrencyCode;
   onCurrencyChange: (c: CurrencyCode) => void;
   config: RemoteConfig;
+  marketLive?: LiveMarketResponse | null;
   onSignOut: (forgetDevice?: boolean) => void;
   onGoToHome: () => void;
   onOpenRenewal: () => void;
@@ -63,6 +73,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   currentCurrency,
   onCurrencyChange,
   config,
+  marketLive,
   onSignOut,
   onGoToHome,
   onOpenRenewal,
@@ -98,30 +109,87 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  // Webhook & email audit logs for Settings/Admin view
+  const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
+  const [emailLogs, setEmailLogs] = useState<any[]>([]);
+  const [isAnalyzingApi, setIsAnalyzingApi] = useState(false);
+
+  const isTestMode =
+    import.meta.env.VITE_LEMON_TEST_MODE === 'true' ||
+    (import.meta.env.VITE_LEMON_TEST_MODE as unknown) === true;
+
   // Plan info & Live 1-minute countdown interval
-  const planInfo = PLAN_LIMITS[user.plan] || PLAN_LIMITS.free;
   const [, setMinuteTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => {
       setMinuteTick((t) => t + 1);
-    }, 60000); // Live countdown update every minute
+    }, 60000);
     return () => clearInterval(timer);
   }, []);
 
   const endsAt = user.subscriptionEndsAt || user.subscriptionExpiry;
   const msRemaining = endsAt ? Math.max(0, endsAt - Date.now()) : 0;
-  const daysLeft = endsAt ? Math.ceil(msRemaining / (1000 * 60 * 60 * 24)) : null;
-  const isPlanEnded = Boolean(user.plan !== 'free' && endsAt && msRemaining <= 0);
-  const isExpired = user.subscriptionStatus === 'expired' || isPlanEnded || Boolean(user.plan !== 'free' && user.subscriptionExpiry && Date.now() > user.subscriptionExpiry);
-  const isEndingIn24h = Boolean(user.plan !== 'free' && endsAt && msRemaining > 0 && msRemaining <= 24 * 60 * 60 * 1000);
-  const isExpiringIn1Day = isEndingIn24h;
+
+  const license = computeLicenseStatus({
+    plan: user.plan,
+    licenseStart: user.subscriptionStartAt,
+    licenseEnd: endsAt,
+    analysesUsed: user.analysesUsed,
+    freeAnalysesLeft: user.freeAnalysesLeft ?? user.freeAnalyses,
+    analysesLeft: user.analysesLeft,
+  });
+
+  const planInfo = PLAN_LIMITS[license.planKey] || PLAN_LIMITS.free;
+  const daysLeft = license.daysLeft;
+  const isPlanEnded = license.isExpired;
+  const isExpired = user.subscriptionStatus === 'expired' || isPlanEnded;
+  const isEndingIn24h = Boolean(license.planKey !== 'free' && endsAt && msRemaining > 0 && msRemaining <= 24 * 60 * 60 * 1000);
   const countdownText = endsAt ? formatTimeLeft(msRemaining) : null;
 
-  const analysesRemaining = user.plan === 'enterprise'
-    ? 9999
-    : user.plan === 'free'
-    ? (user.freeAnalysesLeft ?? user.freeAnalyses ?? 0)
-    : (user.analysesLeft ?? user.freeAnalysesLeft ?? user.freeAnalyses ?? 0);
+  const analysesRemaining = license.isUnlimitedAnalyses ? 9999 : license.analysesLeft;
+  const analysesLeftStr = license.isUnlimitedAnalyses ? 'Credits remaining: Unlimited' : `Credits remaining: ${license.analysesLeft}`;
+
+  const canSensitivity = canUseFeature(license.planKey, 'yieldSensitivity');
+  const canMonteCarlo = canUseFeature(license.planKey, 'monteCarlo');
+  const canPdfExport = canUseFeature(license.planKey, 'pdfExport');
+  const canPortfolioAgg = canUseFeature(license.planKey, 'portfolioAggregation');
+  const canFullMatrix = canUseFeature(license.planKey, 'crossBorderMatrixFull');
+  const canApiAccess = canUseFeature(license.planKey, 'apiAccess');
+  const canAnalystDesk = canUseFeature(license.planKey, 'analystDesk');
+
+  // Load webhook & email audit logs when Settings tab opens
+  useEffect(() => {
+    if (activeTab === 'settings') {
+      fetch('/api/webhooks/logs')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.success) {
+            setWebhookLogs(data.webhooks || []);
+            setEmailLogs(data.emails || []);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [activeTab]);
+
+  // Verify portfolio endpoint when opening Portfolio tab if entitled
+  useEffect(() => {
+    if (activeTab === 'portfolio' && canPortfolioAgg && user?.email) {
+      fetch('/api/portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: user.email,
+          name: user.name,
+          userPlan: user.plan,
+          licenseStart: user.subscriptionStartAt,
+          licenseEnd: endsAt,
+          analysesUsed: user.analysesUsed,
+          savedAnalyses: user.savedAnalyses || [],
+        }),
+      }).catch(() => {});
+    }
+  }, [activeTab, canPortfolioAgg]);
 
   // Analyzer Form State (in base USD)
   const [selectedPresetId, setSelectedPresetId] = useState<string>(PROPERTY_LISTINGS[0].id);
@@ -180,45 +248,123 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const irr5Yr = Number((cashOnCash + 4.8).toFixed(1));
   const dscr = annualDebtServiceUSD > 0 ? (netOperatingIncomeUSD / annualDebtServiceUSD).toFixed(2) : '∞';
 
-  // Run Analysis Action (Consumes 1 Credit) - Called ONLY when user clicks RUN ANALYSIS
-  const handleRunAnalysis = () => {
+  // Run Analysis Action (Backend enforced + Consumes 1 Credit)
+  const handleRunAnalysis = async () => {
     if (isExpired) {
-      showToast('Subscription expired. Please renew your 30-day plan to continue running analyses.');
+      showToast('Licensing window expired - Renew');
       onOpenRenewal();
       return;
     }
 
-    if (onConsumeAnalysis) {
-      const ok = onConsumeAnalysis();
-      if (ok) {
-        setHasRunAnalysis(true);
-        showToast('Underwriting analysis completed. 1 credit deducted.');
+    if (!license.isUnlimitedAnalyses && analysesRemaining <= 0) {
+      showToast('Licensing window expired - Renew');
+      onOpenRenewal();
+      return;
+    }
+
+    setIsAnalyzingApi(true);
+    try {
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          name: user.name,
+          propertyTitle: propertyName,
+          city,
+          priceUSD,
+          rentUSD,
+          downPaymentPct,
+          interestRatePct,
+          operatingExpensePct,
+          useSensitivity: canSensitivity,
+          useMonteCarlo: false,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 429) {
+        showToast(data?.error || 'Rate limit exceeded (10 analyses/min). Please wait.');
+        return;
       }
-      return;
-    }
+      if (res.status === 403 || !res.ok) {
+        showToast(data?.error || 'Licensing window expired - Renew');
+        onOpenRenewal();
+        return;
+      }
 
-    if (user.plan === 'free' && analysesRemaining <= 0) {
-      onOpenRenewal();
-      return;
+      if (data?.license) {
+        const nextLeft = data.license.isUnlimitedAnalyses ? 999999 : (data.license.analysesLeft ?? Math.max(0, analysesRemaining - 1));
+        onUpdateUser({
+          ...user,
+          plan: data.license.planKey || user.plan,
+          analysesUsed: data.license.analysesUsed ?? ((user.analysesUsed || 0) + 1),
+          freeAnalyses: nextLeft,
+          freeAnalysesLeft: nextLeft,
+          analysesLeft: nextLeft,
+        });
+      } else if (onConsumeAnalysis) {
+        onConsumeAnalysis();
+      }
+      setHasRunAnalysis(true);
+      showToast('Underwriting analysis completed. 1 credit deducted.');
+    } catch {
+      if (onConsumeAnalysis) {
+        const ok = onConsumeAnalysis();
+        if (ok) {
+          setHasRunAnalysis(true);
+          showToast('Underwriting analysis completed. 1 credit deducted.');
+        }
+      }
+    } finally {
+      setIsAnalyzingApi(false);
     }
-
-    const newRemaining = Math.max(0, analysesRemaining - 1);
-    const updated: User = {
-      ...user,
-      analysesUsed: (user.analysesUsed || 0) + 1,
-      freeAnalyses: newRemaining,
-      freeAnalysesLeft: user.plan === 'free' ? newRemaining : user.freeAnalysesLeft,
-      analysesLeft: user.plan !== 'free' ? newRemaining : user.analysesLeft,
-    };
-    onUpdateUser(updated);
-    setHasRunAnalysis(true);
-    showToast('Underwriting analysis completed. 1 credit deducted.');
   };
 
-  // Save Analysis to Portfolio
-  const handleSaveAnalysis = () => {
+  // Trigger Monte Carlo Scenario (Backend Gated to Professional+)
+  const handleToggleMonteCarlo = async () => {
+    if (!canMonteCarlo) {
+      showToast(getUpgradeMessage('monteCarlo'));
+      onOpenRenewal();
+      return;
+    }
+    try {
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          propertyTitle: propertyName,
+          city,
+          priceUSD,
+          rentUSD,
+          downPaymentPct,
+          interestRatePct,
+          operatingExpensePct,
+          useMonteCarlo: true,
+        }),
+      });
+      if (res.status === 429) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err?.error || 'Rate limit exceeded. Please wait.');
+        return;
+      }
+      if (res.status === 403) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err?.error || 'Upgrade to Professional to unlock');
+        onOpenRenewal();
+        return;
+      }
+    } catch {}
+    setStressTestActive((prev) => !prev);
+  };
+
+  // Save Analysis to Portfolio (Backend Gated: Free=0, Starter=50, Pro=200, Sovereign=Unlimited)
+  const handleSaveAnalysis = async () => {
     if (isExpired) {
-      showToast('Subscription expired. Please renew your plan to save properties to portfolio.');
+      showToast('Licensing window expired - Renew');
       onOpenRenewal();
       return;
     }
@@ -227,11 +373,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       showToast('Please click RUN ANALYSIS first before saving to portfolio.');
       return;
     }
-    const savedList = user.savedAnalyses || [];
-    const maxLimit = planInfo.maxSaved || 3;
 
-    if (savedList.length >= maxLimit) {
-      showToast(`Saved limit reached (${maxLimit}/${maxLimit}). Upgrade plan to save more.`);
+    const savedList = user.savedAnalyses || [];
+    const maxLimit = license.savedLimit;
+
+    if (!canUseFeature(license.planKey, 'saveProperty') || (!license.isUnlimitedSaved && savedList.length >= maxLimit)) {
+      showToast('Upgrade to save more');
       onOpenRenewal();
       return;
     }
@@ -252,6 +399,26 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       imageUrl: propertyImageUrl,
       notes: `${downPaymentPct}% down, ${interestRatePct}% rate, ${operatingExpensePct}% OPEX`,
     };
+
+    try {
+      const res = await fetch('/api/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          name: user.name,
+          currentSavedCount: savedList.length,
+          analysis: newAnalysis,
+        }),
+      });
+      if (res.status === 403) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err?.error || 'Upgrade to save more');
+        onOpenRenewal();
+        return;
+      }
+    } catch {}
 
     const newSavedList = [newAnalysis, ...savedList];
     const newTotalVal = newSavedList.reduce((acc, curr) => acc + curr.price, 0);
@@ -352,17 +519,72 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     showToast('Loaded 3 institutional sample assets into portfolio.');
   };
 
-  // Simulated PDF Memorandum Export
-  const handleExportPDF = (title: string) => {
-    if (user.plan === 'starter' || user.plan === 'free') {
-      showToast('PDF Investment Memorandum is available on Pro & Enterprise plans.');
+  // Backend-enforced PDF Memorandum Export with real watermarked PDF download
+  const handleExportPDF = async (title: string) => {
+    if (!canPdfExport) {
+      showToast('Upgrade to Professional to unlock');
       onOpenRenewal();
       return;
     }
-    showToast(`Generating institutional PDF memorandum for "${title}"...`);
-    setTimeout(() => {
-      showToast(`Downloaded: ${title.replace(/\s+/g, '_')}_AQARI_MEMO.pdf`);
-    }, 1500);
+    try {
+      const res = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          format: 'pdf',
+          propertyTitle: title,
+        }),
+      });
+      if (res.status === 403) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err?.error || 'Upgrade to Professional to unlock');
+        onOpenRenewal();
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      const metricsLines = [
+        `Acquisition Price: ${formatPrice(priceUSD, currentCurrency)}`,
+        `Gross Monthly Rent: ${formatPrice(rentUSD, currentCurrency)}`,
+        `Unlevered Cap Rate: ${capRate}%`,
+        `Cash-on-Cash Return: ${cashOnCash}%`,
+        `5-Year Equity IRR: ${irr5Yr}%`,
+        `Monthly Net Cashflow: ${formatPrice(monthlyCashflowUSD, currentCurrency)}`,
+        `Debt Service Coverage Ratio (DSCR): ${dscr}x`,
+        ...(stressTestActive
+          ? [`Stress Test (+200bps) Cash-on-Cash: ${Math.max(0, cashOnCash - 1.85).toFixed(2)}%`]
+          : []),
+      ];
+      const filename = downloadMemorandumPdf({
+        title,
+        city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: `${downPaymentPct}% Equity Down | ${interestRatePct}% Interest Rate | ${operatingExpensePct}% OPEX`,
+        watermarkText: data?.watermark,
+      });
+      showToast(`Downloaded watermarked PDF: ${filename}`);
+    } catch {
+      const filename = downloadMemorandumPdf({
+        title,
+        city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines: [
+          `Acquisition Price: ${formatPrice(priceUSD, currentCurrency)}`,
+          `Gross Monthly Rent: ${formatPrice(rentUSD, currentCurrency)}`,
+          `Unlevered Cap Rate: ${capRate}%`,
+          `Cash-on-Cash Return: ${cashOnCash}%`,
+          `5-Year Equity IRR: ${irr5Yr}%`,
+          `Monthly Net Cashflow: ${formatPrice(monthlyCashflowUSD, currentCurrency)}`,
+          `DSCR: ${dscr}x`,
+        ],
+        notes: `${downPaymentPct}% Equity Down | ${interestRatePct}% Interest Rate | ${operatingExpensePct}% OPEX`,
+      });
+      showToast(`Downloaded watermarked PDF: ${filename}`);
+    }
   };
 
   // Portfolio calculations
@@ -456,6 +678,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         </div>
       )}
 
+      {/* Lemon Test Mode Banner */}
+      {isTestMode && (
+        <div className="bg-amber-950/95 border-b border-amber-500/40 text-amber-200 text-[11px] font-mono py-1.5 px-4 flex items-center justify-center gap-2 z-50">
+          <span className="font-bold">⚠️ TEST MODE - No real money - Test card 4242 4242 4242 4242</span>
+        </div>
+      )}
+
       {/* Top Header */}
       <header className="h-16 border-b border-white/[0.08] bg-black/80 backdrop-blur-2xl px-4 lg:px-6 flex items-center justify-between shrink-0 sticky top-0 z-40">
         
@@ -483,43 +712,36 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         </div>
 
         {/* Status Indicators & User Controls */}
-        <div className="flex items-center gap-3 sm:gap-5">
+        <div className="flex items-center gap-2 sm:gap-4">
           
-          {/* Plan Badge or 1-Day Expiration Alert */}
-          {isExpiringIn1Day ? (
+          {/* Unified Plan Badge: PLAN + days left */}
+          {isEndingIn24h ? (
             <button
               onClick={onOpenRenewal}
               className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-red-950/80 border border-red-500/60 text-xs font-mono text-red-400 font-bold uppercase animate-pulse cursor-pointer"
-              title="Subscription ends in 1 day - Click to renew"
+              title="Subscription ends tomorrow - Click to renew"
             >
               <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
-              <span>{user.plan} • 1d left - Renew</span>
+              <span>{license.displayName} • 1 days left - Renew</span>
             </button>
           ) : (
             <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-white/[0.04] border border-white/10 text-xs font-mono">
-              <span className={`w-2 h-2 rounded-full ${user.plan === 'free' ? 'bg-amber-400' : 'bg-emerald-400'} animate-pulse`} />
+              <span className={`w-2 h-2 rounded-full ${license.planKey === 'free' ? 'bg-[#D4AF37]' : 'bg-emerald-400'} animate-pulse`} />
               <span className="font-bold uppercase text-white tracking-wide">
-                {user.plan}
+                {license.displayName}
               </span>
-              {daysLeft !== null && (
-                <>
-                  <span className="text-zinc-600">•</span>
-                  <span className="text-zinc-400">{daysLeft}d left</span>
-                </>
-              )}
+              <span className="text-zinc-600">•</span>
+              <span className="text-zinc-300">{daysLeft} days left</span>
             </div>
           )}
 
           {/* Analyses Left Badge */}
           <div className={`hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-xl border text-xs font-mono ${
-            user.plan === 'free' && analysesRemaining <= 0
+            !license.isUnlimitedAnalyses && analysesRemaining <= 0
               ? 'bg-rose-950/40 border-rose-500/30 text-rose-300'
               : 'bg-[#D4AF37]/10 border-[#D4AF37]/30 text-[#D4AF37]'
           }`}>
-            <span>Analyses:</span>
-            <strong className="text-white">
-              {user.plan === 'enterprise' ? '∞' : `${analysesRemaining} left`}
-            </strong>
+            <strong className="text-white">{analysesLeftStr}</strong>
           </div>
 
           {/* Currency Switcher */}
@@ -591,9 +813,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             </button>
 
             {/* Test Mode Badge in Sidebar if active */}
-            {(import.meta.env.VITE_LEMON_TEST_MODE === 'true' || import.meta.env.VITE_LEMON_TEST_MODE === true) && (
+            {isTestMode && (
               <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono text-center leading-tight">
-                ⚠️ TEST MODE: Use card 4242 4242 4242 4242
+                ⚠️ TEST MODE - No real money - Test card 4242 4242 4242 4242
               </div>
             )}
             
@@ -614,23 +836,36 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 <div className="text-xs font-bold text-white truncate">{user.email}</div>
                 <div className="text-[10px] font-mono text-[#D4AF37] flex items-center gap-1 mt-0.5">
                   <ShieldCheck className="w-3 h-3" />
-                  <span className="uppercase">{user.plan} TERMINAL</span>
+                  <span className="uppercase">{license.displayName} TERMINAL</span>
                 </div>
               </div>
             </div>
 
-            {/* Live 30-Day Subscription Countdown Widget */}
-            <div className="px-3.5 py-2.5 rounded-xl bg-white/[0.02] border border-white/[0.06] font-mono text-[11px]">
-              <div className="text-zinc-500 uppercase text-[9px] font-bold tracking-wider mb-1 flex items-center justify-between">
-                <span>Licensing Countdown</span>
+            {/* Live 30-Day Licensing Countdown & Quota Progress Bar Widget */}
+            <div className="px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/[0.08] font-mono text-[11px] space-y-2">
+              <div className="text-zinc-400 uppercase text-[9px] font-bold tracking-wider flex items-center justify-between">
+                <span>LICENSING COUNTDOWN</span>
                 <span className={`w-1.5 h-1.5 rounded-full ${isPlanEnded ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`} />
               </div>
-              {user.plan === 'free' ? (
-                <div className="text-zinc-300 font-semibold">Free Tier • {analysesRemaining} analyses left</div>
-              ) : isPlanEnded ? (
-                <div className="text-rose-400 font-bold leading-tight">Your plan has ended. Renew to continue.</div>
+              {isPlanEnded ? (
+                <div className="text-rose-400 font-bold leading-tight">
+                  Licensing window expired - Renew
+                </div>
               ) : (
-                <div className="text-[#D4AF37] font-semibold tracking-tight">{countdownText}</div>
+                <>
+                  <div className="text-[#D4AF37] font-bold leading-snug">
+                    {license.sidebarText}
+                  </div>
+                  <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-[#D4AF37] to-emerald-400 transition-all duration-500 rounded-full"
+                      style={{ width: `${license.progressPct}%` }}
+                    />
+                  </div>
+                  {countdownText && license.planKey !== 'free' && (
+                    <div className="text-[10px] text-zinc-400">{countdownText}</div>
+                  )}
+                </>
               )}
             </div>
 
@@ -790,10 +1025,16 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </h2>
                 </div>
 
-                <div className="flex items-center gap-3">
-                  <div className="text-xs font-mono text-zinc-400 bg-white/[0.03] px-3 py-1.5 rounded-xl border border-white/[0.06]">
-                    Credits remaining: <strong className="text-[#D4AF37]">{user.plan === 'enterprise' ? 'Unlimited' : `${user.freeAnalyses}`}</strong>
-                  </div>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <span className="text-xs font-mono font-bold px-3 py-1.5 rounded-xl bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37]">
+                    {license.displayName}
+                  </span>
+                  <span className="text-xs font-mono text-white bg-white/[0.04] px-3 py-1.5 rounded-xl border border-white/[0.08]">
+                    {analysesLeftStr}
+                  </span>
+                  <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20">
+                    {daysLeft} days left
+                  </span>
                 </div>
               </div>
 
@@ -966,32 +1207,44 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="pt-3 flex flex-col sm:flex-row gap-3">
                     <button
                       onClick={handleRunAnalysis}
-                      disabled={user.plan === 'free' && analysesRemaining <= 0}
+                      disabled={isAnalyzingApi || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)}
                       className={`flex-1 py-3.5 px-4 rounded-xl text-xs font-bold font-mono tracking-wider uppercase transition flex items-center justify-center gap-2 cursor-pointer shadow-lg ${
-                        user.plan === 'free' && analysesRemaining <= 0
+                        !license.isUnlimitedAnalyses && analysesRemaining <= 0
                           ? 'bg-zinc-800 text-zinc-500 border border-zinc-700 cursor-not-allowed'
                           : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black shadow-[0_0_20px_rgba(212,175,55,0.35)]'
                       }`}
                     >
-                      {user.plan === 'free' && analysesRemaining <= 0 ? (
+                      {!license.isUnlimitedAnalyses && analysesRemaining <= 0 ? (
                         <>
                           <Lock className="w-4 h-4 text-amber-400" />
-                          <span>FREE LIMIT REACHED (0/3) • UPGRADE</span>
+                          <span>LICENSING LIMIT REACHED • RENEW</span>
                         </>
                       ) : (
                         <>
                           <Sparkles className="w-4 h-4" />
-                          <span>RUN ANALYSIS (-1 CREDIT)</span>
+                          <span>{isAnalyzingApi ? 'RUNNING ANALYSIS...' : 'RUN ANALYSIS (-1 CREDIT)'}</span>
                         </>
                       )}
                     </button>
 
                     <button
                       onClick={handleSaveAnalysis}
-                      className="py-3.5 px-5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-white font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-2 cursor-pointer"
+                      className={`py-3.5 px-5 rounded-xl border font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-2 cursor-pointer ${
+                        !canUseFeature(license.planKey, 'saveProperty')
+                          ? 'bg-white/[0.02] border-amber-500/30 text-amber-300/80 hover:bg-amber-500/10'
+                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-white'
+                      }`}
                     >
-                      <BookmarkCheck className="w-4 h-4 text-[#D4AF37]" />
-                      <span>SAVE TO PORTFOLIO</span>
+                      {canUseFeature(license.planKey, 'saveProperty') ? (
+                        <BookmarkCheck className="w-4 h-4 text-[#D4AF37]" />
+                      ) : (
+                        <Lock className="w-4 h-4 text-amber-400" />
+                      )}
+                      <span>
+                        {canUseFeature(license.planKey, 'saveProperty')
+                          ? 'SAVE TO PORTFOLIO'
+                          : 'SAVE (UPGRADE)'}
+                      </span>
                     </button>
                   </div>
 
@@ -1080,7 +1333,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </>
                   ) : (
                     <>
-                      {/* Primary Metrics Grid */}
+                      {/* Primary Metrics Grid (FREE: Basic Cap Rate & Cash-on-Cash only; Starter+: Full Yield & Sensitivity) */}
                       <div className="grid grid-cols-2 gap-3">
                         <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                           <div className="text-[10px] font-mono uppercase text-zinc-400">Unlevered Cap Rate</div>
@@ -1096,35 +1349,49 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Net Cash / Equity</div>
                         </div>
 
-                        <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                          <div className="text-[10px] font-mono uppercase text-zinc-400">5-Year Equity IRR</div>
-                          <div className="text-2xl font-black font-mono text-purple-400 mt-1">{irr5Yr}%</div>
-                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Exit Multiple: 1.48x</div>
-                        </div>
+                        {canSensitivity ? (
+                          <>
+                            <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                              <div className="text-[10px] font-mono uppercase text-zinc-400">5-Year Equity IRR</div>
+                              <div className="text-2xl font-black font-mono text-purple-400 mt-1">{irr5Yr}%</div>
+                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Exit Multiple: 1.48x</div>
+                            </div>
 
-                        <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                          <div className="text-[10px] font-mono uppercase text-zinc-400">Monthly Net Cashflow</div>
-                          <div className={`text-2xl font-black font-mono mt-1 ${monthlyCashflowUSD >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {formatPrice(monthlyCashflowUSD, currentCurrency)}
+                            <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                              <div className="text-[10px] font-mono uppercase text-zinc-400">Monthly Net Cashflow</div>
+                              <div className={`text-2xl font-black font-mono mt-1 ${monthlyCashflowUSD >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {formatPrice(monthlyCashflowUSD, currentCurrency)}
+                              </div>
+                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">DSCR: {dscr}x</div>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="col-span-2 p-3.5 rounded-xl bg-black/50 border border-amber-500/30 flex items-center justify-between text-xs font-mono">
+                            <div className="flex items-center gap-2 text-zinc-400">
+                              <Lock className="w-4 h-4 text-[#D4AF37]" />
+                              <span>Yield &amp; Sensitivity Calculator, IRR &amp; DSCR locked on FREE</span>
+                            </div>
+                            <button onClick={onOpenRenewal} className="text-[#D4AF37] font-bold underline cursor-pointer shrink-0 ml-2">
+                              Upgrade to Starter
+                            </button>
                           </div>
-                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">DSCR: {dscr}x</div>
-                        </div>
+                        )}
                       </div>
 
-                      {/* Gated Feature 1: Monte Carlo Stress Test */}
+                      {/* Gated Feature 1: Monte Carlo Stress Test (Professional+) */}
                       <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-2.5">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-white">
                             <span>Monte Carlo Stress Test (+200bps)</span>
                           </div>
-                          {user.plan === 'starter' || user.plan === 'free' ? (
+                          {!canMonteCarlo ? (
                             <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1">
                               <Lock className="w-3 h-3" />
-                              <span>PRO TIER ONLY</span>
+                              <span>PROFESSIONAL ONLY</span>
                             </span>
                           ) : (
                             <button
-                              onClick={() => setStressTestActive(!stressTestActive)}
+                              onClick={handleToggleMonteCarlo}
                               className="text-[10px] font-mono px-2.5 py-1 rounded bg-[#D4AF37]/20 text-[#D4AF37] hover:bg-[#D4AF37] hover:text-black transition cursor-pointer font-bold"
                             >
                               {stressTestActive ? 'Reset Stress' : 'Run Scenario'}
@@ -1132,10 +1399,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           )}
                         </div>
 
-                        {user.plan === 'starter' || user.plan === 'free' ? (
-                          <div className="p-3 rounded-lg bg-black/40 border border-white/5 text-[11px] font-mono text-zinc-500 flex items-center justify-between">
-                            <span>Stress testing rate spikes & vacancy shocks is locked on Free/Starter.</span>
-                            <button onClick={onOpenRenewal} className="text-[#D4AF37] underline cursor-pointer ml-2">Upgrade</button>
+                        {!canMonteCarlo ? (
+                          <div className="p-3 rounded-lg bg-black/40 border border-white/5 text-[11px] font-mono text-zinc-400 flex items-center justify-between">
+                            <span>Upgrade to Professional to unlock</span>
+                            <button onClick={onOpenRenewal} className="text-[#D4AF37] underline cursor-pointer ml-2 font-bold">Upgrade</button>
                           </div>
                         ) : stressTestActive ? (
                           <div className="p-3 rounded-lg bg-[#D4AF37]/10 border border-[#D4AF37]/30 space-y-1.5 text-[11px] font-mono">
@@ -1155,20 +1422,20 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         )}
                       </div>
 
-                      {/* Gated Feature 2: PDF Investment Memorandum Export */}
+                      {/* Gated Feature 2: PDF Investment Memorandum Export (Professional+) */}
                       <div className="pt-2">
                         <button
                           onClick={() => handleExportPDF(propertyName)}
                           className={`w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold transition flex items-center justify-center gap-2 cursor-pointer ${
-                            user.plan === 'starter' || user.plan === 'free'
-                              ? 'bg-white/[0.03] text-zinc-500 border border-white/5 hover:border-amber-400/30'
+                            !canPdfExport
+                              ? 'bg-white/[0.03] text-amber-300/80 border border-amber-500/20 hover:border-amber-400/50'
                               : 'bg-white/[0.08] hover:bg-white/[0.15] text-white border border-white/10'
                           }`}
                         >
-                          {user.plan === 'starter' || user.plan === 'free' ? (
+                          {!canPdfExport ? (
                             <>
                               <Lock className="w-3.5 h-3.5 text-amber-400" />
-                              <span>EXPORT PDF MEMORANDUM (PRO ONLY)</span>
+                              <span>EXPORT PDF • Upgrade to Professional to unlock</span>
                             </>
                           ) : (
                             <>
@@ -1199,7 +1466,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <span>PORTFOLIO ASSET REGISTRY</span>
                   </div>
                   <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                    My Saved Analyses ({savedAnalyses.length} / {planInfo.maxSaved || 3})
+                    My Saved Analyses ({savedAnalyses.length} / {license.isUnlimitedSaved ? 'Unlimited' : license.savedLimit})
                   </h2>
                 </div>
 
@@ -1349,7 +1616,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           {/* TAB 3: PORTFOLIO AGGREGATION */}
           {activeTab === 'portfolio' && (
             <div className="space-y-6 max-w-6xl mx-auto">
-              {user.plan === 'free' ? (
+              {!canPortfolioAgg ? (
                 <div className="glass-panel p-10 sm:p-16 text-center space-y-6 border border-[#D4AF37]/40 shadow-[0_20px_60px_rgba(212,175,55,0.15)] relative overflow-hidden">
                   <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-[#D4AF37]/50 flex items-center justify-center mx-auto text-[#D4AF37] shadow-[0_0_25px_rgba(212,175,55,0.3)]">
                     <Lock className="w-8 h-8 text-[#D4AF37]" />
@@ -1357,13 +1624,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="max-w-md mx-auto space-y-2">
                     <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 font-mono text-[10px] font-bold uppercase tracking-wider">
                       <Crown className="w-3.5 h-3.5" />
-                      <span>PRO & ENTERPRISE EXCLUSIVE</span>
+                      <span>PROFESSIONAL &amp; SOVEREIGN EXCLUSIVE</span>
                     </div>
                     <h3 className="text-2xl font-bold text-white tracking-tight">
-                      Sovereign Multi-Asset Portfolio Aggregation
+                      Multi-Asset Portfolio Aggregation
                     </h3>
                     <p className="text-xs text-zinc-400 font-mono leading-relaxed">
-                      Aggregate portfolio yields across London, Dubai, Muscat, and New York. Calculate weighted IRR, track loan-to-value covenants, and export institutional portfolio memorandums.
+                      Upgrade to Professional to unlock multi-asset portfolio yield aggregation, weighted IRR tracking, and institutional PDF exports.
                     </p>
                   </div>
                   <div className="pt-2">
@@ -1371,17 +1638,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       onClick={onOpenRenewal}
                       className="px-6 py-3.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-xs font-mono uppercase tracking-wider transition cursor-pointer shadow-lg"
                     >
-                      PRO ONLY - Upgrade
+                      Upgrade to Professional to unlock
                     </button>
-                  </div>
-                  {/* Blurred mock background */}
-                  <div className="mt-6 filter blur-md opacity-25 pointer-events-none select-none">
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                      <div className="p-4 rounded-xl bg-white/5 border border-white/10 h-24" />
-                      <div className="p-4 rounded-xl bg-white/5 border border-white/10 h-24" />
-                      <div className="p-4 rounded-xl bg-white/5 border border-white/10 h-24" />
-                      <div className="p-4 rounded-xl bg-white/5 border border-white/10 h-24" />
-                    </div>
                   </div>
                 </div>
               ) : savedAnalyses.length === 0 ? (
@@ -1503,14 +1761,24 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           {/* TAB 4: MARKET RADAR */}
           {activeTab === 'radar' && (
             <div className="space-y-6 max-w-6xl mx-auto">
-              <div className="border-b border-white/[0.08] pb-4">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-xs font-mono text-[#D4AF37] mb-2">
-                  <Globe className="w-3.5 h-3.5" />
-                  <span>CROSS-BORDER ARBITRAGE RADAR</span>
+              <div className="border-b border-white/[0.08] pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-xs font-mono text-[#D4AF37] mb-2">
+                    <Globe className="w-3.5 h-3.5" />
+                    <span>CROSS-BORDER ARBITRAGE RADAR</span>
+                  </div>
+                  <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                    Sovereign Real Estate Capital Matrix
+                  </h2>
                 </div>
-                <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                  Sovereign Real Estate Capital Matrix
-                </h2>
+                {!canFullMatrix && (
+                  <button
+                    onClick={onOpenRenewal}
+                    className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer shrink-0"
+                  >
+                    Upgrade to Starter to unlock full matrix
+                  </button>
+                )}
               </div>
 
               <div className="glass-panel overflow-hidden">
@@ -1527,7 +1795,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.04]">
-                      {CROSS_BORDER_DATA.map((row: MarketMatrixRow) => (
+                      {(canFullMatrix ? CROSS_BORDER_DATA : CROSS_BORDER_DATA.slice(0, 2)).map((row: MarketMatrixRow) => (
                         <tr key={row.city} className="hover:bg-white/[0.02]">
                           <td className="py-3.5 px-4 font-bold text-white whitespace-nowrap">
                             <span className="mr-2">{row.flag}</span>
@@ -1540,19 +1808,34 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             {row.avgGrossYield}%
                           </td>
                           <td className="py-3.5 px-4 text-zinc-300">
-                            {row.transferTaxPct}%
+                            {canFullMatrix ? `${row.transferTaxPct}%` : '🔒 Starter'}
                           </td>
                           <td className="py-3.5 px-4 text-emerald-400 font-semibold">
-                            {row.capitalGainsTax}
+                            {canFullMatrix ? row.capitalGainsTax : '🔒 Starter'}
                           </td>
                           <td className="py-3.5 px-4 text-cyan-400">
-                            {row.goldenVisaUSD ? formatPrice(row.goldenVisaUSD, currentCurrency, { compact: true }) : 'N/A'}
+                            {canFullMatrix
+                              ? row.goldenVisaUSD
+                                ? formatPrice(row.goldenVisaUSD, currentCurrency, { compact: true })
+                                : 'N/A'
+                              : '🔒 Starter'}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
+                {!canFullMatrix && (
+                  <div className="p-4 bg-black/70 border-t border-[#D4AF37]/30 flex items-center justify-between text-xs font-mono text-amber-200">
+                    <span className="flex items-center gap-2">
+                      <Lock className="w-4 h-4 text-[#D4AF37]" />
+                      <span>5 additional markets + full tax &amp; visa rules locked on FREE tier.</span>
+                    </span>
+                    <button onClick={onOpenRenewal} className="text-[#D4AF37] font-bold underline cursor-pointer">
+                      Upgrade to Starter
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1660,32 +1943,40 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
                     <span className="text-xs font-mono font-bold uppercase tracking-wider text-white">
-                      Market Highlights - LIVE
+                      Market Highlights • Synced {marketLive?.last_synced_display || 'Daily'}
                     </span>
                   </div>
                   <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                    <span>LIVE MARKET METRICS</span>
+                    <span>WORLD BANK / FRED / DLD / JLL</span>
                   </span>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                   <div className="glass-panel p-5 border border-white/[0.08]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-400">Highest Net Yield Market</span>
-                    <div className="text-xl font-bold font-mono text-[#D4AF37] mt-1">Muscat ITC • 8.4%</div>
-                    <p className="text-[10px] text-zinc-500 font-mono mt-1">100% Freehold • 0% CGT</p>
+                    <span className="text-[10px] font-mono uppercase text-zinc-400">Muscat vs US 10Y Spread</span>
+                    <div className="text-xl font-bold font-mono text-[#D4AF37] mt-1">
+                      +{marketLive?.metrics?.muscat_vs_us10y_bps ?? 412} bps • {marketLive?.cities?.find((c) => c.city === 'Muscat')?.gross_yield ?? 8.4}%
+                    </div>
+                    <p className="text-[10px] text-zinc-500 font-mono mt-1">
+                      FRED US10Y: {marketLive?.macro?.us_10y_yield ?? 4.28}% • 0% CGT
+                    </p>
                   </div>
 
                   <div className="glass-panel p-5 border border-white/[0.08]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-400">Highest Rental Velocity</span>
-                    <div className="text-xl font-bold font-mono text-emerald-400 mt-1">Dubai Marina • 96% Occ</div>
-                    <p className="text-[10px] text-zinc-500 font-mono mt-1">Golden Visa Eligible</p>
+                    <span className="text-[10px] font-mono uppercase text-zinc-400">Dubai DLD Residential Index</span>
+                    <div className="text-xl font-bold font-mono text-emerald-400 mt-1">
+                      {marketLive?.metrics?.dubai_dld_index ?? 184.2} pts • {marketLive?.cities?.find((c) => c.city === 'Dubai')?.gross_yield ?? 8.8}%
+                    </div>
+                    <p className="text-[10px] text-zinc-500 font-mono mt-1">Dubai Land Department • Golden Visa Eligible</p>
                   </div>
 
                   <div className="glass-panel p-5 border border-white/[0.08]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-400">Highest Capital Growth</span>
-                    <div className="text-xl font-bold font-mono text-purple-400 mt-1">Riyadh KAFD • +14.8% YoY</div>
-                    <p className="text-[10px] text-zinc-500 font-mono mt-1">HQ Corporate Demand</p>
+                    <span className="text-[10px] font-mono uppercase text-zinc-400">Riyadh KAFD Rental Spread</span>
+                    <div className="text-xl font-bold font-mono text-purple-400 mt-1">
+                      Riyadh • +{marketLive?.cities?.find((c) => c.city === 'Riyadh')?.rental_yoy ?? 14.8}% YoY
+                    </div>
+                    <p className="text-[10px] text-zinc-500 font-mono mt-1">JLL KSA Baseline • HQ Corporate Demand</p>
                   </div>
                 </div>
               </div>
@@ -1811,12 +2102,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               <div className="border-b border-white/[0.08] pb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h2 className="text-2xl font-bold text-white tracking-tight">Account & Entitlements</h2>
-                  <p className="text-xs text-zinc-400 font-mono mt-0.5">Manage your active subscription and institutional credentials.</p>
+                  <p className="text-xs text-zinc-400 font-mono mt-0.5">Manage your active 30-day licensing, plan limits, and payment audit logs.</p>
                 </div>
-                {(import.meta.env.VITE_LEMON_TEST_MODE === 'true' || import.meta.env.VITE_LEMON_TEST_MODE === true) && (
+                {isTestMode && (
                   <div className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 font-mono text-xs flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-                    <span>TEST MODE - Use card 4242 4242 4242 4242</span>
+                    <span>TEST MODE - No real money - Test card 4242 4242 4242 4242</span>
                   </div>
                 )}
               </div>
@@ -1834,34 +2125,32 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <span className="text-white truncate block">{user.email}</span>
                   </div>
                   <div>
-                    <span className="text-zinc-500 block mb-0.5">Current Subscription</span>
-                    <span className="text-[#D4AF37] font-bold uppercase">{user.plan}</span>
+                    <span className="text-zinc-500 block mb-0.5">Current Plan</span>
+                    <span className="text-[#D4AF37] font-bold uppercase">{license.displayName}</span>
                   </div>
                   <div>
-                    <span className="text-zinc-500 block mb-0.5">Licensing Expiry & Countdown</span>
-                    <span className={isPlanEnded ? "text-rose-400 font-bold" : "text-[#D4AF37] font-bold"}>
-                      {user.plan === 'free'
-                        ? 'Active Free Tier'
-                        : isPlanEnded
-                        ? 'Your plan has ended. Renew to continue.'
-                        : countdownText}
+                    <span className="text-zinc-500 block mb-0.5">Licensing Expiry &amp; Countdown</span>
+                    <span className={isPlanEnded ? 'text-rose-400 font-bold' : 'text-[#D4AF37] font-bold'}>
+                      {isPlanEnded
+                        ? 'Licensing window expired - Renew'
+                        : `${daysLeft} days left`}
                     </span>
-                    {endsAt && user.plan !== 'free' && (
+                    {endsAt && license.planKey !== 'free' && (
                       <span className="text-[10px] text-zinc-500 block mt-0.5">
                         Ends: {new Date(endsAt).toLocaleString()}
                       </span>
                     )}
                   </div>
                   <div>
-                    <span className="text-zinc-500 block mb-0.5">Analyses Left</span>
+                    <span className="text-zinc-500 block mb-0.5">Analyses Quota</span>
                     <span className="text-emerald-400 font-bold">
-                      {user.plan === 'enterprise' ? 'Unlimited (∞)' : `${analysesRemaining} remaining`}
+                      {analysesLeftStr}
                     </span>
                   </div>
                   <div>
                     <span className="text-zinc-500 block mb-0.5">Saved Properties Limit</span>
                     <span className="text-white">
-                      {savedAnalyses.length} / {planInfo.maxSaved || 3}
+                      {savedAnalyses.length} / {license.isUnlimitedSaved ? 'Unlimited' : license.savedLimit}
                     </span>
                   </div>
                 </div>
@@ -1871,131 +2160,150 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               <div className="glass-panel p-6 space-y-4">
                 <h3 className="text-sm font-mono font-bold uppercase text-white">Feature Entitlements Checklist</h3>
                 <div className="space-y-2 text-xs font-mono">
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]">
-                    <div className="flex items-center gap-2">
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Basic Yield Calculator & Financing Model:</span>
-                    </div>
-                    <span className="text-emerald-400 font-bold">UNLOCKED</span>
-                  </div>
-
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]">
-                    <div className="flex items-center gap-2">
-                      {user.plan === 'free' ? (
-                        <Lock className="w-3.5 h-3.5 text-amber-400" />
+                  {[
+                    { label: 'Basic Cap Rate & Cash-on-Cash', unlocked: true, req: 'FREE' },
+                    { label: 'Yield & Sensitivity Calculator + Full Matrix', unlocked: canSensitivity, req: 'STARTER' },
+                    { label: 'Monte Carlo Stress Tests (+200bps)', unlocked: canMonteCarlo, req: 'PROFESSIONAL' },
+                    { label: 'PDF Memorandum Export', unlocked: canPdfExport, req: 'PROFESSIONAL' },
+                    { label: 'Multi-Asset Portfolio Aggregation', unlocked: canPortfolioAgg, req: 'PROFESSIONAL' },
+                    { label: 'Full REST API Credentials', unlocked: canApiAccess, req: 'SOVEREIGN' },
+                    { label: '1-on-1 Dedicated Analyst Desk & Custom Underwriting', unlocked: canAnalystDesk, req: 'SOVEREIGN' },
+                  ].map((item) => (
+                    <div key={item.label} className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]">
+                      <div className="flex items-center gap-2">
+                        {item.unlocked ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : (
+                          <Lock className="w-3.5 h-3.5 text-amber-400" />
+                        )}
+                        <span>{item.label}</span>
+                      </div>
+                      {item.unlocked ? (
+                        <span className="text-emerald-400 font-bold">UNLOCKED</span>
                       ) : (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-zinc-500 font-semibold">LOCKED ({item.req})</span>
                       )}
-                      <span>Custom OPEX, Vacancy & DSCR Modeling:</span>
                     </div>
-                    {user.plan === 'free' ? (
-                      <span className="text-zinc-500 flex items-center gap-1 font-semibold">LOCKED (STARTER+)</span>
-                    ) : (
-                      <span className="text-emerald-400 font-bold">UNLOCKED</span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]">
-                    <div className="flex items-center gap-2">
-                      {user.plan === 'free' ? (
-                        <Lock className="w-3.5 h-3.5 text-amber-400" />
-                      ) : (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      )}
-                      <span>Multi-Asset Portfolio Aggregation:</span>
-                    </div>
-                    {user.plan === 'free' ? (
-                      <span className="text-zinc-500 flex items-center gap-1 font-semibold">LOCKED (PRO+)</span>
-                    ) : (
-                      <span className="text-emerald-400 font-bold">UNLOCKED</span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]">
-                    <div className="flex items-center gap-2">
-                      {user.plan === 'starter' || user.plan === 'free' ? (
-                        <Lock className="w-3.5 h-3.5 text-amber-400" />
-                      ) : (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      )}
-                      <span>Monte Carlo Stress Testing (+200bps Rate Shock):</span>
-                    </div>
-                    {user.plan === 'starter' || user.plan === 'free' ? (
-                      <span className="text-zinc-500 flex items-center gap-1 font-semibold">LOCKED (PRO+)</span>
-                    ) : (
-                      <span className="text-emerald-400 font-bold">UNLOCKED</span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]">
-                    <div className="flex items-center gap-2">
-                      {user.plan === 'starter' || user.plan === 'free' ? (
-                        <Lock className="w-3.5 h-3.5 text-amber-400" />
-                      ) : (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      )}
-                      <span>Downloadable PDF Investment Memoranda:</span>
-                    </div>
-                    {user.plan === 'starter' || user.plan === 'free' ? (
-                      <span className="text-zinc-500 flex items-center gap-1 font-semibold">LOCKED (PRO+)</span>
-                    ) : (
-                      <span className="text-emerald-400 font-bold">UNLOCKED</span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]">
-                    <div className="flex items-center gap-2">
-                      {user.plan !== 'enterprise' ? (
-                        <Lock className="w-3.5 h-3.5 text-purple-400" />
-                      ) : (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      )}
-                      <span>Enterprise REST API & Live Terminal Webhooks:</span>
-                    </div>
-                    {user.plan !== 'enterprise' ? (
-                      <span className="text-zinc-500 flex items-center gap-1 font-semibold">LOCKED (ENTERPRISE)</span>
-                    ) : (
-                      <span className="text-emerald-400 font-bold">UNLOCKED</span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]">
-                    <div className="flex items-center gap-2">
-                      {user.plan !== 'enterprise' ? (
-                        <Lock className="w-3.5 h-3.5 text-purple-400" />
-                      ) : (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      )}
-                      <span>1-on-1 Dedicated Institutional Analyst Desk:</span>
-                    </div>
-                    {user.plan !== 'enterprise' ? (
-                      <span className="text-zinc-500 flex items-center gap-1 font-semibold">LOCKED (ENTERPRISE)</span>
-                    ) : (
-                      <span className="text-emerald-400 font-bold">UNLOCKED</span>
-                    )}
-                  </div>
+                  ))}
                 </div>
 
                 <button
                   onClick={onOpenRenewal}
                   className="mt-4 px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer"
                 >
-                  Upgrade Subscription
+                  Upgrade / Renew Subscription
                 </button>
               </div>
 
-              {/* Enterprise API Keys / Analyst Desk Panel */}
-              {user.plan === 'enterprise' && (
-                <div className="glass-panel p-6 border border-purple-500/40 space-y-4">
-                  <div className="flex items-center gap-2 text-purple-400 font-mono text-xs font-bold uppercase">
-                    <Key className="w-4 h-4" />
-                    <span>Sovereign Enterprise API Credentials</span>
+              {/* Sovereign API Credentials & Dedicated Analyst Desk */}
+              {canApiAccess && (
+                <div className="glass-panel p-6 border border-purple-500/40 space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-purple-400 font-mono text-xs font-bold uppercase">
+                      <Key className="w-4 h-4" />
+                      <span>Sovereign REST API Credentials &amp; 1-on-1 Dedicated Analyst Desk</span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300 font-bold">
+                      WHITE-GLOVE UNDERWRITING ACTIVE
+                    </span>
                   </div>
-                  <div className="p-3 rounded-lg bg-black/60 font-mono text-xs text-zinc-300 border border-white/10 break-all">
-                    Bearer aqari_live_sec_8cf20546c6b3428d878638ed27765ab7_prod
+
+                  <div>
+                    <div className="text-[10px] font-mono uppercase text-zinc-400 mb-1.5">Full REST API Bearer Token</div>
+                    <div className="p-3 rounded-lg bg-black/60 font-mono text-xs text-zinc-200 border border-white/10 break-all flex items-center justify-between gap-3">
+                      <span>Bearer aqari_sov_{user.id.slice(0, 10)}_{user.plan}_live</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(`aqari_sov_${user.id.slice(0, 10)}_${user.plan}_live`);
+                          showToast('API key copied to clipboard.');
+                        }}
+                        className="px-2.5 py-1 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-[10px] font-bold shrink-0 cursor-pointer"
+                      >
+                        COPY KEY
+                      </button>
+                    </div>
                   </div>
+
+                  {canAnalystDesk && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/10">
+                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-1.5">
+                        <div className="flex items-center gap-2 text-xs font-mono font-bold text-[#D4AF37]">
+                          <Headphones className="w-4 h-4" />
+                          <span>1-on-1 Dedicated Analyst Desk</span>
+                        </div>
+                        <p className="text-[11px] font-mono text-zinc-400 leading-relaxed">
+                          Direct priority underwriting consultation with Loomora Studios institutional real estate desk.
+                        </p>
+                        <a
+                          href="mailto:loomora.studios@gmail.com?subject=SOVEREIGN%20Analyst%20Desk%20Request"
+                          className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-white hover:text-[#D4AF37] underline pt-1"
+                        >
+                          <span>loomora.studios@gmail.com</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-1.5">
+                        <div className="flex items-center gap-2 text-xs font-mono font-bold text-emerald-400">
+                          <FileText className="w-4 h-4" />
+                          <span>White-Glove Custom Underwriting</span>
+                        </div>
+                        <p className="text-[11px] font-mono text-zinc-400 leading-relaxed">
+                          Submit multi-jurisdiction SPV structures or GCC ITC portfolios for bespoke sensitivity modeling and board PDF memos.
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
+
+              {/* Webhook & Day-29 Email Audit Logs */}
+              <div className="glass-panel p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-mono font-bold uppercase text-white">
+                    Payment Webhook &amp; Email Audit Logs
+                  </h3>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/5 text-zinc-400">
+                    {webhookLogs.length} webhooks • {emailLogs.length} emails
+                  </span>
+                </div>
+
+                {webhookLogs.length === 0 ? (
+                  <div className="text-xs font-mono text-zinc-500 p-3 rounded-xl bg-black/40 border border-white/5">
+                    No Lemon Squeezy webhook events logged in this container yet.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-[11px] font-mono">
+                      <thead className="text-zinc-500 border-b border-white/10 uppercase">
+                        <tr>
+                          <th className="py-2 pr-3">Order ID</th>
+                          <th className="py-2 pr-3">Plan</th>
+                          <th className="py-2 pr-3">Email</th>
+                          <th className="py-2 pr-3">Amount</th>
+                          <th className="py-2">Mode</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5 text-zinc-300">
+                        {webhookLogs.slice(0, 10).map((w) => (
+                          <tr key={w.id}>
+                            <td className="py-2 pr-3">{w.order_id}</td>
+                            <td className="py-2 pr-3 uppercase text-[#D4AF37] font-bold">{w.plan}</td>
+                            <td className="py-2 pr-3">{w.email}</td>
+                            <td className="py-2 pr-3">${w.amount} {w.currency}</td>
+                            <td className="py-2">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.test_mode ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                                {w.test_mode ? 'TEST' : 'LIVE'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
 
             </div>
           )}

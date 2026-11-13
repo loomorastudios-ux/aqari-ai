@@ -24,6 +24,7 @@ interface PricingSectionProps {
   onOpenAuth: () => void;
   onTestUnlock?: (plan: 'starter' | 'pro' | 'enterprise') => void;
   onGoToTerminal?: () => void;
+  onOpenLegal?: (page: 'terms' | 'privacy' | 'refund' | 'disclaimer') => void;
   isStandalonePage?: boolean;
 }
 
@@ -40,14 +41,17 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   user,
   onOpenAuth,
   onGoToTerminal,
+  onOpenLegal,
   isStandalonePage = false,
 }) => {
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [errorToast, setErrorToast] = useState<string | null>(null);
+  const [refundAccepted, setRefundAccepted] = useState<boolean>(false);
+  const [highlightPolicy, setHighlightPolicy] = useState<boolean>(false);
 
   // Check if Lemon Squeezy test mode is active
-  const isTestMode = 
-    typeof window !== 'undefined' && 
+  const isTestMode =
+    typeof window !== 'undefined' &&
     (import.meta.env.VITE_LEMON_TEST_MODE === 'true' || import.meta.env.VITE_LEMON_TEST_MODE === true);
 
   const showError = (msg: string) => {
@@ -102,7 +106,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     });
   }, [user]);
 
-  // Handle plan selection with 8s timeout + 1 automatic retry
+  // Handle plan selection with refund agreement enforcement + 8s timeout + 1 retry
   const handleChoosePlan = async (planId: 'free' | 'starter' | 'pro' | 'enterprise') => {
     if (planId === 'free') {
       if (!user) {
@@ -120,10 +124,30 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       return;
     }
 
+    if (!refundAccepted) {
+      setHighlightPolicy(true);
+      showError('Please agree to the "5-7 Day Refund Policy - Max 3 analyses" checkbox below before checkout.');
+      setTimeout(() => setHighlightPolicy(false), 3000);
+      return;
+    }
+
+    const acceptedAt = new Date().toISOString();
+
     // Check if immediate cached checkout URL is ready
     const cached = checkoutPrefetchCache[planId];
     if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
       console.log(`[Aqari Checkout] Using prefetch cache for plan: ${planId}`);
+      // Fire background consent timestamp record
+      fetch('/api/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          plan: planId,
+          email: user.email,
+          userId: user.id || user.googleId,
+          refundAcceptedAt: acceptedAt,
+        }),
+      }).catch(() => {});
       window.location.href = cached.url;
       return;
     }
@@ -144,6 +168,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
             plan: planId,
             email: user.email,
             userId: user.id || user.googleId,
+            refundAcceptedAt: acceptedAt,
           }),
           signal: controller.signal,
         });
@@ -191,14 +216,16 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       }
     }
 
-    // Direct fallback to hosted Lemon Squeezy URL so user is never stuck
+    // Direct fallback to hosted Lemon Squeezy URL with production redirect
     try {
       const buyUrls: Record<'starter' | 'pro' | 'enterprise', string> = {
         starter: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/da826632-dcb4-4885-966e-aac1fab84cb3',
         pro: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/404c54cb-29c5-477a-b8c2-772092f5459a',
         enterprise: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/ce8dfbdb-cedd-4445-a947-e821522472bb',
       };
-      const direct = `${buyUrls[planId]}?checkout[email]=${encodeURIComponent(user.email)}&checkout[custom][user_id]=${encodeURIComponent(user.id || user.googleId || '')}&checkout[custom][plan]=${planId}${isTestMode ? '&checkout[test_mode]=1' : ''}`;
+      const redirectUrl = `https://aqari-ai-rho.vercel.app/app?checkout=success&plan=${planId}&email=${encodeURIComponent(user.email)}`;
+      const cancelUrl = `https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled`;
+      const direct = `${buyUrls[planId]}?checkout[email]=${encodeURIComponent(user.email)}&checkout[custom][user_id]=${encodeURIComponent(user.id || user.googleId || '')}&checkout[custom][plan]=${planId}&checkout[redirect_url]=${encodeURIComponent(redirectUrl)}&checkout[cancel_url]=${encodeURIComponent(cancelUrl)}${isTestMode ? '&checkout[test_mode]=1' : ''}`;
       window.location.href = direct;
       return;
     } catch {
@@ -217,79 +244,78 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     analysesLimit: string;
     icon: React.ReactNode;
     features: string[];
+    lockedFeatures?: string[];
     ctaLabel: string;
   }> = [
     {
       id: 'free',
-      name: 'Aqari AI - Free',
-      subtitle: 'For exploratory property underwriting',
+      name: 'FREE',
+      subtitle: 'For exploratory underwriting checks',
       baseUSD: 0,
-      analysesLimit: '3 Free Analyses Total',
+      analysesLimit: '3 Analyses / 30 Days',
       icon: <Building2 className="w-5 h-5 text-zinc-400" />,
       features: [
-        '3 Free Institutional Analyses with Google sign-in',
-        'Basic Yield Calculator (Cap Rate, CoC, IRR, Cashflow)',
-        'Save up to 3 properties in personal portfolio',
-        'Standard Currency Switcher (USD, OMR, AED, GBP)',
-        'Zero credit card required to start',
+        '3 Analyses / 30 Days',
+        'Basic Cap Rate',
+        'Cash-on-Cash only',
+        '0 Saved Properties',
       ],
-      ctaLabel: user ? 'Current Free Plan' : 'Get Started Free',
+      lockedFeatures: [
+        'Monte Carlo, PDF Export, API, Analyst Desk, Portfolio Aggregation & Full Matrix',
+      ],
+      ctaLabel: user ? 'Current FREE Plan' : 'Start FREE (3 Analyses)',
     },
     {
       id: 'starter',
-      name: 'Aqari AI - Standard',
-      subtitle: 'For individual cross-border real estate investors',
+      name: 'STARTER',
+      subtitle: 'For individual cross-border investors',
       baseUSD: 89,
-      analysesLimit: '50 Deep Analyses / 30 Days',
+      analysesLimit: '50 Analyses / 30 Days',
       icon: <Building2 className="w-5 h-5 text-zinc-300" />,
       features: [
-        '50 Deep Asset Intelligence analyses',
-        'Real-time currency converter across 4 currencies',
-        'Yield & sensitivity simulator with mortgage model',
-        'Cross-border tax & visa matrix (7 markets)',
-        'Transfer Tax, OPEX & Insurance Modeling',
-        'Multi-asset Portfolio Aggregation (up to 50 saved properties)',
-        'Standard email support',
+        '50 Analyses / 30 Days',
+        'Yield & Sensitivity Calculator',
+        'Cross-border Tax & Visa Matrix',
+        'Save 50 properties',
       ],
-      ctaLabel: 'Upgrade to Standard',
+      ctaLabel: 'Upgrade to STARTER ($89)',
     },
     {
       id: 'pro',
-      name: 'Aqari AI - Pro',
+      name: 'PROFESSIONAL',
       subtitle: 'For family offices, active syndicators & brokers',
       baseUSD: 249,
       popular: true,
-      analysesLimit: '400 Deep Analyses / 30 Days',
+      analysesLimit: '400 Analyses / 30 Days',
       icon: <Zap className="w-5 h-5 text-[#D4AF37]" />,
       features: [
-        '400 Institutional Asset Intelligence analyses',
-        'Full Monte Carlo stress tests (+200bps rate shocks)',
-        'Tenant default probability index & credit ratings',
-        'Sovereign wealth fund capital flow tracking',
-        'Priority 24/7 dedicated analyst desk',
-        'Downloadable PDF investment memoranda',
-        'Full Cash Flow Waterfall Breakdown',
-        'Save up to 200 properties',
+        '400 Analyses / 30 Days',
+        'Monte Carlo Stress Tests +200bps',
+        'PDF Memorandum Export',
+        'Multi-asset Portfolio Aggregation',
+        'Yield & Sensitivity Calculator',
+        'Cross-border Tax & Visa Matrix',
+        'Save 200 properties',
       ],
-      ctaLabel: 'Upgrade to Professional',
+      ctaLabel: 'Upgrade to PROFESSIONAL ($249)',
     },
     {
       id: 'enterprise',
-      name: 'Aqari AI - Agency',
+      name: 'SOVEREIGN',
       subtitle: 'For institutional funds, REITs & sovereign wealth',
       baseUSD: 749,
       analysesLimit: 'Unlimited Analyses / 30 Days',
       icon: <Crown className="w-5 h-5 text-purple-400" />,
       features: [
-        'Unlimited institutional underwriting dossiers',
-        'Real-time API access to global transaction data',
-        'Custom multi-jurisdiction portfolio stress-testing',
-        'Dedicated real estate underwriting director',
-        'Bespoke macro legal & tax opinion integration',
-        'White-glove data ingestion & custom reporting',
-        'Unlimited saved properties',
+        'Unlimited Analyses / 30 Days',
+        'Full REST API Credentials',
+        '1-on-1 Dedicated Analyst Desk',
+        'White-glove Custom Underwriting',
+        'Monte Carlo +200bps & PDF Export',
+        'Multi-asset Portfolio Aggregation',
+        'Unlimited Saved properties',
       ],
-      ctaLabel: 'Upgrade to Sovereign Agency',
+      ctaLabel: 'Upgrade to SOVEREIGN ($749)',
     },
   ];
 
@@ -298,9 +324,9 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       
       {/* Test Mode Badge Header if active */}
       {isTestMode && (
-        <div className="mb-6 mx-auto max-w-md p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs font-mono flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(245,158,11,0.2)] animate-pulse">
+        <div className="mb-6 mx-auto max-w-xl p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs font-mono flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(245,158,11,0.2)]">
           <CreditCard className="w-4 h-4 text-amber-400 shrink-0" />
-          <span className="font-bold">TEST MODE - Use card 4242 4242 4242 4242</span>
+          <span className="font-bold">TEST MODE - No real money - Test card 4242 4242 4242 4242</span>
         </div>
       )}
 
@@ -409,11 +435,17 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                       <span>{feature}</span>
                     </div>
                   ))}
+                  {tier.lockedFeatures && tier.lockedFeatures.map((locked, idx) => (
+                    <div key={`locked_${idx}`} className="flex items-start gap-2 text-[10px] text-zinc-500 font-mono leading-tight pt-1">
+                      <Lock className="w-3 h-3 text-zinc-600 mt-0.5 shrink-0" />
+                      <span>No {locked}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
 
               {/* Action Button */}
-              <div className="pt-2">
+              <div className="pt-2 space-y-2">
                 <button
                   type="button"
                   disabled={isLoadingThis || isCurrentPlan}
@@ -443,6 +475,11 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     </>
                   )}
                 </button>
+                {tier.baseUSD > 0 && (
+                  <p className="text-[10px] font-mono text-zinc-400 text-center leading-snug">
+                    5-7 Day Refund - If technical issue, max 3 analyses
+                  </p>
+                )}
               </div>
 
             </div>
@@ -450,8 +487,52 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         })}
       </div>
 
+      {/* Required Checkout Policy Checkbox */}
+      <div className={`mt-8 max-w-xl mx-auto p-4 rounded-2xl border transition-all ${
+        highlightPolicy
+          ? 'bg-rose-950/40 border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.3)]'
+          : 'bg-white/[0.03] border-white/10'
+      }`}>
+        <label className="flex items-start gap-3 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={refundAccepted}
+            onChange={(e) => {
+              setRefundAccepted(e.target.checked);
+              if (e.target.checked) setHighlightPolicy(false);
+            }}
+            className="mt-0.5 w-4 h-4 accent-[#D4AF37] rounded cursor-pointer shrink-0"
+          />
+          <span className="text-xs font-mono text-zinc-200 leading-relaxed">
+            I agree to the{' '}
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenLegal) onOpenLegal('refund');
+                else window.location.hash = '#/refund';
+              }}
+              className="text-[#D4AF37] underline font-bold hover:text-amber-300 cursor-pointer"
+            >
+              5-7 Day Refund Policy - Max 3 analyses
+            </button>{' '}
+            and{' '}
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenLegal) onOpenLegal('terms');
+                else window.location.hash = '#/terms';
+              }}
+              className="text-[#D4AF37] underline hover:text-amber-300 cursor-pointer"
+            >
+              Terms of Service
+            </button>
+            .
+          </span>
+        </label>
+      </div>
+
       {/* Trust & Guarantee Footer */}
-      <div className="mt-12 text-center text-xs text-zinc-400 font-mono flex flex-wrap items-center justify-center gap-6">
+      <div className="mt-8 text-center text-xs text-zinc-400 font-mono flex flex-wrap items-center justify-center gap-6">
         <span className="flex items-center gap-1.5">
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
           <span>Real Lemon Squeezy 256-Bit SSL Checkout</span>
@@ -461,7 +542,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         <span className="text-zinc-600">•</span>
         <span>30-Day Subscription Window</span>
         <span className="text-zinc-600">•</span>
-        <span>Cancel Anytime</span>
+        <span>5-7 Day Refund - If technical issue, max 3 analyses</span>
       </div>
 
     </section>

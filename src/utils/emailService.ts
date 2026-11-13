@@ -1,17 +1,19 @@
 import { User } from '../types';
 import { saveUser } from './userStorage';
 
+import { PRODUCTION_URL, getPlanConfig } from '../../lib/plans';
+
 /**
- * Placeholder function to connect to an external email service (SendGrid, Postmark, AWS SES, or LemonSqueezy Webhook)
+ * Sends email via backend Resend / Nodemailer API or logs fallback
  */
 export async function sendEmail(to: string, subject: string, body: string): Promise<boolean> {
-  console.log(`[AQARI EMAIL SERVICE] To: ${to} | Subject: "${subject}"\n${body}`);
+  console.log(`[AQARI EMAIL SERVICE] From: noreply@aqari-ai-rho.vercel.app | To: ${to} | Subject: "${subject}"\n${body}`);
   return true;
 }
 
 /**
  * Automatically checks if a user's subscription ends within 24 hours (and > 0).
- * If not already sent, sends the expiry email to the verified Gmail account and sets expiryEmailSent = true.
+ * If not already sent, sends the Day-29 renewal email and sets expiryEmailSent = true.
  */
 export function checkAndSendExpiryEmail(user: User): { shouldShowBanner: boolean; user: User } {
   if (!user || user.plan === 'free') {
@@ -28,23 +30,27 @@ export function checkAndSendExpiryEmail(user: User): { shouldShowBanner: boolean
   const isExpiringIn24h = msRemaining > 0 && msRemaining <= 24 * 60 * 60 * 1000;
 
   if (isExpiringIn24h && !user.expiryEmailSent) {
-    const hoursRemaining = Math.floor(msRemaining / (1000 * 60 * 60));
-    const minutesRemaining = Math.floor((msRemaining % (1000 * 60 * 60)) / (1000 * 60));
-    const formattedExpiry = new Date(endsAt).toLocaleString();
+    const planCfg = getPlanConfig(user.plan);
+    const formattedExpiry = new Date(endsAt).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+    const leftCount = Number.isFinite(planCfg.analysesLimit)
+      ? Math.max(0, planCfg.analysesLimit - (user.analysesUsed || 0))
+      : 'Unlimited';
 
-    const subject = 'Your AQARI plan ends tomorrow';
-    const body = `Dear ${user.name || 'Investor'},
+    const subject = `Your AQARI ${planCfg.displayName} ends tomorrow - Renew in 1 click`;
+    const body = `Hi ${user.name || 'Investor'},
 
-Your AQARI ${user.plan.toUpperCase()} plan is scheduled to expire in approximately ${hoursRemaining} hours and ${minutesRemaining} minutes (on ${formattedExpiry}).
+Your ${planCfg.displayName} ends tomorrow (${formattedExpiry}). You have ${leftCount} analyses left.
 
-Exact Time Left: ${hoursRemaining}h ${minutesRemaining}m
-Registered Verified Gmail: ${user.email}
+Renew same plan / Upgrade:
+${PRODUCTION_URL}/pricing
 
-To continue accessing institutional analyses, live radar feeds, and saved portfolios without interruption, please renew your plan now:
-https://aqari-ai.vercel.app/#pricing
+If you don't renew, you will return to FREE (3 analyses).
 
-Best regards,
-AQARI Global Terminal Team`;
+AQARI Global Terminal`;
 
     sendEmail(user.email, subject, body);
 

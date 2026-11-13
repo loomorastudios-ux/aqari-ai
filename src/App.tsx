@@ -1,24 +1,36 @@
+// © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import React, { useState, useEffect } from 'react';
 import confetti from 'canvas-confetti';
 import { CurrencyCode, PropertyListing, RemoteConfig, User, MarketMatrixRow } from './types';
-import { 
-  CONFIG_URL, 
-  DEFAULT_CONFIG, 
-  PLAN_LIMITS, 
+import {
+  CONFIG_URL,
+  DEFAULT_CONFIG,
   PROPERTY_LISTINGS,
-  FALLBACK_CROSS_BORDER_DATA 
+  FALLBACK_CROSS_BORDER_DATA,
 } from './constants';
-import { fetchLiveExchangeRates, fetchMarketData } from './utils/marketDataService';
-import { 
-  getSessionUser, 
-  saveUser, 
-  clearSession, 
-  getUser, 
-  getRememberedAccounts, 
+import {
+  fetchLiveExchangeRates,
+  fetchLiveMarketData,
+  fetchLiveNews,
+  mapLiveCitiesToMatrix,
+  LiveMarketResponse,
+  MarketNewsArticle,
+} from './utils/marketDataService';
+import {
+  getSessionUser,
+  saveUser,
+  clearSession,
+  getUser,
   removeRememberedAccount,
-  loginOrCreateUser 
+  loginOrCreateUser,
 } from './utils/userStorage';
 import { verifyGoogleAccessToken, verifyGoogleIdToken } from './utils/oauthConfig';
+import {
+  canUseFeature,
+  normalizePlanKey,
+  PLANS,
+  PRODUCTION_URL,
+} from '../lib/plans';
 import { AmbientBackground } from './components/AmbientBackground';
 import { CustomCursor } from './components/CustomCursor';
 import { Navbar } from './components/Navbar';
@@ -38,23 +50,35 @@ import { TerminalDashboard } from './components/TerminalDashboard';
 import { PaymentSuccessView } from './components/PaymentSuccessView';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { DemoAnalysisView } from './components/DemoAnalysisView';
+import { LegalPages, LegalDocSlug } from './components/LegalPages';
+import { AdminDashboard } from './components/AdminDashboard';
 import { checkAndSendExpiryEmail } from './utils/emailService';
-import { 
-  Building2, 
-  Sparkles, 
-  X, 
-  AlertOctagon, 
-  Settings, 
-  ShieldCheck, 
-  FileCode,
-  CheckCircle2
+import {
+  Sparkles,
+  X,
+  AlertOctagon,
+  CheckCircle2,
+  Loader2,
+  Newspaper,
+  ExternalLink,
 } from 'lucide-react';
 
-// Global Announcement Banner Text (Set to empty string "" to hide)
-export const ANNOUNCEMENT = "Institutional Spring Cycle: Muscat + Dubai Gross Yield Spread reaches +450bps. Sovereign Terminal 3.0 Live.";
+type AppRoute =
+  | 'landing'
+  | 'terminal'
+  | 'pricing'
+  | 'payment-success'
+  | 'demo'
+  | 'terms'
+  | 'privacy'
+  | 'refund'
+  | 'disclaimer'
+  | 'admin'
+  | 'checkout-verifying';
+
+const OWNER_ADMIN_EMAIL = 'loomora.studios@gmail.com';
 
 export default function App() {
-  // Currency State (saved in localStorage)
   const [currency, setCurrency] = useState<CurrencyCode>(() => {
     const saved = localStorage.getItem('aqari_currency');
     if (saved && ['USD', 'OMR', 'AED', 'GBP'].includes(saved)) {
@@ -63,12 +87,8 @@ export default function App() {
     return 'USD';
   });
 
-  // User Auth & Session State (per-user database)
-  const [user, setUser] = useState<User | null>(() => {
-    return getSessionUser();
-  });
+  const [user, setUser] = useState<User | null>(() => getSessionUser());
 
-  // App Routing State: 'landing' vs 'terminal' vs 'pricing' vs 'payment-success' vs 'demo'
   const [demoSlug, setDemoSlug] = useState<string>(() => {
     if (typeof window !== 'undefined') {
       const path = window.location.pathname;
@@ -83,20 +103,26 @@ export default function App() {
     return 'tribeca';
   });
 
-  const [route, setRoute] = useState<'landing' | 'terminal' | 'pricing' | 'payment-success' | 'demo'>(() => {
+  const [route, setRoute] = useState<AppRoute>(() => {
     if (typeof window !== 'undefined') {
       const path = window.location.pathname;
       const hash = window.location.hash;
-      if (path === '/payment-success' || hash.startsWith('#/payment-success')) {
-        return 'payment-success';
+      const params = new URLSearchParams(window.location.search);
+
+      if (path === '/terms' || hash === '#/terms') return 'terms';
+      if (path === '/privacy' || hash === '#/privacy') return 'privacy';
+      if (path === '/refund' || hash === '#/refund') return 'refund';
+      if (path === '/disclaimer' || hash === '#/disclaimer') return 'disclaimer';
+      if (path === '/admin' || hash === '#/admin') return 'admin';
+      if (path === '/payment-success' || hash.startsWith('#/payment-success')) return 'payment-success';
+      if (path === '/pricing' || hash === '#/pricing') return 'pricing';
+      if (path.startsWith('/demo/') || hash.startsWith('#/demo/')) return 'demo';
+
+      if (params.get('checkout') === 'success' || params.get('success') === 'true') {
+        return 'checkout-verifying';
       }
-      if (path === '/pricing' || hash === '#/pricing') {
-        return 'pricing';
-      }
-      if (path.startsWith('/demo/') || hash.startsWith('#/demo/')) {
-        return 'demo';
-      }
-      if (hash === '#/terminal') {
+
+      if (path === '/app' || hash === '#/terminal') {
         const sessionUser = getSessionUser();
         if (sessionUser) return 'terminal';
       }
@@ -104,69 +130,107 @@ export default function App() {
     return 'landing';
   });
 
-  // Remote Config State
+  const [verifyingPlanName, setVerifyingPlanName] = useState<string>('SUBSCRIPTION');
+
   const [config, setConfig] = useState<RemoteConfig>(() => {
     const localOverride = localStorage.getItem('aqari_remote_config');
     if (localOverride) {
       try {
         return JSON.parse(localOverride);
-      } catch (e) {
-        console.error(e);
-      }
+      } catch {}
     }
     const cached = localStorage.getItem('aqari_remote_config_cached');
     if (cached) {
       try {
         return JSON.parse(cached);
-      } catch (e) {
-        console.error(e);
-      }
+      } catch {}
     }
     return DEFAULT_CONFIG;
   });
 
-  // Modals State - Do NOT auto-open login on initial landing page load
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isLimitOpen, setIsLimitOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isRenewalOpen, setIsRenewalOpen] = useState(false);
   const [activePropertyAnalysis, setActivePropertyAnalysis] = useState<PropertyListing | null>(null);
 
-  // Filter state for landing page
   const [selectedCity, setSelectedCity] = useState<string>('All');
+  const [marketLive, setMarketLive] = useState<LiveMarketResponse | null>(null);
   const [matrixData, setMatrixData] = useState<MarketMatrixRow[]>(FALLBACK_CROSS_BORDER_DATA);
+  const [newsArticles, setNewsArticles] = useState<MarketNewsArticle[]>([]);
 
-  // Announcement Toast state
   const [showToast, setShowToast] = useState(true);
-
-  // Success Unlock Banner (when returning from LemonSqueezy)
   const [unlockSuccessMsg, setUnlockSuccessMsg] = useState<string | null>(null);
-
-  // Terminal welcome toast state
   const [terminalToast, setTerminalToast] = useState<string | null>(null);
+
+  const showTempToast = (msg: string, duration = 3500) => {
+    setTerminalToast(msg);
+    setTimeout(() => setTerminalToast(null), duration);
+  };
+
+  // Force production Vercel domain redirect if accessed via any preview .vercel.app host
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const host = window.location.hostname;
+      if (host.endsWith('.vercel.app') && host !== 'aqari-ai-rho.vercel.app') {
+        window.location.replace(
+          `${PRODUCTION_URL}${window.location.pathname}${window.location.search}${window.location.hash}`
+        );
+      }
+    }
+  }, []);
+
+  // Navigation helpers supporting both clean pathnames and hash fallbacks
+  const navigateLegal = (slug: LegalDocSlug) => {
+    window.history.pushState({}, '', `/${slug}`);
+    setRoute(slug);
+    window.scrollTo(0, 0);
+  };
+
+  const handleGoToHome = () => {
+    window.history.pushState({}, '', '/');
+    setRoute('landing');
+    window.scrollTo(0, 0);
+  };
+
+  const handleGoToTerminal = () => {
+    if (!user) {
+      setIsAuthOpen(true);
+      return;
+    }
+    window.history.pushState({}, '', '/app');
+    setRoute('terminal');
+    window.scrollTo(0, 0);
+  };
+
+  const handleGoToPricing = () => {
+    window.history.pushState({}, '', '/pricing');
+    setRoute('pricing');
+    window.scrollTo(0, 0);
+  };
 
   // Listen to hash and pathname changes
   useEffect(() => {
-    const handleHashChange = () => {
+    const handleLocationChange = () => {
       const hash = window.location.hash;
       const path = window.location.pathname;
       const currentUser = getSessionUser();
 
-      if (path === '/payment-success' || hash.startsWith('#/payment-success')) {
-        setRoute('payment-success');
-        return;
-      }
-      if (path === '/pricing' || hash === '#/pricing') {
-        setRoute('pricing');
-        return;
-      }
+      if (path === '/terms' || hash === '#/terms') return setRoute('terms');
+      if (path === '/privacy' || hash === '#/privacy') return setRoute('privacy');
+      if (path === '/refund' || hash === '#/refund') return setRoute('refund');
+      if (path === '/disclaimer' || hash === '#/disclaimer') return setRoute('disclaimer');
+      if (path === '/admin' || hash === '#/admin') return setRoute('admin');
+      if (path === '/payment-success' || hash.startsWith('#/payment-success')) return setRoute('payment-success');
+      if (path === '/pricing' || hash === '#/pricing') return setRoute('pricing');
+
       if (path.startsWith('/demo/') || hash.startsWith('#/demo/')) {
         const s = (path.startsWith('/demo/') ? path.replace('/demo/', '') : hash.replace('#/demo/', '')).split('?')[0] || 'tribeca';
         setDemoSlug(s);
         setRoute('demo');
         return;
       }
-      if (hash === '#/terminal') {
+      if (hash === '#/terminal' || path === '/app') {
         if (currentUser) {
           setRoute('terminal');
         } else {
@@ -175,21 +239,30 @@ export default function App() {
         }
         return;
       }
-      if (hash === '#/landing' || hash === '' || hash === '#') {
+      if (path === '/' || hash === '#/landing' || hash === '' || hash === '#') {
         setRoute('landing');
-        return;
       }
     };
 
-    window.addEventListener('hashchange', handleHashChange);
-    window.addEventListener('popstate', handleHashChange);
+    window.addEventListener('hashchange', handleLocationChange);
+    window.addEventListener('popstate', handleLocationChange);
     return () => {
-      window.removeEventListener('hashchange', handleHashChange);
-      window.removeEventListener('popstate', handleHashChange);
+      window.removeEventListener('hashchange', handleLocationChange);
+      window.removeEventListener('popstate', handleLocationChange);
     };
   }, []);
 
-  // Save Currency
+  // Protect /admin route strictly for owner email
+  useEffect(() => {
+    if (route === 'admin') {
+      if (!user || user.email.toLowerCase() !== OWNER_ADMIN_EMAIL) {
+        window.history.replaceState({}, document.title, '/');
+        setRoute('landing');
+        showTempToast('403 Forbidden: Restricted access', 4000);
+      }
+    }
+  }, [route, user?.email]);
+
   const handleCurrencyChange = (newCurrency: CurrencyCode) => {
     setCurrency(newCurrency);
     localStorage.setItem('aqari_currency', newCurrency);
@@ -201,56 +274,48 @@ export default function App() {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2500);
-
-        const res = await fetch(`${CONFIG_URL}?t=${Date.now()}`, {
-          signal: controller.signal,
-        });
+        const res = await fetch(`${CONFIG_URL}?t=${Date.now()}`, { signal: controller.signal });
         clearTimeout(timeoutId);
-
         if (res.ok) {
           const data: RemoteConfig = await res.json();
           const localOverride = localStorage.getItem('aqari_remote_config');
-          if (!localOverride) {
-            setConfig(data);
-          }
+          if (!localOverride) setConfig(data);
           localStorage.setItem('aqari_remote_config_cached', JSON.stringify(data));
         }
-      } catch (e) {
-        // Fallback silently
-      }
+      } catch {}
     };
-
     fetchRemoteConfig();
   }, []);
 
-  // Poll live exchange rates and market data (every 5 min)
+  // Poll live FX, live market metrics (/api/market/live), and live Google News RSS (/api/news)
   useEffect(() => {
-    fetchLiveExchangeRates();
-    fetchMarketData().then((data) => {
-      if (data && data.length > 0) setMatrixData(data);
+    const loadLiveFeeds = async () => {
+      await fetchLiveExchangeRates();
+      const live = await fetchLiveMarketData();
+      setMarketLive(live);
+      const mapped = mapLiveCitiesToMatrix(live);
+      if (mapped.length > 0) setMatrixData(mapped);
+    };
+
+    loadLiveFeeds();
+    fetchLiveNews().then((res) => {
+      if (res?.success && Array.isArray(res.articles) && res.articles.length > 0) {
+        setNewsArticles(res.articles);
+      }
     });
 
-    const intervalId = setInterval(() => {
-      fetchLiveExchangeRates();
-      fetchMarketData().then((data) => {
-        if (data && data.length > 0) setMatrixData(data);
-      });
-    }, 5 * 60 * 1000);
-
+    const intervalId = setInterval(loadLiveFeeds, 5 * 60 * 1000);
     return () => clearInterval(intervalId);
   }, []);
 
-  // 1-Day Expiration Reminder Modal Check (shows once per day)
+  // 1-Day Expiration Reminder Modal Check
   useEffect(() => {
     if (user && user.plan !== 'free' && user.subscriptionExpiry) {
       const msLeft = user.subscriptionExpiry - Date.now();
       if (msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000) {
         const todayStr = new Date().toISOString().slice(0, 10);
         if (user.lastReminderDate !== todayStr) {
-          const updated: User = {
-            ...user,
-            lastReminderDate: todayStr,
-          };
+          const updated: User = { ...user, lastReminderDate: todayStr };
           setUser(updated);
           localStorage.setItem('aqari_user', JSON.stringify(updated));
           setIsRenewalOpen(true);
@@ -259,74 +324,113 @@ export default function App() {
     }
   }, [user]);
 
-  // Check URL params on load (LemonSqueezy redirect: ?success=true&plan=starter|pro|enterprise)
+  // Verify post-checkout success & Google OAuth redirect tokens on mount
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('success') === 'true') {
-      const returnedPlan = (urlParams.get('plan') as 'starter' | 'pro' | 'enterprise') || 'pro';
-      const sessionUser = getSessionUser();
-      const targetEmail = sessionUser?.email || urlParams.get('email') || 'investor@global-capital.io';
-      const existingUser = getUser(targetEmail);
-      const planQuota = PLAN_LIMITS[returnedPlan]?.analyses || 400;
 
-      const baseUser: User = existingUser || sessionUser || {
-        id: 'user_' + Date.now(),
-        email: targetEmail,
-        name: targetEmail.split('@')[0],
-        avatar: targetEmail.charAt(0).toUpperCase(),
-        provider: 'email',
-        plan: 'free',
-        freeAnalysesLeft: 3,
-        freeAnalyses: 3,
-        analysesUsed: 0,
-        analysesLeft: 0,
-        subscriptionExpiry: null,
-        savedAnalyses: [],
-        createdAt: Date.now(),
-        lastLoginAt: Date.now(),
-      };
-
-      const now = Date.now();
-      const subscriptionDuration = 30 * 24 * 60 * 60 * 1000;
-      const updatedUser: User = {
-        ...baseUser,
-        plan: returnedPlan,
-        subscriptionStatus: 'active',
-        subscriptionStartAt: now,
-        subscriptionEndsAt: now + subscriptionDuration,
-        subscriptionExpiry: now + subscriptionDuration,
-        expiryEmailSent: false,
-        freeAnalyses: planQuota,
-        freeAnalysesLeft: planQuota,
-        analysesLeft: planQuota,
-      };
-
-      saveUser(updatedUser);
-      setUser(updatedUser);
-
-      // Fire confetti
-      try {
-        confetti({
-          particleCount: 160,
-          spread: 85,
-          origin: { y: 0.6 },
-          colors: ['#D4AF37', '#F3E5AB', '#8B5CF6', '#06B6D4'],
-        });
-      } catch (e) {}
-
-      setUnlockSuccessMsg(`Welcome to ${returnedPlan.toUpperCase()} — 30 Days Unlocked! Redirecting to Terminal...`);
-
-      // Auto redirect to #/terminal dashboard in 1.5 seconds as requested in prompt section 1
-      setTimeout(() => {
-        window.location.hash = '#/terminal';
-        setRoute('terminal');
-      }, 1500);
-
-      // Clean query params
-      window.history.replaceState({}, document.title, window.location.pathname);
+    if (urlParams.get('checkout') === 'cancelled') {
+      setRoute('pricing');
+      window.history.replaceState({}, document.title, '/pricing');
+      showTempToast('Checkout cancelled — no charge was made.', 4000);
     }
 
-    // Check if returning from Google OAuth redirect (access_token, id_token, or credential)
+    if (urlParams.get('success') === 'true' || urlParams.get('checkout') === 'success') {
+      const parsedPlan = normalizePlanKey(urlParams.get('plan'));
+      const returnedPlan: 'starter' | 'pro' | 'enterprise' =
+        parsedPlan === 'free' ? 'pro' : parsedPlan;
+      const planCfg = PLANS[returnedPlan];
+      setVerifyingPlanName(planCfg.displayName);
+      setRoute('checkout-verifying');
+
+      const sessionUser = getSessionUser();
+      const targetEmail = (sessionUser?.email || urlParams.get('email') || '').trim().toLowerCase();
+      const checkoutId = urlParams.get('checkout_id') || '';
+      const orderId = urlParams.get('order_id') || '';
+
+      const verifyCheckout = async () => {
+        try {
+          const res = await fetch('/api/checkout/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              email: targetEmail,
+              plan: returnedPlan,
+              checkout_id: checkoutId,
+              order_id: orderId,
+            }),
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            if (data?.verified && data?.user) {
+              const verifiedPlan = normalizePlanKey(data.user.plan);
+              const verifiedCfg = PLANS[verifiedPlan];
+              const serverLimit = verifiedCfg.analysesLimit;
+              const serverLeft = Number.isFinite(serverLimit)
+                ? Math.max(0, serverLimit - Number(data.user.analyses_used || 0))
+                : 999999;
+
+              const existing = (targetEmail && getUser(targetEmail)) || sessionUser;
+              const updatedUser: User = {
+                ...(existing || {
+                  id: 'user_' + Date.now(),
+                  email: data.user.email,
+                  name: data.user.name || data.user.email.split('@')[0],
+                  avatar: data.user.email.charAt(0).toUpperCase(),
+                  provider: 'google',
+                  createdAt: Date.now(),
+                  savedAnalyses: [],
+                }),
+                email: data.user.email,
+                plan: verifiedPlan,
+                subscriptionPlan: verifiedPlan,
+                subscriptionStatus: verifiedPlan === 'free' ? 'free' : 'active',
+                subscriptionStartAt: data.user.license_start ?? Date.now(),
+                subscriptionEndsAt: data.user.license_end ?? null,
+                subscriptionExpiry: data.user.license_end ?? null,
+                analysesUsed: Number(data.user.analyses_used || 0),
+                freeAnalyses: serverLeft,
+                freeAnalysesLeft: serverLeft,
+                analysesLeft: serverLeft,
+                expiryEmailSent: false,
+              };
+
+              saveUser(updatedUser);
+              setUser(updatedUser);
+
+              try {
+                confetti({
+                  particleCount: 160,
+                  spread: 85,
+                  origin: { y: 0.6 },
+                  colors: ['#D4AF37', '#F3E5AB', '#8B5CF6', '#06B6D4'],
+                });
+              } catch {}
+
+              setUnlockSuccessMsg(
+                `Welcome to ${verifiedCfg.displayName} — Payment Successful! Your Terminal is unlocked.`
+              );
+              showTempToast(`Welcome to AQARI ${verifiedCfg.displayName} — Unlocked for 30 Days!`, 5000);
+              window.history.replaceState({}, document.title, '/app');
+              setRoute('terminal');
+              return;
+            }
+          }
+        } catch (err) {
+          console.error('Checkout verification error:', err);
+        }
+
+        // If verification pending webhook or email missing, prompt or route cleanly without granting unearned client access
+        showTempToast('Payment verification in progress. Please refresh or sign in with your checkout email.', 5000);
+        window.history.replaceState({}, document.title, '/app');
+        setRoute(sessionUser ? 'terminal' : 'landing');
+      };
+
+      verifyCheckout();
+    }
+
+    // Check if returning from Google OAuth redirect
     const rawHash = window.location.hash.replace(/^#\/?/, '');
     const hashParams = new URLSearchParams(rawHash.includes('=') ? rawHash : '');
     const accessToken = hashParams.get('access_token') || urlParams.get('access_token');
@@ -352,12 +456,8 @@ export default function App() {
             verified.picture || verified.avatar,
             verified.googleId
           );
-          handleSaveUser(authedUser);
-          setIsAuthOpen(false);
-          window.location.hash = '#/terminal';
-          setRoute('terminal');
-          setTerminalToast(`Welcome, ${authedUser.name || authedUser.email}`);
-          window.history.replaceState({}, document.title, window.location.pathname);
+          await handleSignIn(authedUser);
+          window.history.replaceState({}, document.title, '/app');
         }
       } catch (err) {
         console.warn('Google OAuth verification failed on redirect:', err);
@@ -369,7 +469,6 @@ export default function App() {
     }
   }, []);
 
-  // Save User Helper (persists to aqari_users_db_v2 per email)
   const handleSaveUser = (updatedUser: User | null) => {
     if (updatedUser) {
       saveUser(updatedUser);
@@ -380,76 +479,130 @@ export default function App() {
     }
   };
 
-  // Sign In Action -> Immediately direct to #/terminal dashboard
-  const handleSignIn = (newUser: User) => {
+  // Sign In Action -> create signed HttpOnly cookie + redirect to /app
+  const handleSignIn = async (newUser: User) => {
     handleSaveUser(newUser);
     setIsAuthOpen(false);
 
-    // Direct DOM manipulation as requested for testing and instant transition
-    const loginModal = document.getElementById('loginModal');
-    if (loginModal) loginModal.style.display = 'none';
-    document.body.classList.remove('modal-open');
+    // Issue server HttpOnly signed session cookie & sync server-authoritative plan
+    try {
+      const res = await fetch('/api/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: newUser.email, name: newUser.name }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.user) {
+          const serverPlan = normalizePlanKey(data.user.plan);
+          const serverCfg = PLANS[serverPlan];
+          const serverUsed = Number(data.user.analyses_used ?? 0);
+          const serverLeft = Number.isFinite(serverCfg.analysesLimit)
+            ? Math.max(0, serverCfg.analysesLimit - serverUsed)
+            : 999999;
+          const syncedUser: User = {
+            ...newUser,
+            plan: serverPlan,
+            subscriptionPlan: serverPlan,
+            subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : 'active',
+            subscriptionStartAt: data.user.license_start ?? undefined,
+            subscriptionEndsAt: data.user.license_end ?? null,
+            subscriptionExpiry: data.user.license_end ?? null,
+            analysesUsed: serverUsed,
+            freeAnalyses: serverLeft,
+            freeAnalysesLeft: serverLeft,
+            analysesLeft: serverLeft,
+          };
+          handleSaveUser(syncedUser);
+        }
+      }
+    } catch {}
 
-    const landingEl = document.getElementById('landingPage');
-    if (landingEl) landingEl.style.display = 'none';
-
-    const terminalEl = document.getElementById('terminalPage');
-    if (terminalEl) terminalEl.style.display = 'block';
-
-    window.location.hash = '#/terminal';
+    window.history.pushState({}, '', '/app');
     setRoute('terminal');
     window.scrollTo(0, 0);
 
-    const left = newUser.plan === 'free' 
+    const left = newUser.plan === 'free'
       ? (newUser.freeAnalysesLeft ?? newUser.freeAnalyses ?? 3)
       : (newUser.analysesLeft ?? 50);
-    const toastText = `Welcome back, ${newUser.name || newUser.email.split('@')[0]} - ${left} analyses left`;
-    setTerminalToast(toastText);
-    setTimeout(() => {
-      setTerminalToast(null);
-    }, 3000);
+    showTempToast(`Welcome back, ${newUser.name || newUser.email.split('@')[0]} - ${left} analyses left`, 3000);
   };
 
-  // Sign Out (clears session ONLY, or optionally removes remembered account)
-  const handleSignOut = (forgetDevice = false) => {
+  // Sign Out (clears session cookie & localStorage session, stays cleanly on '/')
+  const handleSignOut = async (forgetDevice = false) => {
     if (user && forgetDevice) {
       removeRememberedAccount(user.email);
     }
     clearSession();
     setUser(null);
     setTerminalToast(null);
-
-    const terminalEl = document.getElementById('terminalPage');
-    if (terminalEl) terminalEl.style.display = 'none';
-
-    const landingEl = document.getElementById('landingPage');
-    if (landingEl) landingEl.style.display = 'block';
-
-    window.location.hash = '#/landing';
+    try {
+      await fetch('/api/auth/session', { method: 'DELETE', credentials: 'include' });
+    } catch {}
+    window.history.pushState({}, '', '/');
     setRoute('landing');
     window.scrollTo(0, 0);
-
-    // After logout, show login modal so user sees their email already listed in Remembered Accounts
-    setIsAuthOpen(true);
   };
 
-  // Switch to Terminal Dashboard
-  const handleGoToTerminal = () => {
-    if (!user) {
-      setIsAuthOpen(true);
-      return;
-    }
-    window.location.hash = '#/terminal';
-    setRoute('terminal');
-  };
+  // Server-authoritative License Sync: ALWAYS trust server DB plan over tampered localStorage
+  useEffect(() => {
+    if (!user?.email) return;
 
-  // Switch back to Landing page
-  const handleGoToHome = () => {
-    window.location.hash = '#/landing';
-    setRoute('landing');
-  };
+    const syncLicenseFromServer = async () => {
+      try {
+        const res = await fetch('/api/user/license', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            email: user.email,
+            name: user.name,
+          }),
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data?.user) return;
 
-  // Auto check and send 24h expiry notification email on mount and user update
+        const serverPlan = normalizePlanKey(data.user.plan);
+        const serverUsed = Number(data.user.analyses_used ?? 0);
+        const serverEnd = data.user.license_end ?? null;
+        const serverLimit = PLANS[serverPlan].analysesLimit;
+        const serverLeft = Number.isFinite(serverLimit) ? Math.max(0, serverLimit - serverUsed) : 999999;
+
+        const changed =
+          normalizePlanKey(user.plan) !== serverPlan ||
+          (user.analysesUsed ?? 0) !== serverUsed ||
+          (user.subscriptionEndsAt ?? null) !== serverEnd ||
+          (Number.isFinite(serverLimit) && (user.analysesLeft ?? -1) !== serverLeft);
+
+        if (changed) {
+          const syncedUser: User = {
+            ...user,
+            plan: serverPlan,
+            subscriptionPlan: serverPlan,
+            subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : 'active',
+            subscriptionStartAt: data.user.license_start ?? undefined,
+            subscriptionEndsAt: serverEnd,
+            subscriptionExpiry: serverEnd,
+            analysesUsed: serverUsed,
+            freeAnalyses: serverLeft,
+            freeAnalysesLeft: serverLeft,
+            analysesLeft: serverLeft,
+          };
+          saveUser(syncedUser);
+          setUser(syncedUser);
+        }
+      } catch {}
+    };
+
+    syncLicenseFromServer();
+    const onFocus = () => syncLicenseFromServer();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [user?.email, route]);
+
+  // 24h expiry email check
   useEffect(() => {
     if (user && user.plan !== 'free') {
       const { user: updatedUser } = checkAndSendExpiryEmail(user);
@@ -459,52 +612,34 @@ export default function App() {
     }
   }, [user]);
 
-  // Admin Testing Unlock (strictly kept for Admin in AdminModal)
   const handleAdminTestUnlock = (plan: 'starter' | 'pro' | 'enterprise') => {
-    const planQuota = PLAN_LIMITS[plan]?.analyses || 400;
+    if (!user || user.email.toLowerCase() !== OWNER_ADMIN_EMAIL) {
+      showTempToast('Admin sandbox unlock is restricted to owner email.', 4000);
+      return;
+    }
+    const planCfg = PLANS[plan];
+    const planQuota = Number.isFinite(planCfg.analysesLimit) ? planCfg.analysesLimit : 999999;
     const now = Date.now();
     const subscriptionDuration = 30 * 24 * 60 * 60 * 1000;
-    const updated: User = user
-      ? {
-          ...user,
-          plan,
-          subscriptionStartAt: now,
-          subscriptionEndsAt: now + subscriptionDuration,
-          subscriptionExpiry: now + subscriptionDuration,
-          expiryEmailSent: false,
-          freeAnalyses: planQuota,
-        }
-      : {
-          id: 'user_' + Date.now(),
-          email: 'admin.tester@gmail.com',
-          plan,
-          subscriptionStartAt: now,
-          subscriptionEndsAt: now + subscriptionDuration,
-          subscriptionExpiry: now + subscriptionDuration,
-          expiryEmailSent: false,
-          freeAnalyses: planQuota,
-          analysesUsed: 0,
-          createdAt: Date.now(),
-        };
-
+    const updated: User = {
+      ...user,
+      plan,
+      subscriptionPlan: plan,
+      subscriptionStatus: 'active',
+      subscriptionStartAt: now,
+      subscriptionEndsAt: now + subscriptionDuration,
+      subscriptionExpiry: now + subscriptionDuration,
+      expiryEmailSent: false,
+      analysesUsed: 0,
+      freeAnalyses: planQuota,
+      freeAnalysesLeft: planQuota,
+      analysesLeft: planQuota,
+    };
     handleSaveUser(updated);
-
-    try {
-      confetti({
-        particleCount: 120,
-        spread: 70,
-        origin: { y: 0.6 },
-        colors: ['#D4AF37', '#F3E5AB', '#8B5CF6'],
-      });
-    } catch (e) {}
-
-    setUnlockSuccessMsg(`Admin Sandbox: ${plan.toUpperCase()} Unlocked for 30 Days!`);
-    window.location.hash = '#/terminal';
-    setRoute('terminal');
+    showTempToast(`Admin Sandbox: ${planCfg.displayName} updated locally.`);
   };
 
-  // Central authoritative analysis credit consumption logic
-  // ONLY called when user clicks "ANALYZE PROPERTY" on property card OR "RUN ANALYSIS" in Underwriter
+  // Authoritative analysis credit consumption (delegates to server DB when analyzing from TerminalDashboard)
   const consumeAnalysis = (): boolean => {
     if (!user) {
       setIsAuthOpen(true);
@@ -512,74 +647,84 @@ export default function App() {
     }
 
     const currentUser = getUser(user.email) || user;
-    const endsAt = currentUser.subscriptionEndsAt || currentUser.subscriptionExpiry;
+    const serverPlan = normalizePlanKey(currentUser.plan);
+    const cfg = PLANS[serverPlan];
+    const limit = cfg.analysesLimit;
+    const used = Number(currentUser.analysesUsed || 0);
+    const left = Number.isFinite(limit) ? Math.max(0, limit - used) : 999999;
 
-    if ((currentUser.plan !== 'free' && endsAt && Date.now() >= endsAt) || currentUser.subscriptionStatus === 'expired') {
-      const expiredUser: User = {
-        ...currentUser,
-        plan: 'free',
-        subscriptionStatus: 'expired',
-        freeAnalyses: 0,
-        freeAnalysesLeft: 0,
-        analysesLeft: 0,
-      };
-      handleSaveUser(expiredUser);
+    if (serverPlan !== 'free' && currentUser.subscriptionEndsAt && Date.now() >= currentUser.subscriptionEndsAt) {
+      showTempToast('Licensing window expired - Renew');
       setIsRenewalOpen(true);
       return false;
     }
 
-    const freeRemaining = currentUser.freeAnalysesLeft ?? currentUser.freeAnalyses ?? 0;
-    if (currentUser.plan === 'free' && freeRemaining <= 0) {
+    if (Number.isFinite(limit) && left <= 0) {
       setIsRenewalOpen(true);
       return false;
     }
 
-    const paidRemaining = currentUser.analysesLeft ?? currentUser.freeAnalyses ?? 0;
-    if (currentUser.plan !== 'free' && currentUser.plan !== 'enterprise' && paidRemaining <= 0) {
-      setIsRenewalOpen(true);
-      return false;
-    }
+    const nextUsed = used + 1;
+    const nextLeft = Number.isFinite(limit) ? Math.max(0, limit - nextUsed) : 999999;
 
-    let updatedUser: User = { ...currentUser };
-    if (currentUser.plan === 'free') {
-      const newFree = Math.max(0, freeRemaining - 1);
-      updatedUser = {
-        ...updatedUser,
-        freeAnalyses: newFree,
-        freeAnalysesLeft: newFree,
-        analysesUsed: (currentUser.analysesUsed || 0) + 1,
-      };
-    } else if (currentUser.plan !== 'enterprise') {
-      const newPaid = Math.max(0, paidRemaining - 1);
-      updatedUser = {
-        ...updatedUser,
-        analysesLeft: newPaid,
-        freeAnalyses: newPaid,
-        freeAnalysesLeft: newPaid,
-        analysesUsed: (currentUser.analysesUsed || 0) + 1,
-      };
-    } else {
-      updatedUser = {
-        ...updatedUser,
-        analysesUsed: (currentUser.analysesUsed || 0) + 1,
-      };
-    }
-
-    handleSaveUser(updatedUser);
+    handleSaveUser({
+      ...currentUser,
+      analysesUsed: nextUsed,
+      freeAnalyses: nextLeft,
+      freeAnalysesLeft: nextLeft,
+      analysesLeft: nextLeft,
+    });
     return true;
   };
 
-  // Analyze Click Checker on Landing Page - Deducts 1 credit via consumeAnalysis
   const handleAnalyzeProperty = (property: PropertyListing) => {
-    if (!consumeAnalysis()) return;
-    setActivePropertyAnalysis(property);
+    if (!user) {
+      setIsAuthOpen(true);
+      return;
+    }
+    fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        email: user.email,
+        name: user.name,
+        propertyTitle: property.title,
+        city: property.city,
+        priceUSD: property.basePriceUSD,
+        rentUSD: property.baseRentMonthlyUSD,
+      }),
+    })
+      .then(async (res) => {
+        if (res.status === 429) {
+          showTempToast('Rate limit exceeded (10 analyses/min). Please wait.');
+          return;
+        }
+        if (res.status === 403) {
+          setIsRenewalOpen(true);
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (data?.license) {
+          const nextLeft = data.license.isUnlimitedAnalyses ? 999999 : data.license.analysesLeft;
+          handleSaveUser({
+            ...user,
+            plan: data.license.planKey || user.plan,
+            analysesUsed: data.license.analysesUsed,
+            freeAnalyses: nextLeft,
+            freeAnalysesLeft: nextLeft,
+            analysesLeft: nextLeft,
+          });
+        } else {
+          consumeAnalysis();
+        }
+        setActivePropertyAnalysis(property);
+      })
+      .catch(() => {
+        if (consumeAnalysis()) setActivePropertyAnalysis(property);
+      });
   };
 
-  const handleAnalyzeSimulation = () => {
-    // Simulator runs calculations live without deducting credits
-  };
-
-  // Admin Config Handlers
   const handleSaveConfig = (updated: RemoteConfig) => {
     setConfig(updated);
     localStorage.setItem('aqari_remote_config', JSON.stringify(updated));
@@ -591,40 +736,145 @@ export default function App() {
     setConfig(DEFAULT_CONFIG);
   };
 
-  // Maintenance Screen if enabled in remote config
+  const lastSyncDisplay = marketLive?.last_synced_display || 'Synced Daily';
+  const liveAnnouncementText = marketLive
+    ? `LIVE MACRO SYNC (${lastSyncDisplay}): US 10Y ${marketLive.macro.us_10y_yield}% (FRED) • Muscat vs US10Y +${marketLive.metrics.muscat_vs_us10y_bps} bps • Dubai DLD Index ${marketLive.metrics.dubai_dld_index} pts`
+    : 'AQARI TERMINAL • Syncing World Bank, FRED, DLD, ONS & JLL Market Feeds...';
+
+  // Reusable Legal Footer across public views
+  const renderLegalFooter = () => (
+    <footer className="mt-20 border-t border-white/[0.08] bg-black/95 backdrop-blur-2xl py-10 px-4 lg:px-8 relative z-20 text-xs text-zinc-400 font-mono">
+      <div className="max-w-7xl mx-auto space-y-5">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+          <div className="text-center md:text-left">
+            <div className="text-white font-bold tracking-tight">
+              © 2026 Loomora Studios - AQARI TERMINAL. All rights reserved.
+            </div>
+            <div className="text-[11px] text-zinc-500 mt-1">
+              Bloomberg-style UI, not affiliated with Bloomberg L.P.
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-3 text-[11px]">
+            <button onClick={() => navigateLegal('terms')} className="hover:text-[#D4AF37] underline cursor-pointer">
+              Terms
+            </button>
+            <span className="text-zinc-700">|</span>
+            <button onClick={() => navigateLegal('privacy')} className="hover:text-[#D4AF37] underline cursor-pointer">
+              Privacy
+            </button>
+            <span className="text-zinc-700">|</span>
+            <button onClick={() => navigateLegal('refund')} className="hover:text-[#D4AF37] underline cursor-pointer">
+              Refund
+            </button>
+            <span className="text-zinc-700">|</span>
+            <button onClick={() => navigateLegal('disclaimer')} className="hover:text-[#D4AF37] underline cursor-pointer">
+              Disclaimer
+            </button>
+          </div>
+        </div>
+
+        <div className="pt-4 border-t border-white/[0.06] text-[11px] text-zinc-500 text-center md:text-left flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <span>
+            Market data is indicative, synced daily from public sources. Not financial advice. Last sync: {lastSyncDisplay}.
+          </span>
+          <a href="mailto:loomora.studios@gmail.com" className="text-zinc-400 hover:text-[#D4AF37]">
+            loomora.studios@gmail.com
+          </a>
+        </div>
+      </div>
+    </footer>
+  );
+
+  // Maintenance Screen
   if (config.maintenance) {
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 text-center relative overflow-hidden select-none">
         <AmbientBackground />
         <div className="z-10 max-w-lg glass-panel p-10 border border-rose-500/30">
           <AlertOctagon className="w-16 h-16 text-rose-500 mx-auto mb-4 animate-pulse" />
-          <h1 className="text-3xl font-bold tracking-tight text-white">
-            TERMINAL UNDER MAINTENANCE
-          </h1>
+          <h1 className="text-3xl font-bold tracking-tight text-white">TERMINAL UNDER MAINTENANCE</h1>
           <p className="text-sm text-zinc-400 mt-2 font-mono leading-relaxed">
-            Global market feeds and institutional real estate indices are being calibrated for Q4 2026 reporting. Access will resume momentarily.
+            Global market feeds and institutional real estate indices are undergoing scheduled maintenance. Access will resume momentarily.
           </p>
-          <div className="mt-6 pt-6 border-t border-white/10 flex items-center justify-between text-xs font-mono text-zinc-500">
-            <span>Status: 503 Maintenance</span>
-            <button
-              onClick={() => setIsAdminOpen(true)}
-              className="text-[#D4AF37] underline hover:text-amber-300 cursor-pointer"
-            >
-              Admin Override
-            </button>
-          </div>
         </div>
+      </div>
+    );
+  }
 
-        {isAdminOpen && (
-          <AdminModal
-            isOpen={isAdminOpen}
-            onClose={() => setIsAdminOpen(false)}
-            config={config}
-            onSaveConfig={handleSaveConfig}
-            onResetConfig={handleResetConfig}
-            onTestUnlock={handleAdminTestUnlock}
+  // View: Post-Checkout Full-Screen Unlocking Verification Screen (/app?checkout=success)
+  if (route === 'checkout-verifying') {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center p-6 relative overflow-hidden">
+        <AmbientBackground />
+        <div className="z-10 max-w-md w-full glass-panel p-8 sm:p-10 rounded-[32px] border border-[#D4AF37]/40 text-center space-y-5 shadow-[0_0_60px_rgba(212,175,55,0.2)]">
+          <Loader2 className="w-12 h-12 text-[#D4AF37] animate-spin mx-auto" />
+          <div className="text-xs font-mono uppercase tracking-wider text-emerald-400 font-bold">
+            PAYMENT SUCCESSFUL • VERIFYING LICENSE
+          </div>
+          <h1 className="text-2xl font-bold text-white tracking-tight">
+            Welcome to AQARI {verifyingPlanName}
+          </h1>
+          <p className="text-xs font-mono text-zinc-400 leading-relaxed">
+            Payment Successful - Unlocking your Terminal and synchronizing your 30-day entitlements with Lemon Squeezy...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // View: Public Legal Pages (/terms, /privacy, /refund, /disclaimer) - No login required
+  if (route === 'terms' || route === 'privacy' || route === 'refund' || route === 'disclaimer') {
+    return (
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#D4AF37]/30 selection:text-white relative">
+        <AmbientBackground />
+        <CustomCursor />
+        <Navbar
+          currentCurrency={currency}
+          onCurrencyChange={handleCurrencyChange}
+          user={user}
+          config={config}
+          onOpenAuth={() => setIsAuthOpen(true)}
+          onSignOut={handleSignOut}
+          onOpenAdmin={() => setIsAdminOpen(true)}
+          onGoToTerminal={handleGoToTerminal}
+          onOpenPricing={handleGoToPricing}
+          onGoToHome={handleGoToHome}
+        />
+        <div className="flex-1">
+          <LegalPages
+            slug={route}
+            onGoHome={handleGoToHome}
+            onNavigateLegal={navigateLegal}
+          />
+        </div>
+        {renderLegalFooter()}
+        {isAuthOpen && (
+          <AuthModal
+            isOpen={isAuthOpen}
+            onClose={() => setIsAuthOpen(false)}
+            onSignIn={handleSignIn}
           />
         )}
+      </div>
+    );
+  }
+
+  // View: Owner-Only Forensic Admin Dashboard (/admin)
+  if (route === 'admin') {
+    if (!user || user.email.toLowerCase() !== OWNER_ADMIN_EMAIL) {
+      return null;
+    }
+    return (
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col relative">
+        <AmbientBackground />
+        <AdminDashboard
+          currentUser={user}
+          onRedirectHome={(reason) => {
+            if (reason) showTempToast(reason, 4000);
+            handleGoToHome();
+          }}
+        />
       </div>
     );
   }
@@ -643,9 +893,10 @@ export default function App() {
           onGoHome={handleGoToHome}
           onSelectOtherDemo={(s) => {
             setDemoSlug(s);
-            window.location.hash = `#/demo/${s}`;
+            window.history.pushState({}, '', `/demo/${s}`);
           }}
         />
+        {renderLegalFooter()}
         {isAuthOpen && (
           <AuthModal
             isOpen={isAuthOpen}
@@ -683,19 +934,22 @@ export default function App() {
           onSignOut={handleSignOut}
           onOpenAdmin={() => setIsAdminOpen(true)}
           onGoToTerminal={handleGoToTerminal}
-          onOpenPricing={() => {
-            window.location.hash = '#/pricing';
-            setRoute('pricing');
-          }}
+          onOpenPricing={handleGoToPricing}
+          onGoToHome={handleGoToHome}
         />
-        <PricingSection
-          isStandalonePage={true}
-          currentCurrency={currency}
-          config={config}
-          user={user}
-          onOpenAuth={() => setIsAuthOpen(true)}
-          onTestUnlock={handleAdminTestUnlock}
-        />
+        <div className="flex-1">
+          <PricingSection
+            isStandalonePage={true}
+            currentCurrency={currency}
+            config={config}
+            user={user}
+            onOpenAuth={() => setIsAuthOpen(true)}
+            onTestUnlock={handleAdminTestUnlock}
+            onGoToTerminal={handleGoToTerminal}
+            onOpenLegal={navigateLegal}
+          />
+        </div>
+        {renderLegalFooter()}
         {isAuthOpen && (
           <AuthModal
             isOpen={isAuthOpen}
@@ -711,10 +965,8 @@ export default function App() {
 
   return (
     <>
-      {/* PART 5: Global Announcements Banner */}
-      <AnnouncementBanner text={ANNOUNCEMENT} />
+      <AnnouncementBanner text={liveAnnouncementText} />
 
-      {/* Toast Notification Container */}
       {terminalToast && (
         <div id="terminalToast" className="fixed top-20 right-6 z-50 p-4 rounded-2xl bg-zinc-900 border border-[#D4AF37]/50 text-white text-xs font-mono shadow-[0_10px_35px_rgba(0,0,0,0.8)] animate-in fade-in slide-in-from-top-4 duration-200 flex items-center gap-2.5 backdrop-blur-xl">
           <Sparkles className="w-4 h-4 text-[#D4AF37] shrink-0" />
@@ -722,7 +974,7 @@ export default function App() {
         </div>
       )}
 
-      {/* VIEW 2: TERMINAL DASHBOARD APP */}
+      {/* VIEW: TERMINAL DASHBOARD APP */}
       <div
         id="terminalPage"
         style={{ display: isTerminal ? 'block' : 'none' }}
@@ -737,6 +989,7 @@ export default function App() {
               currentCurrency={currency}
               onCurrencyChange={handleCurrencyChange}
               config={config}
+              marketLive={marketLive}
               onSignOut={handleSignOut}
               onGoToHome={handleGoToHome}
               onOpenRenewal={() => setIsRenewalOpen(true)}
@@ -749,165 +1002,172 @@ export default function App() {
         )}
       </div>
 
-      {/* VIEW 1: LANDING PAGE (When unauthenticated or on landing route) */}
+      {/* VIEW: LANDING PAGE */}
       <div
         id="landingPage"
         style={{ display: isTerminal ? 'none' : 'block' }}
         className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#D4AF37]/30 selection:text-white relative"
       >
-      
-      {/* Ambient background with SVG grain and 3 blurred floating orbs */}
-      <AmbientBackground />
+        <AmbientBackground />
+        <CustomCursor />
 
-      {/* 20px Gold Cursor with lag */}
-      <CustomCursor />
-
-      {/* Top Navbar */}
-      <Navbar
-        currentCurrency={currency}
-        onCurrencyChange={handleCurrencyChange}
-        user={user}
-        config={config}
-        onOpenAuth={() => setIsAuthOpen(true)}
-        onSignOut={handleSignOut}
-        onOpenAdmin={() => setIsAdminOpen(true)}
-        onGoToTerminal={handleGoToTerminal}
-        onOpenPricing={() => {
-          const el = document.getElementById('pricing');
-          el?.scrollIntoView({ behavior: 'smooth' });
-        }}
-      />
-
-      {/* Real-time Infinite Marquee Ticker */}
-      <MarqueeTicker />
-
-      {/* Success Notification Banner */}
-      {unlockSuccessMsg && (
-        <div className="max-w-4xl mx-auto px-4 mt-6 z-20 w-full animate-in fade-in slide-in-from-top-4 duration-300">
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-[#D4AF37]/20 via-emerald-500/20 to-[#D4AF37]/20 border border-[#D4AF37]/40 flex items-center justify-between gap-3 backdrop-blur-xl shadow-[0_0_30px_rgba(212,175,55,0.2)]">
-            <div className="flex items-center gap-3">
-              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-              <span className="text-xs sm:text-sm font-semibold text-white font-mono">
-                {unlockSuccessMsg}
-              </span>
-            </div>
-            <button
-              onClick={() => setUnlockSuccessMsg(null)}
-              className="p-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Main Landing Page Content */}
-      <main className="flex-1 space-y-10">
-        
-        {/* Hero Section */}
-        <Hero
+        <Navbar
           currentCurrency={currency}
-          selectedCity={selectedCity}
+          onCurrencyChange={handleCurrencyChange}
           user={user}
-          onSelectCity={(city) => setSelectedCity(city)}
-          onExploreProperties={() => {
-            const el = document.getElementById('properties');
-            el?.scrollIntoView({ behavior: 'smooth' });
-          }}
-          onExploreSimulator={() => {
-            const el = document.getElementById('yield-simulator');
-            el?.scrollIntoView({ behavior: 'smooth' });
-          }}
+          config={config}
           onOpenAuth={() => setIsAuthOpen(true)}
-          onSignOut={() => handleSignOut(false)}
+          onSignOut={handleSignOut}
+          onOpenAdmin={() => setIsAdminOpen(true)}
           onGoToTerminal={handleGoToTerminal}
-        />
-
-        {/* High-Conviction Institutional Property Listings */}
-        <PropertyGrid
-          properties={PROPERTY_LISTINGS}
-          currentCurrency={currency}
-          selectedCity={selectedCity}
-          user={user}
-          onAnalyze={handleAnalyzeProperty}
           onOpenPricing={() => {
             const el = document.getElementById('pricing');
             el?.scrollIntoView({ behavior: 'smooth' });
           }}
-          onOpenDemo={(slug) => {
-            setDemoSlug(slug);
-            setRoute('demo');
-            window.location.hash = `#/demo/${slug}`;
-          }}
+          onGoToHome={handleGoToHome}
         />
 
-        {/* Interactive Yield Simulator */}
-        <YieldSimulator
-          currentCurrency={currency}
-          user={user}
-          onAnalyzeSimulation={handleAnalyzeSimulation}
-        />
+        <MarqueeTicker marketLive={marketLive} />
 
-        {/* Sovereign Cross-Border Capital Matrix */}
-        <CrossBorderMatrix currentCurrency={currency} matrixData={matrixData} />
-
-        {/* Multi-Market Institutional Portfolio Dashboard */}
-        <PortfolioSummary
-          currentCurrency={currency}
-          onExploreAssets={() => {
-            const el = document.getElementById('properties');
-            el?.scrollIntoView({ behavior: 'smooth' });
-          }}
-        />
-
-        {/* Pricing Section with real Lemon links */}
-        <PricingSection
-          currentCurrency={currency}
-          config={config}
-          user={user}
-          onOpenAuth={() => setIsAuthOpen(true)}
-          onTestUnlock={handleAdminTestUnlock}
-          onGoToTerminal={handleGoToTerminal}
-        />
-
-      </main>
-
-      {/* Footer */}
-      <footer className="mt-20 border-t border-white/[0.08] bg-black/90 backdrop-blur-2xl py-12 px-4 lg:px-8 relative z-20 text-xs text-zinc-400 font-mono">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="flex items-center gap-3">
-            <div className="w-7 h-7 rounded-lg bg-[#D4AF37] flex items-center justify-center text-black font-black font-mono text-xs">
-              AQ
-            </div>
-            <div>
-              <span className="text-white font-bold tracking-tight">AQARI GLOBAL TERMINAL</span>
-              <p className="text-[10px] text-zinc-400 mt-0.5">The Operating System for Global Real Estate • All Rights Reserved</p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-4 text-[11px]">
-            {user && (
+        {unlockSuccessMsg && (
+          <div className="max-w-4xl mx-auto px-4 mt-6 z-20 w-full animate-in fade-in slide-in-from-top-4 duration-300">
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-[#D4AF37]/20 via-emerald-500/20 to-[#D4AF37]/20 border border-[#D4AF37]/40 flex items-center justify-between gap-3 backdrop-blur-xl shadow-[0_0_30px_rgba(212,175,55,0.2)]">
+              <div className="flex items-center gap-3">
+                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                <span className="text-xs sm:text-sm font-semibold text-white font-mono">
+                  {unlockSuccessMsg}
+                </span>
+              </div>
               <button
-                onClick={handleGoToTerminal}
-                className="text-[#D4AF37] font-bold hover:underline cursor-pointer"
+                onClick={() => setUnlockSuccessMsg(null)}
+                className="p-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
               >
-                Go to Terminal Dashboard &rarr;
+                <X className="w-4 h-4" />
               </button>
-            )}
-
-            <button
-              onClick={() => setIsAdminOpen(true)}
-              className="flex items-center gap-1.5 text-zinc-400 hover:text-[#D4AF37] transition cursor-pointer"
-            >
-              <Settings className="w-3.5 h-3.5" />
-              <span>Admin Config</span>
-            </button>
-
-            <span className="text-zinc-700">•</span>
-            <span className="text-zinc-400">LemonSqueezy Webhook Sync: Active</span>
+            </div>
           </div>
-        </div>
-      </footer>
+        )}
+
+        <main className="flex-1 space-y-10">
+          <Hero
+            currentCurrency={currency}
+            selectedCity={selectedCity}
+            user={user}
+            marketLive={marketLive}
+            onSelectCity={(city) => setSelectedCity(city)}
+            onExploreProperties={() => {
+              const el = document.getElementById('properties');
+              el?.scrollIntoView({ behavior: 'smooth' });
+            }}
+            onExploreSimulator={() => {
+              const el = document.getElementById('yield-simulator');
+              el?.scrollIntoView({ behavior: 'smooth' });
+            }}
+            onOpenAuth={() => setIsAuthOpen(true)}
+            onSignOut={() => handleSignOut(false)}
+            onGoToTerminal={handleGoToTerminal}
+          />
+
+          <PropertyGrid
+            properties={PROPERTY_LISTINGS}
+            currentCurrency={currency}
+            selectedCity={selectedCity}
+            user={user}
+            onAnalyze={handleAnalyzeProperty}
+            onOpenPricing={() => {
+              const el = document.getElementById('pricing');
+              el?.scrollIntoView({ behavior: 'smooth' });
+            }}
+            onOpenDemo={(slug) => {
+              setDemoSlug(slug);
+              setRoute('demo');
+              window.history.pushState({}, '', `/demo/${slug}`);
+            }}
+          />
+
+          <YieldSimulator
+            currentCurrency={currency}
+            user={user}
+            onAnalyzeSimulation={() => {}}
+          />
+
+          <CrossBorderMatrix
+            currentCurrency={currency}
+            matrixData={matrixData}
+            lastSyncedDisplay={lastSyncDisplay}
+            user={user}
+            onOpenPricing={() => {
+              const el = document.getElementById('pricing');
+              el?.scrollIntoView({ behavior: 'smooth' });
+            }}
+          />
+
+          <PortfolioSummary
+            currentCurrency={currency}
+            marketLive={marketLive}
+            onExploreAssets={() => {
+              const el = document.getElementById('properties');
+              el?.scrollIntoView({ behavior: 'smooth' });
+            }}
+          />
+
+          {/* Live Google News RSS Real Estate Headlines (hidden cleanly if RSS unavailable) */}
+          {newsArticles.length > 0 && (
+            <section className="py-12 px-4 lg:px-8 max-w-7xl mx-auto relative z-10">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-[#D4AF37] mb-1">
+                    <Newspaper className="w-4 h-4" />
+                    <span>LIVE REAL ESTATE WIRE • GOOGLE NEWS RSS</span>
+                  </div>
+                  <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                    Global Property Market Headlines
+                  </h2>
+                </div>
+                <span className="text-[11px] font-mono text-zinc-400">
+                  Top {newsArticles.length} headlines
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {newsArticles.map((article, i) => (
+                  <a
+                    key={i}
+                    href={article.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="glass-panel p-5 border border-white/[0.08] hover:border-[#D4AF37]/50 transition flex flex-col justify-between gap-3 group"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[10px] font-mono text-[#D4AF37]">
+                        <span className="uppercase font-bold">{article.source}</span>
+                        <ExternalLink className="w-3.5 h-3.5 opacity-60 group-hover:opacity-100" />
+                      </div>
+                      <h3 className="text-sm font-semibold text-white group-hover:text-[#D4AF37] transition line-clamp-2 leading-snug">
+                        {article.title}
+                      </h3>
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-500">
+                      {article.pubDate}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <PricingSection
+            currentCurrency={currency}
+            config={config}
+            user={user}
+            onOpenAuth={() => setIsAuthOpen(true)}
+            onTestUnlock={handleAdminTestUnlock}
+            onGoToTerminal={handleGoToTerminal}
+            onOpenLegal={navigateLegal}
+          />
+        </main>
+
+        {renderLegalFooter()}
       </div>
 
       {/* Bottom Toast Announcement */}
@@ -974,9 +1234,13 @@ export default function App() {
             setIsAuthOpen(true);
             return;
           }
-          const maxLimit = PLAN_LIMITS[user.plan]?.maxSaved || 3;
+          const planCfg = PLANS[normalizePlanKey(user.plan)];
           const currentSaved = user.savedAnalyses || [];
-          if (currentSaved.length >= maxLimit) {
+          const overLimit =
+            !canUseFeature(user.plan, 'saveProperty') ||
+            (Number.isFinite(planCfg.savedLimit) && currentSaved.length >= planCfg.savedLimit);
+          if (overLimit) {
+            showTempToast('Upgrade to save more', 3000);
             setIsRenewalOpen(true);
             return;
           }
@@ -999,6 +1263,16 @@ export default function App() {
             ...user,
             savedAnalyses: [newAnalysis, ...currentSaved],
           });
+          fetch('/api/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+              email: user.email,
+              savedCount: currentSaved.length,
+              analysis: newAnalysis,
+            }),
+          }).catch(() => {});
         }}
       />
 
@@ -1010,7 +1284,6 @@ export default function App() {
         onResetConfig={handleResetConfig}
         onTestUnlock={handleAdminTestUnlock}
       />
-
     </>
   );
 }

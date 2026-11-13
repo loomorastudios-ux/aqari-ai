@@ -65,11 +65,11 @@ export const getGoogleRedirectUri = (): string => {
   if (typeof window !== 'undefined') {
     // If running on Vercel deployment, prioritize configured Vercel URL
     if (window.location.hostname.includes('vercel.app')) {
-      return 'https://aqari-e4ku9f7u3-aqari2.vercel.app/api/auth/callback/google';
+      return 'https://aqari-ai-rho.vercel.app/api/auth/callback/google';
     }
     return window.location.origin;
   }
-  return 'https://aqari-e4ku9f7u3-aqari2.vercel.app/api/auth/callback/google';
+  return 'https://aqari-ai-rho.vercel.app/api/auth/callback/google';
 };
 
 /**

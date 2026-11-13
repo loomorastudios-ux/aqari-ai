@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
 import { LEMON_LINKS, LEMON_REDIRECT_URLS, PLAN_LIMITS } from '../constants';
 import { formatPrice, getDaysRemaining } from '../utils/formatters';
@@ -29,15 +29,24 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   config,
   currentCurrency,
 }) => {
+  const [refundAccepted, setRefundAccepted] = useState(false);
+  const [policyError, setPolicyError] = useState(false);
+
   if (!isOpen) return null;
 
   const isDiscountActive = config.discount.active && config.discount.percent > 0;
   const discountMultiplier = isDiscountActive ? 1 - config.discount.percent / 100 : 1;
 
   const handleRenew = async (plan: 'starter' | 'pro' | 'enterprise') => {
+    if (!refundAccepted) {
+      setPolicyError(true);
+      return;
+    }
+    setPolicyError(false);
+
     const baseLink = LEMON_LINKS[plan];
-    const successUrl = `https://aqari-e4ku9f7u3-aqari2.vercel.app/payment-success?plan=${plan}&email=${encodeURIComponent(user?.email || '')}`;
-    const cancelUrl = 'https://aqari-e4ku9f7u3-aqari2.vercel.app/pricing';
+    const successUrl = `https://aqari-ai-rho.vercel.app/app?checkout=success&plan=${plan}&email=${encodeURIComponent(user?.email || '')}`;
+    const cancelUrl = 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled';
 
     // 1. Try serverless checkout generator
     if (user?.email) {
@@ -49,6 +58,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
             plan,
             email: user.email,
             userId: user.id || user.googleId,
+            refundAcceptedAt: new Date().toISOString(),
           }),
         });
         if (res.ok) {
@@ -274,23 +284,51 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
                   </div>
                 </div>
 
-                <button
-                  onClick={() => !isDisabled && handleRenew(p.id)}
-                  disabled={isDisabled}
-                  className={`w-full py-3 px-4 rounded-xl text-xs font-bold font-mono tracking-wider transition-all duration-200 flex items-center justify-center gap-2 shadow-md ${
-                    isDisabled
-                      ? 'bg-zinc-800 text-zinc-500 border border-zinc-700/50 cursor-not-allowed'
-                      : isCurrent || p.popular
-                      ? 'bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black cursor-pointer'
-                      : 'bg-white/10 hover:bg-white/20 text-white cursor-pointer'
-                  }`}
-                >
-                  <span>{buttonLabel}</span>
-                  {!isDisabled && <ArrowRight className="w-3.5 h-3.5" />}
-                </button>
+                <div className="space-y-1.5">
+                  <button
+                    onClick={() => !isDisabled && handleRenew(p.id)}
+                    disabled={isDisabled}
+                    className={`w-full py-3 px-4 rounded-xl text-xs font-bold font-mono tracking-wider transition-all duration-200 flex items-center justify-center gap-2 shadow-md ${
+                      isDisabled
+                        ? 'bg-zinc-800 text-zinc-500 border border-zinc-700/50 cursor-not-allowed'
+                        : isCurrent || p.popular
+                        ? 'bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black cursor-pointer'
+                        : 'bg-white/10 hover:bg-white/20 text-white cursor-pointer'
+                    }`}
+                  >
+                    <span>{buttonLabel}</span>
+                    {!isDisabled && <ArrowRight className="w-3.5 h-3.5" />}
+                  </button>
+                  <div className="text-[10px] font-mono text-zinc-400 text-center">
+                    5-7 Day Refund - If technical issue, max 3 analyses
+                  </div>
+                </div>
               </div>
             );
           })}
+        </div>
+
+        {/* Required Refund Policy Consent */}
+        <div className={`mb-4 p-3.5 rounded-2xl border transition ${
+          policyError
+            ? 'bg-rose-950/40 border-rose-500 text-rose-200'
+            : 'bg-white/[0.03] border-white/10 text-zinc-200'
+        }`}>
+          <label className="flex items-start gap-2.5 cursor-pointer select-none text-xs font-mono">
+            <input
+              type="checkbox"
+              checked={refundAccepted}
+              onChange={(e) => {
+                setRefundAccepted(e.target.checked);
+                if (e.target.checked) setPolicyError(false);
+              }}
+              className="mt-0.5 w-4 h-4 accent-[#D4AF37] cursor-pointer shrink-0"
+            />
+            <span>
+              I agree to the <strong className="text-[#D4AF37]">5-7 Day Refund Policy - Max 3 analyses</strong>
+              {policyError && <span className="block text-rose-300 mt-0.5 font-bold">Please check this box before continuing to checkout.</span>}
+            </span>
+          </label>
         </div>
 
         {/* Footer */}

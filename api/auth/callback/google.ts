@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 
 /**
  * Serverless / Edge handler for Google OAuth 2.0 callback
- * URL: https://aqari-e4ku9f7u3-aqari2.vercel.app/api/auth/callback/google
+ * URL: https://aqari-ai-rho.vercel.app/api/auth/callback/google
  */
 export default async function handler(req: any, res: any) {
   const url = new URL(req.url || '', `http://${req.headers?.host || 'localhost:3000'}`);

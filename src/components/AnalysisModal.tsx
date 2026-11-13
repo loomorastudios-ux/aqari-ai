@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { CurrencyCode, PropertyListing, User } from '../types';
 import { formatPrice } from '../utils/formatters';
+import { downloadMemorandumPdf } from '../utils/pdfExport';
+import { canUseFeature, normalizePlanKey, PLANS } from '../../lib/plans';
 import { 
   X, 
   Building, 
@@ -41,18 +43,79 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
 
   if (!property) return null;
 
-  const isProOrEnterprise = user?.plan === 'pro' || user?.plan === 'enterprise';
+  const isProOrEnterprise = canUseFeature(user?.plan, 'pdfExport');
+  const planCfg = PLANS[normalizePlanKey(user?.plan)];
+  const currentSavedCount = (user?.savedAnalyses || []).length;
+  const canSave =
+    Boolean(user) &&
+    canUseFeature(user?.plan, 'saveProperty') &&
+    (!Number.isFinite(planCfg.savedLimit) || currentSavedCount < planCfg.savedLimit);
 
-  const handleDownloadMemo = () => {
+  const handleDownloadMemo = async () => {
     if (!isProOrEnterprise) {
       if (onOpenUpgrade) onOpenUpgrade();
       return;
     }
-    setDownloadSuccess(true);
-    setTimeout(() => setDownloadSuccess(false), 3000);
+    try {
+      const res = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user?.email || '',
+          format: 'pdf',
+          propertyTitle: property.title,
+        }),
+      });
+      if (res.status === 403) {
+        if (onOpenUpgrade) onOpenUpgrade();
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      const metricsLines = [
+        `Acquisition Cost: ${formatPrice(property.basePriceUSD, currentCurrency)}`,
+        `Monthly Gross Rent: ${formatPrice(property.baseRentMonthlyUSD, currentCurrency)}`,
+        `Net Cap Rate: ${property.capRate}%`,
+        `Estimated Cash-on-Cash: ${(property.capRate + 1.1).toFixed(2)}%`,
+        `Estimated 5-Yr IRR: ${(property.capRate + 5.0).toFixed(1)}%`,
+        `Monthly NOI Estimate: ${formatPrice(Math.round(property.noiUSD / 12), currentCurrency)}`,
+        `DSCR Benchmark: 1.85x`,
+      ];
+      downloadMemorandumPdf({
+        title: property.title,
+        city: property.city,
+        userEmail: user?.email || 'licensed@aqari.ai',
+        planDisplay: planCfg.displayName,
+        metricsLines,
+        notes: property.microLocationText,
+        watermarkText: data?.watermark,
+      });
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+    } catch {
+      downloadMemorandumPdf({
+        title: property.title,
+        city: property.city,
+        userEmail: user?.email || 'licensed@aqari.ai',
+        planDisplay: planCfg.displayName,
+        metricsLines: [
+          `Acquisition Cost: ${formatPrice(property.basePriceUSD, currentCurrency)}`,
+          `Monthly Gross Rent: ${formatPrice(property.baseRentMonthlyUSD, currentCurrency)}`,
+          `Net Cap Rate: ${property.capRate}%`,
+        ],
+        notes: property.microLocationText,
+      });
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 3000);
+    }
   };
 
   const handleSave = () => {
+    if (!canSave) {
+      if (onSaveAnalysis) onSaveAnalysis(property);
+      else if (onOpenUpgrade) onOpenUpgrade();
+      return;
+    }
     if (onSaveAnalysis) {
       onSaveAnalysis(property);
       setSavedSuccess(true);
@@ -117,10 +180,19 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
             {onSaveAnalysis && (
               <button
                 onClick={handleSave}
-                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/10 border border-white/10 text-xs font-mono font-semibold text-white transition cursor-pointer"
+                title={!canSave ? 'Upgrade to save more' : 'Save analysis'}
+                className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-mono font-semibold transition cursor-pointer ${
+                  canSave
+                    ? 'bg-white/[0.06] hover:bg-white/10 border-white/10 text-white'
+                    : 'bg-zinc-800 text-zinc-400 border-zinc-700 hover:border-amber-400/40'
+                }`}
               >
-                <BookmarkCheck className="w-3.5 h-3.5 text-[#D4AF37]" />
-                <span>{savedSuccess ? 'SAVED!' : 'SAVE ANALYSIS'}</span>
+                {canSave ? (
+                  <BookmarkCheck className="w-3.5 h-3.5 text-[#D4AF37]" />
+                ) : (
+                  <Lock className="w-3.5 h-3.5 text-amber-400" />
+                )}
+                <span>{!canSave ? 'UPGRADE TO SAVE' : savedSuccess ? 'SAVED!' : 'SAVE ANALYSIS'}</span>
               </button>
             )}
 

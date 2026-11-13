@@ -20,8 +20,8 @@ const BUY_URLS: Record<'starter' | 'pro' | 'enterprise', string> = {
   enterprise: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/ce8dfbdb-cedd-4445-a947-e821522472bb',
 };
 
-const SUCCESS_REDIRECT = 'https://aqari-e4ku9f7u3-aqari2.vercel.app/payment-success';
-const CANCEL_REDIRECT = 'https://aqari-e4ku9f7u3-aqari2.vercel.app/pricing';
+const SUCCESS_REDIRECT = 'https://aqari-ai-rho.vercel.app/app?checkout=success';
+const CANCEL_REDIRECT = 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled';
 
 export default async function handler(req: any, res: any) {
   const startTime = Date.now();
@@ -31,7 +31,7 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const { plan, email, userId } = req.body || {};
+    const { plan, email, userId, refundAcceptedAt } = req.body || {};
     const validPlan = (plan === 'starter' || plan === 'pro' || plan === 'enterprise') ? plan : 'pro';
     const variantId = VARIANT_IDS[validPlan as 'starter' | 'pro' | 'enterprise'];
     const buyBaseUrl = BUY_URLS[validPlan as 'starter' | 'pro' | 'enterprise'];
@@ -39,6 +39,8 @@ export default async function handler(req: any, res: any) {
     const isTestMode = process.env.LEMON_TEST_MODE === 'true' || process.env.VITE_LEMON_TEST_MODE === 'true';
     const apiKey = isTestMode ? (process.env.LEMON_TEST_API_KEY || process.env.LEMONSQUEEZY_API_KEY) : process.env.LEMONSQUEEZY_API_KEY;
     const storeId = isTestMode ? (process.env.LEMON_TEST_STORE_ID || process.env.LEMONSQUEEZY_STORE_ID) : process.env.LEMONSQUEEZY_STORE_ID;
+
+    const redirectWithParams = `${SUCCESS_REDIRECT}&plan=${validPlan}&email=${encodeURIComponent(email || '')}&test_mode=${isTestMode ? '1' : '0'}`;
 
     // If Lemon Squeezy API credentials are set, call the official Checkouts API
     if (apiKey && storeId) {
@@ -61,10 +63,11 @@ export default async function handler(req: any, res: any) {
                     user_id: userId || 'anonymous',
                     plan: validPlan,
                     test_mode: isTestMode ? 'true' : 'false',
+                    refund_accepted_at: refundAcceptedAt || new Date().toISOString(),
                   },
                 },
                 product_options: {
-                  redirect_url: `${SUCCESS_REDIRECT}?plan=${validPlan}&email=${encodeURIComponent(email || '')}&test_mode=${isTestMode ? '1' : '0'}`,
+                  redirect_url: redirectWithParams,
                   receipt_button_text: 'Open Aqari Terminal',
                 },
               },
@@ -110,11 +113,12 @@ export default async function handler(req: any, res: any) {
     if (email) params.set('checkout[email]', email);
     if (userId) params.set('checkout[custom][user_id]', userId);
     params.set('checkout[custom][plan]', validPlan);
+    params.set('checkout[custom][refund_accepted_at]', refundAcceptedAt || new Date().toISOString());
     if (isTestMode) {
       params.set('checkout[test_mode]', '1');
       params.set('checkout[custom][test_mode]', 'true');
     }
-    params.set('checkout[redirect_url]', `${SUCCESS_REDIRECT}?plan=${validPlan}&email=${encodeURIComponent(email || '')}&test_mode=${isTestMode ? '1' : '0'}`);
+    params.set('checkout[redirect_url]', redirectWithParams);
     params.set('checkout[cancel_url]', CANCEL_REDIRECT);
 
     const directUrl = `${buyBaseUrl}?${params.toString()}`;

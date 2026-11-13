@@ -510,7 +510,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     Save & Test Google Sign-In
                   </button>
                   <div className="text-[10px] text-zinc-400 font-mono pt-1">
-                    Origin: <span className="text-zinc-200">{typeof window !== 'undefined' ? window.location.origin : 'https://aqari-e4ku9f7u3-aqari2.vercel.app'}</span>
+                    Origin: <span className="text-zinc-200">{typeof window !== 'undefined' ? window.location.origin : 'https://aqari-ai-rho.vercel.app'}</span>
                   </div>
                 </div>
               )}

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
 import { LEMON_LINKS, LEMON_REDIRECT_URLS } from '../constants';
 import { formatPrice } from '../utils/formatters';
@@ -32,12 +32,43 @@ export const LimitModal: React.FC<LimitModalProps> = ({
   onTestUnlock,
   onOpenPricing,
 }) => {
+  const [refundAccepted, setRefundAccepted] = useState(false);
+  const [policyError, setPolicyError] = useState(false);
+
   if (!isOpen) return null;
 
   const isDiscountActive = config.discount.active && config.discount.percent > 0;
   const discountMultiplier = isDiscountActive ? 1 - config.discount.percent / 100 : 1;
 
-  const handleCheckout = (plan: 'starter' | 'pro' | 'enterprise') => {
+  const handleCheckout = async (plan: 'starter' | 'pro' | 'enterprise') => {
+    if (!refundAccepted) {
+      setPolicyError(true);
+      return;
+    }
+    setPolicyError(false);
+
+    if (user?.email) {
+      try {
+        const res = await fetch('/api/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            plan,
+            email: user.email,
+            userId: user.id || user.googleId,
+            refundAcceptedAt: new Date().toISOString(),
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.url) {
+            window.location.href = data.url;
+            return;
+          }
+        }
+      } catch {}
+    }
+
     const baseLink = LEMON_LINKS[plan];
     const redirectUrl = LEMON_REDIRECT_URLS[plan];
     const params = new URLSearchParams();
@@ -47,6 +78,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
       params.set('checkout[email]', user.email);
     }
     params.set('checkout[redirect_url]', redirectUrl);
+    params.set('checkout[cancel_url]', 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled');
     if (isDiscountActive && config.discount.code) {
       params.set('discount', config.discount.code);
     }
@@ -142,18 +174,44 @@ export const LimitModal: React.FC<LimitModalProps> = ({
               </p>
             </div>
 
-            <button
-              onClick={() => handleCheckout('starter')}
-              className="w-full py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <span>Unlock Starter</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+            <div className="space-y-1.5">
+              <button
+                onClick={() => handleCheckout('starter')}
+                className="w-full py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <span>Unlock Starter</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+              <div className="text-[10px] font-mono text-zinc-400 text-center">
+                5-7 Day Refund - If technical issue, max 3 analyses
+              </div>
+            </div>
           </div>
 
         </div>
 
-        <div className="text-center mt-4">
+        {/* Required Checkout Agreement Checkbox */}
+        <div className={`mb-4 p-3 rounded-xl border text-xs font-mono ${
+          policyError ? 'bg-rose-950/40 border-rose-500 text-rose-200' : 'bg-white/[0.03] border-white/10 text-zinc-300'
+        }`}>
+          <label className="flex items-start gap-2.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={refundAccepted}
+              onChange={(e) => {
+                setRefundAccepted(e.target.checked);
+                if (e.target.checked) setPolicyError(false);
+              }}
+              className="mt-0.5 w-4 h-4 accent-[#D4AF37] cursor-pointer shrink-0"
+            />
+            <span>
+              I agree to the <strong className="text-[#D4AF37]">5-7 Day Refund Policy - Max 3 analyses</strong>
+              {policyError && <span className="block text-rose-300 mt-0.5 font-bold">Please agree to the refund policy first.</span>}
+            </span>
+          </label>
+        </div>
+
+        <div className="text-center mt-2">
           <button
             onClick={() => {
               onClose();
@@ -161,7 +219,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
             }}
             className="text-xs text-zinc-400 hover:text-white underline font-mono cursor-pointer"
           >
-            View all 3 pricing tiers & sovereign enterprise options &rarr;
+            View all pricing tiers &amp; sovereign enterprise options &rarr;
           </button>
         </div>
 

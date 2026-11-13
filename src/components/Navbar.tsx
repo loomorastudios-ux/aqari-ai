@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CurrencyCode, User, RemoteConfig } from '../types';
 import { CURRENCY_SYMBOLS, LEMON_LINKS } from '../constants';
-import { getDaysRemaining } from '../utils/formatters';
+import { computeLicenseStatus } from '../../lib/plans';
 import { PWAInstallButton } from './PWAInstallButton';
 import { 
   Globe2, 
@@ -16,7 +16,8 @@ import {
   RefreshCw,
   Zap,
   Menu,
-  X
+  X,
+  CreditCard
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -29,6 +30,7 @@ interface NavbarProps {
   onOpenAdmin: () => void;
   onGoToTerminal: () => void;
   onOpenPricing: () => void;
+  onGoToHome?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -41,6 +43,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAdmin,
   onGoToTerminal,
   onOpenPricing,
+  onGoToHome,
 }) => {
   const [currencyOpen, setCurrencyOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -65,24 +68,50 @@ export const Navbar: React.FC<NavbarProps> = ({
   const currencies: CurrencyCode[] = ['USD', 'OMR', 'AED', 'GBP'];
   const activeCurrencyInfo = CURRENCY_SYMBOLS[currentCurrency];
 
-  const daysLeft = user?.subscriptionExpiry ? getDaysRemaining(user.subscriptionExpiry) : 0;
-  const msLeft = user?.subscriptionExpiry ? user.subscriptionExpiry - Date.now() : 0;
-  const isExpired = Boolean(user && user.plan !== 'free' && user.subscriptionExpiry && Date.now() > user.subscriptionExpiry);
-  const isExpiringIn1Day = Boolean(user && user.plan !== 'free' && user.subscriptionExpiry && msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000);
+  const isTestMode =
+    import.meta.env.VITE_LEMON_TEST_MODE === 'true' ||
+    (import.meta.env.VITE_LEMON_TEST_MODE as unknown) === true;
 
-  const freeLeft = user?.plan === 'free' 
-    ? (user.freeAnalysesLeft ?? user.freeAnalyses ?? 0)
-    : (user?.analysesLeft ?? user?.freeAnalysesLeft ?? user?.freeAnalyses ?? 0);
+  const endsAt = user?.subscriptionEndsAt || user?.subscriptionExpiry || null;
+  const msLeft = endsAt ? endsAt - Date.now() : 0;
+
+  const license = user
+    ? computeLicenseStatus({
+        plan: user.plan,
+        licenseStart: user.subscriptionStartAt,
+        licenseEnd: endsAt,
+        analysesUsed: user.analysesUsed,
+        freeAnalysesLeft: user.freeAnalysesLeft ?? user.freeAnalyses,
+        analysesLeft: user.analysesLeft,
+      })
+    : null;
+
+  const daysLeft = license ? license.daysLeft : 0;
+  const isExpired = Boolean(license?.isExpired || (user && user.subscriptionStatus === 'expired'));
+  const isExpiringIn1Day = Boolean(user && license && license.planKey !== 'free' && endsAt && msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000);
+  const analysesLeftDisplay = license
+    ? license.isUnlimitedAnalyses
+      ? 'Unlimited left'
+      : `${license.analysesLeft} analyses left`
+    : '3 analyses left';
 
   return (
     <header className="sticky top-0 z-50 w-full">
+      {/* Test Mode Top Banner */}
+      {isTestMode && (
+        <div className="bg-amber-950/95 border-b border-amber-500/40 text-amber-200 text-[11px] font-mono py-1.5 px-4 flex items-center justify-center gap-2 z-50">
+          <CreditCard className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+          <span className="font-bold">TEST MODE - No real money - Test card 4242 4242 4242 4242</span>
+        </div>
+      )}
+
       {/* 1-Day Expiration Reminder Top Banner */}
       {isExpiringIn1Day && (
         <div className="bg-gradient-to-r from-red-600 via-amber-600 to-red-600 text-white text-xs font-semibold py-2 px-4 flex items-center justify-between shadow-lg animate-pulse z-50">
           <div className="flex items-center gap-2 max-w-4xl mx-auto">
             <AlertTriangle className="w-4 h-4 text-white shrink-0" />
             <span>
-              ⚠️ Your <strong className="uppercase">{user?.plan}</strong> subscription ends in 1 day (Tomorrow) — Renew now to keep terminal access without interruption.
+              ⚠️ Your <strong className="uppercase">{license?.displayName}</strong> ends tomorrow — Renew now to keep terminal access without interruption.
             </span>
           </div>
           <a
@@ -139,7 +168,16 @@ export const Navbar: React.FC<NavbarProps> = ({
           
           {/* Brand Logo & Bloomberg Status Indicator */}
           <div className="flex items-center gap-2 sm:gap-4 shrink-0">
-            <a href="#" className="flex items-center gap-2 sm:gap-2.5 group">
+            <a
+              href="#/landing"
+              onClick={(e) => {
+                if (onGoToHome) {
+                  e.preventDefault();
+                  onGoToHome();
+                }
+              }}
+              className="flex items-center gap-2 sm:gap-2.5 group"
+            >
               <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-br from-[#D4AF37] via-[#B8860B] to-[#996515] p-0.5 shadow-[0_0_15px_rgba(212,175,55,0.4)] group-hover:shadow-[0_0_25px_rgba(212,175,55,0.7)] transition-all duration-300 shrink-0">
                 <div className="w-full h-full bg-black rounded-[10px] flex items-center justify-center">
                   <span className="font-mono font-black text-xs sm:text-sm text-[#D4AF37] tracking-tighter">AQ</span>
@@ -156,7 +194,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </div>
                 <div className="text-[9px] sm:text-[10px] text-zinc-400 font-mono flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="hidden sm:inline">BLOOMBERG EDITION v2.6 • </span>
+                  <span className="hidden sm:inline">INSTITUTIONAL ANALYTICS • </span>
                   <span className="text-emerald-400 font-semibold">LIVE</span>
                 </div>
               </div>
@@ -238,52 +276,28 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
 
             {/* Trial Status or Plan Badge */}
-            {user ? (
+            {user && license ? (
               <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
-                {user.plan === 'free' ? (
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="text-zinc-400 font-mono">Free analyses:</span>
-                    <span className={`font-mono font-bold ${freeLeft > 0 ? 'text-[#D4AF37]' : 'text-rose-400'}`}>
-                      {freeLeft}/3
-                    </span>
-                    {/* 3 Dots: filled gold = remaining, grey = used */}
-                    <div className="flex items-center gap-1">
-                      {[1, 2, 3].map((dot) => {
-                        const isAvailable = dot <= freeLeft;
-                        return (
-                          <span
-                            key={dot}
-                            className={`w-2 h-2 rounded-full transition-all duration-300 ${
-                              isAvailable
-                                ? 'bg-[#D4AF37] shadow-[0_0_8px_#D4AF37]'
-                                : 'bg-zinc-700'
-                            }`}
-                            title={isAvailable ? 'Analysis Credit Available' : 'Credit Used'}
-                          />
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : isExpiringIn1Day ? (
+                {isExpiringIn1Day ? (
                   <button
                     onClick={onOpenPricing}
                     className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-0.5 rounded-lg bg-red-950/80 border border-red-500/60 text-red-300 hover:text-white transition animate-pulse cursor-pointer"
                   >
                     <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
                     <span className="text-red-400 font-bold uppercase tracking-wider">
-                      {user.plan} • 1d left - Renew
+                      {license.displayName} • {analysesLeftDisplay} • 1 days left - Renew
                     </span>
                   </button>
                 ) : (
                   <div className="flex items-center gap-1.5 text-xs font-mono">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span className="text-emerald-400 font-bold uppercase tracking-wider">
-                      {user.plan}
+                    <span className={`w-2 h-2 rounded-full ${license.planKey === 'free' ? 'bg-[#D4AF37]' : 'bg-emerald-400'} animate-pulse`} />
+                    <span className={`${license.planKey === 'free' ? 'text-[#D4AF37]' : 'text-emerald-400'} font-bold uppercase tracking-wider`}>
+                      {license.displayName}
                     </span>
-                    <span className="text-zinc-400">•</span>
-                    <span className="text-zinc-300 font-medium">
-                      {daysLeft}d left
-                    </span>
+                    <span className="text-zinc-500">•</span>
+                    <span className="text-zinc-200 font-semibold">{analysesLeftDisplay}</span>
+                    <span className="text-zinc-500">•</span>
+                    <span className="text-zinc-300 font-medium">{daysLeft} days left</span>
                   </div>
                 )}
               </div>
@@ -328,7 +342,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                         {user.email}
                       </div>
                       <div className="text-[9px] font-mono text-[#D4AF37] uppercase font-bold">
-                        {user.plan}
+                        {license?.displayName || 'FREE'}
                       </div>
                     </div>
                     <ChevronDown className={`w-3 h-3 text-zinc-400 transition-transform ${userMenuOpen ? 'rotate-180' : ''}`} />
@@ -344,11 +358,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                         <div className="text-xs font-medium text-white truncate mt-0.5">
                           {user.email}
                         </div>
-                        <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center justify-between text-xs">
-                          <span className="text-zinc-400">Subscription:</span>
+                        <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center justify-between text-[11px]">
+                          <span className="text-zinc-400">Plan:</span>
                           <span className="text-[#D4AF37] font-bold uppercase font-mono">
-                            {user.plan} • {user.plan === 'free' ? `${freeLeft} credits` : `${daysLeft}d left`}
+                            {license?.displayName} • {daysLeft} days left
                           </span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between text-[11px] font-mono">
+                          <span className="text-zinc-400">Quota:</span>
+                          <span className="text-emerald-400 font-bold">{analysesLeftDisplay}</span>
                         </div>
                       </div>
 
@@ -412,27 +430,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                     </div>
                   )}
                 </div>
-
-                {/* Enter App Button next to Avatar */}
-                <button
-                  type="button"
-                  onClick={onGoToTerminal}
-                  className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#D4AF37] text-black font-mono font-bold text-xs hover:brightness-110 transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-sm min-h-[38px] sm:min-h-[40px]"
-                >
-                  <Sparkles className="w-3.5 h-3.5 fill-black shrink-0" />
-                  <span className="whitespace-nowrap">Enter App</span>
-                </button>
-
-                {/* Sign Out Button in Header */}
-                <button
-                  type="button"
-                  onClick={() => onSignOut(false)}
-                  className="px-2 sm:px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 hover:text-rose-200 text-xs font-mono font-semibold transition flex items-center gap-1 shrink-0 cursor-pointer min-h-[38px] sm:min-h-[40px]"
-                  title="Sign Out"
-                >
-                  <LogOut className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                  <span className="hidden sm:inline">Sign Out</span>
-                </button>
               </div>
             )}
 
@@ -530,11 +527,11 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="text-[10px] font-mono text-[#D4AF37]">LEMONSQUEEZY</span>
             </a>
 
-            {/* Trial count indicator on mobile */}
-            {user && user.plan === 'free' && (
+            {/* Plan status indicator on mobile */}
+            {user && license && (
               <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-white/[0.03] border border-white/[0.06] text-xs font-mono">
-                <span className="text-zinc-400">Free analyses remaining:</span>
-                <span className="font-bold text-[#D4AF37]">{freeLeft} / 3</span>
+                <span className="text-[#D4AF37] font-bold">{license.displayName} • {daysLeft} days left</span>
+                <span className="font-bold text-white">{analysesLeftDisplay}</span>
               </div>
             )}
           </div>
