@@ -113,6 +113,11 @@ export interface WebhookLogEntry {
   error?: string;
   raw_error?: string;
   activation_code?: string;
+  has_resend_key?: boolean;
+  key_prefix?: string;
+  from_email?: string;
+  to_email?: string;
+  resend_status?: number;
   timestamp: string;
 }
 
@@ -129,10 +134,13 @@ export interface EmailLogEntry {
   from: string;
   subject: string;
   type: 'day29_renewal' | 'plan_expired' | 'test_day29' | 'activation_code';
-  status: 'sent' | 'simulated';
+  status: 'sent' | 'failed' | 'simulated';
   provider: 'resend' | 'nodemailer' | 'log';
   timestamp: string;
   error?: string;
+  has_resend_key?: boolean;
+  key_prefix?: string;
+  resend_status?: number;
 }
 
 export interface ActivationCodeRecord {
@@ -915,6 +923,29 @@ export async function getWebhookLogsFromDb(limit = 20): Promise<WebhookLogEntry[
 
 export async function getEmailLogsFromDb(limit = 20): Promise<EmailLogEntry[]> {
   try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawItems = await kvCommand(['LRANGE', 'aqari:email_logs:v1', 0, Math.max(0, limit - 1)]);
+      if (Array.isArray(rawItems) && rawItems.length > 0) {
+        const parsedLogs: EmailLogEntry[] = rawItems
+          .map((item) => {
+            try {
+              return typeof item === 'string' ? JSON.parse(item) : item;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        if (parsedLogs.length > 0) {
+          return parsedLogs.slice(0, limit);
+        }
+      }
+    }
+  } catch (kvErr) {
+    console.error('[DB] Failed reading email logs from KV store:', kvErr);
+  }
+
+  try {
     if (fs.existsSync(STORE_FILE)) {
       const raw = fs.readFileSync(STORE_FILE, 'utf8');
       const parsed = JSON.parse(raw);
@@ -1022,6 +1053,12 @@ export function appendEmailLog(entry: Omit<EmailLogEntry, 'id' | 'timestamp'>): 
     store.email_logs = store.email_logs.slice(0, 200);
   }
   persistStore(store);
+  const kv = getKvConfig();
+  if (kv) {
+    kvCommand(['LPUSH', 'aqari:email_logs:v1', JSON.stringify(log)])
+      .then(() => kvCommand(['LTRIM', 'aqari:email_logs:v1', 0, 199]))
+      .catch((err) => console.error('[DB] Async KV email log write failed:', err));
+  }
   return log;
 }
 

@@ -508,17 +508,24 @@ export default function App() {
         credentials: 'include',
         body: JSON.stringify({ payment_email: targetEmail }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch(() => null);
       if (res.ok && data?.success) {
         setResendMessage(
           data.message || 'New activation code sent to your payment email - تم إرسال كود تفعيل جديد لإيميل الدفع'
         );
         setShowResendPanel(false);
       } else {
-        setActivateError(data?.error || 'Could not resend activation code.');
+        const rawErr =
+          data?.error ||
+          `HTTP ${res.status} ${res.statusText || 'Server error'}`;
+        const formattedErr =
+          rawErr.startsWith('Resend error:') || rawErr.startsWith('RESEND_API_KEY')
+            ? rawErr
+            : `Resend error: ${rawErr}`;
+        setActivateError(formattedErr);
       }
-    } catch {
-      setActivateError('Unable to reach server to resend code.');
+    } catch (err: any) {
+      setActivateError(`Resend error: ${err?.message || 'Unable to reach server'}`);
     } finally {
       setIsResendingCode(false);
     }

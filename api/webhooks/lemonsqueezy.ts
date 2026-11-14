@@ -1,7 +1,7 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import crypto from 'crypto';
 import { PLANS, PlanKey, findPlanPricing, normalizePlanKey } from '../../lib/plans';
-import { buildActivationCodeEmail, dispatchEmail } from '../../lib/mailer';
+import { EMAIL_FROM, buildActivationCodeEmail, dispatchEmail } from '../../lib/mailer';
 import { cleanEnvValue, getClientIp } from '../../lib/security';
 import {
   ActivationCodeRecord,
@@ -317,7 +317,21 @@ export default async function handler(req: any, res: any) {
           testMode: isTestMode,
         });
 
-        // 2. Send email to payment_email (uses RESEND_API_KEY; never fails webhook if missing)
+        const resendKey = cleanEnvValue(process.env.RESEND_API_KEY);
+        const hasResendKey = Boolean(resendKey);
+        const keyPrefix = hasResendKey ? resendKey.slice(0, 6) : 'MISSING';
+        const diagToEmail = paymentEmailForCode || 'unknown';
+
+        // Log BEFORE calling Resend (never log full key, only first 6 chars)
+        console.log('[Lemon Webhook] Pre-Resend Check:', {
+          has_resend_key: hasResendKey,
+          key_prefix: keyPrefix,
+          from_email: EMAIL_FROM,
+          to_email: diagToEmail,
+          code: createdActivationCode.code,
+        });
+
+        // 2. Send email to payment_email (always onboarding@resend.dev; never fails webhook if Resend fails)
         if (paymentEmailForCode && paymentEmailForCode.includes('@')) {
           const emailPayload = buildActivationCodeEmail({
             code: createdActivationCode.code,
@@ -329,44 +343,62 @@ export default async function handler(req: any, res: any) {
             text: emailPayload.text,
             html: emailPayload.html,
             type: 'activation_code',
+            code: createdActivationCode.code,
           });
           activationEmailResult = {
             status: mailRes.status,
             provider: mailRes.provider,
             error: mailRes.error,
           };
+        } else {
+          activationEmailResult = {
+            status: 'failed',
+            provider: 'resend',
+            error: 'No valid payment email in Lemon webhook payload',
+          };
         }
 
-        // 3. Log generation to webhook-logs DB (including code for admin fallback if RESEND_API_KEY missing)
+        const emailErr =
+          activationEmailResult && activationEmailResult.status !== 'sent'
+            ? activationEmailResult.error || 'Email delivery failed'
+            : undefined;
+        const adminFallbackMsg = emailErr
+          ? `Code for ${diagToEmail}: ${createdActivationCode.code} - Email failed (${emailErr}), copy manually`
+          : undefined;
+
+        // 3. Log generation to webhook-logs DB (including plain-text admin fallback if email failed)
         if (preLog) {
           await updateWebhookLogInDb(preLog.id, {
             activation_code: createdActivationCode.code,
             plan: createdActivationCode.plan,
+            has_resend_key: hasResendKey,
+            key_prefix: keyPrefix,
+            from_email: EMAIL_FROM,
+            to_email: diagToEmail,
+            ...(adminFallbackMsg ? { raw_error: adminFallbackMsg, error: adminFallbackMsg } : {}),
           }).catch((e) => console.error('[Lemon Webhook] DB code update failed:', e));
         }
         await appendWebhookLogToDb({
           order_id: orderId,
-          event: 'activation_code_generated',
-          event_name: 'activation_code_generated',
+          event: emailErr ? 'activation_code_email_failed' : 'activation_code_generated',
+          event_name: emailErr ? 'activation_code_email_failed' : 'activation_code_generated',
           plan: createdActivationCode.plan,
-          email: paymentEmailForCode || 'unknown',
+          email: diagToEmail,
           amount: amountUSD,
           currency,
           test_mode: isTestMode,
           signature_valid: true,
           activation_code: createdActivationCode.code,
-          raw_error:
-            !cleanEnvValue(process.env.RESEND_API_KEY)
-              ? `RESEND_API_KEY missing - Manual code: ${createdActivationCode.code}`
-              : undefined,
-          error:
-            !cleanEnvValue(process.env.RESEND_API_KEY)
-              ? `RESEND_API_KEY missing - Manual code: ${createdActivationCode.code}`
-              : undefined,
+          has_resend_key: hasResendKey,
+          key_prefix: keyPrefix,
+          from_email: EMAIL_FROM,
+          to_email: diagToEmail,
+          raw_error: adminFallbackMsg,
+          error: adminFallbackMsg,
         });
 
         console.log(
-          `[Lemon Webhook] Generated activation code ${createdActivationCode.code} for ${paymentEmailForCode} (${createdActivationCode.plan_display} / ${createdActivationCode.analyses} analyses)`
+          `[Lemon Webhook] Generated activation code ${createdActivationCode.code} for ${paymentEmailForCode} (${createdActivationCode.plan_display} / ${createdActivationCode.analyses} analyses) | email=${activationEmailResult?.status || 'none'}`
         );
         break;
       }

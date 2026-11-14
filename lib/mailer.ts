@@ -1,19 +1,22 @@
-import nodemailer from 'nodemailer';
 import { PlanKey, PLANS, PRODUCTION_URL } from './plans';
 import { appendEmailLog } from './serverStore';
 
-export const EMAIL_FROM = 'AQARI Terminal <noreply@aqari-ai-rho.vercel.app>';
-export const EMAIL_FROM_ADDRESS = 'noreply@aqari-ai-rho.vercel.app';
+export const EMAIL_FROM = 'AQARI Terminal <onboarding@resend.dev>';
+export const EMAIL_FROM_ADDRESS = 'onboarding@resend.dev';
 
 export interface EmailSendResult {
   success: boolean;
   provider: 'resend' | 'nodemailer' | 'log';
-  status: 'sent' | 'simulated';
+  status: 'sent' | 'failed' | 'simulated';
   to: string;
   from: string;
   subject: string;
   text: string;
   html: string;
+  has_resend_key: boolean;
+  key_prefix: string;
+  resend_status?: number;
+  resend_id?: string;
   error?: string;
 }
 
@@ -144,119 +147,170 @@ export async function dispatchEmail(params: {
   text: string;
   html: string;
   type: 'day29_renewal' | 'plan_expired' | 'test_day29' | 'activation_code';
+  code?: string;
 }): Promise<EmailSendResult> {
   const resendKey = (process.env.RESEND_API_KEY || '').replace(/^["']|["']$/g, '').trim();
-  const smtpHost = process.env.SMTP_HOST;
-  const smtpUser = process.env.SMTP_USER;
-  const smtpPass = process.env.SMTP_PASS;
-  const smtpPort = Number(process.env.SMTP_PORT || 587);
+  const hasResendKey = Boolean(resendKey);
+  const keyPrefix = hasResendKey ? resendKey.slice(0, 6) : 'MISSING';
+  const fromHeader = EMAIL_FROM; // Always "AQARI Terminal <onboarding@resend.dev>" until domain verified
 
-  // 1. Resend API (preferred for Vercel serverless)
-  if (resendKey) {
-    try {
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${resendKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: process.env.EMAIL_FROM || EMAIL_FROM,
-          to: [params.to],
-          subject: params.subject,
-          html: params.html,
-          text: params.text,
-        }),
-      });
+  console.log('[AQARI MAILER] Resend dispatch attempt:', {
+    has_resend_key: hasResendKey,
+    key_prefix: keyPrefix,
+    from_email: fromHeader,
+    to_email: params.to,
+    code: params.code || null,
+    type: params.type,
+  });
 
-      if (res.ok) {
-        appendEmailLog({
-          to: params.to,
-          from: EMAIL_FROM_ADDRESS,
-          subject: params.subject,
-          type: params.type,
-          status: 'sent',
-          provider: 'resend',
-        });
-        return {
-          success: true,
-          provider: 'resend',
-          status: 'sent',
-          to: params.to,
-          from: EMAIL_FROM_ADDRESS,
-          subject: params.subject,
-          text: params.text,
-          html: params.html,
-        };
-      }
-      const errBody = await res.text();
-      console.warn('[AQARI MAILER] Resend API error:', errBody);
-    } catch (err: any) {
-      console.warn('[AQARI MAILER] Resend dispatch error:', err?.message);
-    }
+  if (!hasResendKey) {
+    const missingErr = 'RESEND_API_KEY missing in Vercel - Redeploy needed';
+    appendEmailLog({
+      to: params.to,
+      from: EMAIL_FROM_ADDRESS,
+      subject: params.subject,
+      type: params.type,
+      status: 'failed',
+      provider: 'resend',
+      error: missingErr,
+      has_resend_key: false,
+      key_prefix: 'MISSING',
+      resend_status: 0,
+    });
+    return {
+      success: false,
+      provider: 'resend',
+      status: 'failed',
+      to: params.to,
+      from: fromHeader,
+      subject: params.subject,
+      text: params.text,
+      html: params.html,
+      has_resend_key: false,
+      key_prefix: 'MISSING',
+      resend_status: 0,
+      error: missingErr,
+    };
   }
 
-  // 2. Nodemailer SMTP fallback
-  if (smtpHost && smtpUser && smtpPass) {
-    try {
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: { user: smtpUser, pass: smtpPass },
-      });
-
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || EMAIL_FROM,
-        to: params.to,
+  // 1. Resend API (always uses onboarding@resend.dev so unverified custom domains never cause rejection)
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${resendKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: fromHeader,
+        to: [params.to],
         subject: params.subject,
-        text: params.text,
         html: params.html,
-      });
+        text: params.text,
+      }),
+    });
 
+    const rawText = await res.text();
+    let parsed: any = {};
+    try {
+      parsed = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      parsed = {};
+    }
+
+    if (res.ok) {
       appendEmailLog({
         to: params.to,
         from: EMAIL_FROM_ADDRESS,
         subject: params.subject,
         type: params.type,
         status: 'sent',
-        provider: 'nodemailer',
+        provider: 'resend',
+        has_resend_key: true,
+        key_prefix: keyPrefix,
+        resend_status: res.status,
       });
-
       return {
         success: true,
-        provider: 'nodemailer',
+        provider: 'resend',
         status: 'sent',
         to: params.to,
-        from: EMAIL_FROM_ADDRESS,
+        from: fromHeader,
         subject: params.subject,
         text: params.text,
         html: params.html,
+        has_resend_key: true,
+        key_prefix: keyPrefix,
+        resend_status: res.status,
+        resend_id: parsed?.id,
       };
-    } catch (err: any) {
-      console.warn('[AQARI MAILER] Nodemailer dispatch error:', err?.message);
     }
+
+    const resendMessage =
+      parsed?.message ||
+      parsed?.error?.message ||
+      parsed?.name ||
+      rawText ||
+      res.statusText ||
+      'Resend rejected request';
+    const formattedError = `${resendMessage} | status:${res.status} | has_key:${hasResendKey}`;
+    console.error('[AQARI MAILER] Resend API rejected:', formattedError);
+
+    appendEmailLog({
+      to: params.to,
+      from: EMAIL_FROM_ADDRESS,
+      subject: params.subject,
+      type: params.type,
+      status: 'failed',
+      provider: 'resend',
+      error: formattedError,
+      has_resend_key: true,
+      key_prefix: keyPrefix,
+      resend_status: res.status,
+    });
+
+    return {
+      success: false,
+      provider: 'resend',
+      status: 'failed',
+      to: params.to,
+      from: fromHeader,
+      subject: params.subject,
+      text: params.text,
+      html: params.html,
+      has_resend_key: true,
+      key_prefix: keyPrefix,
+      resend_status: res.status,
+      error: formattedError,
+    };
+  } catch (err: any) {
+    const netError = `${err?.message || 'Resend network error'} | status:502 | has_key:${hasResendKey}`;
+    console.error('[AQARI MAILER] Resend network error:', netError);
+    appendEmailLog({
+      to: params.to,
+      from: EMAIL_FROM_ADDRESS,
+      subject: params.subject,
+      type: params.type,
+      status: 'failed',
+      provider: 'resend',
+      error: netError,
+      has_resend_key: true,
+      key_prefix: keyPrefix,
+      resend_status: 502,
+    });
+    return {
+      success: false,
+      provider: 'resend',
+      status: 'failed',
+      to: params.to,
+      from: fromHeader,
+      subject: params.subject,
+      text: params.text,
+      html: params.html,
+      has_resend_key: true,
+      key_prefix: keyPrefix,
+      resend_status: 502,
+      error: netError,
+    };
   }
-
-  // 3. Local dev / unconfigured SMTP simulation log
-  console.log(`[AQARI MAILER] (${params.type}) From: ${EMAIL_FROM_ADDRESS} -> To: ${params.to} | Subject: ${params.subject}`);
-  appendEmailLog({
-    to: params.to,
-    from: EMAIL_FROM_ADDRESS,
-    subject: params.subject,
-    type: params.type,
-    status: 'simulated',
-    provider: 'log',
-  });
-
-  return {
-    success: true,
-    provider: 'log',
-    status: 'simulated',
-    to: params.to,
-    from: EMAIL_FROM_ADDRESS,
-    subject: params.subject,
-    text: params.text,
-    html: params.html,
-  };
 }

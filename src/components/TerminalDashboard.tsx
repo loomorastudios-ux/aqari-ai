@@ -209,6 +209,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [webhookEnvStatus, setWebhookEnvStatus] = useState<{
     webhookSecretPresent: boolean;
     apiKeyPresent: boolean;
+    resendKeyPresent?: boolean;
+    resendKeyPrefix?: string;
+    lastResendAttempt?: string | null;
+    lastResendError?: string | null;
   } | null>(null);
   const [isRefreshingWebhookLogs, setIsRefreshingWebhookLogs] = useState(false);
   const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false);
@@ -2981,20 +2985,48 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </button>
                   </div>
 
-                  <div className="pt-2 border-t border-amber-400/25 flex flex-wrap items-center gap-4 text-xs">
-                    <span className="text-amber-200 font-bold">Status:</span>
-                    <span className="text-zinc-200">
-                      LEMON_WEBHOOK_SECRET present?{' '}
-                      <strong className={webhookEnvStatus?.webhookSecretPresent ? 'text-emerald-400' : 'text-rose-400'}>
-                        {webhookEnvStatus ? (webhookEnvStatus.webhookSecretPresent ? 'Yes' : 'No') : '...'}
-                      </strong>
-                    </span>
-                    <span className="text-zinc-200">
-                      LEMON_API_KEY present?{' '}
-                      <strong className={webhookEnvStatus?.apiKeyPresent ? 'text-emerald-400' : 'text-rose-400'}>
-                        {webhookEnvStatus ? (webhookEnvStatus.apiKeyPresent ? 'Yes' : 'No') : '...'}
-                      </strong>
-                    </span>
+                  <div className="pt-2 border-t border-amber-400/25 space-y-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-4">
+                      <span className="text-amber-200 font-bold">Status:</span>
+                      <span className="text-zinc-200">
+                        LEMON_WEBHOOK_SECRET present?{' '}
+                        <strong className={webhookEnvStatus?.webhookSecretPresent ? 'text-emerald-400' : 'text-rose-400'}>
+                          {webhookEnvStatus ? (webhookEnvStatus.webhookSecretPresent ? 'Yes' : 'No') : '...'}
+                        </strong>
+                      </span>
+                      <span className="text-zinc-200">
+                        LEMON_API_KEY present?{' '}
+                        <strong className={webhookEnvStatus?.apiKeyPresent ? 'text-emerald-400' : 'text-rose-400'}>
+                          {webhookEnvStatus ? (webhookEnvStatus.apiKeyPresent ? 'Yes' : 'No') : '...'}
+                        </strong>
+                      </span>
+                      <span className="text-zinc-200">
+                        RESEND_API_KEY present?{' '}
+                        <strong className={webhookEnvStatus?.resendKeyPresent ? 'text-emerald-400' : 'text-rose-400'}>
+                          {webhookEnvStatus
+                            ? webhookEnvStatus.resendKeyPresent
+                              ? `Yes (prefix ${webhookEnvStatus.resendKeyPrefix || 're_...'})`
+                              : 'No (MISSING)'
+                            : '...'}
+                        </strong>
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-4 text-[11px] text-zinc-300">
+                      <span>
+                        Last Resend attempt:{' '}
+                        <strong className="text-white">
+                          {webhookEnvStatus?.lastResendAttempt
+                            ? new Date(webhookEnvStatus.lastResendAttempt).toLocaleString()
+                            : 'None yet'}
+                        </strong>
+                      </span>
+                      <span>
+                        Last Resend error:{' '}
+                        <strong className={webhookEnvStatus?.lastResendError ? 'text-rose-400' : 'text-emerald-400'}>
+                          {webhookEnvStatus?.lastResendError || 'None'}
+                        </strong>
+                      </span>
+                    </div>
                   </div>
                 </div>
 

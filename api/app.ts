@@ -46,7 +46,7 @@ import {
   saveUserToDb,
   updateServerUser,
 } from '../lib/serverStore';
-import { buildActivationCodeEmail, dispatchEmail } from '../lib/mailer';
+import { EMAIL_FROM, buildActivationCodeEmail, dispatchEmail } from '../lib/mailer';
 import { getDeterministicMarketData, getLiveMarketDataWithCache } from '../lib/marketData';
 import { fetchGoogleMarketNews } from '../lib/marketNews';
 import { DEMO_ANALYSES } from '../src/constants/demoAnalyses';
@@ -1470,10 +1470,14 @@ export default async function handler(req: any, res: any) {
               return {
                 ...rest,
                 raw_error: rest.raw_error
-                  ? rest.raw_error.replace(/Manual code:\s*AQARI-[A-Z0-9]+/gi, 'Manual code hidden')
+                  ? rest.raw_error
+                      .replace(/Manual code:\s*AQARI-[A-Z0-9]+/gi, 'Manual code hidden')
+                      .replace(/Code for [^:]+:\s*AQARI-[A-Z0-9]+/gi, 'Code hidden')
                   : rest.raw_error,
                 error: rest.error
-                  ? rest.error.replace(/Manual code:\s*AQARI-[A-Z0-9]+/gi, 'Manual code hidden')
+                  ? rest.error
+                      .replace(/Manual code:\s*AQARI-[A-Z0-9]+/gi, 'Manual code hidden')
+                      .replace(/Code for [^:]+:\s*AQARI-[A-Z0-9]+/gi, 'Code hidden')
                   : rest.error,
               };
             });
@@ -1488,6 +1492,29 @@ export default async function handler(req: any, res: any) {
             cleanEnvValue(process.env.LEMON_TEST_API_KEY) ||
             cleanEnvValue(process.env.LEMONSQUEEZY_API_KEY)
         );
+        const resendKey = cleanEnvValue(process.env.RESEND_API_KEY);
+        const resendKeyPresent = Boolean(resendKey);
+        const resendKeyPrefix = resendKeyPresent ? resendKey.slice(0, 6) : 'MISSING';
+        const latestEmail = emailLogs[0] || null;
+        const latestResendLog =
+          rawLogs.find(
+            (w) =>
+              w.event === 'activation_code_resent' ||
+              w.event === 'activation_code_resend_failed' ||
+              w.event === 'activation_code_email_failed' ||
+              w.event === 'resend_code_attempt'
+          ) || null;
+        const lastResendAttempt = latestEmail?.timestamp || latestResendLog?.timestamp || null;
+        const rawLastErr =
+          latestEmail?.status === 'failed'
+            ? latestEmail.error
+            : latestResendLog?.raw_error || latestResendLog?.error || null;
+        const lastResendError = rawLastErr
+          ? requesterIsAdmin
+            ? rawLastErr
+            : rawLastErr.replace(/Code for [^:]+:\s*AQARI-[A-Z0-9]+\s*-\s*/gi, '')
+          : null;
+
         return res.status(200).json({
           success: true,
           testMode: process.env.LEMON_TEST_MODE === 'true' || process.env.VITE_LEMON_TEST_MODE === 'true',
@@ -1500,6 +1527,10 @@ export default async function handler(req: any, res: any) {
           envStatus: {
             webhookSecretPresent,
             apiKeyPresent,
+            resendKeyPresent,
+            resendKeyPrefix,
+            lastResendAttempt,
+            lastResendError,
           },
           ...(logs.length === 0
             ? {
@@ -1962,6 +1993,17 @@ export default async function handler(req: any, res: any) {
         });
         await saveUserToDb(dbUser);
 
+        const resendKeyAct = cleanEnvValue(process.env.RESEND_API_KEY);
+        const hasResendKeyAct = Boolean(resendKeyAct);
+        const keyPrefixAct = hasResendKeyAct ? resendKeyAct.slice(0, 6) : 'MISSING';
+        console.log('[activate-with-code] Env check:', {
+          has_resend_key: hasResendKeyAct,
+          key_prefix: keyPrefixAct,
+          from_email: EMAIL_FROM,
+          to_email: loginEmail,
+          code: codeRecord.code,
+        });
+
         await appendWebhookLogToDb({
           order_id: codeRecord.order_id,
           event: 'direct_activation',
@@ -1973,6 +2015,10 @@ export default async function handler(req: any, res: any) {
           test_mode: codeRecord.test_mode,
           signature_valid: true,
           activation_code: codeRecord.code,
+          has_resend_key: hasResendKeyAct,
+          key_prefix: keyPrefixAct,
+          from_email: EMAIL_FROM,
+          to_email: loginEmail,
         });
 
         setSessionCookie(res, dbUser.email);
@@ -2007,7 +2053,7 @@ export default async function handler(req: any, res: any) {
       }
 
       // ------------------------------------------------------------------
-      // 19. POST /api/app?action=resend-code (Invalidate Old Code, Generate New One-Time Code & Email)
+      // 19. POST /api/app?action=resend-code (Invalidate Old Code, Generate New One-Time Code & Email via Resend)
       // ------------------------------------------------------------------
       case 'resend-code': {
         if (req.method !== 'POST') {
@@ -2020,21 +2066,36 @@ export default async function handler(req: any, res: any) {
           .trim()
           .toLowerCase();
 
+        const resendKey = cleanEnvValue(process.env.RESEND_API_KEY);
+        const hasResendKey = Boolean(resendKey);
+        const keyPrefix = hasResendKey ? resendKey.slice(0, 6) : 'MISSING';
+
         if (!paymentEmail || !paymentEmail.includes('@')) {
           return res.status(400).json({
             success: false,
             error: 'Please enter the email you used to pay - أدخل إيميل الدفع الصحيح',
+            has_resend_key: hasResendKey,
+            key_prefix: keyPrefix,
           });
         }
 
         const existingCode = await findLatestActivationCodeByPaymentEmailInDb(paymentEmail);
-        let orderId = existingCode?.order_id || '';
-        let amountUSD = existingCode?.amount || 0;
-        let fallbackPlan: PlanKey = existingCode?.plan || 'pro';
-        let testMode = existingCode?.test_mode || (process.env.LEMON_TEST_MODE === 'true');
+        const existingUserRecord = existingCode ? null : await getUserFromDb(paymentEmail);
+        const existingPayment = existingUserRecord?.payments?.[0];
 
-        // Fallback lookup in Lemon API if this container doesn't have previous code record
-        if (!existingCode) {
+        let orderId = existingCode?.order_id || existingPayment?.order_id || '';
+        let amountUSD = existingCode?.amount || existingPayment?.amount || 0;
+        let fallbackPlan: PlanKey =
+          existingCode?.plan ||
+          (existingPayment?.plan && existingPayment.plan !== 'free' ? existingPayment.plan : 'pro');
+        let testMode =
+          existingCode?.test_mode ??
+          existingPayment?.test_mode ??
+          (process.env.LEMON_TEST_MODE === 'true');
+
+        // Fallback lookup in Lemon API if this container doesn't have previous code/payment record
+        let lemonApiError = '';
+        if (!orderId) {
           const candidateKeys = Array.from(
             new Set(
               [
@@ -2046,13 +2107,21 @@ export default async function handler(req: any, res: any) {
           );
           for (const key of candidateKeys) {
             try {
-              const listRes = await fetch('https://api.lemonsqueezy.com/v1/orders?page[size]=50', {
-                headers: {
-                  Accept: 'application/vnd.api+json',
-                  Authorization: `Bearer ${key}`,
-                },
-              });
-              if (listRes.ok) {
+              const endpoints = [
+                `https://api.lemonsqueezy.com/v1/orders?filter[user_email]=${encodeURIComponent(paymentEmail)}&page[size]=50`,
+                'https://api.lemonsqueezy.com/v1/orders?page[size]=50',
+              ];
+              for (const ep of endpoints) {
+                const listRes = await fetch(ep, {
+                  headers: {
+                    Accept: 'application/vnd.api+json',
+                    Authorization: `Bearer ${key}`,
+                  },
+                });
+                if (!listRes.ok) {
+                  lemonApiError = `Lemon HTTP ${listRes.status}`;
+                  continue;
+                }
                 const listJson = await listRes.json();
                 const rows = Array.isArray(listJson?.data) ? listJson.data : [];
                 const match = rows.find((o: any) => {
@@ -2073,17 +2142,41 @@ export default async function handler(req: any, res: any) {
                   break;
                 }
               }
-            } catch {}
+              if (orderId) break;
+            } catch (err: any) {
+              lemonApiError = err?.message || 'Lemon request failed';
+            }
           }
         }
 
         if (!orderId) {
+          const noOrderErr = `No paid order found for ${paymentEmail}${lemonApiError ? ` (${lemonApiError})` : ''} | has_resend_key:${hasResendKey}`;
+          await appendWebhookLogToDb({
+            order_id: 'resend_no_order',
+            event: 'activation_code_resend_failed',
+            event_name: 'activation_code_resend_failed',
+            plan: 'pro',
+            email: paymentEmail,
+            amount: 0,
+            currency: 'USD',
+            test_mode: testMode,
+            signature_valid: false,
+            has_resend_key: hasResendKey,
+            key_prefix: keyPrefix,
+            from_email: EMAIL_FROM,
+            to_email: paymentEmail,
+            raw_error: noOrderErr,
+            error: noOrderErr,
+          });
           return res.status(404).json({
             success: false,
-            error: 'No paid order found for this payment email - لم يتم العثور على طلب مدفوع لهذا الإيميل',
+            error: noOrderErr,
+            has_resend_key: hasResendKey,
+            key_prefix: keyPrefix,
           });
         }
 
+        // Always save new activation code to DB FIRST (even if email later fails)
         const newCode = await createActivationCodeInDb({
           paymentEmail,
           orderId,
@@ -2092,6 +2185,62 @@ export default async function handler(req: any, res: any) {
           testMode,
           invalidatePreviousForEmail: true,
         });
+
+        // Log BEFORE calling Resend (never log full key, only first 6 chars)
+        console.log('[resend-code] Pre-Resend Check:', {
+          has_resend_key: hasResendKey,
+          key_prefix: keyPrefix,
+          from_email: EMAIL_FROM,
+          to_email: paymentEmail,
+          code: newCode.code,
+        });
+
+        await appendWebhookLogToDb({
+          order_id: newCode.order_id,
+          event: 'resend_code_attempt',
+          event_name: 'resend_code_attempt',
+          plan: newCode.plan,
+          email: paymentEmail,
+          amount: newCode.amount,
+          currency: 'USD',
+          test_mode: newCode.test_mode,
+          signature_valid: true,
+          activation_code: newCode.code,
+          has_resend_key: hasResendKey,
+          key_prefix: keyPrefix,
+          from_email: EMAIL_FROM,
+          to_email: paymentEmail,
+        });
+
+        if (!hasResendKey) {
+          const missingKeyError = 'RESEND_API_KEY missing in Vercel - Redeploy needed';
+          const adminFallbackMsg = `Code for ${paymentEmail}: ${newCode.code} - Email failed (${missingKeyError}), copy manually`;
+          await appendWebhookLogToDb({
+            order_id: newCode.order_id,
+            event: 'activation_code_resend_failed',
+            event_name: 'activation_code_resend_failed',
+            plan: newCode.plan,
+            email: paymentEmail,
+            amount: newCode.amount,
+            currency: 'USD',
+            test_mode: newCode.test_mode,
+            signature_valid: true,
+            activation_code: newCode.code,
+            has_resend_key: false,
+            key_prefix: 'MISSING',
+            from_email: EMAIL_FROM,
+            to_email: paymentEmail,
+            resend_status: 0,
+            raw_error: adminFallbackMsg,
+            error: adminFallbackMsg,
+          });
+          return res.status(500).json({
+            success: false,
+            error: missingKeyError,
+            has_resend_key: false,
+            key_prefix: 'MISSING',
+          });
+        }
 
         const emailPayload = buildActivationCodeEmail({
           code: newCode.code,
@@ -2103,7 +2252,39 @@ export default async function handler(req: any, res: any) {
           text: emailPayload.text,
           html: emailPayload.html,
           type: 'activation_code',
+          code: newCode.code,
         });
+
+        if (!mailRes.success) {
+          const realResendErr = mailRes.error || `Resend failed | status:${mailRes.resend_status || 502} | has_key:${hasResendKey}`;
+          const adminFallbackMsg = `Code for ${paymentEmail}: ${newCode.code} - Email failed (${realResendErr}), copy manually`;
+          await appendWebhookLogToDb({
+            order_id: newCode.order_id,
+            event: 'activation_code_resend_failed',
+            event_name: 'activation_code_resend_failed',
+            plan: newCode.plan,
+            email: paymentEmail,
+            amount: newCode.amount,
+            currency: 'USD',
+            test_mode: newCode.test_mode,
+            signature_valid: true,
+            activation_code: newCode.code,
+            has_resend_key: hasResendKey,
+            key_prefix: keyPrefix,
+            from_email: EMAIL_FROM,
+            to_email: paymentEmail,
+            resend_status: mailRes.resend_status,
+            raw_error: adminFallbackMsg,
+            error: adminFallbackMsg,
+          });
+          return res.status(mailRes.resend_status && mailRes.resend_status >= 400 ? mailRes.resend_status : 502).json({
+            success: false,
+            error: realResendErr,
+            has_resend_key: hasResendKey,
+            key_prefix: keyPrefix,
+            status: mailRes.resend_status || 502,
+          });
+        }
 
         await appendWebhookLogToDb({
           order_id: newCode.order_id,
@@ -2116,14 +2297,11 @@ export default async function handler(req: any, res: any) {
           test_mode: newCode.test_mode,
           signature_valid: true,
           activation_code: newCode.code,
-          raw_error:
-            !cleanEnvValue(process.env.RESEND_API_KEY)
-              ? `RESEND_API_KEY missing - Manual code: ${newCode.code}`
-              : undefined,
-          error:
-            !cleanEnvValue(process.env.RESEND_API_KEY)
-              ? `RESEND_API_KEY missing - Manual code: ${newCode.code}`
-              : undefined,
+          has_resend_key: true,
+          key_prefix: keyPrefix,
+          from_email: EMAIL_FROM,
+          to_email: paymentEmail,
+          resend_status: mailRes.resend_status || 200,
         });
 
         return res.status(200).json({
@@ -2131,6 +2309,9 @@ export default async function handler(req: any, res: any) {
           message: 'New activation code sent to your payment email - تم إرسال كود تفعيل جديد لإيميل الدفع',
           emailStatus: mailRes.status,
           provider: mailRes.provider,
+          resend_id: mailRes.resend_id,
+          has_resend_key: true,
+          key_prefix: keyPrefix,
         });
       }
 
