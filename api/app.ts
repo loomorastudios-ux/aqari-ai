@@ -126,18 +126,24 @@ function safeParseBody(req: any): Record<string, any> {
 }
 
 export default async function handler(req: any, res: any) {
-  const url = new URL(req.url || '/api/app', `http://${req.headers?.host || 'localhost:3000'}`);
-  const parsedBody = safeParseBody(req);
-  const action = (
-    getQueryParam(req, url, 'action') ||
-    parsedBody.action ||
-    ''
-  )
-    .toString()
-    .trim()
-    .toLowerCase();
-
+  let action = '';
   try {
+    let url: URL;
+    try {
+      url = new URL(req?.url || '/api/app', `http://${req?.headers?.host || 'localhost:3000'}`);
+    } catch {
+      url = new URL('/api/app', 'http://localhost:3000');
+    }
+    const parsedBody = safeParseBody(req);
+    action = (
+      getQueryParam(req, url, 'action') ||
+      parsedBody.action ||
+      ''
+    )
+      .toString()
+      .trim()
+      .toLowerCase();
+
     switch (action) {
       // ------------------------------------------------------------------
       // 1. GET /api/app?action=me (Authoritative Server Entitlement + Backup Expiry)
@@ -237,10 +243,25 @@ export default async function handler(req: any, res: any) {
       // 3. GET/POST /api/app?action=verify-checkout (Direct Lemon order_id Auto-Activation onto login_email)
       // ------------------------------------------------------------------
       case 'verify-checkout': {
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        try {
+          res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
+        } catch {}
+
+        let orderId = '';
+        const candidateKeys = Array.from(
+          new Set(
+            [
+              cleanEnvValue(process.env.LEMONSQUEEZY_API_KEY),
+              cleanEnvValue(process.env.LEMON_API_KEY),
+              cleanEnvValue(process.env.LEMON_TEST_API_KEY),
+            ].filter(Boolean)
+          )
+        );
+        const hasLemonKey = candidateKeys.length > 0;
+
         try {
           const src: Record<string, any> = {
-            ...(req.query && typeof req.query === 'object' ? req.query : {}),
+            ...(req?.query && typeof req.query === 'object' ? req.query : {}),
             ...(parsedBody && typeof parsedBody === 'object' ? parsedBody : {}),
           };
           const sessionEmail = getSessionEmailFromReq(req);
@@ -258,45 +279,82 @@ export default async function handler(req: any, res: any) {
           // Clean order_id and ignore unresolved URL placeholders like {ORDER_ID} or [order_id]
           const cleanPlaceholderOrderId = (raw: any): string => {
             const cleaned = normalizeOrderId(String(raw || ''));
+            const lower = cleaned.toLowerCase();
             if (
               !cleaned ||
               cleaned === '{ORDER_ID}' ||
               cleaned === '[order_id]' ||
               cleaned === '{order_id}' ||
-              cleaned.toLowerCase() === 'null' ||
-              cleaned.toLowerCase() === 'undefined'
+              lower === 'null' ||
+              lower === 'undefined' ||
+              lower === 'none' ||
+              lower === 'empty'
             ) {
               return '';
             }
             return cleaned;
           };
 
-          let orderId = cleanPlaceholderOrderId(src?.order_id || src?.order);
+          const rawOrderParam = String(src?.order_id || src?.order || '').trim();
+          const isExplicitLastRequest = rawOrderParam.toUpperCase() === 'LAST';
+          orderId = isExplicitLastRequest ? '' : cleanPlaceholderOrderId(rawOrderParam);
 
-          // If no order_id in URL/body, check webhook-logs for last order_id matching login_email
+          const isValidWebhookOrderEntry = (entry: any): string => {
+            if (!entry || typeof entry !== 'object') return '';
+            const ev = String(entry?.event || entry?.event_name || '').trim().toLowerCase();
+            if (ev && ev !== 'order_created' && ev !== 'subscription_created' && ev !== 'checkout_verify_api') {
+              return '';
+            }
+            const oid = cleanPlaceholderOrderId(entry?.order_id);
+            if (
+              !oid ||
+              oid === 'key_missing' ||
+              oid === 'not_found' ||
+              oid === 'invalid_api_key' ||
+              oid.startsWith('ord_')
+            ) {
+              return '';
+            }
+            return oid;
+          };
+
+          // 2. Missing order_id (or explicit LAST): NEVER call Lemon API with undefined; fallback to webhook-logs
           if (!orderId) {
             const recentLogs = await getWebhookLogsFromDb(100).catch(() => []);
-            const matchingLog = (Array.isArray(recentLogs) ? recentLogs : []).find((entry) => {
-              if (!entry || typeof entry !== 'object') return false;
-              const ev = String(entry?.event || entry?.event_name || '').trim().toLowerCase();
-              if (ev && ev !== 'order_created' && ev !== 'checkout_verify_api') return false;
-              const oid = cleanPlaceholderOrderId(entry?.order_id);
-              if (!oid || oid === 'key_missing' || oid === 'not_found' || oid === 'invalid_api_key') {
-                return false;
-              }
+            const logsArr = Array.isArray(recentLogs) ? recentLogs : [];
+
+            const emailMatch = logsArr.find((entry) => {
+              const oid = isValidWebhookOrderEntry(entry);
+              if (!oid) return false;
               const e1 = String(entry?.email || '').trim().toLowerCase();
               const e2 = String(entry?.payment_email || '').trim().toLowerCase();
               return e1 === loginEmail || e2 === loginEmail;
             });
-            if (matchingLog?.order_id) {
-              orderId = cleanPlaceholderOrderId(matchingLog.order_id);
+
+            if (emailMatch) {
+              orderId = cleanPlaceholderOrderId(emailMatch.order_id);
+            } else if (isExplicitLastRequest) {
+              // If user explicitly clicked "Use Last Order From Webhook Logs", also check latest unused order_created webhook
+              for (const entry of logsArr) {
+                const oid = isValidWebhookOrderEntry(entry);
+                if (!oid) continue;
+                const usedCheck = await getUsedOrderFromDb(oid).catch(() => null);
+                if (!usedCheck) {
+                  orderId = oid;
+                  break;
+                }
+              }
+            }
+
+            if (orderId) {
+              console.log(`order_id from webhook-logs fallback: ${orderId}`);
             }
           }
 
           if (!orderId) {
             return res.status(200).json({
               success: false,
-              error: `No order_id found in URL or webhook logs for ${loginEmail}`,
+              error: `No order_id in URL and no order found in webhook-logs for ${loginEmail}. Please add &order_id={ORDER_ID} to Lemon Checkout Success URL. Go to Lemon > Product > Checkout Success URL: https://aqari-ai-rho.vercel.app/app?checkout=success&order_id={ORDER_ID}`,
             });
           }
 
@@ -312,7 +370,6 @@ export default async function handler(req: any, res: any) {
               });
             }
 
-            // Already activated on this same login_email -> return idempotent success
             let existingUser =
               (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
             if (existingUser.plan === 'free') {
@@ -361,24 +418,15 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          // Check Lemon API Keys (prefer LEMONSQUEEZY_API_KEY, then LEMON_API_KEY / LEMON_TEST_API_KEY)
-          const candidateKeys = Array.from(
-            new Set(
-              [
-                cleanEnvValue(process.env.LEMONSQUEEZY_API_KEY),
-                cleanEnvValue(process.env.LEMON_API_KEY),
-                cleanEnvValue(process.env.LEMON_TEST_API_KEY),
-              ].filter(Boolean)
-            )
-          );
-
-          if (candidateKeys.length === 0) {
+          // 3. Handle missing LEMONSQUEEZY_API_KEY gracefully (HTTP 200)
+          if (!hasLemonKey) {
             return res.status(200).json({
               success: false,
-              error: 'LEMONSQUEEZY_API_KEY / LEMON_API_KEY is missing in environment variables',
+              error: 'LEMONSQUEEZY_API_KEY missing in Vercel - Add it and Redeploy',
             });
           }
 
+          // 4. Call Lemon API GET /v1/orders/{order_id} safely
           let verifiedAttrs: any = null;
           let verifiedOrderData: any = null;
           let lemonIncluded: any[] = [];
@@ -398,6 +446,16 @@ export default async function handler(req: any, res: any) {
                   signal: controller.signal,
                 }
               );
+
+              if (orderRes.status === 404) {
+                lastLemonError = `Order not found in Lemon: ${orderId}`;
+                continue;
+              }
+              if (orderRes.status === 401) {
+                lastLemonError = 'Lemon API key invalid - Check LEMONSQUEEZY_API_KEY';
+                continue;
+              }
+
               const rawText = await orderRes.text();
               let parsed: any = {};
               try {
@@ -438,12 +496,12 @@ export default async function handler(req: any, res: any) {
               currency: 'USD',
               test_mode: process.env.LEMON_TEST_MODE === 'true',
               signature_valid: false,
-              raw_error: lastLemonError || `Order #${orderId} not found in Lemon Squeezy`,
-              error: lastLemonError || `Order #${orderId} not found in Lemon Squeezy`,
+              raw_error: lastLemonError || `Order not found in Lemon: ${orderId}`,
+              error: lastLemonError || `Order not found in Lemon: ${orderId}`,
             }).catch(() => {});
             return res.status(200).json({
               success: false,
-              error: lastLemonError || `Order #${orderId} not found in Lemon Squeezy`,
+              error: lastLemonError || `Order not found in Lemon: ${orderId}`,
             });
           }
 
@@ -569,7 +627,7 @@ export default async function handler(req: any, res: any) {
           console.error('[verify-checkout] Unhandled error (returning HTTP 200):', err);
           return res.status(200).json({
             success: false,
-            error: err?.message || 'Verification failed',
+            error: `Verify failed: ${err?.message || String(err || 'Unknown error')} | order_id:${orderId || 'none'} | has_lemon_key:${hasLemonKey}`,
           });
         }
       }

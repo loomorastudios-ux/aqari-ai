@@ -186,6 +186,7 @@ export default function App() {
   });
   const [verifyState, setVerifyState] = useState<'verifying' | 'activated' | 'error'>('verifying');
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [checkoutUrlOrderId, setCheckoutUrlOrderId] = useState<string | null>(null);
   const [verifiedSummary, setVerifiedSummary] = useState<{
     plan: string;
     analysesLeft: number | string;
@@ -377,24 +378,31 @@ export default function App() {
 
   const cleanPlaceholderOrderId = (raw?: string | null): string => {
     const cleaned = String(raw || '').replace(/^#/, '').trim();
+    const lower = cleaned.toLowerCase();
     if (
       !cleaned ||
       cleaned === '{ORDER_ID}' ||
       cleaned === '[order_id]' ||
       cleaned === '{order_id}' ||
-      cleaned.toLowerCase() === 'null' ||
-      cleaned.toLowerCase() === 'undefined'
+      lower === 'null' ||
+      lower === 'undefined' ||
+      lower === 'none' ||
+      lower === 'empty'
     ) {
       return '';
     }
     return cleaned;
   };
 
-  const runAutoVerifyCheckout = async () => {
+  const runAutoVerifyCheckout = async (overrideOrderId?: string) => {
     setVerifyState('verifying');
     setVerifyError(null);
 
     try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlOrderId = cleanPlaceholderOrderId(urlParams.get('order_id') || urlParams.get('order'));
+      setCheckoutUrlOrderId(urlOrderId || null);
+
       // 1. Get login_email from /api/app?action=me
       let loginEmail = '';
       try {
@@ -421,50 +429,32 @@ export default function App() {
         return;
       }
 
-      // 2. Get order_id from URL (?order_id=), or fallback to last order_id for login_email from webhook-logs
-      const urlParams = new URLSearchParams(window.location.search);
-      let orderId = cleanPlaceholderOrderId(urlParams.get('order_id') || urlParams.get('order'));
+      const targetOrderId =
+        overrideOrderId === 'LAST'
+          ? 'LAST'
+          : overrideOrderId
+          ? cleanPlaceholderOrderId(overrideOrderId)
+          : urlOrderId;
 
-      if (!orderId) {
-        try {
-          const logsRes = await fetch(`/api/app?action=webhook-logs&t=${Date.now()}`, {
-            credentials: 'include',
-            cache: 'no-store',
-          });
-          if (logsRes.ok) {
-            const logsJson = await logsRes.json().catch(() => null);
-            const entries: any[] = Array.isArray(logsJson?.logs) ? logsJson.logs : [];
-            const match = entries.find((entry) => {
-              if (!entry || typeof entry !== 'object') return false;
-              const ev = String(entry?.event || entry?.event_name || '').trim().toLowerCase();
-              if (ev && ev !== 'order_created' && ev !== 'checkout_verify_api') return false;
-              const oid = cleanPlaceholderOrderId(entry?.order_id);
-              if (!oid || oid === 'key_missing' || oid === 'not_found' || oid === 'invalid_api_key') {
-                return false;
-              }
-              const e1 = String(entry?.email || '').trim().toLowerCase();
-              const e2 = String(entry?.payment_email || '').trim().toLowerCase();
-              return e1 === loginEmail || e2 === loginEmail;
-            });
-            if (match?.order_id) {
-              orderId = cleanPlaceholderOrderId(match.order_id);
-            }
-          }
-        } catch {}
-      }
-
-      // 3. Verify checkout with { order_id, login_email }
+      // 2. Verify checkout with { order_id, login_email } (backend handles webhook-logs fallback if empty or LAST)
       const verifyRes = await fetch('/api/app?action=verify-checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          order_id: orderId || undefined,
+          order_id: targetOrderId || '',
           login_email: loginEmail,
         }),
       });
 
-      const data = await verifyRes.json().catch(() => null);
+      const rawText = await verifyRes.text().catch(() => '');
+      let data: any = null;
+      try {
+        data = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        data = null;
+      }
+
       if (verifyRes.ok && data?.success) {
         const verifiedPlan = normalizePlanKey(data.planKey || data.user?.plan);
         const verifiedCfg = PLANS[verifiedPlan];
@@ -541,8 +531,13 @@ export default function App() {
         return;
       }
 
+      const realError =
+        data?.error ||
+        data?.message ||
+        (rawText && !rawText.trim().startsWith('<') ? rawText.trim().slice(0, 350) : '') ||
+        `Unable to verify payment (status ${verifyRes.status})`;
       setVerifyState('error');
-      setVerifyError(data?.error || `Verification failed (HTTP ${verifyRes.status})`);
+      setVerifyError(realError);
     } catch (err: any) {
       setVerifyState('error');
       setVerifyError(err?.message || 'Unable to verify payment with server.');
@@ -1044,16 +1039,28 @@ export default function App() {
               <h1 className="text-2xl font-bold text-white tracking-tight">
                 Activating Your Terminal... - جاري تفعيل حسابك
               </h1>
-              <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-500/50 text-left text-xs font-mono text-rose-200 leading-relaxed">
-                {verifyError || 'Verification failed'}
+              <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-500/50 text-left text-xs font-mono text-rose-200 leading-relaxed break-words">
+                {verifyError || 'Unable to verify checkout'}
               </div>
-              <button
-                type="button"
-                onClick={runAutoVerifyCheckout}
-                className="w-full py-4 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-sm font-mono uppercase tracking-wider transition cursor-pointer shadow-lg min-h-[52px]"
-              >
-                Try Again - حاول مرة ثانية
-              </button>
+              <div className="text-[11px] font-mono text-zinc-400">
+                Order ID from URL: <span className="text-zinc-200">{checkoutUrlOrderId || 'Not found'}</span>
+              </div>
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => runAutoVerifyCheckout()}
+                  className="w-full py-4 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-sm font-mono uppercase tracking-wider transition cursor-pointer shadow-lg min-h-[52px]"
+                >
+                  Try Again - حاول مرة ثانية
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runAutoVerifyCheckout('LAST')}
+                  className="w-full py-3 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/15 text-zinc-200 font-bold text-xs font-mono uppercase tracking-wider transition cursor-pointer"
+                >
+                  Use Last Order From Webhook Logs
+                </button>
+              </div>
             </>
           )}
         </div>
