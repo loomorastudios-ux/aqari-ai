@@ -1,12 +1,16 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import crypto from 'crypto';
 import { PLANS, PlanKey, findPlanPricing, normalizePlanKey } from '../../lib/plans';
+import { buildActivationCodeEmail, dispatchEmail } from '../../lib/mailer';
 import { cleanEnvValue, getClientIp } from '../../lib/security';
 import {
+  ActivationCodeRecord,
   WebhookLogEntry,
   activatePaidPlanOnServer,
   appendWebhookLogToDb,
+  createActivationCodeInDb,
   getPricingPublicPayload,
+  invalidateActivationCodesForOrderOrEmailInDb,
   recordFailedWebhook,
   recordOrderRefunded,
   recordSubscriptionUpdated,
@@ -296,10 +300,77 @@ export default async function handler(req: any, res: any) {
 
     let subscriptionStatus: 'active' | 'cancelled' | 'expired' | 'refunded' | 'past_due' = 'active';
     let persistedUser = null;
+    let createdActivationCode: ActivationCodeRecord | null = null;
+    let activationEmailResult: { status: string; provider: string; error?: string } | null = null;
     const targetEmail = accountEmail || customerEmail;
+    const paymentEmailForCode = (customerEmail || targetEmail || '').trim().toLowerCase();
 
     switch (eventName) {
-      case 'order_created':
+      case 'order_created': {
+        subscriptionStatus = 'active';
+        // 1. Always generate unique one-time AQARI-XXXXXX code (24h expiry, used=false)
+        createdActivationCode = await createActivationCodeInDb({
+          paymentEmail: paymentEmailForCode || 'payer@aqari-ai-rho.vercel.app',
+          orderId,
+          amountUSD,
+          fallbackPlan: planCode,
+          testMode: isTestMode,
+        });
+
+        // 2. Send email to payment_email (uses RESEND_API_KEY; never fails webhook if missing)
+        if (paymentEmailForCode && paymentEmailForCode.includes('@')) {
+          const emailPayload = buildActivationCodeEmail({
+            code: createdActivationCode.code,
+            planDisplay: createdActivationCode.plan_display,
+          });
+          const mailRes = await dispatchEmail({
+            to: paymentEmailForCode,
+            subject: emailPayload.subject,
+            text: emailPayload.text,
+            html: emailPayload.html,
+            type: 'activation_code',
+          });
+          activationEmailResult = {
+            status: mailRes.status,
+            provider: mailRes.provider,
+            error: mailRes.error,
+          };
+        }
+
+        // 3. Log generation to webhook-logs DB (including code for admin fallback if RESEND_API_KEY missing)
+        if (preLog) {
+          await updateWebhookLogInDb(preLog.id, {
+            activation_code: createdActivationCode.code,
+            plan: createdActivationCode.plan,
+          }).catch((e) => console.error('[Lemon Webhook] DB code update failed:', e));
+        }
+        await appendWebhookLogToDb({
+          order_id: orderId,
+          event: 'activation_code_generated',
+          event_name: 'activation_code_generated',
+          plan: createdActivationCode.plan,
+          email: paymentEmailForCode || 'unknown',
+          amount: amountUSD,
+          currency,
+          test_mode: isTestMode,
+          signature_valid: true,
+          activation_code: createdActivationCode.code,
+          raw_error:
+            !cleanEnvValue(process.env.RESEND_API_KEY)
+              ? `RESEND_API_KEY missing - Manual code: ${createdActivationCode.code}`
+              : undefined,
+          error:
+            !cleanEnvValue(process.env.RESEND_API_KEY)
+              ? `RESEND_API_KEY missing - Manual code: ${createdActivationCode.code}`
+              : undefined,
+        });
+
+        console.log(
+          `[Lemon Webhook] Generated activation code ${createdActivationCode.code} for ${paymentEmailForCode} (${createdActivationCode.plan_display} / ${createdActivationCode.analyses} analyses)`
+        );
+        break;
+      }
+
       case 'subscription_created':
       case 'subscription_payment_success':
       case 'subscription_resumed':
@@ -345,17 +416,25 @@ export default async function handler(req: any, res: any) {
         break;
       }
 
-      case 'order_refunded':
+      case 'order_refunded': {
         subscriptionStatus = 'refunded';
-        if (targetEmail) {
+        const affectedEmails = await invalidateActivationCodesForOrderOrEmailInDb({
+          orderId,
+          paymentEmail: paymentEmailForCode,
+        });
+        const revokeEmails = Array.from(
+          new Set([targetEmail, customerEmail, ...affectedEmails].filter(Boolean))
+        );
+        for (const revEmail of revokeEmails) {
           persistedUser = recordOrderRefunded({
-            email: targetEmail,
+            email: revEmail,
             orderId,
             amountUSD,
           });
           await saveUserToDb(persistedUser);
         }
         break;
+      }
 
       case 'subscription_cancelled':
         subscriptionStatus = 'cancelled';
@@ -402,9 +481,13 @@ export default async function handler(req: any, res: any) {
       customerEmail: customerEmail || targetEmail,
       customerName,
       productName,
-      subscriptionPlan: planCode,
-      displayPlan: PLANS[planCode]?.displayName || 'PROFESSIONAL',
+      subscriptionPlan: createdActivationCode?.plan || planCode,
+      displayPlan: createdActivationCode?.plan_display || PLANS[planCode]?.displayName || 'PROFESSIONAL',
       subscriptionStatus,
+      activation_code: createdActivationCode?.code || null,
+      activationCode: createdActivationCode?.code || null,
+      activation_expires_at: createdActivationCode?.expires_at || null,
+      emailStatus: activationEmailResult,
       paymentDate: new Date(paymentTimestamp).toISOString(),
       license_start: paymentTimestamp,
       license_end: persistedUser?.license_end ?? subscriptionEndsAt,
@@ -414,7 +497,15 @@ export default async function handler(req: any, res: any) {
       expiryDateFormatted: new Date(persistedUser?.license_end ?? subscriptionEndsAt)
         .toISOString()
         .slice(0, 10),
-      log: preLog ? { ...preLog, signature_valid: true, raw_error: undefined, error: undefined } : null,
+      log: preLog
+        ? {
+            ...preLog,
+            signature_valid: true,
+            raw_error: undefined,
+            error: undefined,
+            activation_code: createdActivationCode?.code,
+          }
+        : null,
     });
   } catch (error: any) {
     const rawError = error?.message || 'Webhook processing failed';

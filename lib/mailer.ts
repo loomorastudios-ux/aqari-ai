@@ -101,14 +101,51 @@ export function buildExpiredEmail(params: { name: string; previousPlan: PlanKey 
   return { subject, text, html };
 }
 
+export function buildActivationCodeEmail(params: {
+  code: string;
+  planDisplay: string;
+}) {
+  const subject = 'Your AQARI Terminal Activation Code';
+  const activateUrl = `${PRODUCTION_URL}/app?checkout=success`;
+  const text = `Your code is: ${params.code} - Enter it in /app?checkout=success to activate ${params.planDisplay} - Valid 24 hours - الكود صالح 24 ساعة`;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:0;background:#070709;color:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <div style="max-width:600px;margin:0 auto;padding:32px 24px;background:#0b0b0f;border:1px solid #26262e;border-radius:16px;">
+      <div style="font-family:monospace;color:#D4AF37;font-size:12px;letter-spacing:1.5px;font-weight:bold;margin-bottom:12px;">
+        AQARI GLOBAL TERMINAL • ONE-TIME ACTIVATION CODE
+      </div>
+      <h1 style="font-size:22px;margin:0 0 14px;color:#ffffff;">
+        Your AQARI Terminal Activation Code
+      </h1>
+      <p style="font-size:15px;line-height:1.6;color:#d4d4d8;margin:0 0 18px;">
+        Your code is: <strong style="color:#D4AF37;font-family:monospace;font-size:18px;letter-spacing:1px;">${params.code}</strong> - Enter it in <a href="${activateUrl}" style="color:#D4AF37;">/app?checkout=success</a> to activate <strong>${params.planDisplay}</strong> - Valid 24 hours - الكود صالح 24 ساعة
+      </p>
+      <div style="margin:20px 0;padding:18px;background:#141418;border:1px dashed #D4AF37;border-radius:12px;text-align:center;">
+        <div style="font-family:monospace;font-size:26px;font-weight:900;letter-spacing:3px;color:#D4AF37;">
+          ${params.code}
+        </div>
+      </div>
+      <a href="${activateUrl}" style="display:inline-block;padding:12px 22px;background:#D4AF37;color:#000000;font-weight:800;font-family:monospace;text-decoration:none;border-radius:10px;font-size:13px;">
+        Activate My Terminal &rarr;
+      </a>
+    </div>
+  </body>
+</html>`.trim();
+
+  return { subject, text, html };
+}
+
 export async function dispatchEmail(params: {
   to: string;
   subject: string;
   text: string;
   html: string;
-  type: 'day29_renewal' | 'plan_expired' | 'test_day29';
+  type: 'day29_renewal' | 'plan_expired' | 'test_day29' | 'activation_code';
 }): Promise<EmailSendResult> {
-  const resendKey = process.env.RESEND_API_KEY;
+  const resendKey = (process.env.RESEND_API_KEY || '').replace(/^["']|["']$/g, '').trim();
   const smtpHost = process.env.SMTP_HOST;
   const smtpUser = process.env.SMTP_USER;
   const smtpPass = process.env.SMTP_PASS;

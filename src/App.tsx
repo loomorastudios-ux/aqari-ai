@@ -184,17 +184,13 @@ export default function App() {
       return null;
     }
   });
-  const [verifyError, setVerifyError] = useState<string | null>(null);
-  const [verifyDebug, setVerifyDebug] = useState<{
-    email_searched?: string;
-    total_orders_checked?: number;
-    lemon_status?: number | string;
-    key_present?: boolean;
-  } | null>(null);
-  const [manualPaymentEmail, setManualPaymentEmail] = useState('');
-  const [manualOrderId, setManualOrderId] = useState('');
-  const [verifyFailCount, setVerifyFailCount] = useState(0);
-  const [isRetryingVerify, setIsRetryingVerify] = useState(false);
+  const [activationCode, setActivationCode] = useState('');
+  const [activateError, setActivateError] = useState<string | null>(null);
+  const [isActivatingCode, setIsActivatingCode] = useState(false);
+  const [showResendPanel, setShowResendPanel] = useState(false);
+  const [resendEmail, setResendEmail] = useState('');
+  const [isResendingCode, setIsResendingCode] = useState(false);
+  const [resendMessage, setResendMessage] = useState<string | null>(null);
   const [serverSynced, setServerSynced] = useState<boolean>(() => !getSessionUser());
 
   const showTempToast = (msg: string, duration = 3500) => {
@@ -380,93 +376,77 @@ export default function App() {
     }
   }, [user]);
 
-  const runCheckoutVerification = async (overrides?: { email?: string; orderId?: string }) => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const parsedPlan = normalizePlanKey(urlParams.get('plan'));
-    const returnedPlan: 'starter' | 'pro' | 'enterprise' =
-      parsedPlan === 'free' ? 'pro' : parsedPlan;
-    const planCfg = PLANS[returnedPlan];
-    setVerifyingPlanName(urlParams.get('plan') ? planCfg.displayName : 'TERMINAL');
-    setVerifyError(null);
-    setVerifyDebug(null);
-    setIsRetryingVerify(true);
+  const handleActivateWithCode = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = activationCode.trim().toUpperCase();
+    setActivateError(null);
+    setResendMessage(null);
+
+    if (!trimmed) {
+      setActivateError('Invalid code - كود غير صحيح');
+      return;
+    }
 
     const sessionUser = getSessionUser();
-    const loginEmail = (sessionUser?.email || '').trim().toLowerCase();
-    const targetEmail = (overrides?.email || urlParams.get('email') || loginEmail || '').trim().toLowerCase();
-    const checkoutId = urlParams.get('checkout_id') || '';
-    const orderId = (overrides?.orderId || urlParams.get('order_id') || '').trim();
-    const chargedPrice = urlParams.get('charged_price') || '';
-    const launchLocked = urlParams.get('launch_locked') || '';
-    const testModeParam = urlParams.get('test_mode') || '';
+    const loginEmail = (user?.email || sessionUser?.email || '').trim().toLowerCase();
+    if (!loginEmail) {
+      setActivateError('Please sign in first to activate your terminal - سجل دخولك أولاً لتفعيل حسابك');
+      setIsAuthOpen(true);
+      return;
+    }
 
-    const qs = new URLSearchParams({ action: 'verify-checkout' });
-    if (targetEmail) qs.set('email', targetEmail);
-    if (orderId) qs.set('order_id', orderId);
-
+    setIsActivatingCode(true);
     try {
-      const res = await fetch(`/api/app?${qs.toString()}`, {
+      const res = await fetch('/api/app?action=activate-with-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          email: targetEmail || undefined,
-          login_email: loginEmail || undefined,
-          plan: urlParams.get('plan') ? returnedPlan : undefined,
-          checkout_id: checkoutId || undefined,
-          order_id: orderId || undefined,
-          charged_price: chargedPrice ? Number(chargedPrice) : undefined,
-          launch_locked: launchLocked ? Number(launchLocked) : undefined,
-          test_mode: testModeParam || undefined,
+          code: trimmed,
+          login_email: loginEmail,
         }),
       });
 
       const data = await res.json().catch(() => ({}));
-      if (data?.debug) {
-        setVerifyDebug(data.debug);
-      }
-
-      if (res.ok && data?.verified && data?.user) {
-        // Force refresh session directly from authoritative /api/app?action=me
+      if (res.ok && data?.success) {
+        // Authoritative sync from /api/app?action=me before redirecting to /app
         const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {
           credentials: 'include',
           cache: 'no-store',
         });
         const meData = meRes.ok ? await meRes.json().catch(() => data) : data;
 
-        const verifiedPlan = normalizePlanKey(meData?.planKey || data.user.plan);
+        const verifiedPlan = normalizePlanKey(meData?.planKey || data.planKey || data.user?.plan);
         const verifiedCfg = PLANS[verifiedPlan];
         const serverLimit = meData?.license?.analysesLimit ?? data.license?.analysesLimit ?? verifiedCfg.analysesLimit;
-        const serverUsed = Number(meData?.analyses_used ?? data.user.analyses_used ?? 0);
+        const serverUsed = Number(meData?.analyses_used ?? data.user?.analyses_used ?? 0);
         const serverLeft = Number.isFinite(serverLimit)
           ? Math.max(0, serverLimit - serverUsed)
           : 999999;
 
-        const existing = (data.user.email && getUser(data.user.email)) || sessionUser;
-        const lockedPriceVal = meData?.locked_launch_price ?? data.user.locked_launch_price ?? null;
+        const existing = (meData?.email && getUser(meData.email)) || sessionUser || user;
+        const lockedPriceVal = meData?.locked_launch_price ?? data.user?.locked_launch_price ?? null;
         const serverCustomCities = Array.isArray(meData?.custom_cities)
           ? meData.custom_cities
-          : Array.isArray(data?.custom_cities)
-          ? data.custom_cities
           : existing?.customCities || [];
 
         const updatedUser: User = {
           ...(existing || {
             id: 'user_' + Date.now(),
-            email: data.user.email,
-            name: data.user.name || data.user.email.split('@')[0],
-            avatar: data.user.email.charAt(0).toUpperCase(),
+            email: loginEmail,
+            name: loginEmail.split('@')[0],
+            avatar: loginEmail.charAt(0).toUpperCase(),
             provider: 'google',
             createdAt: Date.now(),
             savedAnalyses: [],
           }),
-          email: data.user.email,
+          email: meData?.email || loginEmail,
           plan: verifiedPlan,
           subscriptionPlan: verifiedPlan,
           subscriptionStatus: verifiedPlan === 'free' ? 'free' : 'active',
-          subscriptionStartAt: meData?.license_start ?? data.user.license_start ?? Date.now(),
-          subscriptionEndsAt: meData?.license_end ?? data.user.license_end ?? null,
-          subscriptionExpiry: meData?.license_end ?? data.user.license_end ?? null,
+          subscriptionStartAt: meData?.license_start ?? data.user?.license_start ?? Date.now(),
+          subscriptionEndsAt: meData?.license_end ?? data.license_end ?? null,
+          subscriptionExpiry: meData?.license_end ?? data.license_end ?? null,
           analysesUsed: serverUsed,
           freeAnalyses: serverLeft,
           freeAnalysesLeft: serverLeft,
@@ -489,31 +469,58 @@ export default function App() {
           });
         } catch {}
 
-        const unlockBanner = lockedPriceVal
-          ? `Welcome to ${verifiedCfg.displayName} — You locked Launch Price ${lockedPriceVal}$ - Your next renewal will be at same launch price if you renew before expiry`
-          : `Welcome to ${verifiedCfg.displayName} — Payment Successful! Your Terminal is unlocked.`;
+        const unlockBanner = `Welcome to ${verifiedCfg.displayName} — Payment Successful! Your Terminal is unlocked.`;
         const unlockToast = `Welcome to AQARI ${verifiedCfg.displayName} — Unlocked for 30 Days!`;
         try {
           sessionStorage.setItem('aqari_unlock_msg', unlockBanner);
           sessionStorage.setItem('aqari_unlock_toast', unlockToast);
         } catch {}
 
-        setIsRetryingVerify(false);
         window.location.replace('/app');
         return;
       }
 
-      setVerifyFailCount((c) => c + 1);
-      setVerifyError(
-        data?.error ||
-          `No order found for email ${targetEmail || 'your account'} - Try entering your payment email or Order ID below`
-      );
+      setActivateError(data?.error || 'Invalid code - كود غير صحيح');
     } catch (err) {
-      console.error('Checkout verification error:', err);
-      setVerifyFailCount((c) => c + 1);
-      setVerifyError('Unable to reach verification server. Click below to retry.');
+      console.error('Activation error:', err);
+      setActivateError('Unable to reach activation server. Please try again.');
     } finally {
-      setIsRetryingVerify(false);
+      setIsActivatingCode(false);
+    }
+  };
+
+  const handleResendCode = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const targetEmail = (resendEmail || user?.email || '').trim().toLowerCase();
+    setActivateError(null);
+    setResendMessage(null);
+
+    if (!targetEmail || !targetEmail.includes('@')) {
+      setActivateError('Please enter your payment email - أدخل إيميل الدفع الصحيح');
+      return;
+    }
+
+    setIsResendingCode(true);
+    try {
+      const res = await fetch('/api/app?action=resend-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ payment_email: targetEmail }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success) {
+        setResendMessage(
+          data.message || 'New activation code sent to your payment email - تم إرسال كود تفعيل جديد لإيميل الدفع'
+        );
+        setShowResendPanel(false);
+      } else {
+        setActivateError(data?.error || 'Could not resend activation code.');
+      }
+    } catch {
+      setActivateError('Unable to reach server to resend code.');
+    } finally {
+      setIsResendingCode(false);
     }
   };
 
@@ -529,7 +536,6 @@ export default function App() {
 
     if (urlParams.get('success') === 'true' || urlParams.get('checkout') === 'success') {
       setRoute('checkout-verifying');
-      runCheckoutVerification();
     }
 
     // Check if returning from Google OAuth redirect
@@ -962,122 +968,108 @@ export default function App() {
     );
   }
 
-  // View: Post-Checkout Full-Screen Unlocking Verification Screen (/app?checkout=success)
+  // View: Post-Checkout One-Time Activation Code Screen (/app?checkout=success)
   if (route === 'checkout-verifying') {
-    const activeEmail = user?.email || new URLSearchParams(window.location.search).get('email') || 'your account';
+    const activeEmail = user?.email || getSessionUser()?.email || '';
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center p-6 relative overflow-hidden">
         <AmbientBackground />
         <div className="z-10 max-w-lg w-full glass-panel p-8 sm:p-10 rounded-[32px] border border-[#D4AF37]/40 text-center space-y-5 shadow-[0_0_60px_rgba(212,175,55,0.2)]">
-          <Loader2 className={`w-12 h-12 text-[#D4AF37] mx-auto ${isRetryingVerify ? 'animate-spin' : ''}`} />
           <div className="text-xs font-mono uppercase tracking-wider text-emerald-400 font-bold">
-            {verifyError ? 'VERIFICATION PENDING' : 'PAYMENT SUCCESSFUL • VERIFYING LICENSE'}
+            AQARI GLOBAL TERMINAL • ACTIVATION
           </div>
           <h1 className="text-2xl font-bold text-white tracking-tight">
-            Welcome to AQARI TERMINAL
+            Enter Activation Code - أدخل كود التفعيل
           </h1>
           <p className="text-sm font-mono text-zinc-200 leading-relaxed">
-            {isRetryingVerify
-              ? `Unlocking for ${activeEmail}...`
-              : verifyError
-              ? `Verifying order for ${activeEmail}`
-              : `Welcome to AQARI ${verifyingPlanName} — Unlocking for ${activeEmail}...`}
+            Check your payment email inbox for code AQARI-XXXXXX - تحقق من إيميل الدفع، وصلك كود التفعيل
           </p>
 
-          {verifyError && (
-            <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-500/50 text-left text-xs font-mono text-rose-200 leading-relaxed space-y-2">
-              <div className="font-bold text-rose-400 uppercase">Verification Error</div>
-              <div>{verifyError}</div>
-              {verifyDebug && (
-                <div className="text-[11px] text-zinc-300 pt-1 border-t border-rose-500/20">
-                  Checked: {verifyDebug.email_searched || activeEmail} • Orders checked:{' '}
-                  {verifyDebug.total_orders_checked ?? 0} • Lemon status: {String(verifyDebug.lemon_status ?? '-')} • Key present:{' '}
-                  {verifyDebug.key_present ? 'true' : 'false'}
-                </div>
-              )}
-              {verifyFailCount >= 3 && (
-                <div className="pt-2 border-t border-rose-500/30 text-amber-300 font-semibold">
-                  Still locked? Go to Settings &gt; PAYMENT WEBHOOK LOGS and screenshot the error
-                </div>
-              )}
+          {activeEmail && (
+            <div className="text-xs font-mono text-zinc-400">
+              Activating account: <span className="text-[#D4AF37] font-bold">{activeEmail}</span>
             </div>
           )}
 
-          {verifyError && (
-            <div className="space-y-4 pt-1 text-left">
-              <button
-                type="button"
-                disabled={isRetryingVerify}
-                onClick={() => runCheckoutVerification()}
-                className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-xs font-mono uppercase tracking-wider transition cursor-pointer shadow-lg disabled:opacity-60 min-h-[48px]"
-              >
-                {isRetryingVerify ? 'Unlocking Terminal...' : 'CLICK TO UNLOCK - RETRY'}
-              </button>
-
-              {/* Fallback Input 1: Email used for payment */}
-              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5">
-                <label className="block text-xs font-mono font-bold text-[#D4AF37]">
-                  Email used for payment (if different)
-                </label>
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    type="email"
-                    value={manualPaymentEmail}
-                    onChange={(e) => setManualPaymentEmail(e.target.value)}
-                    placeholder="Email used for payment (if different)"
-                    className="flex-1 px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/15 text-white text-xs font-mono outline-none focus:border-[#D4AF37]"
-                  />
-                  <button
-                    type="button"
-                    disabled={isRetryingVerify || !manualPaymentEmail.trim()}
-                    onClick={() => runCheckoutVerification({ email: manualPaymentEmail.trim() })}
-                    className="px-4 py-2.5 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono transition cursor-pointer disabled:opacity-50 shrink-0 min-h-[44px]"
-                  >
-                    Retry with this email
-                  </button>
-                </div>
-              </div>
-
-              {/* Fallback Input 2: Order ID from Lemon receipt email */}
-              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5">
-                <label className="block text-xs font-mono font-bold text-[#D4AF37]">
-                  Order ID from Lemon receipt email (optional)
-                </label>
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <input
-                    type="text"
-                    value={manualOrderId}
-                    onChange={(e) => setManualOrderId(e.target.value)}
-                    placeholder="Order ID from Lemon receipt email (optional)"
-                    className="flex-1 px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/15 text-white text-xs font-mono outline-none focus:border-[#D4AF37]"
-                  />
-                  <button
-                    type="button"
-                    disabled={isRetryingVerify || !manualOrderId.trim()}
-                    onClick={() => runCheckoutVerification({ orderId: manualOrderId.trim() })}
-                    className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs font-mono transition cursor-pointer disabled:opacity-50 shrink-0 min-h-[44px]"
-                  >
-                    Verify with Order ID
-                  </button>
-                </div>
-                <p className="text-[11px] font-mono text-zinc-400 leading-relaxed">
-                  Check your Gmail for Lemon receipt - The order ID looks like 123456789 - انسخ Order ID من إيميل فاتورة Lemon
-                </p>
-              </div>
-
-              {verifyFailCount >= 3 && user && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    window.history.replaceState({}, document.title, '/app');
-                    setRoute('terminal');
-                  }}
-                  className="w-full py-2.5 px-4 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 text-zinc-200 font-mono text-xs transition cursor-pointer"
-                >
-                  Open Terminal Settings &amp; Webhook Logs
-                </button>
-              )}
+          {activateError && (
+            <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-500/50 text-left text-xs font-mono text-rose-200 leading-relaxed">
+              {activateError}
             </div>
+          )}
+
+          {resendMessage && (
+            <div className="p-4 rounded-2xl bg-emerald-950/60 border border-emerald-500/40 text-left text-xs font-mono text-emerald-200 leading-relaxed">
+              {resendMessage}
+            </div>
+          )}
+
+          <form onSubmit={handleActivateWithCode} className="space-y-3.5 text-left">
+            <input
+              type="text"
+              value={activationCode}
+              onChange={(e) => setActivationCode(e.target.value.toUpperCase())}
+              placeholder="AQARI-XXXXXX"
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full px-4 py-4 rounded-xl bg-black/70 border border-[#D4AF37]/40 text-white text-center text-lg font-mono font-bold tracking-widest uppercase outline-none focus:border-[#D4AF37]"
+            />
+            <button
+              type="submit"
+              disabled={isActivatingCode}
+              className="w-full py-4 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-sm font-mono uppercase tracking-wider transition cursor-pointer shadow-lg disabled:opacity-60 min-h-[52px]"
+            >
+              {isActivatingCode ? 'Activating...' : 'Activate My Terminal - فعل حسابي'}
+            </button>
+          </form>
+
+          {!activeEmail && (
+            <button
+              type="button"
+              onClick={() => setIsAuthOpen(true)}
+              className="w-full py-2.5 px-4 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 text-zinc-200 font-mono text-xs transition cursor-pointer"
+            >
+              Sign in with Google first
+            </button>
+          )}
+
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                setShowResendPanel((v) => !v);
+                setActivateError(null);
+              }}
+              className="text-xs font-mono text-zinc-400 hover:text-[#D4AF37] underline cursor-pointer transition"
+            >
+              Didn&apos;t receive code? Check spam / Resend code
+            </button>
+          </div>
+
+          {showResendPanel && (
+            <form
+              onSubmit={handleResendCode}
+              className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5 text-left"
+            >
+              <label className="block text-xs font-mono text-zinc-300">
+                Payment email used at checkout
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="email"
+                  value={resendEmail}
+                  onChange={(e) => setResendEmail(e.target.value)}
+                  placeholder="payer@gmail.com"
+                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/15 text-white text-xs font-mono outline-none focus:border-[#D4AF37]"
+                />
+                <button
+                  type="submit"
+                  disabled={isResendingCode || !resendEmail.trim()}
+                  className="px-4 py-2.5 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono transition cursor-pointer disabled:opacity-50 shrink-0 min-h-[44px]"
+                >
+                  {isResendingCode ? 'Sending...' : 'Send New Code'}
+                </button>
+              </div>
+            </form>
           )}
         </div>
       </div>

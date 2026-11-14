@@ -213,6 +213,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [isRefreshingWebhookLogs, setIsRefreshingWebhookLogs] = useState(false);
   const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false);
   const [isAnalyzingApi, setIsAnalyzingApi] = useState(false);
+  const [backupOrderId, setBackupOrderId] = useState('');
+  const [backupTargetEmail, setBackupTargetEmail] = useState('');
+  const [backupVerifyMsg, setBackupVerifyMsg] = useState<string | null>(null);
+  const [isRunningBackupVerify, setIsRunningBackupVerify] = useState(false);
+  const isOwnerAdmin = ['loomora.studios@gmail.com', 'loomorastudios@gmail.com'].includes(
+    (user?.email || '').trim().toLowerCase()
+  );
 
   // Add Your City state & persistence
   const [isAddCityOpen, setIsAddCityOpen] = useState(false);
@@ -294,7 +301,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const loadWebhookLogs = async () => {
     setIsRefreshingWebhookLogs(true);
     try {
-      const res = await fetch(`/api/app?action=webhook-logs&t=${Date.now()}`, { cache: 'no-store' });
+      const res = await fetch(`/api/app?action=webhook-logs&t=${Date.now()}`, {
+        cache: 'no-store',
+        credentials: 'include',
+      });
       if (!res.ok) return;
       const data = await res.json();
       if (data?.success) {
@@ -309,6 +319,40 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       // Ignore transient network errors
     } finally {
       setIsRefreshingWebhookLogs(false);
+    }
+  };
+
+  const handleAdminBackupVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isOwnerAdmin) return;
+    setBackupVerifyMsg(null);
+    if (!backupOrderId.trim() && !backupTargetEmail.trim()) {
+      setBackupVerifyMsg('Enter Order ID or Payment Email.');
+      return;
+    }
+    setIsRunningBackupVerify(true);
+    try {
+      const res = await fetch('/api/app?action=verify-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          order_id: backupOrderId.trim() || undefined,
+          email: backupTargetEmail.trim() || user.email,
+          login_email: backupTargetEmail.trim() || user.email,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success) {
+        setBackupVerifyMsg(`Verified ${data.plan || data.planKey} (Order #${data.order_id_used || backupOrderId}).`);
+        loadWebhookLogs();
+      } else {
+        setBackupVerifyMsg(data?.error || 'Verification did not find a paid order.');
+      }
+    } catch {
+      setBackupVerifyMsg('Backup verify request failed.');
+    } finally {
+      setIsRunningBackupVerify(false);
     }
   };
 
@@ -2969,6 +3013,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <th className="py-2.5 pr-3">Plan</th>
                           <th className="py-2.5 pr-3">Email</th>
                           <th className="py-2.5 pr-3">Amount</th>
+                          {isOwnerAdmin && <th className="py-2.5 pr-3">Code</th>}
                           <th className="py-2.5 pr-3">Signature</th>
                           <th className="py-2.5 pr-3">Mode</th>
                           <th className="py-2.5">Timestamp / Error</th>
@@ -2982,6 +3027,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             <td className="py-2.5 pr-3 uppercase text-[#D4AF37] font-bold">{w.plan}</td>
                             <td className="py-2.5 pr-3 text-xs">{w.email}</td>
                             <td className="py-2.5 pr-3">${w.amount} {w.currency}</td>
+                            {isOwnerAdmin && (
+                              <td className="py-2.5 pr-3 text-xs font-bold text-emerald-300 select-all">
+                                {w.activation_code || '—'}
+                              </td>
+                            )}
                             <td className="py-2.5 pr-3">
                               <span
                                 className={`px-2 py-0.5 rounded text-xs font-bold ${
@@ -3011,6 +3061,45 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       </tbody>
                     </table>
                   </div>
+                )}
+
+                {isOwnerAdmin && (
+                  <form
+                    onSubmit={handleAdminBackupVerify}
+                    className="pt-4 border-t border-white/10 space-y-2.5 text-xs font-mono"
+                  >
+                    <div className="text-zinc-400 uppercase font-bold">
+                      Admin Backup: Manual Lemon Order Verification
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <input
+                        type="text"
+                        value={backupOrderId}
+                        onChange={(e) => setBackupOrderId(e.target.value)}
+                        placeholder="Lemon Order ID (e.g. 5165758)"
+                        className="px-3 py-2 rounded-lg bg-black/50 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                      />
+                      <input
+                        type="email"
+                        value={backupTargetEmail}
+                        onChange={(e) => setBackupTargetEmail(e.target.value)}
+                        placeholder="Account / Payment Email"
+                        className="px-3 py-2 rounded-lg bg-black/50 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isRunningBackupVerify}
+                        className="px-3 py-2 rounded-lg bg-[#D4AF37]/20 hover:bg-[#D4AF37]/30 border border-[#D4AF37]/40 text-[#D4AF37] font-bold transition cursor-pointer disabled:opacity-50"
+                      >
+                        {isRunningBackupVerify ? 'Checking Lemon...' : 'Admin Verify Order'}
+                      </button>
+                    </div>
+                    {backupVerifyMsg && (
+                      <div className="text-zinc-300 bg-black/40 border border-white/10 rounded-lg px-3 py-2">
+                        {backupVerifyMsg}
+                      </div>
+                    )}
+                  </form>
                 )}
               </div>
 

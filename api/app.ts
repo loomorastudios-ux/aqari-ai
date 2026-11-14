@@ -26,7 +26,10 @@ import {
   appendWebhookLogToDb,
   computeServerLicenseStatus,
   consumePendingCheckout,
+  createActivationCodeInDb,
   enforceServerUserExpiry,
+  findLatestActivationCodeByPaymentEmailInDb,
+  getActivationCodeFromDb,
   getEmailLogs,
   getEmailLogsFromDb,
   getFailedWebhookLogs,
@@ -35,6 +38,7 @@ import {
   getUserFromDb,
   getWebhookLogs,
   getWebhookLogsFromDb,
+  markActivationCodeUsedInDb,
   recordPendingCheckout,
   recordUserAnalysis,
   recordUserLogin,
@@ -42,6 +46,7 @@ import {
   saveUserToDb,
   updateServerUser,
 } from '../lib/serverStore';
+import { buildActivationCodeEmail, dispatchEmail } from '../lib/mailer';
 import { getDeterministicMarketData, getLiveMarketDataWithCache } from '../lib/marketData';
 import { fetchGoogleMarketNews } from '../lib/marketNews';
 import { DEMO_ANALYSES } from '../src/constants/demoAnalyses';
@@ -1456,7 +1461,22 @@ export default async function handler(req: any, res: any) {
       // ------------------------------------------------------------------
       case 'webhook-logs': {
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-        const logs = await getWebhookLogsFromDb(20);
+        const requesterIsAdmin = isAdminEmail(getSessionEmailFromReq(req));
+        const rawLogs = await getWebhookLogsFromDb(20);
+        const logs = requesterIsAdmin
+          ? rawLogs
+          : rawLogs.map((entry) => {
+              const { activation_code: _hiddenCode, ...rest } = entry;
+              return {
+                ...rest,
+                raw_error: rest.raw_error
+                  ? rest.raw_error.replace(/Manual code:\s*AQARI-[A-Z0-9]+/gi, 'Manual code hidden')
+                  : rest.raw_error,
+                error: rest.error
+                  ? rest.error.replace(/Manual code:\s*AQARI-[A-Z0-9]+/gi, 'Manual code hidden')
+                  : rest.error,
+              };
+            });
         const emailLogs = await getEmailLogsFromDb(20);
         const failedWebhooks = getFailedWebhookLogs().slice(0, 20);
         const webhookSecretPresent = Boolean(
@@ -1861,6 +1881,259 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      // ------------------------------------------------------------------
+      // 18. POST /api/app?action=activate-with-code (One-Time Activation Code Redemption)
+      // ------------------------------------------------------------------
+      case 'activate-with-code': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const body = req.body || {};
+        const sessionEmail = getSessionEmailFromReq(req);
+        const loginEmail = (sessionEmail || body.login_email || body.email || '')
+          .toString()
+          .trim()
+          .toLowerCase();
+
+        if (!loginEmail || !loginEmail.includes('@')) {
+          return res.status(401).json({
+            success: false,
+            error: 'Please sign in first to activate your terminal - سجل دخولك أولاً لتفعيل حسابك',
+          });
+        }
+
+        const rawCode = (body.code || '').toString().trim().toUpperCase();
+        if (!rawCode) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid code - كود غير صحيح',
+          });
+        }
+
+        const codeRecord = await getActivationCodeFromDb(rawCode);
+        if (!codeRecord) {
+          return res.status(404).json({
+            success: false,
+            error: 'Invalid code - كود غير صحيح',
+          });
+        }
+
+        if (codeRecord.used) {
+          return res.status(400).json({
+            success: false,
+            error: 'This code was already used - هذا الكود تم استخدامه من قبل',
+          });
+        }
+
+        if (codeRecord.invalidated) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid code - كود غير صحيح',
+          });
+        }
+
+        if (Date.now() > Number(codeRecord.expires_at || 0)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Code expired - الكود انتهى، اطلب كود جديد',
+          });
+        }
+
+        // Atomic single-use redemption + 30-day plan activation on login_email
+        await markActivationCodeUsedInDb({
+          code: codeRecord.code,
+          loginEmail,
+        });
+
+        const now = Date.now();
+        const pricing = getPricingPublicPayload();
+        let dbUser = (await getUserFromDb(loginEmail)) || getOrCreateServerUser(loginEmail);
+        dbUser = activatePaidPlanOnServer({
+          email: loginEmail,
+          name: dbUser.name,
+          plan: codeRecord.plan,
+          paymentTimestamp: now,
+          orderId: codeRecord.order_id,
+          amountUSD: codeRecord.amount,
+          currency: 'USD',
+          testMode: codeRecord.test_mode,
+          lemonCustomerEmail: codeRecord.payment_email,
+        });
+        await saveUserToDb(dbUser);
+
+        await appendWebhookLogToDb({
+          order_id: codeRecord.order_id,
+          event: 'direct_activation',
+          event_name: 'direct_activation',
+          plan: codeRecord.plan,
+          email: loginEmail,
+          amount: codeRecord.amount,
+          currency: 'USD',
+          test_mode: codeRecord.test_mode,
+          signature_valid: true,
+          activation_code: codeRecord.code,
+        });
+
+        setSessionCookie(res, dbUser.email);
+        const license = computeServerLicenseStatus(dbUser);
+        const analysesLeft = codeRecord.analyses || (license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLeft);
+        setEntitlementCookie(res, {
+          email: dbUser.email,
+          plan: codeRecord.plan,
+          orderId: codeRecord.order_id,
+          licenseStart: dbUser.license_start || now,
+          licenseEnd: dbUser.license_end || now + 30 * 24 * 60 * 60 * 1000,
+          amountUSD: codeRecord.amount,
+          testMode: codeRecord.test_mode,
+          lemonCustomerEmail: codeRecord.payment_email,
+        });
+
+        const features = findPlanPricing(pricing, codeRecord.plan)?.features || PLANS[codeRecord.plan].features;
+        return res.status(200).json({
+          success: true,
+          plan: codeRecord.plan_display,
+          planKey: codeRecord.plan,
+          license_end: dbUser.license_end,
+          analyses_left: analysesLeft,
+          user: dbUser,
+          license: {
+            ...license,
+            analysesLimit: codeRecord.analyses || license.analysesLimit,
+            analysesLeft: typeof analysesLeft === 'number' ? analysesLeft : license.analysesLeft,
+          },
+          features,
+        });
+      }
+
+      // ------------------------------------------------------------------
+      // 19. POST /api/app?action=resend-code (Invalidate Old Code, Generate New One-Time Code & Email)
+      // ------------------------------------------------------------------
+      case 'resend-code': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const body = req.body || {};
+        const paymentEmail = (body.payment_email || body.email || '')
+          .toString()
+          .trim()
+          .toLowerCase();
+
+        if (!paymentEmail || !paymentEmail.includes('@')) {
+          return res.status(400).json({
+            success: false,
+            error: 'Please enter the email you used to pay - أدخل إيميل الدفع الصحيح',
+          });
+        }
+
+        const existingCode = await findLatestActivationCodeByPaymentEmailInDb(paymentEmail);
+        let orderId = existingCode?.order_id || '';
+        let amountUSD = existingCode?.amount || 0;
+        let fallbackPlan: PlanKey = existingCode?.plan || 'pro';
+        let testMode = existingCode?.test_mode || (process.env.LEMON_TEST_MODE === 'true');
+
+        // Fallback lookup in Lemon API if this container doesn't have previous code record
+        if (!existingCode) {
+          const candidateKeys = Array.from(
+            new Set(
+              [
+                cleanEnvValue(process.env.LEMON_API_KEY),
+                cleanEnvValue(process.env.LEMON_TEST_API_KEY),
+                cleanEnvValue(process.env.LEMONSQUEEZY_API_KEY),
+              ].filter(Boolean)
+            )
+          );
+          for (const key of candidateKeys) {
+            try {
+              const listRes = await fetch('https://api.lemonsqueezy.com/v1/orders?page[size]=50', {
+                headers: {
+                  Accept: 'application/vnd.api+json',
+                  Authorization: `Bearer ${key}`,
+                },
+              });
+              if (listRes.ok) {
+                const listJson = await listRes.json();
+                const rows = Array.isArray(listJson?.data) ? listJson.data : [];
+                const match = rows.find((o: any) => {
+                  const a = o?.attributes || {};
+                  const st = String(a.status || '').toLowerCase();
+                  if (st !== 'paid' && st !== 'completed') return false;
+                  const emails = [a.user_email, a.customer_email, a.checkout_data?.email]
+                    .filter(Boolean)
+                    .map((e: any) => String(e).trim().toLowerCase());
+                  return emails.includes(paymentEmail);
+                });
+                if (match) {
+                  const a = match.attributes || {};
+                  orderId = String(match.id);
+                  amountUSD = a.total ? Number(a.total) / 100 : 199;
+                  fallbackPlan = resolvePlanFromLemonAttributes(a, 'pro');
+                  testMode = Boolean(a.test_mode);
+                  break;
+                }
+              }
+            } catch {}
+          }
+        }
+
+        if (!orderId) {
+          return res.status(404).json({
+            success: false,
+            error: 'No paid order found for this payment email - لم يتم العثور على طلب مدفوع لهذا الإيميل',
+          });
+        }
+
+        const newCode = await createActivationCodeInDb({
+          paymentEmail,
+          orderId,
+          amountUSD,
+          fallbackPlan,
+          testMode,
+          invalidatePreviousForEmail: true,
+        });
+
+        const emailPayload = buildActivationCodeEmail({
+          code: newCode.code,
+          planDisplay: newCode.plan_display,
+        });
+        const mailRes = await dispatchEmail({
+          to: paymentEmail,
+          subject: emailPayload.subject,
+          text: emailPayload.text,
+          html: emailPayload.html,
+          type: 'activation_code',
+        });
+
+        await appendWebhookLogToDb({
+          order_id: newCode.order_id,
+          event: 'activation_code_resent',
+          event_name: 'activation_code_resent',
+          plan: newCode.plan,
+          email: paymentEmail,
+          amount: newCode.amount,
+          currency: 'USD',
+          test_mode: newCode.test_mode,
+          signature_valid: true,
+          activation_code: newCode.code,
+          raw_error:
+            !cleanEnvValue(process.env.RESEND_API_KEY)
+              ? `RESEND_API_KEY missing - Manual code: ${newCode.code}`
+              : undefined,
+          error:
+            !cleanEnvValue(process.env.RESEND_API_KEY)
+              ? `RESEND_API_KEY missing - Manual code: ${newCode.code}`
+              : undefined,
+        });
+
+        return res.status(200).json({
+          success: true,
+          message: 'New activation code sent to your payment email - تم إرسال كود تفعيل جديد لإيميل الدفع',
+          emailStatus: mailRes.status,
+          provider: mailRes.provider,
+        });
+      }
+
       default:
         return res.status(400).json({
           error: `Unknown or missing action '${action}'.`,
@@ -1868,6 +2141,8 @@ export default async function handler(req: any, res: any) {
             'me',
             'pricing',
             'verify-checkout',
+            'activate-with-code',
+            'resend-code',
             'debug-plan',
             'underwrite',
             'save-property',
