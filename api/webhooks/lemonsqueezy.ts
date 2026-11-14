@@ -58,6 +58,12 @@ function mapVariantOrProductToPlan(
   if (productId && process.env.LEMON_SOVEREIGN_PRODUCT_ID && productId === process.env.LEMON_SOVEREIGN_PRODUCT_ID) return 'enterprise';
   if (variantId && VARIANT_ID_TO_PLAN[variantId]) return VARIANT_ID_TO_PLAN[variantId];
 
+  // Prioritize paid USD amount before fuzzy product name matching (199->PRO, 79->STARTER, 599->SOVEREIGN)
+  const totalUSD = attributes?.total ? Number(attributes.total) / 100 : Number(attributes?.subtotal || 0) / 100;
+  if (totalUSD >= 500) return 'enterprise';
+  if (totalUSD >= 150) return 'pro';
+  if (totalUSD >= 50) return 'starter';
+
   const productName = (
     attributes?.first_order_item?.product_name ||
     attributes?.first_order_item?.variant_name ||
@@ -70,14 +76,6 @@ function mapVariantOrProductToPlan(
     .toString()
     .toLowerCase();
 
-  if (
-    productName.includes('starter') ||
-    productName.includes('standard') ||
-    productName.includes('79') ||
-    productName.includes('129')
-  ) {
-    return 'starter';
-  }
   if (
     productName.includes('enterprise') ||
     productName.includes('sovereign') ||
@@ -94,6 +92,13 @@ function mapVariantOrProductToPlan(
     productName.includes('349')
   ) {
     return 'pro';
+  }
+  if (
+    productName.includes('starter') ||
+    productName.includes('79') ||
+    productName.includes('129')
+  ) {
+    return 'starter';
   }
 
   const normalized = normalizePlanKey(customData?.plan || payload?.plan);

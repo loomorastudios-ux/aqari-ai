@@ -1318,6 +1318,20 @@ export function getPricingChangeLogs(): PricingChangeLogEntry[] {
 const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
+export function normalizeActivationCode(raw: string): string {
+  const cleaned = String(raw || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\u2010-\u2015\u2212]+/g, '-')
+    .replace(/\s+/g, '')
+    .replace(/-+/g, '-');
+  if (!cleaned) return '';
+  if (cleaned.startsWith('AQARI') && !cleaned.startsWith('AQARI-')) {
+    return `AQARI-${cleaned.slice(5).replace(/^-+/, '')}`;
+  }
+  return cleaned;
+}
+
 export function mapAmountOrPlanToCodeTier(
   amountUSD: number,
   fallbackPlan?: PlanKey
@@ -1329,12 +1343,12 @@ export function mapAmountOrPlanToCodeTier(
   const rounded = Math.round(Number(amountUSD || 0));
   let plan: PlanKey = fallbackPlan && fallbackPlan !== 'free' ? fallbackPlan : 'pro';
 
-  if (rounded === 79 || rounded === 129 || (rounded > 0 && rounded < 150)) {
-    plan = 'starter';
+  if (rounded === 599 || rounded === 999 || rounded >= 500) {
+    plan = 'enterprise';
   } else if (rounded === 199 || rounded === 349 || (rounded >= 150 && rounded < 500)) {
     plan = 'pro';
-  } else if (rounded === 599 || rounded === 999 || rounded >= 500) {
-    plan = 'enterprise';
+  } else if (rounded === 79 || rounded === 129 || (rounded > 0 && rounded < 150)) {
+    plan = 'starter';
   }
 
   if (plan === 'starter') {
@@ -1354,12 +1368,45 @@ function generateRandomAqariCode(): string {
   return `AQARI-${suffix}`;
 }
 
+async function readActivationCodesMapFromKv(): Promise<Record<string, ActivationCodeRecord> | null> {
+  try {
+    const kv = getKvConfig();
+    if (!kv) return null;
+    const raw = await kvCommand(['GET', 'aqari:activation_codes_map:v1']);
+    if (!raw) return null;
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (parsed && typeof parsed === 'object') {
+      return parsed as Record<string, ActivationCodeRecord>;
+    }
+  } catch (err) {
+    console.error('[DB] Failed reading activation_codes_map from KV:', err);
+  }
+  return null;
+}
+
 async function saveActivationCodeRecordToKv(record: ActivationCodeRecord): Promise<void> {
   try {
     const kv = getKvConfig();
     if (!kv) return;
-    const codeKey = record.code.toUpperCase();
+    const codeKey = normalizeActivationCode(record.code);
     await kvCommand(['SET', `aqari:activation_code:${codeKey}`, JSON.stringify(record)]);
+
+    const map = (await readActivationCodesMapFromKv()) || {};
+    map[codeKey] = record;
+    const keys = Object.keys(map);
+    if (keys.length > 500) {
+      const sorted = Object.values(map)
+        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+        .slice(0, 500);
+      const trimmed: Record<string, ActivationCodeRecord> = {};
+      for (const item of sorted) {
+        trimmed[normalizeActivationCode(item.code)] = item;
+      }
+      await kvCommand(['SET', 'aqari:activation_codes_map:v1', JSON.stringify(trimmed)]);
+    } else {
+      await kvCommand(['SET', 'aqari:activation_codes_map:v1', JSON.stringify(map)]);
+    }
+
     if (record.payment_email) {
       await kvCommand([
         'SET',
@@ -1372,8 +1419,27 @@ async function saveActivationCodeRecordToKv(record: ActivationCodeRecord): Promi
   }
 }
 
+export async function upsertActivationCodeInDb(
+  record: ActivationCodeRecord
+): Promise<ActivationCodeRecord> {
+  const codeKey = normalizeActivationCode(record.code);
+  const normalizedRecord: ActivationCodeRecord = {
+    ...record,
+    code: codeKey,
+    payment_email: normalizeEmail(record.payment_email),
+  };
+  const store = loadStore();
+  if (!store.activation_codes || typeof store.activation_codes !== 'object') {
+    store.activation_codes = {};
+  }
+  store.activation_codes[codeKey] = normalizedRecord;
+  persistStore(store);
+  await saveActivationCodeRecordToKv(normalizedRecord);
+  return normalizedRecord;
+}
+
 export async function getActivationCodeFromDb(rawCode: string): Promise<ActivationCodeRecord | null> {
-  const codeKey = String(rawCode || '').trim().toUpperCase();
+  const codeKey = normalizeActivationCode(rawCode);
   if (!codeKey) return null;
 
   try {
@@ -1389,13 +1455,47 @@ export async function getActivationCodeFromDb(rawCode: string): Promise<Activati
           return parsed;
         }
       }
+      const map = await readActivationCodesMapFromKv();
+      if (map && map[codeKey]) {
+        const store = loadStore();
+        store.activation_codes[codeKey] = map[codeKey];
+        persistStore(store);
+        return map[codeKey];
+      }
     }
   } catch (err) {
     console.error('[DB] Failed reading activation code from KV:', err);
   }
 
   const store = loadStore();
-  return store.activation_codes?.[codeKey] || null;
+  const direct = store.activation_codes?.[codeKey];
+  if (direct) return direct;
+
+  for (const [k, rec] of Object.entries(store.activation_codes || {})) {
+    if (normalizeActivationCode(k) === codeKey || normalizeActivationCode(rec?.code || '') === codeKey) {
+      return rec;
+    }
+  }
+  return null;
+}
+
+export async function getActivationCodeDbStats(): Promise<{
+  totalCodes: number;
+  lastCode: string | null;
+}> {
+  const store = loadStore();
+  const merged: Record<string, ActivationCodeRecord> = { ...(store.activation_codes || {}) };
+  const kvMap = await readActivationCodesMapFromKv();
+  if (kvMap) {
+    for (const [k, v] of Object.entries(kvMap)) {
+      merged[normalizeActivationCode(k)] = v;
+    }
+  }
+  const all = Object.values(merged).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  return {
+    totalCodes: all.length,
+    lastCode: all[0]?.code || null,
+  };
 }
 
 export async function createActivationCodeInDb(params: {
@@ -1414,26 +1514,14 @@ export async function createActivationCodeInDb(params: {
   const normEmail = normalizeEmail(params.paymentEmail || 'unknown@aqari-ai-rho.vercel.app');
   const tier = mapAmountOrPlanToCodeTier(params.amountUSD, params.fallbackPlan);
 
-  if (params.invalidatePreviousForEmail) {
-    for (const [k, existing] of Object.entries(store.activation_codes)) {
-      if (
-        normalizeEmail(existing.payment_email) === normEmail &&
-        !existing.used &&
-        !existing.invalidated
-      ) {
-        const invalidatedEntry: ActivationCodeRecord = { ...existing, invalidated: true };
-        store.activation_codes[k] = invalidatedEntry;
-        await saveActivationCodeRecordToKv(invalidatedEntry);
-      }
-    }
-  }
+  // Do NOT invalidate previous unused codes on resend; prior codes remain valid until activated or 24h expires.
 
-  let uniqueCode = generateRandomAqariCode();
+  let uniqueCode = normalizeActivationCode(generateRandomAqariCode());
   for (let attempt = 0; attempt < 15; attempt++) {
     const existsLocal = Boolean(store.activation_codes[uniqueCode]);
     const existsKv = !existsLocal ? Boolean(await getActivationCodeFromDb(uniqueCode)) : true;
     if (!existsLocal && !existsKv) break;
-    uniqueCode = generateRandomAqariCode();
+    uniqueCode = normalizeActivationCode(generateRandomAqariCode());
   }
 
   const now = Date.now();
@@ -1464,12 +1552,13 @@ export async function markActivationCodeUsedInDb(params: {
   code: string;
   loginEmail: string;
 }): Promise<ActivationCodeRecord | null> {
-  const codeKey = String(params.code || '').trim().toUpperCase();
+  const codeKey = normalizeActivationCode(params.code);
   const existing = await getActivationCodeFromDb(codeKey);
   if (!existing) return null;
 
   const updated: ActivationCodeRecord = {
     ...existing,
+    code: codeKey,
     used: true,
     used_by: normalizeEmail(params.loginEmail),
     used_at: Date.now(),

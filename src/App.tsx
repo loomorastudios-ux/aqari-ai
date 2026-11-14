@@ -378,7 +378,16 @@ export default function App() {
 
   const handleActivateWithCode = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const trimmed = activationCode.trim().toUpperCase();
+    const cleaned = activationCode
+      .trim()
+      .toUpperCase()
+      .replace(/[\u2010-\u2015\u2212]+/g, '-')
+      .replace(/\s+/g, '')
+      .replace(/-+/g, '-');
+    const trimmed =
+      cleaned.startsWith('AQARI') && !cleaned.startsWith('AQARI-')
+        ? `AQARI-${cleaned.slice(5).replace(/^-+/, '')}`
+        : cleaned;
     setActivateError(null);
     setResendMessage(null);
 
@@ -409,12 +418,21 @@ export default function App() {
 
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.success) {
-        // Authoritative sync from /api/app?action=me before redirecting to /app
-        const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {
-          credentials: 'include',
-          cache: 'no-store',
-        });
-        const meData = meRes.ok ? await meRes.json().catch(() => data) : data;
+        // Quick authoritative sync from /api/app?action=me (with 1.5s cap so redirect always stays < 3s)
+        let meData: any = data;
+        try {
+          const ctrl = new AbortController();
+          const tId = setTimeout(() => ctrl.abort(), 1500);
+          const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {
+            credentials: 'include',
+            cache: 'no-store',
+            signal: ctrl.signal,
+          });
+          clearTimeout(tId);
+          if (meRes.ok) {
+            meData = await meRes.json().catch(() => data);
+          }
+        } catch {}
 
         const verifiedPlan = normalizePlanKey(meData?.planKey || data.planKey || data.user?.plan);
         const verifiedCfg = PLANS[verifiedPlan];
@@ -480,7 +498,7 @@ export default function App() {
         return;
       }
 
-      setActivateError(data?.error || 'Invalid code - كود غير صحيح');
+      setActivateError(data?.error || 'Invalid code - Not found in DB.');
     } catch (err) {
       console.error('Activation error:', err);
       setActivateError('Unable to reach activation server. Please try again.');
