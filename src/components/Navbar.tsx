@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from 'react';
 import { CurrencyCode, User, RemoteConfig } from '../types';
 import { CURRENCY_SYMBOLS } from '../constants';
 import { computeLicenseStatus } from '../../lib/plans';
-import { PWAInstallButton } from './PWAInstallButton';
 import { 
   Globe2, 
   ChevronDown, 
@@ -431,9 +430,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             )}
 
-            {/* Install App PWA Button (Prominent in navbar) */}
-            <PWAInstallButton variant="navbar" className="hidden sm:inline-flex" />
-
             {/* Mobile Hamburger Toggle Button */}
             <button
               type="button"
@@ -477,11 +473,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span>Log Out / تسجيل الخروج</span>
               </button>
             )}
-
-            {/* Install App button on mobile inside drawer */}
-            <div className="sm:hidden mb-1">
-              <PWAInstallButton variant="navbar" className="w-full justify-center" />
-            </div>
 
             {/* Navigation links */}
             <a

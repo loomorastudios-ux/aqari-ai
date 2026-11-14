@@ -121,11 +121,33 @@ export default async function handler(req: any, res: any) {
 
     if (!webhookSecret) {
       recordFailedWebhook('Webhook secret not configured on server', ip);
+      appendWebhookLog({
+        order_id: 'sig_missing_secret',
+        event_name: 'webhook_signature_failed',
+        plan: 'free',
+        email: 'unknown',
+        amount: 0,
+        currency: 'USD',
+        test_mode: process.env.LEMON_TEST_MODE === 'true',
+        signature_valid: false,
+        error: 'Webhook secret not configured on server',
+      });
       return res.status(401).json({ error: 'Webhook verification failed: missing secret configuration' });
     }
 
     if (!signature) {
       recordFailedWebhook('Missing X-Signature header', ip);
+      appendWebhookLog({
+        order_id: 'sig_missing_header',
+        event_name: 'webhook_signature_failed',
+        plan: 'free',
+        email: 'unknown',
+        amount: 0,
+        currency: 'USD',
+        test_mode: process.env.LEMON_TEST_MODE === 'true',
+        signature_valid: false,
+        error: 'Missing X-Signature header',
+      });
       return res.status(401).json({ error: 'Invalid webhook signature: missing X-Signature' });
     }
 
@@ -136,6 +158,17 @@ export default async function handler(req: any, res: any) {
     if (digest.length !== signatureBuffer.length || !crypto.timingSafeEqual(digest, signatureBuffer)) {
       console.warn('Lemon Squeezy Webhook: Invalid signature rejected from', ip);
       recordFailedWebhook('Invalid X-Signature HMAC mismatch', ip);
+      appendWebhookLog({
+        order_id: 'sig_mismatch',
+        event_name: 'webhook_signature_failed',
+        plan: 'free',
+        email: 'unknown',
+        amount: 0,
+        currency: 'USD',
+        test_mode: process.env.LEMON_TEST_MODE === 'true',
+        signature_valid: false,
+        error: 'Invalid X-Signature HMAC mismatch',
+      });
       return res.status(401).json({ error: 'Invalid webhook signature' });
     }
 
@@ -305,6 +338,7 @@ export default async function handler(req: any, res: any) {
       amount: amountUSD,
       currency,
       test_mode: isTestMode,
+      signature_valid: true,
     });
 
     console.log(

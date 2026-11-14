@@ -54,6 +54,7 @@ import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { DemoAnalysisView } from './components/DemoAnalysisView';
 import { LegalPages, LegalDocSlug } from './components/LegalPages';
 import { AdminDashboard } from './components/AdminDashboard';
+import { PWAInstallButton } from './components/PWAInstallButton';
 import { checkAndSendExpiryEmail } from './utils/emailService';
 import {
   Sparkles,
@@ -184,6 +185,7 @@ export default function App() {
     }
   });
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [verifyFailCount, setVerifyFailCount] = useState(0);
   const [isRetryingVerify, setIsRetryingVerify] = useState(false);
   const [serverSynced, setServerSynced] = useState<boolean>(() => !getSessionUser());
 
@@ -404,84 +406,93 @@ export default function App() {
         }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.verified && data?.user) {
-          // Force refresh session directly from authoritative /api/me
-          const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {
-            credentials: 'include',
-            cache: 'no-store',
-          });
-          const meData = meRes.ok ? await meRes.json() : data;
+      const data = await res.json().catch(() => ({}));
 
-          const verifiedPlan = normalizePlanKey(meData?.planKey || data.user.plan);
-          const verifiedCfg = PLANS[verifiedPlan];
-          const serverLimit = meData?.license?.analysesLimit ?? data.license?.analysesLimit ?? verifiedCfg.analysesLimit;
-          const serverUsed = Number(meData?.analyses_used ?? data.user.analyses_used ?? 0);
-          const serverLeft = Number.isFinite(serverLimit)
-            ? Math.max(0, serverLimit - serverUsed)
-            : 999999;
+      if (res.ok && data?.verified && data?.user) {
+        // Force refresh session directly from authoritative /api/app?action=me
+        const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        const meData = meRes.ok ? await meRes.json().catch(() => data) : data;
 
-          const existing = (data.user.email && getUser(data.user.email)) || sessionUser;
-          const lockedPriceVal = meData?.locked_launch_price ?? data.user.locked_launch_price ?? null;
-          const updatedUser: User = {
-            ...(existing || {
-              id: 'user_' + Date.now(),
-              email: data.user.email,
-              name: data.user.name || data.user.email.split('@')[0],
-              avatar: data.user.email.charAt(0).toUpperCase(),
-              provider: 'google',
-              createdAt: Date.now(),
-              savedAnalyses: [],
-            }),
+        const verifiedPlan = normalizePlanKey(meData?.planKey || data.user.plan);
+        const verifiedCfg = PLANS[verifiedPlan];
+        const serverLimit = meData?.license?.analysesLimit ?? data.license?.analysesLimit ?? verifiedCfg.analysesLimit;
+        const serverUsed = Number(meData?.analyses_used ?? data.user.analyses_used ?? 0);
+        const serverLeft = Number.isFinite(serverLimit)
+          ? Math.max(0, serverLimit - serverUsed)
+          : 999999;
+
+        const existing = (data.user.email && getUser(data.user.email)) || sessionUser;
+        const lockedPriceVal = meData?.locked_launch_price ?? data.user.locked_launch_price ?? null;
+        const serverCustomCities = Array.isArray(meData?.custom_cities)
+          ? meData.custom_cities
+          : Array.isArray(data?.custom_cities)
+          ? data.custom_cities
+          : existing?.customCities || [];
+
+        const updatedUser: User = {
+          ...(existing || {
+            id: 'user_' + Date.now(),
             email: data.user.email,
-            plan: verifiedPlan,
-            subscriptionPlan: verifiedPlan,
-            subscriptionStatus: verifiedPlan === 'free' ? 'free' : 'active',
-            subscriptionStartAt: meData?.license_start ?? data.user.license_start ?? Date.now(),
-            subscriptionEndsAt: meData?.license_end ?? data.user.license_end ?? null,
-            subscriptionExpiry: meData?.license_end ?? data.user.license_end ?? null,
-            analysesUsed: serverUsed,
-            freeAnalyses: serverLeft,
-            freeAnalysesLeft: serverLeft,
-            analysesLeft: serverLeft,
-            lockedLaunchPrice: lockedPriceVal,
-            expiryEmailSent: false,
-          };
+            name: data.user.name || data.user.email.split('@')[0],
+            avatar: data.user.email.charAt(0).toUpperCase(),
+            provider: 'google',
+            createdAt: Date.now(),
+            savedAnalyses: [],
+          }),
+          email: data.user.email,
+          plan: verifiedPlan,
+          subscriptionPlan: verifiedPlan,
+          subscriptionStatus: verifiedPlan === 'free' ? 'free' : 'active',
+          subscriptionStartAt: meData?.license_start ?? data.user.license_start ?? Date.now(),
+          subscriptionEndsAt: meData?.license_end ?? data.user.license_end ?? null,
+          subscriptionExpiry: meData?.license_end ?? data.user.license_end ?? null,
+          analysesUsed: serverUsed,
+          freeAnalyses: serverLeft,
+          freeAnalysesLeft: serverLeft,
+          analysesLeft: serverLeft,
+          lockedLaunchPrice: lockedPriceVal,
+          customCities: serverCustomCities,
+          expiryEmailSent: false,
+        };
 
-          saveUser(updatedUser);
-          setUser(updatedUser);
-          setVerifyingPlanName(verifiedCfg.displayName);
+        saveUser(updatedUser);
+        setUser(updatedUser);
+        setVerifyingPlanName(verifiedCfg.displayName);
 
-          try {
-            confetti({
-              particleCount: 160,
-              spread: 85,
-              origin: { y: 0.6 },
-              colors: ['#D4AF37', '#F3E5AB', '#8B5CF6', '#06B6D4'],
-            });
-          } catch {}
+        try {
+          confetti({
+            particleCount: 160,
+            spread: 85,
+            origin: { y: 0.6 },
+            colors: ['#D4AF37', '#F3E5AB', '#8B5CF6', '#06B6D4'],
+          });
+        } catch {}
 
-          const unlockBanner = lockedPriceVal
-            ? `Welcome to ${verifiedCfg.displayName} — You locked Launch Price ${lockedPriceVal}$ - Your next renewal will be at same launch price if you renew before expiry`
-            : `Welcome to ${verifiedCfg.displayName} — Payment Successful! Your Terminal is unlocked.`;
-          const unlockToast = `Welcome to AQARI ${verifiedCfg.displayName} — Unlocked for 30 Days!`;
-          try {
-            sessionStorage.setItem('aqari_unlock_msg', unlockBanner);
-            sessionStorage.setItem('aqari_unlock_toast', unlockToast);
-          } catch {}
+        const unlockBanner = lockedPriceVal
+          ? `Welcome to ${verifiedCfg.displayName} — You locked Launch Price ${lockedPriceVal}$ - Your next renewal will be at same launch price if you renew before expiry`
+          : `Welcome to ${verifiedCfg.displayName} — Payment Successful! Your Terminal is unlocked.`;
+        const unlockToast = `Welcome to AQARI ${verifiedCfg.displayName} — Unlocked for 30 Days!`;
+        try {
+          sessionStorage.setItem('aqari_unlock_msg', unlockBanner);
+          sessionStorage.setItem('aqari_unlock_toast', unlockToast);
+        } catch {}
 
-          setIsRetryingVerify(false);
-          window.history.replaceState({}, document.title, '/app');
-          window.location.reload();
-          return;
-        }
+        setIsRetryingVerify(false);
+        window.location.replace('/app');
+        return;
       }
 
-      const errData = await res.json().catch(() => ({}));
-      setVerifyError(errData?.error || 'Verification is still syncing with Lemon Squeezy. Click below to unlock your terminal.');
+      setVerifyFailCount((c) => c + 1);
+      setVerifyError(
+        data?.error ||
+          `No order found for email ${targetEmail || 'your account'} - Check LEMON_API_KEY in Vercel and that payment was TEST MODE`
+      );
     } catch (err) {
       console.error('Checkout verification error:', err);
+      setVerifyFailCount((c) => c + 1);
       setVerifyError('Unable to reach verification server. Click below to retry.');
     } finally {
       setIsRetryingVerify(false);
@@ -660,6 +671,11 @@ export default function App() {
         const serverLimit = data.license?.analysesLimit ?? PLANS[serverPlan].analysesLimit;
         const serverLeft = Number.isFinite(serverLimit) ? Math.max(0, serverLimit - serverUsed) : 999999;
         const serverLockedLaunch = data.locked_launch_price ?? null;
+        const serverCustomCities = Array.isArray(data.custom_cities)
+          ? data.custom_cities
+          : Array.isArray(data.user?.custom_cities)
+          ? data.user.custom_cities
+          : [];
 
         const baseUser: User = user || {
           id: 'user_' + Date.now(),
@@ -675,6 +691,7 @@ export default function App() {
           freeAnalyses: 3,
           freeAnalysesLeft: 3,
           analysesLeft: 3,
+          customCities: [],
         };
 
         const changed =
@@ -683,9 +700,12 @@ export default function App() {
           (user.analysesUsed ?? 0) !== serverUsed ||
           (user.subscriptionEndsAt ?? null) !== serverEnd ||
           (user.lockedLaunchPrice ?? null) !== serverLockedLaunch ||
+          (serverCustomCities.length !== (user.customCities?.length ?? 0)) ||
           (Number.isFinite(serverLimit) && (user.analysesLeft ?? -1) !== serverLeft);
 
         if (changed) {
+          const mergedCities =
+            serverCustomCities.length > 0 ? serverCustomCities : baseUser.customCities || [];
           const syncedUser: User = {
             ...baseUser,
             email: data.email,
@@ -701,6 +721,7 @@ export default function App() {
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
             lockedLaunchPrice: serverLockedLaunch,
+            customCities: mergedCities,
           };
           saveUser(syncedUser);
           setUser(syncedUser);
@@ -861,7 +882,11 @@ export default function App() {
   // Reusable Legal Footer across public views
   const renderLegalFooter = () => (
     <footer className="mt-20 border-t border-white/[0.08] bg-black/95 backdrop-blur-2xl py-10 px-4 lg:px-8 relative z-20 text-xs text-zinc-400 font-mono">
-      <div className="max-w-7xl mx-auto space-y-5">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="flex justify-center">
+          <PWAInstallButton variant="footer" />
+        </div>
+
         <div className="flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="text-center md:text-left">
             <div className="text-white font-bold tracking-tight">
@@ -893,7 +918,7 @@ export default function App() {
 
         <div className="pt-4 border-t border-white/[0.06] text-[11px] text-zinc-500 text-center md:text-left flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <span>
-            Market data is indicative, synced daily from public sources. Not financial advice. Last sync: {lastSyncDisplay}.
+            Market data is indicative, synced daily from public sources. Not financial advice. Data as of {lastSyncDisplay}.
           </span>
           <a href="mailto:loomora.studios@gmail.com" className="text-zinc-400 hover:text-[#D4AF37]">
             loomora.studios@gmail.com
@@ -921,29 +946,62 @@ export default function App() {
 
   // View: Post-Checkout Full-Screen Unlocking Verification Screen (/app?checkout=success)
   if (route === 'checkout-verifying') {
+    const activeEmail = user?.email || new URLSearchParams(window.location.search).get('email') || 'your account';
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center p-6 relative overflow-hidden">
         <AmbientBackground />
-        <div className="z-10 max-w-md w-full glass-panel p-8 sm:p-10 rounded-[32px] border border-[#D4AF37]/40 text-center space-y-5 shadow-[0_0_60px_rgba(212,175,55,0.2)]">
+        <div className="z-10 max-w-lg w-full glass-panel p-8 sm:p-10 rounded-[32px] border border-[#D4AF37]/40 text-center space-y-5 shadow-[0_0_60px_rgba(212,175,55,0.2)]">
           <Loader2 className={`w-12 h-12 text-[#D4AF37] mx-auto ${isRetryingVerify ? 'animate-spin' : ''}`} />
           <div className="text-xs font-mono uppercase tracking-wider text-emerald-400 font-bold">
             {verifyError ? 'VERIFICATION PENDING' : 'PAYMENT SUCCESSFUL • VERIFYING LICENSE'}
           </div>
           <h1 className="text-2xl font-bold text-white tracking-tight">
-            Welcome to AQARI {verifyingPlanName}
+            Welcome to AQARI TERMINAL
           </h1>
-          <p className="text-xs font-mono text-zinc-400 leading-relaxed">
-            {verifyError || 'Payment Successful - Unlocking your Terminal...'}
+          <p className="text-sm font-mono text-zinc-200 leading-relaxed">
+            {isRetryingVerify
+              ? `Unlocking for ${activeEmail}...`
+              : verifyError
+              ? `Verifying order for ${activeEmail}`
+              : `Welcome to AQARI ${verifyingPlanName} — Unlocking for ${activeEmail}...`}
           </p>
+
           {verifyError && (
-            <button
-              type="button"
-              disabled={isRetryingVerify}
-              onClick={runCheckoutVerification}
-              className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-xs font-mono uppercase tracking-wider transition cursor-pointer shadow-lg disabled:opacity-60"
-            >
-              {isRetryingVerify ? 'Unlocking Terminal...' : 'Click to Unlock - Retry'}
-            </button>
+            <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-500/50 text-left text-xs font-mono text-rose-200 leading-relaxed space-y-2">
+              <div className="font-bold text-rose-400 uppercase">Verification Error</div>
+              <div>{verifyError}</div>
+              {verifyFailCount >= 3 && (
+                <div className="pt-2 border-t border-rose-500/30 text-amber-300 font-semibold">
+                  Still locked? Go to Settings &gt; PAYMENT WEBHOOK LOGS and screenshot the error
+                </div>
+              )}
+            </div>
+          )}
+
+          {verifyError && (
+            <div className="space-y-2.5 pt-1">
+              <button
+                type="button"
+                disabled={isRetryingVerify}
+                onClick={runCheckoutVerification}
+                className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-xs font-mono uppercase tracking-wider transition cursor-pointer shadow-lg disabled:opacity-60 min-h-[48px]"
+              >
+                {isRetryingVerify ? 'Unlocking Terminal...' : 'CLICK TO UNLOCK - RETRY'}
+              </button>
+
+              {verifyFailCount >= 3 && user && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.history.replaceState({}, document.title, '/app');
+                    setRoute('terminal');
+                  }}
+                  className="w-full py-2.5 px-4 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 text-zinc-200 font-mono text-xs transition cursor-pointer"
+                >
+                  Open Terminal Settings &amp; Webhook Logs
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -1131,6 +1189,7 @@ export default function App() {
               marketLive={marketLive}
               onSignOut={handleSignOut}
               onGoToHome={handleGoToHome}
+              onGoToPricing={handleGoToPricing}
               onOpenRenewal={() => setIsRenewalOpen(true)}
               onUpdateUser={handleSaveUser}
               onConsumeAnalysis={consumeAnalysis}

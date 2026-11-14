@@ -58,6 +58,19 @@ export interface ForensicTimelineEntry {
   actor?: string;
 }
 
+export interface CustomCityRecord {
+  id: string;
+  city: string;
+  country: string;
+  countryCode?: string;
+  estimatedAvgPriceUSD: number;
+  estimatedAvgRentUSD: number;
+  grossYield: number;
+  source: string;
+  isEstimated: boolean;
+  addedAt: number;
+}
+
 export interface ServerUserRecord {
   email: string;
   name: string;
@@ -66,6 +79,7 @@ export interface ServerUserRecord {
   license_end: number | null;
   analyses_used: number;
   saved_analyses: any[];
+  custom_cities: CustomCityRecord[];
   timezone: string;
   day29_email_sent: boolean;
   expired_email_sent: boolean;
@@ -93,6 +107,8 @@ export interface WebhookLogEntry {
   amount: number;
   currency: string;
   test_mode: boolean;
+  signature_valid?: boolean;
+  error?: string;
   timestamp: string;
 }
 
@@ -231,6 +247,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
     analyses_used: Math.max(0, Number(raw?.analyses_used ?? 0)),
     saved_analyses: Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [],
+    custom_cities: Array.isArray(raw?.custom_cities) ? raw.custom_cities : [],
     timezone: raw?.timezone || 'Asia/Muscat',
     day29_email_sent: Boolean(raw?.day29_email_sent),
     expired_email_sent: Boolean(raw?.expired_email_sent),

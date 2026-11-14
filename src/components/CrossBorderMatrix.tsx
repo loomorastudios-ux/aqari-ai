@@ -43,15 +43,17 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/60 border border-white/10 text-[11px] font-mono text-zinc-300">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-start sm:items-center gap-2.5">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/60 border border-white/10 text-xs font-mono text-zinc-300">
             <span className={`w-2 h-2 rounded-full ${isLive ? 'bg-emerald-400 animate-ping' : 'bg-zinc-500'}`} />
             <Activity className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Market Feed • Synced {lastSyncedDisplay} • Sources: World Bank / DLD / ONS / JLL</span>
+            <span>
+              Data as of {lastSyncedDisplay} • Sources: World Bank / DLD / ONS / JLL
+            </span>
           </div>
 
           <div className="text-xs font-mono text-zinc-400 bg-white/[0.03] border border-white/[0.08] px-3.5 py-1.5 rounded-xl">
-            Base: <strong className="text-[#D4AF37]">{currentCurrency}</strong>
+            Estimated / Demo data - بيانات تقديرية • Base: <strong className="text-[#D4AF37]">{currentCurrency}</strong>
           </div>
         </div>
       </div>

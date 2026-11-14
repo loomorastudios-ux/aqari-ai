@@ -3,7 +3,6 @@ import React, { useState, useEffect } from 'react';
 import { CurrencyCode, User } from '../types';
 import type { LiveMarketResponse } from '../utils/marketDataService';
 import { MagneticButton } from './MagneticButton';
-import { PWAInstallButton } from './PWAInstallButton';
 import {
   Building2,
   ArrowUpRight,
@@ -187,8 +186,6 @@ export const Hero: React.FC<HeroProps> = ({
             <span>Open Yield Simulator</span>
             <ChevronRight className="w-4 h-4 text-zinc-500 shrink-0" />
           </MagneticButton>
-
-          <PWAInstallButton variant="hero" className="w-full sm:w-auto" />
         </div>
 
         {/* Row 2: Centered Terminal Auth / App Entry Buttons */}

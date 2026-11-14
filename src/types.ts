@@ -17,6 +17,19 @@ export interface SavedAnalysis {
   notes?: string;
 }
 
+export interface CustomCityCard {
+  id: string;
+  city: string;
+  country: string;
+  countryCode?: string;
+  estimatedAvgPriceUSD: number;
+  estimatedAvgRentUSD: number;
+  grossYield: number;
+  source: string;
+  isEstimated?: boolean;
+  addedAt: number;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -41,6 +54,7 @@ export interface User {
   lastReminderDate?: string;
   lockedLaunchPrice?: number | null;
   savedAnalyses?: SavedAnalysis[];
+  customCities?: CustomCityCard[];
   portfolio?: {
     totalValue: number;
     monthlyCashflow: number;

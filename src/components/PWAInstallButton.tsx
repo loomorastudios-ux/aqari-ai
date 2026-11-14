@@ -3,20 +3,20 @@ import { Download, Share2, PlusSquare, X, Check, Smartphone } from 'lucide-react
 import { usePWAInstall } from '../utils/usePWAInstall';
 
 interface PWAInstallButtonProps {
-  variant?: 'navbar' | 'hero' | 'floating';
+  variant?: 'navbar' | 'hero' | 'floating' | 'footer';
   className?: string;
 }
 
 export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
-  variant = 'navbar',
+  variant = 'footer',
   className = '',
 }) => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSModal, setShowIOSModal] = useState(false);
   const [justInstalled, setJustInstalled] = useState(false);
 
-  // If already running in standalone / installed PWA mode, don't show prompt
-  if (isInstalled && !justInstalled) {
+  // Hide completely if already installed OR if browser cannot install (desktop without beforeinstallprompt & non-iOS)
+  if ((isInstalled && !justInstalled) || (!isInstallable && !isIOS && !justInstalled)) {
     return null;
   }
 
@@ -32,63 +32,34 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
       }
     } else if (isIOS) {
       setShowIOSModal(true);
-    } else {
-      // In case beforeinstallprompt hasn't fired yet or desktop browser
-      setShowIOSModal(true);
     }
   };
 
   // Just installed feedback
   if (justInstalled) {
     return (
-      <div className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-950/80 border border-emerald-500/50 text-emerald-400 text-xs font-mono">
+      <div className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-950/80 border border-emerald-500/50 text-emerald-400 text-xs font-mono">
         <Check className="w-4 h-4" />
         <span>App Installed!</span>
       </div>
     );
   }
 
-  // Hero Variant (Prominent button)
-  if (variant === 'hero') {
-    return (
-      <>
-        <button
-          onClick={handleInstallClick}
-          type="button"
-          className={`group relative inline-flex items-center justify-center p-0.5 overflow-hidden rounded-2xl cursor-pointer min-h-[44px] transition-transform active:scale-95 ${className}`}
-        >
-          <span className="w-full h-full bg-gradient-to-r from-[#10b981] via-[#D4AF37] to-[#059669] group-hover:from-[#34d399] group-hover:to-[#D4AF37] absolute transition-all duration-300"></span>
-          <span className="relative px-5 py-2.5 rounded-[14px] bg-black/90 group-hover:bg-black/75 transition duration-300 flex items-center gap-2.5 text-white">
-            <Download className="w-4 h-4 text-[#D4AF37] group-hover:text-emerald-400 transition animate-bounce" />
-            <div className="flex flex-col text-left">
-              <span className="text-xs font-bold text-white tracking-wide">
-                Install App <span className="text-zinc-400 font-normal">|</span> <span className="text-[#D4AF37] font-arabic font-medium">ثبّت التطبيق</span>
-              </span>
-              <span className="text-[10px] text-zinc-400 font-mono">Offline fast access • iOS & Android</span>
-            </div>
-          </span>
-        </button>
-
-        {showIOSModal && (
-          <IOSInstallModal onClose={() => setShowIOSModal(false)} />
-        )}
-      </>
-    );
-  }
-
-  // Navbar / Floating Variant
+  // Footer / Standard Gold Button
   return (
     <>
       <button
         onClick={handleInstallClick}
         type="button"
-        title="Install Aqari App - ثبّت التطبيق"
-        aria-label="Install App"
-        className={`inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-950/80 to-zinc-900 border border-emerald-500/40 hover:border-emerald-400/80 text-white hover:text-emerald-300 text-xs font-medium transition cursor-pointer min-h-[44px] shadow-[0_0_15px_rgba(16,185,129,0.15)] active:scale-95 ${className}`}
+        title="Install AQARI Terminal App - ثبّت التطبيق"
+        aria-label="Install AQARI Terminal App"
+        className={`w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-6 py-3 rounded-2xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#C99D28] hover:brightness-110 text-black font-bold text-sm font-mono tracking-wide transition cursor-pointer min-h-[48px] shadow-[0_0_20px_rgba(212,175,55,0.28)] active:scale-95 ${
+          variant === 'footer' ? 'mx-auto' : ''
+        } ${className}`}
       >
-        <Download className="w-4 h-4 text-emerald-400 shrink-0 animate-pulse" />
-        <span className="font-semibold text-white">Install App</span>
-        <span className="text-[#D4AF37] font-arabic font-medium hidden sm:inline">ثبّت التطبيق</span>
+        <Download className="w-4 h-4 text-black shrink-0" />
+        <span>Install AQARI Terminal App</span>
+        <span className="font-arabic font-semibold text-black/80 hidden sm:inline">• ثبّت التطبيق</span>
       </button>
 
       {showIOSModal && (

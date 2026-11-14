@@ -1,6 +1,6 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import React, { useState, useMemo, useEffect } from 'react';
-import { CurrencyCode, RemoteConfig, User, SavedAnalysis, MarketMatrixRow } from '../types';
+import { CurrencyCode, RemoteConfig, User, SavedAnalysis, MarketMatrixRow, CustomCityCard } from '../types';
 import { 
   CURRENCY_SYMBOLS, 
   PLAN_LIMITS, 
@@ -52,9 +52,94 @@ import {
   Flame,
   ArrowRight,
   Menu,
-  X
+  X,
+  MapPin,
+  Loader2,
+  Bot,
+  Radar,
+  Calendar
 } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
+
+// Institutional Demo Benchmarks shown in Empty Saved/Portfolio and kept accessible
+const DEMO_SAVED_BENCHMARKS: SavedAnalysis[] = [
+  {
+    id: 'demo-dubai-marina',
+    property: 'Dubai Marina Waterfront Tower (DEMO)',
+    city: 'Dubai',
+    price: 1240000,
+    rent: 9093,
+    capRate: 8.8,
+    cashOnCash: 9.4,
+    irr: 14.9,
+    dscr: '1.82',
+    monthlyCashflow: 3920,
+    riskScore: 'AAA',
+    date: Date.now() - 86400000,
+    imageUrl: PROPERTY_LISTINGS[1].imageUrl,
+    notes: 'Demo institutional benchmark — 8.8% Gross Yield',
+  },
+  {
+    id: 'demo-muscat-khuwair',
+    property: 'Muscat Al Khuwair Residences (DEMO)',
+    city: 'Muscat',
+    price: 652800,
+    rent: 4570,
+    capRate: 8.4,
+    cashOnCash: 9.8,
+    irr: 14.6,
+    dscr: '1.85',
+    monthlyCashflow: 2150,
+    riskScore: 'AAA',
+    date: Date.now() - 2 * 86400000,
+    imageUrl: PROPERTY_LISTINGS[0].imageUrl,
+    notes: 'Demo institutional benchmark — 8.4% Gross Yield',
+  },
+  {
+    id: 'demo-riyadh-olaya',
+    property: 'Riyadh Al Olaya Sovereign Suite (DEMO)',
+    city: 'Riyadh',
+    price: 980000,
+    rent: 7186,
+    capRate: 8.8,
+    cashOnCash: 9.6,
+    irr: 15.2,
+    dscr: '1.79',
+    monthlyCashflow: 3250,
+    riskScore: 'AAA',
+    date: Date.now() - 3 * 86400000,
+    imageUrl: PROPERTY_LISTINGS[5]?.imageUrl || PROPERTY_LISTINGS[0].imageUrl,
+    notes: 'Demo institutional benchmark — 8.8% Gross Yield',
+  },
+];
+
+const COMING_SOON_AI_MODULES = [
+  {
+    title: 'AI Deal Finder',
+    arabicDesc: 'ابحث عن أفضل الصفقات العقارية تلقائياً',
+    badge: 'PROFESSIONAL / SOVEREIGN',
+  },
+  {
+    title: 'AI Market Forecast',
+    arabicDesc: 'توقعات الأسعار والإيجارات بالذكاء الاصطناعي',
+    badge: 'PROFESSIONAL / SOVEREIGN',
+  },
+  {
+    title: 'AI Due Diligence',
+    arabicDesc: 'فحص شامل للمخاطر القانونية والمالية',
+    badge: 'PROFESSIONAL / SOVEREIGN',
+  },
+  {
+    title: 'Global Portfolio Optimizer',
+    arabicDesc: 'توزيع ذكي لرأس المال بين الأسواق العالمية',
+    badge: 'SOVEREIGN',
+  },
+  {
+    title: 'Institutional AI Advisor',
+    arabicDesc: 'مستشارك الاستثماري الشخصي بالذكاء الاصطناعي',
+    badge: 'SOVEREIGN',
+  },
+];
 
 interface TerminalDashboardProps {
   user: User;
@@ -65,6 +150,7 @@ interface TerminalDashboardProps {
   marketLive?: LiveMarketResponse | null;
   onSignOut: (forgetDevice?: boolean) => void;
   onGoToHome: () => void;
+  onGoToPricing?: () => void;
   onOpenRenewal: () => void;
   onUpdateUser: (u: User) => void;
   onConsumeAnalysis?: () => boolean;
@@ -81,6 +167,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   marketLive,
   onSignOut,
   onGoToHome,
+  onGoToPricing,
   onOpenRenewal,
   onUpdateUser,
   onConsumeAnalysis,
@@ -111,13 +198,43 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
   // Webhook & email audit logs for Settings/Admin view
   const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
   const [emailLogs, setEmailLogs] = useState<any[]>([]);
   const [isAnalyzingApi, setIsAnalyzingApi] = useState(false);
+
+  // Add Your City state & persistence
+  const [isAddCityOpen, setIsAddCityOpen] = useState(false);
+  const [cityQuery, setCityQuery] = useState('');
+  const [citySuggestions, setCitySuggestions] = useState<
+    Array<{ city: string; country: string; displayName: string }>
+  >([]);
+  const [isSearchingCity, setIsSearchingCity] = useState(false);
+  const [isAnalyzingCity, setIsAnalyzingCity] = useState(false);
+  const [cityError, setCityError] = useState<string | null>(null);
+  const [macroSyncInfo, setMacroSyncInfo] = useState<{
+    source: string;
+    last_updated: string;
+    data_as_of: string;
+    real_estate_note: string;
+  } | null>(null);
+
+  const customCities: CustomCityCard[] = useMemo(() => {
+    if (Array.isArray(user.customCities) && user.customCities.length > 0) {
+      return user.customCities;
+    }
+    try {
+      const raw = localStorage.getItem(`aqari_custom_cities_${user.email.toLowerCase()}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  }, [user.customCities, user.email]);
 
   const isTestMode =
     import.meta.env.VITE_LEMON_TEST_MODE === 'true' ||
@@ -220,6 +337,139 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [savedSearch, setSavedSearch] = useState('');
   const [savedCityFilter, setSavedCityFilter] = useState('All');
 
+  // Load macro sync status honestly (Source + Last updated + Data as of date)
+  useEffect(() => {
+    fetch('/api/app?action=macro-sync', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.success) {
+          setMacroSyncInfo({
+            source: d.source || 'FRED / World Bank / ExchangeRate API',
+            last_updated: d.last_updated || marketLive?.last_synced_display || 'Today',
+            data_as_of: d.data_as_of || new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
+            real_estate_note: d.real_estate_note || 'Estimated / Demo data - بيانات تقديرية',
+          });
+        }
+      })
+      .catch(() => {});
+  }, [activeTab]);
+
+  // Debounced city search autocomplete via /api/app?action=city-search
+  useEffect(() => {
+    if (!isAddCityOpen) return;
+    const q = cityQuery.trim();
+    if (q.length < 2) {
+      setCitySuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearchingCity(true);
+      try {
+        const res = await fetch(`/api/app?action=city-search&q=${encodeURIComponent(q)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setCitySuggestions(Array.isArray(data?.suggestions) ? data.suggestions : []);
+        }
+      } catch {
+        setCitySuggestions([]);
+      } finally {
+        setIsSearchingCity(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [cityQuery, isAddCityOpen]);
+
+  // Analyze custom city via /api/app?action=city-analyze (consumes 1 credit, persists to DB + localStorage)
+  const handleAnalyzeCustomCity = async (explicitName?: string) => {
+    const targetCity = (explicitName || cityQuery).trim();
+    if (!targetCity) {
+      setCityError('City not found, try another spelling - المدينة غير موجودة، جرب تهجئة ثانية');
+      return;
+    }
+
+    if (isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)) {
+      showToast('Licensing window expired or quota reached - Renew');
+      setIsAddCityOpen(false);
+      onOpenRenewal();
+      return;
+    }
+
+    setCityError(null);
+    setIsAnalyzingCity(true);
+    try {
+      const res = await fetch('/api/app?action=city-analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          name: user.name,
+          city: targetCity,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success || !data?.cityCard) {
+        setCityError(
+          data?.error || 'City not found, try another spelling - المدينة غير موجودة، جرب تهجئة ثانية'
+        );
+        return;
+      }
+
+      const nextCustomCities: CustomCityCard[] = Array.isArray(data.custom_cities)
+        ? data.custom_cities
+        : [data.cityCard, ...customCities.filter((c) => c.city.toLowerCase() !== data.cityCard.city.toLowerCase())];
+
+      try {
+        localStorage.setItem(
+          `aqari_custom_cities_${user.email.toLowerCase()}`,
+          JSON.stringify(nextCustomCities)
+        );
+      } catch {}
+
+      const nextLeft = data.license?.isUnlimitedAnalyses
+        ? 999999
+        : data.license?.analysesLeft ?? Math.max(0, analysesRemaining - 1);
+
+      onUpdateUser({
+        ...user,
+        customCities: nextCustomCities,
+        analysesUsed: data.license?.analysesUsed ?? (user.analysesUsed || 0) + 1,
+        freeAnalyses: nextLeft,
+        freeAnalysesLeft: nextLeft,
+        analysesLeft: nextLeft,
+      });
+
+      const card: CustomCityCard = data.cityCard;
+      setSelectedPresetId(card.id);
+      setPropertyName(`${card.city} Prime Residential`);
+      setCity(card.city);
+      setPriceUSD(card.estimatedAvgPriceUSD);
+      setRentUSD(card.estimatedAvgRentUSD);
+      setStressTestActive(false);
+      setHasRunAnalysis(true);
+
+      setIsAddCityOpen(false);
+      setCityQuery('');
+      setCitySuggestions([]);
+      showToast(`Added ${card.city} (${card.grossYield}% Gross Estimated) • 1 credit deducted`);
+    } catch {
+      setCityError('City not found, try another spelling - المدينة غير موجودة، جرب تهجئة ثانية');
+    } finally {
+      setIsAnalyzingCity(false);
+    }
+  };
+
+  const handleSelectCustomCity = (card: CustomCityCard) => {
+    setSelectedPresetId(card.id);
+    setPropertyName(`${card.city} Prime Residential`);
+    setCity(card.city);
+    setPriceUSD(card.estimatedAvgPriceUSD);
+    setRentUSD(card.estimatedAvgRentUSD);
+    setStressTestActive(false);
+    setHasRunAnalysis(true);
+    showToast(`Loaded ${card.city} benchmark into Underwriting Engine`);
+  };
+
   // Load a preset property into analyzer (does NOT deduct credit or auto-run)
   const handleSelectPreset = (id: string) => {
     const prop = PROPERTY_LISTINGS.find((p) => p.id === id);
@@ -234,7 +484,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     // User must click RUN ANALYSIS (-1 CREDIT) to compute metrics
   };
 
-  // Financial calculations
+  // Institutional Underwriting Formula Verification:
+  // - NOI = (Monthly Rent * 12 * 0.95 occupancy) - Annual OPEX
+  // - Debt Service = Monthly Mortgage Payment * 12 (25-year amortizing schedule)
+  // - DSCR = NOI / Annual Debt Service
+  // - IRR (5-Year Equity IRR) = annualized compound cashflow yield + equity appreciation benchmark
+  // - Monte Carlo (+200bps) = 1000-trial interest rate shock & 15% vacancy stress test
+  // - Tenant Risk = Covenant yield coverage tiering (AAA / AA)
+  // - Tax Optimization = Cross-border transfer tax & CGT arbitrage adjustment
+  // - PDF Export = Licensed watermarked investor memorandum download
   const downPaymentUSD = priceUSD * (downPaymentPct / 100);
   const loanAmountUSD = Math.max(0, priceUSD - downPaymentUSD);
   const monthlyRate = interestRatePct / 100 / 12;
@@ -997,11 +1255,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
           </div>
 
-          {/* Install App Button in Terminal Sidebar */}
+          {/* Bottom Upgrade / Renew Button - Always Visible Gold Button (PWA Install moved exclusively to bottom page Footer) */}
           <div className="pt-3 border-t border-white/[0.08] space-y-2">
-            <PWAInstallButton variant="navbar" className="w-full justify-center" />
-            
-            {/* Bottom Upgrade / Renew Button - Always Visible Gold Button */}
             <button
               onClick={onOpenRenewal}
               className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#D4AF37] text-black font-black text-xs font-mono uppercase tracking-wider shadow-[0_0_20px_rgba(212,175,55,0.35)] hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
@@ -1009,7 +1264,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               <Zap className="w-4 h-4 fill-black" />
               <span>Upgrade / Renew Plan</span>
             </button>
-            <div className="text-[10px] text-center text-zinc-500 font-mono">
+            <div className="text-[11px] text-center text-zinc-500 font-mono">
               30-day licensing • Real Lemon Checkout
             </div>
           </div>
@@ -1060,33 +1315,174 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
-              {/* Presets & Custom Search */}
-              <div className="glass-panel p-5 space-y-4">
-                <div className="flex items-center justify-between text-xs font-mono text-zinc-400">
+              {/* Presets & Add Your City */}
+              <div className="glass-panel p-5 sm:p-6 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm font-mono text-zinc-300">
                   <span>Quick Load Verified Sovereign Listing:</span>
-                  <span className="text-[#D4AF37]">7 Prime Global Assets</span>
+                  <span className="text-[#D4AF37] font-bold">7 Prime Global Assets</span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+
+                {/* Add Your City Button directly below header, above city cards grid */}
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCityError(null);
+                      setIsAddCityOpen(true);
+                    }}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl border border-[#D4AF37] text-[#D4AF37] hover:bg-[#D4AF37] hover:text-black font-mono text-sm font-bold transition cursor-pointer flex items-center justify-center gap-2 min-h-[44px]"
+                  >
+                    <Plus className="w-4 h-4 shrink-0" />
+                    <span>+ Add Your City - أضف مدينتك</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5">
                   {PROPERTY_LISTINGS.map((p) => {
                     const isSelected = selectedPresetId === p.id;
                     return (
                       <button
                         key={p.id}
                         onClick={() => handleSelectPreset(p.id)}
-                        className={`p-2 rounded-xl text-left transition border cursor-pointer ${
+                        className={`p-3 rounded-xl text-left transition border cursor-pointer ${
                           isSelected
                             ? 'bg-[#D4AF37]/20 border-[#D4AF37] text-white'
                             : 'bg-white/[0.02] border-white/[0.08] text-zinc-400 hover:border-white/20 hover:text-white'
                         }`}
                       >
-                        <div className="text-[10px] font-mono font-bold uppercase text-[#D4AF37] truncate">{p.city}</div>
-                        <div className="text-xs font-semibold truncate text-white mt-0.5">{p.title.split(' ')[0]}</div>
-                        <div className="text-[10px] font-mono text-zinc-400 mt-1">{p.grossYield}% Gross</div>
+                        <div className="text-xs font-mono font-bold uppercase text-[#D4AF37] truncate">{p.city}</div>
+                        <div className="text-sm font-semibold truncate text-white mt-0.5">{p.title.split(' ')[0]}</div>
+                        <div className="text-xs font-mono text-zinc-300 font-bold mt-1">{p.grossYield}% Gross</div>
+                      </button>
+                    );
+                  })}
+
+                  {customCities.map((c) => {
+                    const isSelected = selectedPresetId === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        onClick={() => handleSelectCustomCity(c)}
+                        className={`p-3 rounded-xl text-left transition border cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#D4AF37]/20 border-[#D4AF37] text-white'
+                            : 'bg-emerald-950/20 border-emerald-500/30 text-zinc-300 hover:border-[#D4AF37]/60 hover:text-white'
+                        }`}
+                      >
+                        <div className="text-xs font-mono font-bold uppercase text-emerald-400 truncate">
+                          {c.city.toUpperCase()}
+                        </div>
+                        <div className="text-sm font-semibold truncate text-white mt-0.5">City</div>
+                        <div className="text-xs font-mono text-[#D4AF37] font-bold mt-1">{c.grossYield}% Gross</div>
+                        <div className="text-[11px] font-mono text-zinc-400 mt-0.5 truncate">Estimated • {c.country}</div>
                       </button>
                     );
                   })}
                 </div>
               </div>
+
+              {/* Add Your City Modal */}
+              {isAddCityOpen && (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
+                  onClick={() => setIsAddCityOpen(false)}
+                >
+                  <div
+                    className="w-full max-w-md rounded-3xl bg-zinc-950 border border-[#D4AF37]/40 p-6 space-y-5 shadow-[0_20px_60px_rgba(0,0,0,0.9)]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <MapPin className="w-5 h-5 text-[#D4AF37]" />
+                        <h3 className="text-lg font-bold text-white">Add Your City</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsAddCityOpen(false)}
+                        className="p-2 rounded-full bg-white/5 text-zinc-400 hover:text-white cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="space-y-2 relative">
+                      <label className="text-xs font-mono text-zinc-400 uppercase block">
+                        City Name (Worldwide)
+                      </label>
+                      <input
+                        type="text"
+                        value={cityQuery}
+                        onChange={(e) => {
+                          setCityQuery(e.target.value);
+                          setCityError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAnalyzeCustomCity();
+                          }
+                        }}
+                        placeholder="Type your city... e.g. Salalah, Sohar, Jeddah, Doha, Abu Dhabi"
+                        className="w-full px-4 py-3 rounded-xl bg-white/[0.04] border border-white/15 text-white text-sm font-mono outline-none focus:border-[#D4AF37]"
+                        autoFocus
+                      />
+
+                      {isSearchingCity && (
+                        <div className="text-xs font-mono text-zinc-400 flex items-center gap-1.5 pt-1">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D4AF37]" />
+                          <span>Searching global cities...</span>
+                        </div>
+                      )}
+
+                      {citySuggestions.length > 0 && (
+                        <div className="max-h-48 overflow-y-auto rounded-xl bg-black/95 border border-white/15 divide-y divide-white/[0.06]">
+                          {citySuggestions.map((s, idx) => (
+                            <button
+                              key={`${s.city}-${idx}`}
+                              type="button"
+                              onClick={() => {
+                                setCityQuery(s.displayName);
+                                setCitySuggestions([]);
+                                handleAnalyzeCustomCity(s.displayName);
+                              }}
+                              className="w-full text-left px-4 py-2.5 text-sm font-mono text-zinc-200 hover:bg-[#D4AF37]/15 hover:text-white flex items-center justify-between cursor-pointer"
+                            >
+                              <span>{s.city}</span>
+                              <span className="text-xs text-zinc-400">{s.country}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {cityError && (
+                      <div className="p-3.5 rounded-xl bg-rose-950/60 border border-rose-500/40 text-sm font-mono text-rose-200">
+                        {cityError}
+                      </div>
+                    )}
+
+                    <div className="text-xs font-mono text-zinc-400">
+                      Estimated / Demo data - بيانات تقديرية • Consumes 1 analysis credit if valid city is found.
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isAnalyzingCity}
+                      onClick={() => handleAnalyzeCustomCity()}
+                      className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-sm font-mono transition cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60 min-h-[48px]"
+                    >
+                      {isAnalyzingCity ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Analyzing City...</span>
+                        </>
+                      ) : (
+                        <span>Analyze My City - حلل مدينتي</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Sliders & Parameter Controls */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -1101,20 +1497,20 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   {/* Property Name & City */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="text-[10px] font-mono text-zinc-400 block mb-1 uppercase">Asset Title</label>
+                      <label className="text-xs font-mono text-zinc-400 block mb-1 uppercase">Asset Title</label>
                       <input
                         type="text"
                         value={propertyName}
                         onChange={(e) => setPropertyName(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-white/[0.04] border border-white/10 text-white text-xs font-mono outline-none focus:border-[#D4AF37]"
+                        className="w-full px-3 py-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-white text-sm font-mono outline-none focus:border-[#D4AF37]"
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] font-mono text-zinc-400 block mb-1 uppercase">Target Market / City</label>
+                      <label className="text-xs font-mono text-zinc-400 block mb-1 uppercase">Target Market / City</label>
                       <select
                         value={city}
                         onChange={(e) => setCity(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-white/10 text-white text-xs font-mono outline-none"
+                        className="w-full px-3 py-2.5 rounded-xl bg-zinc-900 border border-white/10 text-white text-sm font-mono outline-none"
                       >
                         <option value="Muscat">Muscat (Oman 🇴🇲)</option>
                         <option value="Dubai">Dubai (UAE 🇦🇪)</option>
@@ -1123,6 +1519,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <option value="New York">New York (USA 🇺🇸)</option>
                         <option value="Riyadh">Riyadh (KSA 🇸🇦)</option>
                         <option value="Miami">Miami (USA 🇺🇸)</option>
+                        {customCities.map((c) => (
+                          <option key={c.id} value={c.city}>
+                            {c.city} ({c.country})
+                          </option>
+                        ))}
                       </select>
                     </div>
                   </div>
@@ -1531,104 +1932,179 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
-              {/* Empty State */}
+              {/* Empty State with 3 DEMO Reference Cards + Accessible Benchmarks */}
               {savedAnalyses.length === 0 ? (
-                <div className="glass-panel p-12 text-center space-y-4">
-                  <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-center mx-auto text-zinc-500">
-                    <BookmarkCheck className="w-8 h-8 text-[#D4AF37]" />
+                <div className="space-y-6">
+                  <div className="glass-panel p-6 sm:p-8 text-center space-y-4">
+                    <div className="w-14 h-14 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-center mx-auto text-zinc-500">
+                      <BookmarkCheck className="w-7 h-7 text-[#D4AF37]" />
+                    </div>
+                    <h3 className="text-xl font-bold text-white">No Real Analyses Saved Yet</h3>
+                    <p className="text-sm text-zinc-400 max-w-lg mx-auto font-mono">
+                      These are demos, your real analyses will appear here
+                    </p>
+                    <div className="flex flex-wrap justify-center gap-3 pt-1">
+                      <button
+                        onClick={() => setActiveTab('analyze')}
+                        className="px-5 py-3 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-sm font-mono cursor-pointer min-h-[44px]"
+                      >
+                        Start Your First Real Analysis
+                      </button>
+                    </div>
                   </div>
-                  <h3 className="text-xl font-bold text-white">No Analyses Saved Yet</h3>
-                  <p className="text-xs text-zinc-400 max-w-md mx-auto font-mono">
-                    Underwrite properties in the analyzer and click "SAVE TO PORTFOLIO" to aggregate cash flows and track multi-asset yields.
-                  </p>
-                  <div className="flex justify-center gap-3 pt-2">
-                    <button
-                      onClick={() => setActiveTab('analyze')}
-                      className="px-5 py-2.5 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer"
-                    >
-                      Underwrite First Property
-                    </button>
-                    <button
-                      onClick={handleSeedSamplePortfolio}
-                      className="px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-mono cursor-pointer"
-                    >
-                      Load Sample Institutional Assets
-                    </button>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    {DEMO_SAVED_BENCHMARKS.map((demo) => (
+                      <div
+                        key={demo.id}
+                        className="glass-panel rounded-2xl p-5 flex flex-col justify-between border border-amber-500/25 hover:border-[#D4AF37]/60 transition"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="px-2.5 py-1 rounded bg-amber-500/15 border border-amber-500/40 text-xs font-mono text-amber-300 font-bold">
+                              DEMO - تجريبي
+                            </span>
+                            <span className="text-xs font-mono text-zinc-400">{demo.city}</span>
+                          </div>
+                          <h4 className="text-base font-bold text-white tracking-tight mt-2">{demo.property}</h4>
+                          <div className="text-xl font-black font-mono text-[#D4AF37] mt-1">
+                            {demo.capRate}% Gross • {formatPrice(demo.price, currentCurrency)}
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] my-4 text-center font-mono">
+                            <div>
+                              <span className="text-xs text-zinc-400 block uppercase">Gross %</span>
+                              <span className="text-lg font-bold text-[#D4AF37]">{demo.capRate}%</span>
+                            </div>
+                            <div>
+                              <span className="text-xs text-zinc-400 block uppercase">IRR</span>
+                              <span className="text-lg font-bold text-purple-400">{demo.irr}%</span>
+                            </div>
+                            <div>
+                              <span className="text-xs text-zinc-400 block uppercase">DSCR</span>
+                              <span className="text-lg font-bold text-emerald-400">{demo.dscr}x</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleLoadSaved(demo)}
+                          className="w-full py-2.5 px-4 rounded-xl bg-white/[0.06] hover:bg-[#D4AF37] hover:text-black text-white font-mono text-sm font-bold transition cursor-pointer flex items-center justify-center gap-2 min-h-[44px]"
+                        >
+                          <Eye className="w-4 h-4" />
+                          <span>Open Demo Analysis</span>
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 </div>
               ) : (
-                /* Grid of Saved Properties */
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                  {filteredSaved.map((item) => (
-                    <div
-                      key={item.id}
-                      className="glass-panel rounded-2xl p-5 flex flex-col justify-between hover:border-[#D4AF37]/50 transition duration-300"
-                    >
-                      <div>
-                        {/* Header & City */}
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="px-2.5 py-0.5 rounded bg-black/60 border border-white/10 text-[10px] font-mono text-[#D4AF37] font-bold uppercase">
-                            {item.city}
-                          </span>
-                          <span className="text-[10px] font-mono text-zinc-500">
-                            {new Date(item.date).toLocaleDateString()}
-                          </span>
-                        </div>
-
-                        <h4 className="text-base font-bold text-white tracking-tight line-clamp-1">{item.property}</h4>
-                        <div className="text-lg font-black font-mono text-white mt-1">
-                          {formatPrice(item.price, currentCurrency)}
-                        </div>
-
-                        {/* Metrics Grid */}
-                        <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] my-4 text-center text-xs font-mono">
-                          <div>
-                            <span className="text-[9px] text-zinc-400 block uppercase">Cap Rate</span>
-                            <span className="font-bold text-[#D4AF37]">{item.capRate}%</span>
-                          </div>
-                          <div>
-                            <span className="text-[9px] text-zinc-400 block uppercase">5Y IRR</span>
-                            <span className="font-bold text-purple-400">{item.irr}%</span>
-                          </div>
-                          <div>
-                            <span className="text-[9px] text-zinc-400 block uppercase">Cashflow</span>
-                            <span className="font-bold text-emerald-400">
-                              {formatPrice(item.monthlyCashflow, currentCurrency, { compact: true })}
+                <div className="space-y-6">
+                  {/* Grid of Saved Properties */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                    {filteredSaved.map((item) => (
+                      <div
+                        key={item.id}
+                        className="glass-panel rounded-2xl p-5 flex flex-col justify-between hover:border-[#D4AF37]/50 transition duration-300"
+                      >
+                        <div>
+                          {/* Header & City */}
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="px-2.5 py-0.5 rounded bg-black/60 border border-white/10 text-xs font-mono text-[#D4AF37] font-bold uppercase">
+                              {item.city}
+                            </span>
+                            <span className="text-xs font-mono text-zinc-500">
+                              {new Date(item.date).toLocaleDateString()}
                             </span>
                           </div>
+
+                          <h4 className="text-base font-bold text-white tracking-tight line-clamp-1">{item.property}</h4>
+                          <div className="text-xl font-black font-mono text-white mt-1">
+                            {formatPrice(item.price, currentCurrency)}
+                          </div>
+
+                          {/* Metrics Grid */}
+                          <div className="grid grid-cols-3 gap-2 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] my-4 text-center font-mono">
+                            <div>
+                              <span className="text-xs text-zinc-400 block uppercase">Cap Rate</span>
+                              <span className="text-lg font-bold text-[#D4AF37]">{item.capRate}%</span>
+                            </div>
+                            <div>
+                              <span className="text-xs text-zinc-400 block uppercase">5Y IRR</span>
+                              <span className="text-lg font-bold text-purple-400">{item.irr}%</span>
+                            </div>
+                            <div>
+                              <span className="text-xs text-zinc-400 block uppercase">DSCR</span>
+                              <span className="text-lg font-bold text-emerald-400">{item.dscr}x</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between gap-2">
+                          <button
+                            onClick={() => handleLoadSaved(item)}
+                            className="flex items-center gap-1.5 text-sm font-mono text-[#D4AF37] hover:underline cursor-pointer"
+                          >
+                            <Eye className="w-4 h-4" />
+                            <span>View Model</span>
+                          </button>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleExportPDF(item.property)}
+                              className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
+                              title="Export PDF Memo (Pro/Enterprise)"
+                            >
+                              <Download className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSaved(item.id)}
+                              className="p-2 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                              title="Delete Analysis"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
                       </div>
+                    ))}
+                  </div>
 
-                      {/* Action Buttons */}
-                      <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between gap-2">
-                        <button
-                          onClick={() => handleLoadSaved(item)}
-                          className="flex items-center gap-1 text-xs font-mono text-[#D4AF37] hover:underline cursor-pointer"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>View Model</span>
-                        </button>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => handleExportPDF(item.property)}
-                            className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
-                            title="Export PDF Memo (Pro/Enterprise)"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteSaved(item.id)}
-                            className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
-                            title="Delete Analysis"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
+                  {/* Keep Demo Reference Analyses accessible even after saving real ones */}
+                  <div className="pt-4 border-t border-white/[0.08] space-y-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-mono font-bold text-zinc-300 uppercase">
+                        Reference Demo Benchmarks (DEMO - تجريبي)
+                      </span>
+                      <span className="text-xs font-mono text-zinc-500">
+                        Always accessible • Not counted toward saved limit
+                      </span>
                     </div>
-                  ))}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {DEMO_SAVED_BENCHMARKS.map((demo) => (
+                        <div
+                          key={demo.id}
+                          className="p-5 rounded-2xl bg-white/[0.02] border border-white/[0.08] flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0">
+                            <span className="text-[11px] font-mono text-amber-300 font-bold block">
+                              DEMO - تجريبي • {demo.city}
+                            </span>
+                            <div className="text-sm font-bold text-white truncate">{demo.property}</div>
+                            <div className="text-sm font-mono text-[#D4AF37] font-bold">{demo.capRate}% Gross</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleLoadSaved(demo)}
+                            className="px-3 py-2 rounded-xl bg-white/[0.06] hover:bg-[#D4AF37] hover:text-black text-xs font-mono font-bold text-white shrink-0 cursor-pointer"
+                          >
+                            Open Demo
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -1651,7 +2127,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <h3 className="text-2xl font-bold text-white tracking-tight">
                       Multi-Asset Portfolio Aggregation
                     </h3>
-                    <p className="text-xs text-zinc-400 font-mono leading-relaxed">
+                    <p className="text-sm text-zinc-400 font-mono leading-relaxed">
                       Upgrade to Professional to unlock multi-asset portfolio yield aggregation, weighted IRR tracking, and institutional PDF exports.
                     </p>
                   </div>
@@ -1665,29 +2141,47 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </div>
                 </div>
               ) : savedAnalyses.length === 0 ? (
-                <div className="glass-panel p-10 sm:p-14 text-center space-y-5 border border-dashed border-white/15">
-                  <div className="w-16 h-16 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-center mx-auto text-[#D4AF37]">
-                    <Briefcase className="w-8 h-8 text-[#D4AF37]" />
+                <div className="space-y-6">
+                  <div className="glass-panel p-6 sm:p-10 text-center space-y-4 border border-dashed border-white/15">
+                    <div className="w-14 h-14 rounded-2xl bg-white/[0.04] border border-white/10 flex items-center justify-center mx-auto text-[#D4AF37]">
+                      <Briefcase className="w-7 h-7 text-[#D4AF37]" />
+                    </div>
+                    <div className="max-w-lg mx-auto space-y-2">
+                      <h3 className="text-xl font-bold text-white tracking-tight">No real assets in portfolio yet</h3>
+                      <p className="text-sm text-zinc-400 font-mono leading-relaxed">
+                        These are demos, your real analyses will appear here
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap justify-center gap-3 pt-1">
+                      <button
+                        onClick={() => setActiveTab('analyze')}
+                        className="px-6 py-3 rounded-xl bg-[#D4AF37] hover:bg-amber-400 text-black font-bold text-sm font-mono uppercase tracking-wider transition cursor-pointer"
+                      >
+                        Start Your First Real Analysis
+                      </button>
+                    </div>
                   </div>
-                  <div className="max-w-md mx-auto space-y-2">
-                    <h3 className="text-xl font-bold text-white tracking-tight">No assets in portfolio yet</h3>
-                    <p className="text-xs text-zinc-400 font-mono leading-relaxed">
-                      You haven't saved any property analyses to your sovereign portfolio. Run an underwriting analysis on Muscat, Dubai, or London properties and click "Save to Portfolio".
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap justify-center gap-3 pt-2">
-                    <button
-                      onClick={() => setActiveTab('analyze')}
-                      className="px-6 py-3 rounded-xl bg-[#D4AF37] hover:bg-amber-400 text-black font-bold text-xs font-mono uppercase tracking-wider transition cursor-pointer"
-                    >
-                      Go to Underwriter
-                    </button>
-                    <button
-                      onClick={handleSeedSamplePortfolio}
-                      className="px-5 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-300 font-mono text-xs transition cursor-pointer"
-                    >
-                      Seed Demo Portfolio (3 Assets)
-                    </button>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    {DEMO_SAVED_BENCHMARKS.map((demo) => (
+                      <div key={demo.id} className="glass-panel p-5 border border-amber-500/25 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="px-2.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 text-xs font-mono text-amber-300 font-bold">
+                            DEMO - تجريبي
+                          </span>
+                          <span className="text-xs font-mono text-zinc-400">{demo.city}</span>
+                        </div>
+                        <div className="text-base font-bold text-white">{demo.property}</div>
+                        <div className="text-lg font-black font-mono text-[#D4AF37]">{demo.capRate}% Gross</div>
+                        <button
+                          type="button"
+                          onClick={() => handleLoadSaved(demo)}
+                          className="w-full py-2.5 px-4 rounded-xl bg-white/[0.06] hover:bg-[#D4AF37] hover:text-black text-white font-mono text-sm font-bold transition cursor-pointer"
+                        >
+                          Open Demo Analysis
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 </div>
               ) : (
@@ -1792,6 +2286,16 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
                     Sovereign Real Estate Capital Matrix
                   </h2>
+                  <div className="text-xs font-mono text-zinc-400 mt-1.5 flex flex-wrap items-center gap-2">
+                    <span>
+                      Source: {macroSyncInfo?.source || 'World Bank / FRED / DLD / JLL'} • Last updated:{' '}
+                      {macroSyncInfo?.last_updated || marketLive?.last_synced_display || 'Daily'} • Data as of{' '}
+                      {macroSyncInfo?.data_as_of || new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                    </span>
+                    <span className="text-zinc-400">
+                      (Estimated / Demo data - بيانات تقديرية)
+                    </span>
+                  </div>
                 </div>
                 {!canFullMatrix && (
                   <button
@@ -1805,8 +2309,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
               <div className="glass-panel overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs font-mono">
-                    <thead className="bg-white/[0.03] border-b border-white/[0.06] text-zinc-400 uppercase text-[10px]">
+                  <table className="w-full text-left text-sm font-mono">
+                    <thead className="bg-white/[0.03] border-b border-white/[0.06] text-zinc-400 uppercase text-xs">
                       <tr>
                         <th className="py-3.5 px-4 font-semibold">City</th>
                         <th className="py-3.5 px-4 font-semibold">Price / m² ({currentCurrency})</th>
@@ -1826,7 +2330,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <td className="py-3.5 px-4 font-mono font-bold text-zinc-200">
                             {formatPrice(row.basePriceSqMUSD, currentCurrency)}
                           </td>
-                          <td className="py-3.5 px-4 text-[#D4AF37] font-bold">
+                          <td className="py-3.5 px-4 text-[#D4AF37] font-bold text-lg">
                             {row.avgGrossYield}%
                           </td>
                           <td className="py-3.5 px-4 text-zinc-300">
@@ -1958,46 +2462,60 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
-              {/* Section A: MARKET HIGHLIGHTS - LIVE */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between px-1">
+              {/* Section A: MARKET HIGHLIGHTS - LIVE MACRO SYNC */}
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
-                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-white">
-                      Market Highlights • Synced {marketLive?.last_synced_display || 'Daily'}
+                    <span className="text-sm font-mono font-bold uppercase tracking-wider text-white">
+                      Market Highlights • Data as of{' '}
+                      {macroSyncInfo?.data_as_of ||
+                        new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
                     </span>
                   </div>
-                  <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                    <span>WORLD BANK / FRED / DLD / JLL</span>
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-mono text-zinc-400">
+                      Estimated / Demo data - بيانات تقديرية
+                    </span>
+                    <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded border border-emerald-500/20 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      <span>Source: {macroSyncInfo?.source || 'FRED / World Bank / DLD / JLL'}</span>
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                   <div className="glass-panel p-5 border border-white/[0.08]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-400">Muscat vs US 10Y Spread</span>
-                    <div className="text-xl font-bold font-mono text-[#D4AF37] mt-1">
+                    <span className="text-xs font-mono uppercase text-zinc-400">Muscat vs US 10Y Spread</span>
+                    <div className="text-xl font-black font-mono text-[#D4AF37] mt-1">
                       +{marketLive?.metrics?.muscat_vs_us10y_bps ?? 412} bps • {marketLive?.cities?.find((c) => c.city === 'Muscat')?.gross_yield ?? 8.4}%
                     </div>
-                    <p className="text-[10px] text-zinc-500 font-mono mt-1">
-                      FRED US10Y: {marketLive?.macro?.us_10y_yield ?? 4.28}% • 0% CGT
+                    <p className="text-xs text-zinc-400 font-mono mt-1.5">
+                      FRED US10Y: {marketLive?.macro?.us_10y_yield ?? 4.28}% • Last updated: {macroSyncInfo?.last_updated || marketLive?.last_synced_display || 'Today'}
                     </p>
+                    <p className="text-xs text-zinc-500 font-mono mt-0.5">Estimated / Demo data - بيانات تقديرية</p>
                   </div>
 
                   <div className="glass-panel p-5 border border-white/[0.08]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-400">Dubai DLD Residential Index</span>
-                    <div className="text-xl font-bold font-mono text-emerald-400 mt-1">
+                    <span className="text-xs font-mono uppercase text-zinc-400">Dubai DLD Residential Index</span>
+                    <div className="text-xl font-black font-mono text-emerald-400 mt-1">
                       {marketLive?.metrics?.dubai_dld_index ?? 184.2} pts • {marketLive?.cities?.find((c) => c.city === 'Dubai')?.gross_yield ?? 8.8}%
                     </div>
-                    <p className="text-[10px] text-zinc-500 font-mono mt-1">Dubai Land Department • Golden Visa Eligible</p>
+                    <p className="text-xs text-zinc-400 font-mono mt-1.5">
+                      Source: Dubai Land Department • Data as of {macroSyncInfo?.data_as_of || 'Today'}
+                    </p>
+                    <p className="text-xs text-zinc-500 font-mono mt-0.5">Estimated / Demo data - بيانات تقديرية</p>
                   </div>
 
                   <div className="glass-panel p-5 border border-white/[0.08]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-400">Riyadh KAFD Rental Spread</span>
-                    <div className="text-xl font-bold font-mono text-purple-400 mt-1">
+                    <span className="text-xs font-mono uppercase text-zinc-400">Riyadh KAFD Rental Spread</span>
+                    <div className="text-xl font-black font-mono text-purple-400 mt-1">
                       Riyadh • +{marketLive?.cities?.find((c) => c.city === 'Riyadh')?.rental_yoy ?? 14.8}% YoY
                     </div>
-                    <p className="text-[10px] text-zinc-500 font-mono mt-1">JLL KSA Baseline • HQ Corporate Demand</p>
+                    <p className="text-xs text-zinc-400 font-mono mt-1.5">
+                      Source: JLL KSA Baseline • Data as of {macroSyncInfo?.data_as_of || 'Today'}
+                    </p>
+                    <p className="text-xs text-zinc-500 font-mono mt-0.5">Estimated / Demo data - بيانات تقديرية</p>
                   </div>
                 </div>
               </div>
@@ -2133,10 +2651,83 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 )}
               </div>
 
+              {/* Subscription Management Card (Start Date, End Date, Days Left, Extend CTA) */}
+              <div className="glass-panel p-6 space-y-5 border border-[#D4AF37]/30">
+                <div className="flex items-center justify-between border-b border-white/[0.08] pb-3">
+                  <div className="flex items-center gap-2 text-base font-mono font-bold uppercase text-white">
+                    <Calendar className="w-5 h-5 text-[#D4AF37]" />
+                    <span>Subscription &amp; 30-Day Licensing</span>
+                  </div>
+                  <span className="text-xs font-mono font-bold uppercase px-3 py-1 rounded-full bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37]">
+                    {license.displayName}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 font-mono">
+                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-xs text-zinc-400 uppercase block mb-1">Plan</span>
+                    <strong className="text-lg font-bold text-[#D4AF37]">{license.displayName}</strong>
+                  </div>
+                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-xs text-zinc-400 uppercase block mb-1">Start Date</span>
+                    <strong className="text-sm font-bold text-white">
+                      {user.subscriptionStartAt
+                        ? new Date(user.subscriptionStartAt).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                          })
+                        : 'Active Today'}
+                    </strong>
+                  </div>
+                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-xs text-zinc-400 uppercase block mb-1">End Date</span>
+                    <strong className="text-sm font-bold text-white">
+                      {endsAt
+                        ? new Date(endsAt).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                          })
+                        : '30-Day Window'}
+                    </strong>
+                  </div>
+                  <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-xs text-zinc-400 uppercase block mb-1">Days Left</span>
+                    <strong className={`text-lg font-bold ${isPlanEnded ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {isPlanEnded ? '0 days' : `${daysLeft} days`}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
+                  <p className="text-sm font-mono text-zinc-300">
+                    Your access ends on{' '}
+                    <strong className="text-white">
+                      {endsAt
+                        ? new Date(endsAt).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                          })
+                        : 'end of cycle'}
+                    </strong>
+                    , renew anytime, your saved analyses stay
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => (onGoToPricing ? onGoToPricing() : onOpenRenewal())}
+                    className="w-full sm:w-auto px-5 py-3 rounded-xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#C99D28] hover:brightness-110 text-black font-black text-sm font-mono transition cursor-pointer shadow-lg shrink-0 min-h-[44px]"
+                  >
+                    Extend Your 30-Day Terminal Access - جدد اشتراكك
+                  </button>
+                </div>
+              </div>
+
               {/* Account Card */}
               <div className="glass-panel p-6 space-y-4">
                 <h3 className="text-sm font-mono font-bold uppercase text-white">Profile Credentials</h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs font-mono">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-sm font-mono">
                   <div>
                     <span className="text-zinc-500 block mb-0.5">User ID</span>
                     <span className="text-white truncate block">{user.id}</span>
@@ -2157,7 +2748,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         : `${daysLeft} days left`}
                     </span>
                     {endsAt && license.planKey !== 'free' && (
-                      <span className="text-[10px] text-zinc-500 block mt-0.5">
+                      <span className="text-xs text-zinc-500 block mt-0.5">
                         Ends: {new Date(endsAt).toLocaleString()}
                       </span>
                     )}
@@ -2180,7 +2771,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               {/* Plan Feature Matrix */}
               <div className="glass-panel p-6 space-y-4">
                 <h3 className="text-sm font-mono font-bold uppercase text-white">Feature Entitlements Checklist</h3>
-                <div className="space-y-2 text-xs font-mono">
+                <div className="space-y-2 text-sm font-mono">
                   {[
                     { label: 'Basic Cap Rate & Cash-on-Cash', unlocked: true, req: 'FREE' },
                     { label: 'Yield & Sensitivity Calculator + Full Matrix', unlocked: canSensitivity, req: 'STARTER' },
@@ -2190,12 +2781,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     { label: 'Full REST API Credentials', unlocked: canApiAccess, req: 'SOVEREIGN' },
                     { label: '1-on-1 Dedicated Analyst Desk & Custom Underwriting', unlocked: canAnalystDesk, req: 'SOVEREIGN' },
                   ].map((item) => (
-                    <div key={item.label} className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.02]">
+                    <div key={item.label} className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
                       <div className="flex items-center gap-2">
                         {item.unlocked ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <Check className="w-4 h-4 text-emerald-400" />
                         ) : (
-                          <Lock className="w-3.5 h-3.5 text-amber-400" />
+                          <Lock className="w-4 h-4 text-amber-400" />
                         )}
                         <span>{item.label}</span>
                       </div>
@@ -2210,7 +2801,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                 <button
                   onClick={onOpenRenewal}
-                  className="mt-4 px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer"
+                  className="mt-4 px-5 py-2.5 rounded-xl bg-[#D4AF37] text-black font-bold text-sm font-mono cursor-pointer"
                 >
                   Upgrade / Renew Subscription
                 </button>
@@ -2253,7 +2844,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <Headphones className="w-4 h-4" />
                           <span>1-on-1 Dedicated Analyst Desk</span>
                         </div>
-                        <p className="text-[11px] font-mono text-zinc-400 leading-relaxed">
+                        <p className="text-xs font-mono text-zinc-400 leading-relaxed">
                           Direct priority underwriting consultation with Loomora Studios institutional real estate desk.
                         </p>
                         <a
@@ -2270,7 +2861,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <FileText className="w-4 h-4" />
                           <span>White-Glove Custom Underwriting</span>
                         </div>
-                        <p className="text-[11px] font-mono text-zinc-400 leading-relaxed">
+                        <p className="text-xs font-mono text-zinc-400 leading-relaxed">
                           Submit multi-jurisdiction SPV structures or GCC ITC portfolios for bespoke sensitivity modeling and board PDF memos.
                         </p>
                       </div>
@@ -2279,44 +2870,65 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               )}
 
-              {/* Webhook & Day-29 Email Audit Logs */}
+              {/* Webhook & Day-29 Email Audit Logs (Shows Event, Signature, Error for Debugging) */}
               <div className="glass-panel p-6 space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-mono font-bold uppercase text-white">
                     Payment Webhook &amp; Email Audit Logs
                   </h3>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/5 text-zinc-400">
+                  <span className="text-xs font-mono px-2.5 py-1 rounded bg-white/5 text-zinc-300">
                     {webhookLogs.length} webhooks • {emailLogs.length} emails
                   </span>
                 </div>
 
                 {webhookLogs.length === 0 ? (
-                  <div className="text-xs font-mono text-zinc-500 p-3 rounded-xl bg-black/40 border border-white/5">
+                  <div className="text-sm font-mono text-zinc-400 p-4 rounded-xl bg-black/40 border border-white/5">
                     No Lemon Squeezy webhook events logged in this container yet.
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
-                    <table className="w-full text-left text-[11px] font-mono">
-                      <thead className="text-zinc-500 border-b border-white/10 uppercase">
+                    <table className="w-full text-left text-sm font-mono">
+                      <thead className="text-zinc-500 border-b border-white/10 uppercase text-xs">
                         <tr>
-                          <th className="py-2 pr-3">Order ID</th>
-                          <th className="py-2 pr-3">Plan</th>
-                          <th className="py-2 pr-3">Email</th>
-                          <th className="py-2 pr-3">Amount</th>
-                          <th className="py-2">Mode</th>
+                          <th className="py-2.5 pr-3">Event</th>
+                          <th className="py-2.5 pr-3">Order ID</th>
+                          <th className="py-2.5 pr-3">Plan</th>
+                          <th className="py-2.5 pr-3">Email</th>
+                          <th className="py-2.5 pr-3">Amount</th>
+                          <th className="py-2.5 pr-3">Signature</th>
+                          <th className="py-2.5 pr-3">Mode</th>
+                          <th className="py-2.5">Timestamp / Error</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5 text-zinc-300">
-                        {webhookLogs.slice(0, 10).map((w) => (
+                        {webhookLogs.slice(0, 20).map((w) => (
                           <tr key={w.id}>
-                            <td className="py-2 pr-3">{w.order_id}</td>
-                            <td className="py-2 pr-3 uppercase text-[#D4AF37] font-bold">{w.plan}</td>
-                            <td className="py-2 pr-3">{w.email}</td>
-                            <td className="py-2 pr-3">${w.amount} {w.currency}</td>
-                            <td className="py-2">
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${w.test_mode ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                            <td className="py-2.5 pr-3 text-xs text-white font-semibold">{w.event_name || 'order_created'}</td>
+                            <td className="py-2.5 pr-3 text-xs">{w.order_id}</td>
+                            <td className="py-2.5 pr-3 uppercase text-[#D4AF37] font-bold">{w.plan}</td>
+                            <td className="py-2.5 pr-3 text-xs">{w.email}</td>
+                            <td className="py-2.5 pr-3">${w.amount} {w.currency}</td>
+                            <td className="py-2.5 pr-3">
+                              <span
+                                className={`px-2 py-0.5 rounded text-xs font-bold ${
+                                  w.signature_valid === false
+                                    ? 'bg-rose-500/20 text-rose-300'
+                                    : 'bg-emerald-500/20 text-emerald-300'
+                                }`}
+                              >
+                                {w.signature_valid === false ? 'FAILED' : 'VALID'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 pr-3">
+                              <span className={`px-2 py-0.5 rounded text-xs font-bold ${w.test_mode ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
                                 {w.test_mode ? 'TEST' : 'LIVE'}
                               </span>
+                            </td>
+                            <td className="py-2.5 text-xs">
+                              <div className="text-zinc-400">
+                                {w.timestamp ? new Date(w.timestamp).toLocaleString() : '-'}
+                              </div>
+                              {w.error && <div className="text-rose-400 mt-0.5">{w.error}</div>}
                             </td>
                           </tr>
                         ))}
@@ -2328,6 +2940,54 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
             </div>
           )}
+
+          {/* Roadmap Section: Coming Soon - قريباً (5 Locked AI Modules Only) */}
+          <section className="max-w-6xl mx-auto pt-6 border-t border-white/[0.08] space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <Bot className="w-5 h-5 text-[#D4AF37]" />
+                <h3 className="text-xl font-bold text-white tracking-tight">
+                  Coming Soon - قريباً
+                </h3>
+              </div>
+              <span className="text-xs font-mono text-zinc-400">
+                Institutional Intelligence Roadmap • Locked Preview
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {COMING_SOON_AI_MODULES.map((mod) => (
+                <button
+                  key={mod.title}
+                  type="button"
+                  onClick={() => showToast('Coming Soon - Available for PROFESSIONAL / SOVEREIGN soon')}
+                  className="text-left p-5 rounded-2xl bg-white/[0.02] hover:bg-white/[0.04] border border-white/[0.08] hover:border-[#D4AF37]/40 transition space-y-2.5 cursor-pointer"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-[#D4AF37] uppercase">
+                      <Lock className="w-3.5 h-3.5 text-[#D4AF37]" />
+                      <span>LOCKED • {mod.badge}</span>
+                    </span>
+                    <Radar className="w-4 h-4 text-zinc-500" />
+                  </div>
+                  <div className="text-base font-bold text-white">{mod.title}</div>
+                  <div className="text-sm font-arabic text-zinc-400 leading-relaxed">
+                    {mod.arabicDesc}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {/* Bottom Dashboard Footer with Single Centered PWA Install Button */}
+          <footer className="max-w-6xl mx-auto pt-8 pb-4 border-t border-white/[0.08] space-y-5 text-center">
+            <div className="flex justify-center">
+              <PWAInstallButton variant="footer" />
+            </div>
+            <div className="text-xs font-mono text-zinc-500">
+              © 2026 Loomora Studios - AQARI TERMINAL. All rights reserved.
+            </div>
+          </footer>
 
         </main>
 
