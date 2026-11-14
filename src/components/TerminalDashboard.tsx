@@ -348,7 +348,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.success) {
-        setBackupVerifyMsg(`Verified ${data.plan || data.planKey} (Order #${data.order_id_used || backupOrderId}).`);
+        setBackupVerifyMsg(`Verified ${data.plan || data.planKey} (Order #${data.order_id || data.order_id_used || backupOrderId}).`);
         loadWebhookLogs();
       } else {
         setBackupVerifyMsg(data?.error || 'Verification did not find a paid order.');
@@ -3000,32 +3000,6 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           {webhookEnvStatus ? (webhookEnvStatus.apiKeyPresent ? 'Yes' : 'No') : '...'}
                         </strong>
                       </span>
-                      <span className="text-zinc-200">
-                        RESEND_API_KEY present?{' '}
-                        <strong className={webhookEnvStatus?.resendKeyPresent ? 'text-emerald-400' : 'text-rose-400'}>
-                          {webhookEnvStatus
-                            ? webhookEnvStatus.resendKeyPresent
-                              ? `Yes (prefix ${webhookEnvStatus.resendKeyPrefix || 're_...'})`
-                              : 'No (MISSING)'
-                            : '...'}
-                        </strong>
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-4 text-[11px] text-zinc-300">
-                      <span>
-                        Last Resend attempt:{' '}
-                        <strong className="text-white">
-                          {webhookEnvStatus?.lastResendAttempt
-                            ? new Date(webhookEnvStatus.lastResendAttempt).toLocaleString()
-                            : 'None yet'}
-                        </strong>
-                      </span>
-                      <span>
-                        Last Resend error:{' '}
-                        <strong className={webhookEnvStatus?.lastResendError ? 'text-rose-400' : 'text-emerald-400'}>
-                          {webhookEnvStatus?.lastResendError || 'None'}
-                        </strong>
-                      </span>
                     </div>
                   </div>
                 </div>
@@ -3045,7 +3019,6 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <th className="py-2.5 pr-3">Plan</th>
                           <th className="py-2.5 pr-3">Email</th>
                           <th className="py-2.5 pr-3">Amount</th>
-                          {isOwnerAdmin && <th className="py-2.5 pr-3">Code</th>}
                           <th className="py-2.5 pr-3">Signature</th>
                           <th className="py-2.5 pr-3">Mode</th>
                           <th className="py-2.5">Timestamp / Error</th>
@@ -3057,13 +3030,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             <td className="py-2.5 pr-3 text-xs text-white font-semibold">{w.event || w.event_name || 'order_created'}</td>
                             <td className="py-2.5 pr-3 text-xs">{w.order_id}</td>
                             <td className="py-2.5 pr-3 uppercase text-[#D4AF37] font-bold">{w.plan}</td>
-                            <td className="py-2.5 pr-3 text-xs">{w.email}</td>
+                            <td className="py-2.5 pr-3 text-xs">{w.payment_email || w.email}</td>
                             <td className="py-2.5 pr-3">${w.amount} {w.currency}</td>
-                            {isOwnerAdmin && (
-                              <td className="py-2.5 pr-3 text-xs font-bold text-emerald-300 select-all">
-                                {w.activation_code || '—'}
-                              </td>
-                            )}
                             <td className="py-2.5 pr-3">
                               <span
                                 className={`px-2 py-0.5 rounded text-xs font-bold ${

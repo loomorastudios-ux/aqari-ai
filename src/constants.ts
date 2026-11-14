@@ -32,9 +32,9 @@ export const LEMON_LINKS: Record<'starter' | 'pro' | 'enterprise', string> = {
 import { PLANS, PRODUCTION_URL } from '../lib/plans';
 
 export const LEMON_REDIRECT_URLS: Record<'starter' | 'pro' | 'enterprise', string> = {
-  starter: `${PRODUCTION_URL}/app?checkout=success`,
-  pro: `${PRODUCTION_URL}/app?checkout=success`,
-  enterprise: `${PRODUCTION_URL}/app?checkout=success`,
+  starter: `${PRODUCTION_URL}/app?checkout=success&order_id={ORDER_ID}`,
+  pro: `${PRODUCTION_URL}/app?checkout=success&order_id={ORDER_ID}`,
+  enterprise: `${PRODUCTION_URL}/app?checkout=success&order_id={ORDER_ID}`,
 };
 
 // Plan specifications synced from lib/plans.ts single source of truth

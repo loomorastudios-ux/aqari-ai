@@ -50,7 +50,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     setPolicyError(false);
 
     const baseLink = LEMON_LINKS[plan];
-    const successUrl = 'https://aqari-ai-rho.vercel.app/app?checkout=success';
+    const successUrl = 'https://aqari-ai-rho.vercel.app/app?checkout=success&order_id={ORDER_ID}';
     const cancelUrl = 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled';
 
     if (user?.email) {

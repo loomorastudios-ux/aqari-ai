@@ -106,18 +106,14 @@ export interface WebhookLogEntry {
   event_name: string;
   plan: PlanKey;
   email: string;
+  payment_email?: string;
+  created_at?: string;
   amount: number;
   currency: string;
   test_mode: boolean;
   signature_valid?: boolean;
   error?: string;
   raw_error?: string;
-  activation_code?: string;
-  has_resend_key?: boolean;
-  key_prefix?: string;
-  from_email?: string;
-  to_email?: string;
-  resend_status?: number;
   timestamp: string;
 }
 
@@ -133,7 +129,7 @@ export interface EmailLogEntry {
   to: string;
   from: string;
   subject: string;
-  type: 'day29_renewal' | 'plan_expired' | 'test_day29' | 'activation_code';
+  type: 'day29_renewal' | 'plan_expired' | 'test_day29';
   status: 'sent' | 'failed' | 'simulated';
   provider: 'resend' | 'nodemailer' | 'log';
   timestamp: string;
@@ -143,21 +139,16 @@ export interface EmailLogEntry {
   resend_status?: number;
 }
 
-export interface ActivationCodeRecord {
-  code: string;
-  payment_email: string;
+export interface UsedOrderRecord {
   order_id: string;
+  login_email: string;
+  payment_email: string;
   plan: PlanKey;
   plan_display: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
   analyses: number;
   amount: number;
   test_mode: boolean;
-  used: boolean;
-  invalidated?: boolean;
-  used_by?: string | null;
-  used_at?: number | null;
-  created_at: number;
-  expires_at: number;
+  used_at: number;
 }
 
 export interface PricingChangeLogEntry {
@@ -204,7 +195,7 @@ interface StoreShape {
   pricing_config: StoredPricingConfig;
   pricing_logs: PricingChangeLogEntry[];
   pending_checkouts: Record<string, PendingCheckoutEntry>;
-  activation_codes: Record<string, ActivationCodeRecord>;
+  used_orders: Record<string, UsedOrderRecord>;
 }
 
 function createDefaultPricingConfig(): StoredPricingConfig {
@@ -265,7 +256,7 @@ let memoryStore: StoreShape = {
   pricing_config: createDefaultPricingConfig(),
   pricing_logs: [],
   pending_checkouts: {},
-  activation_codes: {},
+  used_orders: {},
 };
 
 function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
@@ -349,9 +340,9 @@ function loadStore(): StoreShape {
             parsed.pending_checkouts && typeof parsed.pending_checkouts === 'object'
               ? parsed.pending_checkouts
               : {},
-          activation_codes:
-            parsed.activation_codes && typeof parsed.activation_codes === 'object'
-              ? parsed.activation_codes
+          used_orders:
+            parsed.used_orders && typeof parsed.used_orders === 'object' && !Array.isArray(parsed.used_orders)
+              ? parsed.used_orders
               : {},
         };
       }
@@ -1312,27 +1303,14 @@ export function getPricingChangeLogs(): PricingChangeLogEntry[] {
 }
 
 // =========================================================================
-// ONE-TIME ACTIVATION CODE DB LIFECYCLE (24h Expiry, Single-Use, Invalidation)
+// PERSISTENT USED ORDERS LIFECYCLE (Single-Use Order ID Auto-Activation)
 // =========================================================================
 
-const CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
-
-export function normalizeActivationCode(raw: string): string {
-  const cleaned = String(raw || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[\u2010-\u2015\u2212]+/g, '-')
-    .replace(/\s+/g, '')
-    .replace(/-+/g, '-');
-  if (!cleaned) return '';
-  if (cleaned.startsWith('AQARI') && !cleaned.startsWith('AQARI-')) {
-    return `AQARI-${cleaned.slice(5).replace(/^-+/, '')}`;
-  }
-  return cleaned;
+export function normalizeOrderId(raw: string): string {
+  return String(raw || '').replace(/^#/, '').trim();
 }
 
-export function mapAmountOrPlanToCodeTier(
+export function mapAmountOrPlanToOrderTier(
   amountUSD: number,
   fallbackPlan?: PlanKey
 ): {
@@ -1360,282 +1338,103 @@ export function mapAmountOrPlanToCodeTier(
   return { plan: 'pro', planDisplay: 'PROFESSIONAL', analyses: 150 };
 }
 
-function generateRandomAqariCode(): string {
-  let suffix = '';
-  for (let i = 0; i < 6; i++) {
-    suffix += CODE_CHARS.charAt(Math.floor(Math.random() * CODE_CHARS.length));
-  }
-  return `AQARI-${suffix}`;
-}
-
-async function readActivationCodesMapFromKv(): Promise<Record<string, ActivationCodeRecord> | null> {
-  try {
-    const kv = getKvConfig();
-    if (!kv) return null;
-    const raw = await kvCommand(['GET', 'aqari:activation_codes_map:v1']);
-    if (!raw) return null;
-    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    if (parsed && typeof parsed === 'object') {
-      return parsed as Record<string, ActivationCodeRecord>;
-    }
-  } catch (err) {
-    console.error('[DB] Failed reading activation_codes_map from KV:', err);
-  }
-  return null;
-}
-
-async function saveActivationCodeRecordToKv(record: ActivationCodeRecord): Promise<void> {
-  try {
-    const kv = getKvConfig();
-    if (!kv) return;
-    const codeKey = normalizeActivationCode(record.code);
-    await kvCommand(['SET', `aqari:activation_code:${codeKey}`, JSON.stringify(record)]);
-
-    const map = (await readActivationCodesMapFromKv()) || {};
-    map[codeKey] = record;
-    const keys = Object.keys(map);
-    if (keys.length > 500) {
-      const sorted = Object.values(map)
-        .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
-        .slice(0, 500);
-      const trimmed: Record<string, ActivationCodeRecord> = {};
-      for (const item of sorted) {
-        trimmed[normalizeActivationCode(item.code)] = item;
-      }
-      await kvCommand(['SET', 'aqari:activation_codes_map:v1', JSON.stringify(trimmed)]);
-    } else {
-      await kvCommand(['SET', 'aqari:activation_codes_map:v1', JSON.stringify(map)]);
-    }
-
-    if (record.payment_email) {
-      await kvCommand([
-        'SET',
-        `aqari:latest_code_email:${normalizeEmail(record.payment_email)}`,
-        codeKey,
-      ]);
-    }
-  } catch (err) {
-    console.error('[DB] Failed writing activation code to KV:', err);
-  }
-}
-
-export async function upsertActivationCodeInDb(
-  record: ActivationCodeRecord
-): Promise<ActivationCodeRecord> {
-  const codeKey = normalizeActivationCode(record?.code || '');
-  const normalizedRecord: ActivationCodeRecord = {
-    ...record,
-    code: codeKey,
-    payment_email: normalizeEmail(record?.payment_email || ''),
-  };
-  const store = loadStore();
-  if (!store.activation_codes || typeof store.activation_codes !== 'object' || Array.isArray(store.activation_codes)) {
-    store.activation_codes = {};
-  }
-  store.activation_codes[codeKey] = normalizedRecord;
-  persistStore(store);
-  await saveActivationCodeRecordToKv(normalizedRecord);
-  return normalizedRecord;
-}
-
-export async function getActivationCodeFromDb(rawCode: string): Promise<ActivationCodeRecord | null> {
-  const codeKey = normalizeActivationCode(rawCode);
-  if (!codeKey) return null;
+export async function getUsedOrderFromDb(rawOrderId: string): Promise<UsedOrderRecord | null> {
+  const orderKey = normalizeOrderId(rawOrderId);
+  if (!orderKey) return null;
 
   try {
     const kv = getKvConfig();
     if (kv) {
-      const raw = await kvCommand(['GET', `aqari:activation_code:${codeKey}`]);
+      const raw = await kvCommand(['GET', `aqari:used_order:${orderKey}`]);
       if (raw) {
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (parsed?.code) {
+        if (parsed?.order_id) {
           const store = loadStore();
-          if (!store.activation_codes || typeof store.activation_codes !== 'object' || Array.isArray(store.activation_codes)) {
-            store.activation_codes = {};
+          if (!store.used_orders || typeof store.used_orders !== 'object' || Array.isArray(store.used_orders)) {
+            store.used_orders = {};
           }
-          store.activation_codes[codeKey] = parsed;
+          store.used_orders[orderKey] = parsed;
           persistStore(store);
           return parsed;
         }
       }
-      const map = await readActivationCodesMapFromKv();
-      if (map && map[codeKey]) {
+      const rawMap = await kvCommand(['GET', 'aqari:used_orders_map:v1']);
+      const map = rawMap ? (typeof rawMap === 'string' ? JSON.parse(rawMap) : rawMap) : null;
+      if (map && typeof map === 'object' && map[orderKey]) {
         const store = loadStore();
-        if (!store.activation_codes || typeof store.activation_codes !== 'object' || Array.isArray(store.activation_codes)) {
-          store.activation_codes = {};
+        if (!store.used_orders || typeof store.used_orders !== 'object' || Array.isArray(store.used_orders)) {
+          store.used_orders = {};
         }
-        store.activation_codes[codeKey] = map[codeKey];
+        store.used_orders[orderKey] = map[orderKey];
         persistStore(store);
-        return map[codeKey];
+        return map[orderKey];
       }
     }
   } catch (err) {
-    console.error('[DB] Failed reading activation code from KV:', err);
+    console.error('[DB] Failed reading used_order from KV:', err);
   }
 
   const store = loadStore();
-  const codesTable =
-    store.activation_codes && typeof store.activation_codes === 'object' && !Array.isArray(store.activation_codes)
-      ? store.activation_codes
+  const table =
+    store.used_orders && typeof store.used_orders === 'object' && !Array.isArray(store.used_orders)
+      ? store.used_orders
       : {};
-  const direct = codesTable[codeKey];
-  if (direct) return direct;
-
-  for (const [k, rec] of Object.entries(codesTable)) {
-    if (rec && (normalizeActivationCode(k) === codeKey || normalizeActivationCode(rec?.code || '') === codeKey)) {
-      return rec;
-    }
-  }
-  return null;
+  return table[orderKey] || null;
 }
 
-export async function getActivationCodeDbStats(): Promise<{
-  totalCodes: number;
-  lastCode: string | null;
-}> {
-  const store = loadStore();
-  const safeLocal =
-    store.activation_codes && typeof store.activation_codes === 'object' && !Array.isArray(store.activation_codes)
-      ? store.activation_codes
-      : {};
-  const merged: Record<string, ActivationCodeRecord> = { ...safeLocal };
-  try {
-    const kvMap = await readActivationCodesMapFromKv();
-    if (kvMap && typeof kvMap === 'object') {
-      for (const [k, v] of Object.entries(kvMap)) {
-        if (v) merged[normalizeActivationCode(k)] = v;
-      }
-    }
-  } catch {}
-  const all = Object.values(merged)
-    .filter((v): v is ActivationCodeRecord => Boolean(v && typeof v === 'object'))
-    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
-  return {
-    totalCodes: all.length,
-    lastCode: all[0]?.code || null,
-  };
-}
-
-export async function createActivationCodeInDb(params: {
-  paymentEmail: string;
-  orderId: string;
-  amountUSD: number;
-  fallbackPlan?: PlanKey;
-  testMode?: boolean;
-  invalidatePreviousForEmail?: boolean;
-}): Promise<ActivationCodeRecord> {
-  const store = loadStore();
-  if (!store.activation_codes || typeof store.activation_codes !== 'object' || Array.isArray(store.activation_codes)) {
-    store.activation_codes = {};
-  }
-
-  const normEmail = normalizeEmail(params?.paymentEmail || 'unknown@aqari-ai-rho.vercel.app');
-  const tier = mapAmountOrPlanToCodeTier(Number(params?.amountUSD || 0), params?.fallbackPlan);
-
-  // Do NOT invalidate previous unused codes on resend; prior codes remain valid until activated or 24h expires.
-
-  let uniqueCode = normalizeActivationCode(generateRandomAqariCode());
-  for (let attempt = 0; attempt < 15; attempt++) {
-    if (!store.activation_codes[uniqueCode]) break;
-    uniqueCode = normalizeActivationCode(generateRandomAqariCode());
-  }
-
-  const now = Date.now();
-  const record: ActivationCodeRecord = {
-    code: uniqueCode,
-    payment_email: normEmail,
-    order_id: String(params?.orderId || 'manual-resend'),
-    plan: tier.plan,
-    plan_display: tier.planDisplay,
-    analyses: tier.analyses,
-    amount: Number(params?.amountUSD || 0),
-    test_mode: Boolean(params?.testMode),
-    used: false,
-    invalidated: false,
-    used_by: null,
-    used_at: null,
-    created_at: now,
-    expires_at: now + TWENTY_FOUR_HOURS_MS,
+export async function markOrderUsedInDb(record: UsedOrderRecord): Promise<UsedOrderRecord> {
+  const orderKey = normalizeOrderId(record.order_id);
+  const normalizedRecord: UsedOrderRecord = {
+    ...record,
+    order_id: orderKey,
+    login_email: normalizeEmail(record.login_email),
+    payment_email: normalizeEmail(record.payment_email),
+    used_at: Number(record.used_at || Date.now()),
   };
 
-  store.activation_codes[uniqueCode] = record;
+  const store = loadStore();
+  if (!store.used_orders || typeof store.used_orders !== 'object' || Array.isArray(store.used_orders)) {
+    store.used_orders = {};
+  }
+  store.used_orders[orderKey] = normalizedRecord;
   persistStore(store);
-  await saveActivationCodeRecordToKv(record);
-  return record;
-}
-
-export async function markActivationCodeUsedInDb(params: {
-  code: string;
-  loginEmail: string;
-}): Promise<ActivationCodeRecord | null> {
-  const codeKey = normalizeActivationCode(params.code);
-  const existing = await getActivationCodeFromDb(codeKey);
-  if (!existing) return null;
-
-  const updated: ActivationCodeRecord = {
-    ...existing,
-    code: codeKey,
-    used: true,
-    used_by: normalizeEmail(params.loginEmail),
-    used_at: Date.now(),
-  };
-
-  const store = loadStore();
-  if (!store.activation_codes) store.activation_codes = {};
-  store.activation_codes[codeKey] = updated;
-  persistStore(store);
-  await saveActivationCodeRecordToKv(updated);
-  return updated;
-}
-
-export async function findLatestActivationCodeByPaymentEmailInDb(
-  rawPaymentEmail: string
-): Promise<ActivationCodeRecord | null> {
-  const norm = normalizeEmail(rawPaymentEmail);
-  if (!norm) return null;
 
   try {
     const kv = getKvConfig();
     if (kv) {
-      const latestCodeKey = await kvCommand(['GET', `aqari:latest_code_email:${norm}`]);
-      if (latestCodeKey && typeof latestCodeKey === 'string') {
-        const rec = await getActivationCodeFromDb(latestCodeKey);
-        if (rec) return rec;
-      }
+      await kvCommand(['SET', `aqari:used_order:${orderKey}`, JSON.stringify(normalizedRecord)]);
+      const rawMap = await kvCommand(['GET', 'aqari:used_orders_map:v1']);
+      const map: Record<string, UsedOrderRecord> =
+        rawMap && typeof rawMap === 'string'
+          ? JSON.parse(rawMap)
+          : rawMap && typeof rawMap === 'object'
+          ? rawMap
+          : {};
+      map[orderKey] = normalizedRecord;
+      await kvCommand(['SET', 'aqari:used_orders_map:v1', JSON.stringify(map)]);
     }
   } catch (err) {
-    console.error('[DB] Failed looking up latest activation code by email in KV:', err);
+    console.error('[DB] Failed writing used_order to KV:', err);
   }
 
-  const store = loadStore();
-  const matches = Object.values(store.activation_codes || {})
-    .filter((c) => normalizeEmail(c.payment_email) === norm)
-    .sort((a, b) => b.created_at - a.created_at);
-
-  return matches[0] || null;
+  return normalizedRecord;
 }
 
-export async function invalidateActivationCodesForOrderOrEmailInDb(params: {
-  orderId?: string;
-  paymentEmail?: string;
-}): Promise<string[]> {
-  const store = loadStore();
-  const normOrder = String(params.orderId || '').trim();
-  const normEmail = normalizeEmail(params.paymentEmail || '');
-  const affectedUsers: string[] = [];
+export async function findUsersByOrderId(orderId: string): Promise<string[]> {
+  const normOrder = normalizeOrderId(orderId);
+  const affected: string[] = [];
+  if (!normOrder) return affected;
 
-  for (const [k, rec] of Object.entries(store.activation_codes || {})) {
-    const matchesOrder = normOrder && String(rec.order_id) === normOrder;
-    const matchesEmail = normEmail && normalizeEmail(rec.payment_email) === normEmail;
-    if (matchesOrder || matchesEmail) {
-      const updated: ActivationCodeRecord = { ...rec, invalidated: true };
-      store.activation_codes[k] = updated;
-      if (rec.used_by) {
-        affectedUsers.push(rec.used_by);
-      }
-      await saveActivationCodeRecordToKv(updated);
+  const used = await getUsedOrderFromDb(normOrder).catch(() => null);
+  if (used?.login_email) {
+    affected.push(normalizeEmail(used.login_email));
+  }
+
+  const store = loadStore();
+  for (const user of Object.values(store.users || {})) {
+    if (user?.payments?.some((p) => normalizeOrderId(p.order_id) === normOrder)) {
+      affected.push(normalizeEmail(user.email));
     }
   }
-  persistStore(store);
-  return Array.from(new Set(affectedUsers));
+  return Array.from(new Set(affected.filter(Boolean)));
 }

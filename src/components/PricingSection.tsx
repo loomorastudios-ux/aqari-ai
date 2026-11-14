@@ -254,7 +254,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         pro: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/404c54cb-29c5-477a-b8c2-772092f5459a',
         enterprise: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/ce8dfbdb-cedd-4445-a947-e821522472bb',
       };
-      const redirectUrl = `https://aqari-ai-rho.vercel.app/app?checkout=success`;
+      const redirectUrl = `https://aqari-ai-rho.vercel.app/app?checkout=success&order_id={ORDER_ID}`;
       const cancelUrl = `https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled`;
       const direct = `${buyUrls[planId]}?checkout[email]=${encodeURIComponent(user.email)}&checkout[custom][user_id]=${encodeURIComponent(user.id || user.googleId || '')}&checkout[custom][plan]=${planId}&checkout[redirect_url]=${encodeURIComponent(redirectUrl)}&checkout[cancel_url]=${encodeURIComponent(cancelUrl)}${isTestMode ? '&checkout[test_mode]=1' : ''}`;
       window.location.href = direct;
