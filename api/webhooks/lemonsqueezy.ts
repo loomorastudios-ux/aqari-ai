@@ -1,15 +1,18 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import crypto from 'crypto';
 import { PLANS, PlanKey, findPlanPricing, normalizePlanKey } from '../../lib/plans';
-import { getClientIp } from '../../lib/security';
+import { cleanEnvValue, getClientIp } from '../../lib/security';
 import {
+  WebhookLogEntry,
   activatePaidPlanOnServer,
-  appendWebhookLog,
+  appendWebhookLogToDb,
   getPricingPublicPayload,
   recordFailedWebhook,
   recordOrderRefunded,
   recordSubscriptionUpdated,
+  saveUserToDb,
   updateServerUser,
+  updateWebhookLogInDb,
 } from '../../lib/serverStore';
 
 /**
@@ -99,11 +102,15 @@ export default async function handler(req: any, res: any) {
   }
 
   const webhookSecret =
-    process.env.LEMON_WEBHOOK_SECRET || process.env.LEMONSQUEEZY_WEBHOOK_SECRET || '';
+    cleanEnvValue(process.env.LEMON_WEBHOOK_SECRET) ||
+    cleanEnvValue(process.env.LEMONSQUEEZY_WEBHOOK_SECRET) ||
+    '';
   const ip = getClientIp(req);
 
+  let preLog: WebhookLogEntry | null = null;
+
   try {
-    // 1. Mandatory Signature Verification
+    // 0. Parse body & metadata FIRST so EVERY request is logged BEFORE signature verification
     const signature = (req.headers?.['x-signature'] || req.headers?.['X-Signature'] || '')
       .toString()
       .trim();
@@ -119,61 +126,22 @@ export default async function handler(req: any, res: any) {
       rawBody = JSON.stringify(req.body || {});
     }
 
-    if (!webhookSecret) {
-      recordFailedWebhook('Webhook secret not configured on server', ip);
-      appendWebhookLog({
-        order_id: 'sig_missing_secret',
-        event_name: 'webhook_signature_failed',
-        plan: 'free',
-        email: 'unknown',
-        amount: 0,
-        currency: 'USD',
-        test_mode: process.env.LEMON_TEST_MODE === 'true',
-        signature_valid: false,
-        error: 'Webhook secret not configured on server',
-      });
-      return res.status(401).json({ error: 'Webhook verification failed: missing secret configuration' });
+    let payload: any = {};
+    try {
+      payload = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
+    } catch (parseErr: any) {
+      console.error('[Lemon Webhook] JSON parse warning:', parseErr?.message || parseErr);
+      payload = {};
     }
 
-    if (!signature) {
-      recordFailedWebhook('Missing X-Signature header', ip);
-      appendWebhookLog({
-        order_id: 'sig_missing_header',
-        event_name: 'webhook_signature_failed',
-        plan: 'free',
-        email: 'unknown',
-        amount: 0,
-        currency: 'USD',
-        test_mode: process.env.LEMON_TEST_MODE === 'true',
-        signature_valid: false,
-        error: 'Missing X-Signature header',
-      });
-      return res.status(401).json({ error: 'Invalid webhook signature: missing X-Signature' });
-    }
-
-    const hmac = crypto.createHmac('sha256', webhookSecret);
-    const digest = Buffer.from(hmac.update(rawBody).digest('hex'), 'utf8');
-    const signatureBuffer = Buffer.from(signature, 'utf8');
-
-    if (digest.length !== signatureBuffer.length || !crypto.timingSafeEqual(digest, signatureBuffer)) {
-      console.warn('Lemon Squeezy Webhook: Invalid signature rejected from', ip);
-      recordFailedWebhook('Invalid X-Signature HMAC mismatch', ip);
-      appendWebhookLog({
-        order_id: 'sig_mismatch',
-        event_name: 'webhook_signature_failed',
-        plan: 'free',
-        email: 'unknown',
-        amount: 0,
-        currency: 'USD',
-        test_mode: process.env.LEMON_TEST_MODE === 'true',
-        signature_valid: false,
-        error: 'Invalid X-Signature HMAC mismatch',
-      });
-      return res.status(401).json({ error: 'Invalid webhook signature' });
-    }
-
-    const payload = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const eventName = payload?.meta?.event_name || payload?.event_name || 'order_created';
+    const eventName = (
+      payload?.meta?.event_name ||
+      payload?.event_name ||
+      req.headers?.['x-event-name'] ||
+      'unknown'
+    )
+      .toString()
+      .trim();
     const customData = payload?.meta?.custom_data || {};
     const attributes = payload?.data?.attributes || {};
 
@@ -184,24 +152,23 @@ export default async function handler(req: any, res: any) {
       payload?.email ||
       ''
     )
+      .toString()
+      .toLowerCase()
+      .trim();
+    const accountEmail = (
+      customData?.user_email ||
+      customerEmail ||
+      ''
+    )
+      .toString()
       .toLowerCase()
       .trim();
 
-    const customerName =
-      attributes?.user_name || attributes?.customer_name || customerEmail.split('@')[0];
-    const productName = (
-      attributes?.first_order_item?.product_name ||
-      attributes?.product_name ||
-      customData?.plan ||
-      payload?.plan ||
-      'Aqari AI - Pro'
-    ).toString();
-
     const planCode = mapVariantOrProductToPlan(attributes, customData, payload);
-
     const orderId = (
       payload?.data?.id ||
       attributes?.order_id ||
+      attributes?.order_number ||
       attributes?.identifier ||
       `ord_${Date.now()}`
     ).toString();
@@ -218,7 +185,6 @@ export default async function handler(req: any, res: any) {
     const dynamicPlan = findPlanPricing(pricing, planCode);
     const fallbackPlanPrice =
       dynamicPlan?.activePrice ?? PLANS[planCode]?.launchPrice ?? 199;
-
     const rawTotal =
       attributes?.total ??
       attributes?.subtotal ??
@@ -229,9 +195,94 @@ export default async function handler(req: any, res: any) {
         : Number(rawTotal || fallbackPlanPrice || 0);
     const currency = (attributes?.currency || 'USD').toString().toUpperCase();
 
+    // 1. MANDATORY PRE-VERIFICATION DB LOG (logs EVERY incoming webhook even if signature fails)
+    try {
+      preLog = await appendWebhookLogToDb({
+        order_id: orderId,
+        event: eventName,
+        event_name: eventName,
+        plan: planCode,
+        email: customerEmail || accountEmail || 'unknown',
+        amount: amountUSD,
+        currency,
+        test_mode: isTestMode,
+        signature_valid: false,
+        raw_error: 'Signature verification pending',
+        error: 'Signature verification pending',
+      });
+    } catch (dbErr) {
+      console.error('[Lemon Webhook] DB pre-log write failed:', dbErr);
+    }
+
+    // 2. Mandatory Signature Verification
+    if (!webhookSecret) {
+      const rawError = 'LEMON_WEBHOOK_SECRET not configured on server';
+      recordFailedWebhook(rawError, ip);
+      if (preLog) {
+        await updateWebhookLogInDb(preLog.id, {
+          signature_valid: false,
+          raw_error: rawError,
+          error: rawError,
+        }).catch((e) => console.error('[Lemon Webhook] DB update failed:', e));
+      }
+      console.error('[Lemon Webhook]', rawError);
+      return res.status(401).json({ error: 'Webhook verification failed: missing secret configuration' });
+    }
+
+    if (!signature) {
+      const rawError = 'Missing X-Signature header';
+      recordFailedWebhook(rawError, ip);
+      if (preLog) {
+        await updateWebhookLogInDb(preLog.id, {
+          signature_valid: false,
+          raw_error: rawError,
+          error: rawError,
+        }).catch((e) => console.error('[Lemon Webhook] DB update failed:', e));
+      }
+      console.error('[Lemon Webhook]', rawError, 'ip=', ip);
+      return res.status(401).json({ error: 'Invalid webhook signature: missing X-Signature' });
+    }
+
+    const hmac = crypto.createHmac('sha256', webhookSecret);
+    const digest = Buffer.from(hmac.update(rawBody).digest('hex'), 'utf8');
+    const signatureBuffer = Buffer.from(signature, 'utf8');
+
+    if (digest.length !== signatureBuffer.length || !crypto.timingSafeEqual(digest, signatureBuffer)) {
+      const rawError = 'Invalid X-Signature HMAC mismatch';
+      console.warn('Lemon Squeezy Webhook: Invalid signature rejected from', ip);
+      recordFailedWebhook(rawError, ip);
+      if (preLog) {
+        await updateWebhookLogInDb(preLog.id, {
+          signature_valid: false,
+          raw_error: rawError,
+          error: rawError,
+        }).catch((e) => console.error('[Lemon Webhook] DB update failed:', e));
+      }
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
+
+    // Mark pre-logged entry as valid signature
+    if (preLog) {
+      await updateWebhookLogInDb(preLog.id, {
+        signature_valid: true,
+        raw_error: undefined,
+        error: undefined,
+      }).catch((e) => console.error('[Lemon Webhook] DB valid update failed:', e));
+    }
+
+    const customerName =
+      attributes?.user_name || attributes?.customer_name || (customerEmail || accountEmail).split('@')[0];
+    const productName = (
+      attributes?.first_order_item?.product_name ||
+      attributes?.product_name ||
+      customData?.plan ||
+      payload?.plan ||
+      'Aqari AI - Pro'
+    ).toString();
+
     const paymentDateStr =
       attributes?.created_at || attributes?.order_date || new Date().toISOString();
-    const paymentTimestamp = new Date(paymentDateStr).getTime();
+    const paymentTimestamp = new Date(paymentDateStr).getTime() || Date.now();
     const duration30Days = 30 * 24 * 60 * 60 * 1000;
     const subscriptionEndsAt = paymentTimestamp + duration30Days;
 
@@ -245,6 +296,7 @@ export default async function handler(req: any, res: any) {
 
     let subscriptionStatus: 'active' | 'cancelled' | 'expired' | 'refunded' | 'past_due' = 'active';
     let persistedUser = null;
+    const targetEmail = accountEmail || customerEmail;
 
     switch (eventName) {
       case 'order_created':
@@ -252,9 +304,9 @@ export default async function handler(req: any, res: any) {
       case 'subscription_payment_success':
       case 'subscription_resumed':
         subscriptionStatus = 'active';
-        if (customerEmail) {
+        if (targetEmail) {
           persistedUser = activatePaidPlanOnServer({
-            email: customerEmail,
+            email: targetEmail,
             name: customerName,
             plan: planCode,
             paymentTimestamp,
@@ -265,7 +317,9 @@ export default async function handler(req: any, res: any) {
             refundPolicyAcceptedAt:
               customData?.refund_accepted_at || new Date(paymentTimestamp).toISOString(),
             lockedLaunchPrice,
+            lemonCustomerEmail: customerEmail || null,
           });
+          await saveUserToDb(persistedUser);
         }
         break;
 
@@ -279,45 +333,49 @@ export default async function handler(req: any, res: any) {
             : 'active';
         const renewsOrEndsStr = attributes?.renews_at || attributes?.ends_at;
         const licenseEndMs = renewsOrEndsStr ? new Date(renewsOrEndsStr).getTime() : null;
-        if (customerEmail) {
+        if (targetEmail) {
           persistedUser = recordSubscriptionUpdated({
-            email: customerEmail,
+            email: targetEmail,
             plan: planCode,
             licenseEndMs,
             status: subStatus,
           });
+          await saveUserToDb(persistedUser);
         }
         break;
       }
 
       case 'order_refunded':
         subscriptionStatus = 'refunded';
-        if (customerEmail) {
+        if (targetEmail) {
           persistedUser = recordOrderRefunded({
-            email: customerEmail,
+            email: targetEmail,
             orderId,
             amountUSD,
           });
+          await saveUserToDb(persistedUser);
         }
         break;
 
       case 'subscription_cancelled':
         subscriptionStatus = 'cancelled';
-        if (customerEmail) {
+        if (targetEmail) {
           const endsAtStr = attributes?.ends_at;
-          persistedUser = updateServerUser(customerEmail, {
+          persistedUser = updateServerUser(targetEmail, {
             license_end: endsAtStr ? new Date(endsAtStr).getTime() : undefined,
           });
+          await saveUserToDb(persistedUser);
         }
         break;
 
       case 'subscription_expired':
         subscriptionStatus = 'expired';
-        if (customerEmail) {
-          persistedUser = updateServerUser(customerEmail, {
+        if (targetEmail) {
+          persistedUser = updateServerUser(targetEmail, {
             plan: 'free',
             analyses_used: 0,
           });
+          await saveUserToDb(persistedUser);
         }
         break;
 
@@ -330,19 +388,8 @@ export default async function handler(req: any, res: any) {
         break;
     }
 
-    const logEntry = appendWebhookLog({
-      order_id: orderId,
-      event_name: eventName,
-      plan: planCode,
-      email: customerEmail || 'unknown',
-      amount: amountUSD,
-      currency,
-      test_mode: isTestMode,
-      signature_valid: true,
-    });
-
     console.log(
-      `[Lemon Webhook] event=${eventName} order_id=${orderId} email=${customerEmail || 'unknown'} plan=${planCode} amount=$${amountUSD} test_mode=${isTestMode}`
+      `[Lemon Webhook] event=${eventName} order_id=${orderId} email=${targetEmail || 'unknown'} plan=${planCode} amount=$${amountUSD} test_mode=${isTestMode} sig_valid=true`
     );
 
     return res.status(200).json({
@@ -352,7 +399,7 @@ export default async function handler(req: any, res: any) {
       test_mode: isTestMode,
       amount: amountUSD,
       currency,
-      customerEmail,
+      customerEmail: customerEmail || targetEmail,
       customerName,
       productName,
       subscriptionPlan: planCode,
@@ -367,10 +414,17 @@ export default async function handler(req: any, res: any) {
       expiryDateFormatted: new Date(persistedUser?.license_end ?? subscriptionEndsAt)
         .toISOString()
         .slice(0, 10),
-      log: logEntry,
+      log: preLog ? { ...preLog, signature_valid: true, raw_error: undefined, error: undefined } : null,
     });
   } catch (error: any) {
+    const rawError = error?.message || 'Webhook processing failed';
     console.error('Error processing Lemon Squeezy webhook:', error);
-    return res.status(500).json({ error: error?.message || 'Webhook processing failed' });
+    if (preLog) {
+      await updateWebhookLogInDb(preLog.id, {
+        raw_error: rawError,
+        error: rawError,
+      }).catch((e) => console.error('[Lemon Webhook] DB error update failed:', e));
+    }
+    return res.status(500).json({ error: rawError });
   }
 }

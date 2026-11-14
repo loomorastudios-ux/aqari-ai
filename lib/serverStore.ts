@@ -102,6 +102,7 @@ export interface ServerUserRecord {
 export interface WebhookLogEntry {
   id: string;
   order_id: string;
+  event?: string;
   event_name: string;
   plan: PlanKey;
   email: string;
@@ -110,6 +111,7 @@ export interface WebhookLogEntry {
   test_mode: boolean;
   signature_valid?: boolean;
   error?: string;
+  raw_error?: string;
   timestamp: string;
 }
 
@@ -709,6 +711,230 @@ export function getAllServerUsers(): ServerUserRecord[] {
   return Object.keys(store.users).map((email) => enforceServerUserExpiry(email));
 }
 
+function getKvConfig(): { url: string; token: string } | null {
+  const url = (
+    process.env.KV_REST_API_URL ||
+    process.env.UPSTASH_REDIS_REST_URL ||
+    ''
+  )
+    .replace(/^["']|["']$/g, '')
+    .trim();
+  const token = (
+    process.env.KV_REST_API_TOKEN ||
+    process.env.UPSTASH_REDIS_REST_TOKEN ||
+    ''
+  )
+    .replace(/^["']|["']$/g, '')
+    .trim();
+  if (!url || !token) return null;
+  return { url: url.replace(/\/+$/, ''), token };
+}
+
+async function kvCommand(args: Array<string | number>): Promise<any> {
+  const cfg = getKvConfig();
+  if (!cfg) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3500);
+  try {
+    const res = await fetch(cfg.url, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(args),
+    });
+    if (!res.ok) {
+      throw new Error(`KV HTTP ${res.status}`);
+    }
+    const json = await res.json();
+    return json?.result ?? null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function appendWebhookLogToDb(
+  entry: Omit<WebhookLogEntry, 'id' | 'timestamp'>
+): Promise<WebhookLogEntry> {
+  const log: WebhookLogEntry = {
+    id: `wh_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+    event: entry.event || entry.event_name,
+    event_name: entry.event_name || entry.event || 'unknown',
+    raw_error: entry.raw_error ?? entry.error,
+    error: entry.error ?? entry.raw_error,
+  };
+
+  // Write local disk DB
+  try {
+    const store = loadStore();
+    store.webhook_logs.unshift(log);
+    if (store.webhook_logs.length > 200) {
+      store.webhook_logs = store.webhook_logs.slice(0, 200);
+    }
+    persistStore(store);
+  } catch (diskErr) {
+    console.error('[DB] Failed writing webhook log to disk store:', diskErr);
+  }
+
+  // Write remote KV DB when configured (shared across serverless containers)
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['LPUSH', 'aqari:webhook_logs:v1', JSON.stringify(log)]);
+      await kvCommand(['LTRIM', 'aqari:webhook_logs:v1', 0, 199]);
+    }
+  } catch (kvErr) {
+    console.error('[DB] Failed writing webhook log to KV store:', kvErr);
+  }
+
+  return log;
+}
+
+export async function updateWebhookLogInDb(
+  id: string,
+  patch: Partial<WebhookLogEntry>
+): Promise<WebhookLogEntry | null> {
+  let updatedLog: WebhookLogEntry | null = null;
+  try {
+    const store = loadStore();
+    const idx = store.webhook_logs.findIndex((w) => w.id === id);
+    if (idx >= 0) {
+      const merged: WebhookLogEntry = {
+        ...store.webhook_logs[idx],
+        ...patch,
+      };
+      if (patch.raw_error === undefined && 'raw_error' in patch) {
+        delete merged.raw_error;
+        delete merged.error;
+      }
+      store.webhook_logs[idx] = merged;
+      updatedLog = merged;
+      persistStore(store);
+    }
+  } catch (diskErr) {
+    console.error('[DB] Failed updating webhook log in disk store:', diskErr);
+  }
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawItems = await kvCommand(['LRANGE', 'aqari:webhook_logs:v1', 0, 49]);
+      if (Array.isArray(rawItems)) {
+        for (let i = 0; i < rawItems.length; i++) {
+          try {
+            const parsed = typeof rawItems[i] === 'string' ? JSON.parse(rawItems[i]) : rawItems[i];
+            if (parsed?.id === id) {
+              const merged: WebhookLogEntry = { ...parsed, ...patch };
+              if (patch.raw_error === undefined && 'raw_error' in patch) {
+                delete merged.raw_error;
+                delete merged.error;
+              }
+              await kvCommand(['LSET', 'aqari:webhook_logs:v1', i, JSON.stringify(merged)]);
+              updatedLog = merged;
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch (kvErr) {
+    console.error('[DB] Failed updating webhook log in KV store:', kvErr);
+  }
+
+  return updatedLog;
+}
+
+export async function getWebhookLogsFromDb(limit = 20): Promise<WebhookLogEntry[]> {
+  // Prefer remote shared KV DB if configured
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawItems = await kvCommand(['LRANGE', 'aqari:webhook_logs:v1', 0, Math.max(0, limit - 1)]);
+      if (Array.isArray(rawItems) && rawItems.length > 0) {
+        const parsedLogs: WebhookLogEntry[] = rawItems
+          .map((item) => {
+            try {
+              return typeof item === 'string' ? JSON.parse(item) : item;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        if (parsedLogs.length > 0) {
+          return parsedLogs.slice(0, limit);
+        }
+      }
+    }
+  } catch (kvErr) {
+    console.error('[DB] Failed reading webhook logs from KV store:', kvErr);
+  }
+
+  // Always read directly from disk DB file when present (not stale memory)
+  try {
+    if (fs.existsSync(STORE_FILE)) {
+      const raw = fs.readFileSync(STORE_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed?.webhook_logs)) {
+        return parsed.webhook_logs.slice(0, limit);
+      }
+    }
+  } catch (diskErr) {
+    console.error('[DB] Failed reading webhook logs from disk store:', diskErr);
+  }
+
+  return loadStore().webhook_logs.slice(0, limit);
+}
+
+export async function getEmailLogsFromDb(limit = 20): Promise<EmailLogEntry[]> {
+  try {
+    if (fs.existsSync(STORE_FILE)) {
+      const raw = fs.readFileSync(STORE_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed?.email_logs)) {
+        return parsed.email_logs.slice(0, limit);
+      }
+    }
+  } catch {}
+  return loadStore().email_logs.slice(0, limit);
+}
+
+export async function saveUserToDb(user: ServerUserRecord): Promise<void> {
+  try {
+    const kv = getKvConfig();
+    if (kv && user?.email) {
+      await kvCommand(['SET', `aqari:user:${normalizeEmail(user.email)}`, JSON.stringify(user)]);
+    }
+  } catch (kvErr) {
+    console.error('[DB] Failed saving user to KV store:', kvErr);
+  }
+}
+
+export async function getUserFromDb(rawEmail: string): Promise<ServerUserRecord | null> {
+  const email = normalizeEmail(rawEmail);
+  if (!email) return null;
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', `aqari:user:${email}`]);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const hydrated = hydrateUserRecord(parsed, email);
+        const store = loadStore();
+        store.users[email] = hydrated;
+        persistStore(store);
+        return enforceServerUserExpiry(email);
+      }
+    }
+  } catch (kvErr) {
+    console.error('[DB] Failed reading user from KV store:', kvErr);
+  }
+  return getServerUserByEmail(email);
+}
+
 export function appendWebhookLog(
   entry: Omit<WebhookLogEntry, 'id' | 'timestamp'>
 ): WebhookLogEntry {
@@ -717,12 +943,22 @@ export function appendWebhookLog(
     id: `wh_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     timestamp: new Date().toISOString(),
     ...entry,
+    event: entry.event || entry.event_name,
+    event_name: entry.event_name || entry.event || 'unknown',
+    raw_error: entry.raw_error ?? entry.error,
+    error: entry.error ?? entry.raw_error,
   };
   store.webhook_logs.unshift(log);
   if (store.webhook_logs.length > 200) {
     store.webhook_logs = store.webhook_logs.slice(0, 200);
   }
   persistStore(store);
+  const kv = getKvConfig();
+  if (kv) {
+    kvCommand(['LPUSH', 'aqari:webhook_logs:v1', JSON.stringify(log)])
+      .then(() => kvCommand(['LTRIM', 'aqari:webhook_logs:v1', 0, 199]))
+      .catch((err) => console.error('[DB] Async KV webhook log write failed:', err));
+  }
   return log;
 }
 

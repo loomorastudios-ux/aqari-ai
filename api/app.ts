@@ -10,28 +10,36 @@ import {
 } from '../lib/plans';
 import {
   checkRateLimit,
+  cleanEnvValue,
   clearSessionCookie,
   getClientIp,
+  getEntitlementFromReq,
   getSessionEmailFromReq,
   isAdminEmail,
+  setEntitlementCookie,
   setSessionCookie,
 } from '../lib/security';
 import {
   CustomCityRecord,
   activatePaidPlanOnServer,
   appendWebhookLog,
+  appendWebhookLogToDb,
   computeServerLicenseStatus,
   consumePendingCheckout,
   enforceServerUserExpiry,
   getEmailLogs,
+  getEmailLogsFromDb,
   getFailedWebhookLogs,
   getOrCreateServerUser,
   getPricingPublicPayload,
+  getUserFromDb,
   getWebhookLogs,
+  getWebhookLogsFromDb,
   recordPendingCheckout,
   recordUserAnalysis,
   recordUserLogin,
   recordUserPdfDownload,
+  saveUserToDb,
   updateServerUser,
 } from '../lib/serverStore';
 import { getDeterministicMarketData, getLiveMarketDataWithCache } from '../lib/marketData';
@@ -124,8 +132,32 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const initialUser = getOrCreateServerUser(sessionEmail);
-        const dbUser = enforceServerUserExpiry(initialUser.email);
+        const hydratedDb = await getUserFromDb(sessionEmail);
+        const initialUser = hydratedDb || getOrCreateServerUser(sessionEmail);
+        let dbUser = enforceServerUserExpiry(initialUser.email);
+
+        // Restore verified paid plan from HMAC-signed entitlement cookie if cold serverless container missed DB
+        const ent = getEntitlementFromReq(req);
+        if (
+          ent &&
+          ent.email === dbUser.email &&
+          ent.plan !== 'free' &&
+          ent.licenseEnd > Date.now() &&
+          dbUser.plan === 'free'
+        ) {
+          dbUser = activatePaidPlanOnServer({
+            email: dbUser.email,
+            name: dbUser.name,
+            plan: ent.plan,
+            paymentTimestamp: ent.licenseStart,
+            orderId: ent.orderId,
+            amountUSD: ent.amountUSD,
+            testMode: ent.testMode,
+            lemonCustomerEmail: ent.lemonCustomerEmail || null,
+          });
+          await saveUserToDb(dbUser);
+        }
+
         const license = computeServerLicenseStatus(dbUser);
         const pricing = getPricingPublicPayload();
         const dynamicPlan = findPlanPricing(pricing, license.planKey);
@@ -182,7 +214,7 @@ export default async function handler(req: any, res: any) {
       }
 
       // ------------------------------------------------------------------
-      // 3. GET/POST /api/app?action=verify-checkout (LEMON DEBUG + DUAL LOOKUP + EMAIL & ORDER ID FALLBACK)
+      // 3. GET/POST /api/app?action=verify-checkout (LEMON DEBUG + DUAL LOOKUP + EMAIL & ORDER ID FALLBACK + DB LOG)
       // ------------------------------------------------------------------
       case 'verify-checkout': {
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -197,21 +229,20 @@ export default async function handler(req: any, res: any) {
         const targetAccountEmail = (loginEmail || searchEmail).trim().toLowerCase();
 
         const sessionId = (src.session_id || src.checkout_id || '').toString().trim();
-        const orderId = (src.order_id || src.order || '').toString().trim();
+        const rawOrderId = (src.order_id || src.order || '').toString().trim();
+        const orderId = rawOrderId.replace(/^#/, '').trim();
         const requestedPlan = normalizePlanKey(src.plan);
         const isTestEnv =
           process.env.LEMON_TEST_MODE === 'true' || process.env.VITE_LEMON_TEST_MODE === 'true';
 
-        // Collect all configured API keys cleanly (deduplicated)
+        // Collect all configured API keys cleanly (deduplicated, stripped of accidental quotes)
         const candidateKeys = Array.from(
           new Set(
             [
-              process.env.LEMON_API_KEY,
-              process.env.LEMON_TEST_API_KEY,
-              process.env.LEMONSQUEEZY_API_KEY,
-            ]
-              .map((k) => (k || '').trim())
-              .filter(Boolean)
+              cleanEnvValue(process.env.LEMON_API_KEY),
+              cleanEnvValue(process.env.LEMON_TEST_API_KEY),
+              cleanEnvValue(process.env.LEMONSQUEEZY_API_KEY),
+            ].filter(Boolean)
           )
         );
         const primaryKey = candidateKeys[0] || '';
@@ -254,11 +285,10 @@ export default async function handler(req: any, res: any) {
         let invalidKeyDetected = false;
         let lastLemonLookupError = '';
 
-        // Allow DB webhook-synced bypass if webhook already unlocked targetAccountEmail
-        if (targetAccountEmail) {
-          const existingDbUser = getOrCreateServerUser(targetAccountEmail);
+        // Allow DB webhook-synced bypass if webhook already unlocked targetAccountEmail (and no explicit orderId lookup)
+        if (targetAccountEmail && !orderId) {
+          const existingDbUser = (await getUserFromDb(targetAccountEmail)) || getOrCreateServerUser(targetAccountEmail);
           if (
-            !orderId &&
             existingDbUser.plan !== 'free' &&
             existingDbUser.license_end &&
             existingDbUser.license_end > Date.now()
@@ -266,8 +296,9 @@ export default async function handler(req: any, res: any) {
             const license = computeServerLicenseStatus(existingDbUser);
             const features = findPlanPricing(pricing, license.planKey)?.features || PLANS[license.planKey].features;
             const lastPayment = existingDbUser.payments[0];
-            appendWebhookLog({
+            await appendWebhookLogToDb({
               order_id: lastPayment?.order_id || `db_${existingDbUser.plan}`,
+              event: 'verify_checkout_db_synced',
               event_name: 'verify_checkout_db_synced',
               plan: license.planKey,
               email: existingDbUser.email,
@@ -277,6 +308,16 @@ export default async function handler(req: any, res: any) {
               signature_valid: true,
             });
             setSessionCookie(res, existingDbUser.email);
+            setEntitlementCookie(res, {
+              email: existingDbUser.email,
+              plan: license.planKey,
+              orderId: lastPayment?.order_id || `db_${existingDbUser.plan}`,
+              licenseStart: existingDbUser.license_start || Date.now(),
+              licenseEnd: existingDbUser.license_end,
+              amountUSD: lastPayment?.amount || 0,
+              testMode: Boolean(lastPayment?.test_mode ?? isTestEnv),
+              lemonCustomerEmail: existingDbUser.lemon_customer_email || null,
+            });
             return res.status(200).json({
               success: true,
               verified: true,
@@ -302,8 +343,9 @@ export default async function handler(req: any, res: any) {
         if (!keyPresent) {
           const errMsg =
             'LEMON_API_KEY MISSING in Vercel - Go to Vercel > Settings > Environment Variables > Add LEMON_API_KEY, then Redeploy';
-          appendWebhookLog({
+          await appendWebhookLogToDb({
             order_id: orderId || 'key_missing',
+            event: 'checkout_verify_failed',
             event_name: 'checkout_verify_failed',
             plan: verifiedPlan,
             email: searchEmail || 'unknown',
@@ -311,6 +353,7 @@ export default async function handler(req: any, res: any) {
             currency: 'USD',
             test_mode: isTestEnv,
             signature_valid: false,
+            raw_error: errMsg,
             error: errMsg,
           });
           return res.status(400).json({
@@ -320,6 +363,7 @@ export default async function handler(req: any, res: any) {
             error: errMsg,
             debug: {
               email_searched: searchEmail || '',
+              order_id_searched: orderId || null,
               total_orders_checked: 0,
               lemon_status: 'key_missing',
               key_present: false,
@@ -327,7 +371,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        // STEP 1B + STEP 2: Validate key against /v1/stores, then check BOTH direct order, email filters, & latest 20 store orders
+        // STEP 1B + STEP 2: Validate key against /v1/stores, then check Direct Order ID, order_number, & Dual Email Lookup (Test & Live)
         for (const key of candidateKeys) {
           if (verifiedPaid) break;
           try {
@@ -345,12 +389,11 @@ export default async function handler(req: any, res: any) {
               continue;
             }
 
-            let resolvedStoreId = (
-              process.env.LEMON_STORE_ID ||
-              process.env.LEMON_TEST_STORE_ID ||
-              process.env.LEMONSQUEEZY_STORE_ID ||
-              ''
-            ).trim();
+            let resolvedStoreId =
+              cleanEnvValue(process.env.LEMON_STORE_ID) ||
+              cleanEnvValue(process.env.LEMON_TEST_STORE_ID) ||
+              cleanEnvValue(process.env.LEMONSQUEEZY_STORE_ID) ||
+              '';
 
             if (storeRes.ok) {
               const storeJson = await storeRes.json().catch(() => ({}));
@@ -360,7 +403,7 @@ export default async function handler(req: any, res: any) {
               }
             }
 
-            // Direct Order ID Lookup (works even if payment email differs from login email)
+            // Direct Order ID Lookup (e.g. GET /v1/orders/5165758 or 10031170)
             if (orderId) {
               const orderRes = await fetch(
                 `https://api.lemonsqueezy.com/v1/orders/${encodeURIComponent(orderId)}`,
@@ -375,12 +418,20 @@ export default async function handler(req: any, res: any) {
               if (orderRes.ok) {
                 totalOrdersChecked += 1;
                 const json = await orderRes.json();
-                const attrs = json?.data?.attributes || {};
+                const attrs: any = json?.data?.attributes || {};
                 const orderStatus = String(attrs.status || '').toLowerCase();
                 foundLemonEmail =
-                  String(attrs.user_email || attrs.customer_email || searchEmail || '').trim().toLowerCase() || null;
+                  String(
+                    attrs.user_email ||
+                      attrs.customer_email ||
+                      attrs.checkout_data?.email ||
+                      searchEmail ||
+                      ''
+                  )
+                    .trim()
+                    .toLowerCase() || null;
 
-                if (orderStatus === 'paid') {
+                if (orderStatus === 'paid' || orderStatus === 'completed') {
                   verifiedPaid = true;
                   verifiedOrderId = String(json.data.id || orderId);
                   verifiedPlan = resolvePlanFromLemonAttributes(attrs, verifiedPlan);
@@ -397,7 +448,7 @@ export default async function handler(req: any, res: any) {
                   lastLemonLookupError = `Order ${orderId} status is '${attrs.status}' (not paid)`;
                 }
               } else {
-                lastLemonLookupError = `Order ${orderId} lookup HTTP ${orderRes.status}`;
+                lastLemonLookupError = `Order ${orderId} direct lookup HTTP ${orderRes.status}`;
               }
             }
 
@@ -413,7 +464,7 @@ export default async function handler(req: any, res: any) {
               );
               if (chkRes.ok) {
                 const chkJson = await chkRes.json();
-                const attrs = chkJson?.data?.attributes || {};
+                const attrs: any = chkJson?.data?.attributes || {};
                 verifiedTestMode = Boolean(attrs.test_mode ?? verifiedTestMode);
                 if (!foundLemonEmail && attrs.checkout_data?.email) {
                   foundLemonEmail = String(attrs.checkout_data.email).trim().toLowerCase();
@@ -424,14 +475,19 @@ export default async function handler(req: any, res: any) {
               }
             }
 
-            // Dual Call Strategy (checks BOTH TEST and LIVE orders, case-insensitive across searchEmail & loginEmail)
+            // Dual Call Strategy (checks BOTH TEST and LIVE orders, Order Number / Identifier, & case-insensitive Email)
             if (!verifiedPaid) {
               const emailsToMatch: string[] = Array.from(
                 new Set([searchEmail, loginEmail, foundLemonEmail || ''].filter(Boolean))
               );
               const queryUrls: string[] = [];
 
-              // Call A: Email-filtered queries (try customer_email & user_email without test_mode restriction)
+              if (orderId) {
+                queryUrls.push(
+                  `https://api.lemonsqueezy.com/v1/orders?filter[order_number]=${encodeURIComponent(orderId)}`,
+                  `https://api.lemonsqueezy.com/v1/orders?page[size]=50`
+                );
+              }
               if (searchEmail) {
                 queryUrls.push(
                   `https://api.lemonsqueezy.com/v1/orders?filter[customer_email]=${encodeURIComponent(searchEmail)}&sort=-created_at`,
@@ -444,20 +500,17 @@ export default async function handler(req: any, res: any) {
                 );
               }
 
-              // Call B: Fetch latest 20 orders from store (test + live) and match email in JS case-insensitively
               if (resolvedStoreId) {
                 queryUrls.push(
-                  `https://api.lemonsqueezy.com/v1/orders?filter[store_id]=${encodeURIComponent(resolvedStoreId)}&page[size]=20&sort=-created_at`,
-                  `https://api.lemonsqueezy.com/v1/orders?filter[store_id]=${encodeURIComponent(resolvedStoreId)}&page[size]=20`
-                );
-              } else {
-                queryUrls.push(
-                  'https://api.lemonsqueezy.com/v1/orders?page[size]=20'
+                  `https://api.lemonsqueezy.com/v1/orders?filter[store_id]=${encodeURIComponent(resolvedStoreId)}&page[size]=50&sort=-created_at`,
+                  `https://api.lemonsqueezy.com/v1/orders?filter[store_id]=${encodeURIComponent(resolvedStoreId)}&page[size]=50`
                 );
               }
+              queryUrls.push('https://api.lemonsqueezy.com/v1/orders?page[size]=50');
 
+              const uniqueUrls = Array.from(new Set(queryUrls));
               const seenOrders = new Map<string, any>();
-              for (const qUrl of queryUrls) {
+              for (const qUrl of uniqueUrls) {
                 try {
                   const listRes = await fetch(qUrl, {
                     headers: {
@@ -489,7 +542,20 @@ export default async function handler(req: any, res: any) {
               const matchingPaidOrders: any[] = allOrders
                 .filter((o: any): boolean => {
                   const orderAttrs: any = o?.attributes || {};
-                  if (String(orderAttrs.status || '').toLowerCase() !== 'paid') return false;
+                  const st = String(orderAttrs.status || '').toLowerCase();
+                  if (st !== 'paid' && st !== 'completed') return false;
+
+                  if (orderId) {
+                    const cleanOrd = orderId.toLowerCase();
+                    if (
+                      String(o?.id || '').toLowerCase() === cleanOrd ||
+                      String(orderAttrs.order_number ?? '').toLowerCase() === cleanOrd ||
+                      String(orderAttrs.identifier || '').toLowerCase() === cleanOrd
+                    ) {
+                      return true;
+                    }
+                  }
+
                   const candidateEmails: string[] = [
                     orderAttrs.user_email,
                     orderAttrs.customer_email,
@@ -509,10 +575,18 @@ export default async function handler(req: any, res: any) {
                 const latestPaid: any = matchingPaidOrders[0];
                 const attrs: any = latestPaid.attributes || {};
                 verifiedPaid = true;
-                verifiedOrderId = String(latestPaid.id || `ord_${Date.now()}`);
+                verifiedOrderId = String(latestPaid.id || orderId || `ord_${Date.now()}`);
                 verifiedPlan = resolvePlanFromLemonAttributes(attrs, verifiedPlan);
                 foundLemonEmail =
-                  String(attrs.user_email || attrs.customer_email || searchEmail || '').trim().toLowerCase() || null;
+                  String(
+                    attrs.user_email ||
+                      attrs.customer_email ||
+                      attrs.checkout_data?.email ||
+                      searchEmail ||
+                      ''
+                  )
+                    .trim()
+                    .toLowerCase() || null;
                 const matchedDyn = findPlanPricing(pricing, verifiedPlan);
                 verifiedAmount = attrs.total
                   ? Number(attrs.total) / 100
@@ -532,8 +606,9 @@ export default async function handler(req: any, res: any) {
 
         if (!verifiedPaid && invalidKeyDetected) {
           const invalidErr = 'LEMON_API_KEY is invalid for this store - Copy correct key from Lemon > Settings > API';
-          appendWebhookLog({
+          await appendWebhookLogToDb({
             order_id: orderId || 'invalid_api_key',
+            event: 'checkout_verify_failed',
             event_name: 'checkout_verify_failed',
             plan: verifiedPlan,
             email: searchEmail || 'unknown',
@@ -541,6 +616,7 @@ export default async function handler(req: any, res: any) {
             currency: 'USD',
             test_mode: isTestEnv,
             signature_valid: false,
+            raw_error: invalidErr,
             error: invalidErr,
           });
           return res.status(401).json({
@@ -550,6 +626,7 @@ export default async function handler(req: any, res: any) {
             error: invalidErr,
             debug: {
               email_searched: searchEmail || '',
+              order_id_searched: orderId || null,
               total_orders_checked: totalOrdersChecked,
               lemon_status: lemonStatus,
               key_present: keyPresent,
@@ -559,8 +636,10 @@ export default async function handler(req: any, res: any) {
 
         const unlockEmail = (loginEmail || searchEmail || foundLemonEmail || '').trim().toLowerCase();
         if (!unlockEmail) {
-          appendWebhookLog({
+          const missingEmailErr = 'Authentication or order email required to verify checkout';
+          await appendWebhookLogToDb({
             order_id: verifiedOrderId || 'missing_email',
+            event: 'verify_checkout_missing_email',
             event_name: 'verify_checkout_missing_email',
             plan: 'free',
             email: 'unknown',
@@ -568,14 +647,16 @@ export default async function handler(req: any, res: any) {
             currency: 'USD',
             test_mode: isTestEnv,
             signature_valid: false,
-            error: 'Authentication or order email required to verify checkout',
+            raw_error: missingEmailErr,
+            error: missingEmailErr,
           });
           return res.status(401).json({
             success: false,
             verified: false,
-            error: 'Authentication or order email required to verify checkout',
+            error: missingEmailErr,
             debug: {
               email_searched: '',
+              order_id_searched: orderId || null,
               total_orders_checked: totalOrdersChecked,
               lemon_status: lemonStatus,
               key_present: keyPresent,
@@ -583,7 +664,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        let dbUser = getOrCreateServerUser(unlockEmail);
+        let dbUser = (await getUserFromDb(unlockEmail)) || getOrCreateServerUser(unlockEmail);
 
         if (verifiedPaid) {
           const effectiveOrderId = verifiedOrderId || `ord_${Date.now()}`;
@@ -599,9 +680,11 @@ export default async function handler(req: any, res: any) {
             lockedLaunchPrice: verifiedLockedLaunch,
             lemonCustomerEmail: foundLemonEmail || searchEmail,
           });
+          await saveUserToDb(dbUser);
 
-          appendWebhookLog({
+          await appendWebhookLogToDb({
             order_id: effectiveOrderId,
+            event: 'checkout_verify_api',
             event_name: 'checkout_verify_api',
             plan: verifiedPlan,
             email: foundLemonEmail || unlockEmail,
@@ -613,6 +696,16 @@ export default async function handler(req: any, res: any) {
 
           setSessionCookie(res, dbUser.email);
           const license = computeServerLicenseStatus(dbUser);
+          setEntitlementCookie(res, {
+            email: dbUser.email,
+            plan: license.planKey,
+            orderId: effectiveOrderId,
+            licenseStart: dbUser.license_start || Date.now(),
+            licenseEnd: dbUser.license_end || Date.now() + 30 * 24 * 60 * 60 * 1000,
+            amountUSD: verifiedAmount,
+            testMode: verifiedTestMode,
+            lemonCustomerEmail: dbUser.lemon_customer_email || foundLemonEmail || null,
+          });
           const features = findPlanPricing(pricing, license.planKey)?.features || PLANS[license.planKey].features;
 
           return res.status(200).json({
@@ -636,11 +729,12 @@ export default async function handler(req: any, res: any) {
         }
 
         const errMsg = lastLemonLookupError
-          ? `No order found for email ${searchEmail || unlockEmail} (${lastLemonLookupError}) - Try entering your payment email or Order ID below`
-          : `No order found for email ${searchEmail || unlockEmail} - Try entering your payment email or Order ID below`;
+          ? `No order found for ${orderId ? `Order #${orderId} / ` : ''}email ${searchEmail || unlockEmail} (${lastLemonLookupError}) - Try entering your payment email or Order ID below`
+          : `No order found for ${orderId ? `Order #${orderId} / ` : ''}email ${searchEmail || unlockEmail} - Try entering your payment email or Order ID below`;
 
-        appendWebhookLog({
-          order_id: verifiedOrderId || 'not_found',
+        await appendWebhookLogToDb({
+          order_id: verifiedOrderId || orderId || 'not_found',
+          event: 'checkout_verify_failed',
           event_name: 'checkout_verify_failed',
           plan: verifiedPlan,
           email: searchEmail || unlockEmail,
@@ -648,6 +742,7 @@ export default async function handler(req: any, res: any) {
           currency: 'USD',
           test_mode: isTestEnv,
           signature_valid: false,
+          raw_error: errMsg,
           error: errMsg,
         });
 
@@ -662,6 +757,7 @@ export default async function handler(req: any, res: any) {
           source: 'lemon_api_not_found',
           debug: {
             email_searched: searchEmail || unlockEmail,
+            order_id_searched: orderId || null,
             total_orders_checked: totalOrdersChecked,
             lemon_status: lemonStatus,
             key_present: keyPresent,
@@ -1356,21 +1452,41 @@ export default async function handler(req: any, res: any) {
       }
 
       // ------------------------------------------------------------------
-      // 15. GET /api/app?action=webhook-logs (last 20 webhook & email audit logs)
+      // 15. GET /api/app?action=webhook-logs (last 20 webhook & email audit logs from DB)
       // ------------------------------------------------------------------
       case 'webhook-logs': {
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-        const webhookLogs = getWebhookLogs().slice(0, 20);
-        const emailLogs = getEmailLogs().slice(0, 20);
+        const logs = await getWebhookLogsFromDb(20);
+        const emailLogs = await getEmailLogsFromDb(20);
         const failedWebhooks = getFailedWebhookLogs().slice(0, 20);
+        const webhookSecretPresent = Boolean(
+          cleanEnvValue(process.env.LEMON_WEBHOOK_SECRET) ||
+            cleanEnvValue(process.env.LEMONSQUEEZY_WEBHOOK_SECRET)
+        );
+        const apiKeyPresent = Boolean(
+          cleanEnvValue(process.env.LEMON_API_KEY) ||
+            cleanEnvValue(process.env.LEMON_TEST_API_KEY) ||
+            cleanEnvValue(process.env.LEMONSQUEEZY_API_KEY)
+        );
         return res.status(200).json({
           success: true,
           testMode: process.env.LEMON_TEST_MODE === 'true' || process.env.VITE_LEMON_TEST_MODE === 'true',
-          webhookLogs,
-          webhooks: webhookLogs,
+          logs,
+          webhookLogs: logs,
+          webhooks: logs,
           failedWebhooks,
           emailLogs,
           emails: emailLogs,
+          envStatus: {
+            webhookSecretPresent,
+            apiKeyPresent,
+          },
+          ...(logs.length === 0
+            ? {
+                debug:
+                  'No webhook received - Check Lemon > Settings > Webhooks URL is https://aqari-ai-rho.vercel.app/api/webhooks/lemonsqueezy',
+              }
+            : {}),
         });
       }
 

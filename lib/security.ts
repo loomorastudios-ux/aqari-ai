@@ -8,14 +8,82 @@ const OWNER_ADMIN_EMAILS = new Set([
   'loomorastudios@gmail.com',
 ]);
 export const SESSION_COOKIE_NAME = 'aqari_session';
+export const ENTITLEMENT_COOKIE_NAME = 'aqari_entitlement';
+
+export function cleanEnvValue(value?: string | null): string {
+  return (value || '').replace(/^["']|["']$/g, '').trim();
+}
 
 function getSessionSecret(): string {
   return (
-    process.env.SESSION_SECRET ||
-    process.env.NEXTAUTH_SECRET ||
-    process.env.GOOGLE_CLIENT_SECRET ||
+    cleanEnvValue(process.env.SESSION_SECRET) ||
+    cleanEnvValue(process.env.NEXTAUTH_SECRET) ||
+    cleanEnvValue(process.env.GOOGLE_CLIENT_SECRET) ||
     'aqari-terminal-sovereign-hmac-2026'
   );
+}
+
+export interface SignedEntitlementPayload {
+  email: string;
+  plan: 'free' | 'starter' | 'pro' | 'enterprise';
+  orderId: string;
+  licenseStart: number;
+  licenseEnd: number;
+  amountUSD: number;
+  testMode: boolean;
+  lemonCustomerEmail?: string | null;
+  exp: number;
+}
+
+export function signEntitlementToken(data: Omit<SignedEntitlementPayload, 'exp'>): string {
+  const payloadObj: SignedEntitlementPayload = {
+    ...data,
+    email: (data.email || '').trim().toLowerCase(),
+    exp: Math.max(data.licenseEnd, Date.now() + 24 * 60 * 60 * 1000),
+  };
+  const payload = Buffer.from(JSON.stringify(payloadObj)).toString('base64url');
+  const sig = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+export function verifyEntitlementToken(token?: string | null): SignedEntitlementPayload | null {
+  if (!token || !token.includes('.')) return null;
+  const [payload, sig] = token.split('.');
+  if (!payload || !sig) return null;
+  try {
+    const expected = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as SignedEntitlementPayload;
+    if (!decoded?.email || !decoded?.plan || (decoded.exp && Date.now() > decoded.exp)) {
+      return null;
+    }
+    return {
+      ...decoded,
+      email: String(decoded.email).trim().toLowerCase(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function getEntitlementFromReq(req: any): SignedEntitlementPayload | null {
+  const cookies = parseCookies(req?.headers?.cookie || '');
+  return verifyEntitlementToken(cookies[ENTITLEMENT_COOKIE_NAME]);
+}
+
+function appendSetCookieHeader(res: any, cookieStr: string): void {
+  const prev = res.getHeader?.('Set-Cookie');
+  if (!prev) {
+    res.setHeader('Set-Cookie', cookieStr);
+    return;
+  }
+  const arr = Array.isArray(prev) ? prev.map(String) : [String(prev)];
+  const cookieName = cookieStr.split('=')[0] + '=';
+  const filtered = arr.filter((c) => !c.startsWith(cookieName));
+  filtered.push(cookieStr);
+  res.setHeader('Set-Cookie', filtered);
 }
 
 export function isAdminEmail(email?: string | null): boolean {
@@ -107,7 +175,22 @@ export function setSessionCookie(res: any, email: string): string {
     `Max-Age=${30 * 24 * 60 * 60}`,
     ...(isProd ? ['Secure'] : []),
   ];
-  res.setHeader('Set-Cookie', flags.join('; '));
+  appendSetCookieHeader(res, flags.join('; '));
+  return token;
+}
+
+export function setEntitlementCookie(res: any, data: Omit<SignedEntitlementPayload, 'exp'>): string {
+  const token = signEntitlementToken(data);
+  const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
+  const flags = [
+    `${ENTITLEMENT_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${30 * 24 * 60 * 60}`,
+    ...(isProd ? ['Secure'] : []),
+  ];
+  appendSetCookieHeader(res, flags.join('; '));
   return token;
 }
 
@@ -119,7 +202,8 @@ export function clearSessionCookie(res: any): void {
     'SameSite=Lax',
     'Max-Age=0',
   ];
-  res.setHeader('Set-Cookie', flags.join('; '));
+  appendSetCookieHeader(res, flags.join('; '));
+  appendSetCookieHeader(res, `${ENTITLEMENT_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
 // Sliding window rate limiter

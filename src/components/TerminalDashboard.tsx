@@ -57,7 +57,8 @@ import {
   Loader2,
   Bot,
   Radar,
-  Calendar
+  Calendar,
+  RefreshCw
 } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -204,6 +205,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   // Webhook & email audit logs for Settings/Admin view
   const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
   const [emailLogs, setEmailLogs] = useState<any[]>([]);
+  const [webhookDebug, setWebhookDebug] = useState<string | null>(null);
+  const [webhookEnvStatus, setWebhookEnvStatus] = useState<{
+    webhookSecretPresent: boolean;
+    apiKeyPresent: boolean;
+  } | null>(null);
+  const [isRefreshingWebhookLogs, setIsRefreshingWebhookLogs] = useState(false);
+  const [copiedWebhookUrl, setCopiedWebhookUrl] = useState(false);
   const [isAnalyzingApi, setIsAnalyzingApi] = useState(false);
 
   // Add Your City state & persistence
@@ -283,18 +291,31 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const canApiAccess = canUseFeature(license.planKey, 'apiAccess');
   const canAnalystDesk = canUseFeature(license.planKey, 'analystDesk');
 
+  const loadWebhookLogs = async () => {
+    setIsRefreshingWebhookLogs(true);
+    try {
+      const res = await fetch(`/api/app?action=webhook-logs&t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data?.success) {
+        setWebhookLogs(data.logs || data.webhooks || []);
+        setEmailLogs(data.emailLogs || data.emails || []);
+        setWebhookDebug(data.debug || null);
+        if (data.envStatus) {
+          setWebhookEnvStatus(data.envStatus);
+        }
+      }
+    } catch {
+      // Ignore transient network errors
+    } finally {
+      setIsRefreshingWebhookLogs(false);
+    }
+  };
+
   // Load webhook & email audit logs when Settings tab opens
   useEffect(() => {
     if (activeTab === 'settings') {
-      fetch('/api/app?action=webhook-logs')
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (data?.success) {
-            setWebhookLogs(data.webhooks || []);
-            setEmailLogs(data.emails || []);
-          }
-        })
-        .catch(() => {});
+      loadWebhookLogs();
     }
   }, [activeTab]);
 
@@ -2872,18 +2893,71 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
               {/* Webhook & Day-29 Email Audit Logs (Shows Event, Signature, Error for Debugging) */}
               <div className="glass-panel p-6 space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <h3 className="text-sm font-mono font-bold uppercase text-white">
                     Payment Webhook &amp; Email Audit Logs
                   </h3>
-                  <span className="text-xs font-mono px-2.5 py-1 rounded bg-white/5 text-zinc-300">
-                    {webhookLogs.length} webhooks • {emailLogs.length} emails
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={loadWebhookLogs}
+                      disabled={isRefreshingWebhookLogs}
+                      className="inline-flex items-center gap-1.5 text-xs font-mono font-bold px-3 py-1 rounded bg-white/10 hover:bg-white/15 text-white border border-white/15 transition cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingWebhookLogs ? 'animate-spin' : ''}`} />
+                      <span>{isRefreshingWebhookLogs ? 'Refreshing...' : 'Refresh Logs'}</span>
+                    </button>
+                    <span className="text-xs font-mono px-2.5 py-1 rounded bg-white/5 text-zinc-300">
+                      {webhookLogs.length} webhooks • {emailLogs.length} emails
+                    </span>
+                  </div>
+                </div>
+
+                {/* Yellow Webhook Setup & Env Status Box (never shows full keys) */}
+                <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-400/40 space-y-3 text-xs font-mono">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-1">
+                      <div className="text-amber-300 font-bold uppercase tracking-wider">
+                        Webhook URL to copy:
+                      </div>
+                      <div className="text-white break-all select-all">
+                        https://aqari-ai-rho.vercel.app/api/webhooks/lemonsqueezy
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText('https://aqari-ai-rho.vercel.app/api/webhooks/lemonsqueezy');
+                        setCopiedWebhookUrl(true);
+                        setTimeout(() => setCopiedWebhookUrl(false), 2000);
+                      }}
+                      className="px-3.5 py-2 rounded-lg bg-amber-400 hover:bg-amber-300 text-black font-bold text-xs transition cursor-pointer shrink-0"
+                    >
+                      {copiedWebhookUrl ? 'Copied URL!' : 'Copy Webhook URL'}
+                    </button>
+                  </div>
+
+                  <div className="pt-2 border-t border-amber-400/25 flex flex-wrap items-center gap-4 text-xs">
+                    <span className="text-amber-200 font-bold">Status:</span>
+                    <span className="text-zinc-200">
+                      LEMON_WEBHOOK_SECRET present?{' '}
+                      <strong className={webhookEnvStatus?.webhookSecretPresent ? 'text-emerald-400' : 'text-rose-400'}>
+                        {webhookEnvStatus ? (webhookEnvStatus.webhookSecretPresent ? 'Yes' : 'No') : '...'}
+                      </strong>
+                    </span>
+                    <span className="text-zinc-200">
+                      LEMON_API_KEY present?{' '}
+                      <strong className={webhookEnvStatus?.apiKeyPresent ? 'text-emerald-400' : 'text-rose-400'}>
+                        {webhookEnvStatus ? (webhookEnvStatus.apiKeyPresent ? 'Yes' : 'No') : '...'}
+                      </strong>
+                    </span>
+                  </div>
                 </div>
 
                 {webhookLogs.length === 0 ? (
-                  <div className="text-sm font-mono text-zinc-400 p-4 rounded-xl bg-black/40 border border-white/5">
-                    No Lemon Squeezy webhook events logged in this container yet.
+                  <div className="text-sm font-mono text-zinc-300 p-4 rounded-xl bg-black/40 border border-white/10">
+                    {webhookDebug ||
+                      'No webhook received - Check Lemon > Settings > Webhooks URL is https://aqari-ai-rho.vercel.app/api/webhooks/lemonsqueezy'}
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -2903,7 +2977,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <tbody className="divide-y divide-white/5 text-zinc-300">
                         {webhookLogs.slice(0, 20).map((w) => (
                           <tr key={w.id}>
-                            <td className="py-2.5 pr-3 text-xs text-white font-semibold">{w.event_name || 'order_created'}</td>
+                            <td className="py-2.5 pr-3 text-xs text-white font-semibold">{w.event || w.event_name || 'order_created'}</td>
                             <td className="py-2.5 pr-3 text-xs">{w.order_id}</td>
                             <td className="py-2.5 pr-3 uppercase text-[#D4AF37] font-bold">{w.plan}</td>
                             <td className="py-2.5 pr-3 text-xs">{w.email}</td>
@@ -2928,7 +3002,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               <div className="text-zinc-400">
                                 {w.timestamp ? new Date(w.timestamp).toLocaleString() : '-'}
                               </div>
-                              {w.error && <div className="text-rose-400 mt-0.5">{w.error}</div>}
+                              {(w.raw_error || w.error) && (
+                                <div className="text-rose-400 mt-0.5">{w.raw_error || w.error}</div>
+                              )}
                             </td>
                           </tr>
                         ))}
