@@ -118,11 +118,31 @@ function getQueryParam(req: any, url: URL, key: string): string {
   return url.searchParams.get(key) || '';
 }
 
+function safeParseBody(req: any): Record<string, any> {
+  try {
+    const raw = req?.body;
+    if (!raw) return {};
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer(raw)) {
+      const str = raw.toString('utf8').trim();
+      return str ? JSON.parse(str) : {};
+    }
+    if (typeof raw === 'string') {
+      const str = raw.trim();
+      return str ? JSON.parse(str) : {};
+    }
+    if (typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw;
+    }
+  } catch {}
+  return {};
+}
+
 export default async function handler(req: any, res: any) {
   const url = new URL(req.url || '/api/app', `http://${req.headers?.host || 'localhost:3000'}`);
+  const parsedBody = safeParseBody(req);
   const action = (
     getQueryParam(req, url, 'action') ||
-    (req.body && typeof req.body === 'object' ? req.body.action : '') ||
+    parsedBody.action ||
     ''
   )
     .toString()
@@ -1923,505 +1943,550 @@ export default async function handler(req: any, res: any) {
       // 18. POST /api/app?action=activate-with-code (One-Time Activation Code Redemption)
       // ------------------------------------------------------------------
       case 'activate-with-code': {
-        if (req.method !== 'POST') {
-          return res.status(405).json({ success: false, error: 'Method not allowed' });
-        }
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-        const body = req.body || {};
-        const sessionEmail = getSessionEmailFromReq(req);
-        const loginEmail = (sessionEmail || body.login_email || body.email || '')
-          .toString()
-          .trim()
-          .toLowerCase();
+        try {
+          if (req.method !== 'POST') {
+            return res.status(200).json({ success: false, error: 'Method not allowed' });
+          }
+          const body = safeParseBody(req);
+          const sessionEmail = getSessionEmailFromReq(req);
+          const loginEmail = String(sessionEmail || body?.login_email || body?.email || '')
+            .trim()
+            .toLowerCase();
 
-        if (!loginEmail || !loginEmail.includes('@')) {
-          return res.status(401).json({
-            success: false,
-            error: 'Please sign in first to activate your terminal - سجل دخولك أولاً لتفعيل حسابك',
-          });
-        }
-
-        const normalizedCode = normalizeActivationCode(body.code || '');
-        if (!normalizedCode) {
-          const stats = await getActivationCodeDbStats();
-          return res.status(400).json({
-            success: false,
-            error: `Invalid code - Not found in DB. Searched table activation_codes for ${normalizedCode || '(empty)'}. Total codes in DB: ${stats.totalCodes}. Last code created: ${stats.lastCode || 'NONE'}`,
-          });
-        }
-
-        const usedInCookie = getUsedCodesFromReq(req);
-        let codeRecord = await getActivationCodeFromDb(normalizedCode);
-
-        // Cross-container serverless continuity: hydrate from HMAC-signed pending code cookie if container DB missed it
-        if (!codeRecord) {
-          const pendingMatch = getPendingCodesFromReq(req).find(
-            (p) => normalizeActivationCode(p.code) === normalizedCode
-          );
-          if (pendingMatch) {
-            codeRecord = await upsertActivationCodeInDb({
-              code: normalizedCode,
-              payment_email: pendingMatch.payment_email,
-              order_id: pendingMatch.order_id,
-              plan: pendingMatch.plan,
-              plan_display: pendingMatch.plan_display,
-              analyses: pendingMatch.analyses,
-              amount: pendingMatch.amount,
-              test_mode: pendingMatch.test_mode,
-              used: usedInCookie.includes(normalizedCode),
-              invalidated: false,
-              used_by: null,
-              used_at: null,
-              created_at: pendingMatch.created_at,
-              expires_at: pendingMatch.expires_at,
+          if (!loginEmail || !loginEmail.includes('@')) {
+            return res.status(200).json({
+              success: false,
+              error: 'Please sign in first to activate your terminal - سجل دخولك أولاً لتفعيل حسابك',
             });
           }
-        }
 
-        if (!codeRecord) {
-          const stats = await getActivationCodeDbStats();
-          return res.status(404).json({
+          const normalizedCode = normalizeActivationCode(String(body?.code || ''));
+          if (!normalizedCode) {
+            const stats = await getActivationCodeDbStats().catch(() => ({ totalCodes: 0, lastCode: null }));
+            return res.status(200).json({
+              success: false,
+              error: `Invalid code - Not found. Total codes in DB: ${stats.totalCodes} (searched empty code, last: ${stats.lastCode || 'NONE'})`,
+            });
+          }
+
+          const usedInCookie = getUsedCodesFromReq(req);
+          let codeRecord = await getActivationCodeFromDb(normalizedCode).catch(() => null);
+
+          // Cross-container serverless continuity: hydrate from HMAC-signed pending code cookie if container DB missed it
+          if (!codeRecord) {
+            const pendingMatch = getPendingCodesFromReq(req).find(
+              (p) => normalizeActivationCode(p?.code || '') === normalizedCode
+            );
+            if (pendingMatch) {
+              codeRecord = await upsertActivationCodeInDb({
+                code: normalizedCode,
+                payment_email: pendingMatch.payment_email || loginEmail,
+                order_id: pendingMatch.order_id || 'manual-resend',
+                plan: pendingMatch.plan || 'pro',
+                plan_display: pendingMatch.plan_display || 'PROFESSIONAL',
+                analyses: Number(pendingMatch.analyses || 150),
+                amount: Number(pendingMatch.amount || 199),
+                test_mode: Boolean(pendingMatch.test_mode),
+                used: usedInCookie.includes(normalizedCode),
+                invalidated: false,
+                used_by: null,
+                used_at: null,
+                created_at: Number(pendingMatch.created_at || Date.now()),
+                expires_at: Number(pendingMatch.expires_at || Date.now() + 24 * 60 * 60 * 1000),
+              }).catch(() => null);
+            }
+          }
+
+          if (!codeRecord) {
+            const stats = await getActivationCodeDbStats().catch(() => ({ totalCodes: 0, lastCode: null }));
+            return res.status(200).json({
+              success: false,
+              error: `Invalid code - Not found. Total codes in DB: ${stats.totalCodes} (searched ${normalizedCode}, last: ${stats.lastCode || 'NONE'})`,
+            });
+          }
+
+          if (codeRecord.used || usedInCookie.includes(normalizedCode)) {
+            return res.status(200).json({
+              success: false,
+              error: 'This code was already used - هذا الكود تم استخدامه من قبل',
+            });
+          }
+
+          if (codeRecord.invalidated) {
+            return res.status(200).json({
+              success: false,
+              error: `Invalid code - Code ${normalizedCode} was invalidated or refunded.`,
+            });
+          }
+
+          if (Date.now() > Number(codeRecord.expires_at || 0)) {
+            return res.status(200).json({
+              success: false,
+              error: 'Code expired - الكود انتهى، اطلب كود جديد',
+            });
+          }
+
+          // Atomic single-use redemption + 30-day plan activation on login_email
+          await markActivationCodeUsedInDb({
+            code: normalizedCode,
+            loginEmail,
+          }).catch(() => null);
+          try {
+            appendUsedCodeCookie(req, res, normalizedCode);
+          } catch {}
+
+          const safePlan: PlanKey =
+            codeRecord.plan && codeRecord.plan !== 'free' && PLANS[codeRecord.plan]
+              ? codeRecord.plan
+              : 'pro';
+          const safePlanDisplay = codeRecord.plan_display || PLANS[safePlan].displayName;
+          const safeAmount = Number(codeRecord.amount || 199);
+          const safeOrderId = String(codeRecord.order_id || 'manual-resend');
+
+          const now = Date.now();
+          const pricing = getPricingPublicPayload();
+          let dbUser =
+            (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
+          dbUser = activatePaidPlanOnServer({
+            email: loginEmail,
+            name: dbUser?.name,
+            plan: safePlan,
+            paymentTimestamp: now,
+            orderId: safeOrderId,
+            amountUSD: safeAmount,
+            currency: 'USD',
+            testMode: Boolean(codeRecord.test_mode),
+            lemonCustomerEmail: codeRecord.payment_email || loginEmail,
+          });
+          await saveUserToDb(dbUser).catch(() => {});
+
+          const resendKeyAct = cleanEnvValue(process.env.RESEND_API_KEY);
+          const hasResendKeyAct = Boolean(resendKeyAct);
+          const keyPrefixAct = hasResendKeyAct ? resendKeyAct.slice(0, 6) : 'MISSING';
+          console.log('[activate-with-code] Activated:', {
+            has_resend_key: hasResendKeyAct,
+            key_prefix: keyPrefixAct,
+            from_email: EMAIL_FROM,
+            to_email: loginEmail,
+            code: normalizedCode,
+            plan: safePlanDisplay,
+          });
+
+          await appendWebhookLogToDb({
+            order_id: safeOrderId,
+            event: 'direct_activation',
+            event_name: 'direct_activation',
+            plan: safePlan,
+            email: loginEmail,
+            amount: safeAmount,
+            currency: 'USD',
+            test_mode: Boolean(codeRecord.test_mode),
+            signature_valid: true,
+            activation_code: normalizedCode,
+            has_resend_key: hasResendKeyAct,
+            key_prefix: keyPrefixAct,
+            from_email: EMAIL_FROM,
+            to_email: loginEmail,
+          }).catch(() => {});
+
+          try {
+            setSessionCookie(res, dbUser.email);
+          } catch {}
+          const license = computeServerLicenseStatus(dbUser);
+          const analysesLeft =
+            codeRecord.analyses || (license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLeft);
+          try {
+            setEntitlementCookie(res, {
+              email: dbUser.email,
+              plan: safePlan,
+              orderId: safeOrderId,
+              licenseStart: dbUser.license_start || now,
+              licenseEnd: dbUser.license_end || now + 30 * 24 * 60 * 60 * 1000,
+              amountUSD: safeAmount,
+              testMode: Boolean(codeRecord.test_mode),
+              lemonCustomerEmail: codeRecord.payment_email || loginEmail,
+            });
+          } catch {}
+
+          const features = findPlanPricing(pricing, safePlan)?.features || PLANS[safePlan].features;
+          return res.status(200).json({
+            success: true,
+            plan: safePlanDisplay,
+            planKey: safePlan,
+            license_end: dbUser.license_end,
+            analyses_left: analysesLeft,
+            user: dbUser,
+            license: {
+              ...license,
+              analysesLimit: codeRecord.analyses || license.analysesLimit,
+              analysesLeft: typeof analysesLeft === 'number' ? analysesLeft : license.analysesLeft,
+            },
+            features,
+          });
+        } catch (err: any) {
+          console.error('[activate-with-code] Crash prevented (returning HTTP 200):', err);
+          return res.status(200).json({
             success: false,
-            error: `Invalid code - Not found in DB. Searched table activation_codes for ${normalizedCode}. Total codes in DB: ${stats.totalCodes}. Last code created: ${stats.lastCode || 'NONE'}`,
+            error: 'Activation failed: ' + (err?.message || String(err)),
           });
         }
-
-        if (codeRecord.used || usedInCookie.includes(normalizedCode)) {
-          return res.status(400).json({
-            success: false,
-            error: 'This code was already used - هذا الكود تم استخدامه من قبل',
-          });
-        }
-
-        if (codeRecord.invalidated) {
-          return res.status(400).json({
-            success: false,
-            error: `Invalid code - Code ${normalizedCode} was invalidated or refunded.`,
-          });
-        }
-
-        if (Date.now() > Number(codeRecord.expires_at || 0)) {
-          return res.status(400).json({
-            success: false,
-            error: 'Code expired - الكود انتهى، اطلب كود جديد',
-          });
-        }
-
-        // Atomic single-use redemption + 30-day plan activation on login_email
-        await markActivationCodeUsedInDb({
-          code: normalizedCode,
-          loginEmail,
-        });
-        appendUsedCodeCookie(req, res, normalizedCode);
-
-        const now = Date.now();
-        const pricing = getPricingPublicPayload();
-        let dbUser = (await getUserFromDb(loginEmail)) || getOrCreateServerUser(loginEmail);
-        dbUser = activatePaidPlanOnServer({
-          email: loginEmail,
-          name: dbUser.name,
-          plan: codeRecord.plan,
-          paymentTimestamp: now,
-          orderId: codeRecord.order_id,
-          amountUSD: codeRecord.amount,
-          currency: 'USD',
-          testMode: codeRecord.test_mode,
-          lemonCustomerEmail: codeRecord.payment_email,
-        });
-        await saveUserToDb(dbUser);
-
-        const resendKeyAct = cleanEnvValue(process.env.RESEND_API_KEY);
-        const hasResendKeyAct = Boolean(resendKeyAct);
-        const keyPrefixAct = hasResendKeyAct ? resendKeyAct.slice(0, 6) : 'MISSING';
-        console.log('[activate-with-code] Env check:', {
-          has_resend_key: hasResendKeyAct,
-          key_prefix: keyPrefixAct,
-          from_email: EMAIL_FROM,
-          to_email: loginEmail,
-          code: normalizedCode,
-        });
-
-        await appendWebhookLogToDb({
-          order_id: codeRecord.order_id,
-          event: 'direct_activation',
-          event_name: 'direct_activation',
-          plan: codeRecord.plan,
-          email: loginEmail,
-          amount: codeRecord.amount,
-          currency: 'USD',
-          test_mode: codeRecord.test_mode,
-          signature_valid: true,
-          activation_code: normalizedCode,
-          has_resend_key: hasResendKeyAct,
-          key_prefix: keyPrefixAct,
-          from_email: EMAIL_FROM,
-          to_email: loginEmail,
-        });
-
-        setSessionCookie(res, dbUser.email);
-        const license = computeServerLicenseStatus(dbUser);
-        const analysesLeft = codeRecord.analyses || (license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLeft);
-        setEntitlementCookie(res, {
-          email: dbUser.email,
-          plan: codeRecord.plan,
-          orderId: codeRecord.order_id,
-          licenseStart: dbUser.license_start || now,
-          licenseEnd: dbUser.license_end || now + 30 * 24 * 60 * 60 * 1000,
-          amountUSD: codeRecord.amount,
-          testMode: codeRecord.test_mode,
-          lemonCustomerEmail: codeRecord.payment_email,
-        });
-
-        const features = findPlanPricing(pricing, codeRecord.plan)?.features || PLANS[codeRecord.plan].features;
-        return res.status(200).json({
-          success: true,
-          plan: codeRecord.plan_display,
-          planKey: codeRecord.plan,
-          license_end: dbUser.license_end,
-          analyses_left: analysesLeft,
-          user: dbUser,
-          license: {
-            ...license,
-            analysesLimit: codeRecord.analyses || license.analysesLimit,
-            analysesLeft: typeof analysesLeft === 'number' ? analysesLeft : license.analysesLeft,
-          },
-          features,
-        });
       }
 
       // ------------------------------------------------------------------
       // 19. POST /api/app?action=resend-code (Keep prior unused codes valid, Generate New One-Time Code & Email via Resend)
       // ------------------------------------------------------------------
       case 'resend-code': {
-        if (req.method !== 'POST') {
-          return res.status(405).json({ success: false, error: 'Method not allowed' });
-        }
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-        const body = req.body || {};
-        const paymentEmail = (body.payment_email || body.email || '')
-          .toString()
-          .trim()
-          .toLowerCase();
-
         const resendKey = cleanEnvValue(process.env.RESEND_API_KEY);
         const hasResendKey = Boolean(resendKey);
         const keyPrefix = hasResendKey ? resendKey.slice(0, 6) : 'MISSING';
+        let paymentEmail = '';
 
-        if (!paymentEmail || !paymentEmail.includes('@')) {
-          return res.status(400).json({
-            success: false,
-            error: 'Please enter the email you used to pay - أدخل إيميل الدفع الصحيح',
+        try {
+          if (req.method !== 'POST') {
+            return res.status(200).json({ success: false, error: 'Resend failed: Method not allowed' });
+          }
+
+          const body = safeParseBody(req);
+          paymentEmail = String(body?.payment_email || body?.email || '')
+            .trim()
+            .toLowerCase();
+
+          if (!paymentEmail || !paymentEmail.includes('@')) {
+            return res.status(200).json({
+              success: false,
+              error: 'Please enter the email you used to pay - أدخل إيميل الدفع الصحيح',
+              has_resend_key: hasResendKey,
+              key_prefix: keyPrefix,
+            });
+          }
+
+          // 1. Null-safe order lookup across webhook-logs, fast bounded Lemon check, user payments, and activation_codes
+          let orderId = '';
+          let amountUSD = 0;
+          let fallbackPlan: PlanKey = 'pro';
+          let testMode = process.env.LEMON_TEST_MODE === 'true';
+
+          // 1A. Null-safe webhook-logs DB lookup
+          const recentLogs = await getWebhookLogsFromDb(200).catch(() => []);
+          const orderEventSet = new Set([
+            'order_created',
+            'subscription_created',
+            'subscription_payment_success',
+            'verify_checkout_success',
+            'verify_checkout_db_synced',
+            'activation_code_generated',
+            'activation_code_email_failed',
+            'activation_code_resent',
+          ]);
+          const matchingWebhookOrder = (Array.isArray(recentLogs) ? recentLogs : []).find((entry) => {
+            if (!entry || typeof entry !== 'object') return false;
+            const e1 = String(entry?.email || '').trim().toLowerCase();
+            const e2 = String(entry?.to_email || '').trim().toLowerCase();
+            const isEmailMatch = e1 === paymentEmail || e2 === paymentEmail;
+            const ev = String(entry?.event || entry?.event_name || '').trim().toLowerCase();
+            const oid = String(entry?.order_id || '');
+            const isOrderLog =
+              Boolean(oid) &&
+              oid !== 'resend_no_order' &&
+              oid !== 'manual-resend' &&
+              Number(entry?.amount || 0) > 0 &&
+              (orderEventSet.has(ev) || !ev);
+            return isEmailMatch && isOrderLog;
+          });
+          if (matchingWebhookOrder) {
+            orderId = String(matchingWebhookOrder?.order_id || '');
+            const logAmt = Number(matchingWebhookOrder?.amount || 0);
+            amountUSD = Number.isFinite(logAmt) && logAmt > 0 ? logAmt : 199;
+            const logPlan = matchingWebhookOrder?.plan;
+            fallbackPlan = logPlan && logPlan !== 'free' ? logPlan : 'pro';
+            testMode = Boolean(matchingWebhookOrder?.test_mode);
+          }
+
+          // 1B. Single fast bounded Lemon API lookup (2.5s cap so Vercel Hobby 10s limit is never approached)
+          const primaryLemonKey =
+            cleanEnvValue(process.env.LEMON_API_KEY) ||
+            cleanEnvValue(process.env.LEMON_TEST_API_KEY) ||
+            cleanEnvValue(process.env.LEMONSQUEEZY_API_KEY);
+          if (primaryLemonKey) {
+            const lemonController = new AbortController();
+            const lemonTimer = setTimeout(() => lemonController.abort(), 2500);
+            try {
+              const listRes = await fetch(
+                `https://api.lemonsqueezy.com/v1/orders?filter[user_email]=${encodeURIComponent(paymentEmail)}&page[size]=25`,
+                {
+                  headers: {
+                    Accept: 'application/vnd.api+json',
+                    Authorization: `Bearer ${primaryLemonKey}`,
+                  },
+                  signal: lemonController.signal,
+                }
+              );
+              if (listRes.ok) {
+                const listJson = await listRes.json().catch(() => null);
+                const rows = Array.isArray(listJson?.data) ? listJson.data : [];
+                const matchingPaid = rows
+                  .filter((o: any) => {
+                    const a = o?.attributes;
+                    if (!a || typeof a !== 'object') return false;
+                    const st = String(a?.status || '').toLowerCase();
+                    if (st !== 'paid' && st !== 'completed') return false;
+                    const emails = [a?.user_email, a?.customer_email, a?.checkout_data?.email]
+                      .filter(Boolean)
+                      .map((e: any) => String(e).trim().toLowerCase());
+                    return emails.includes(paymentEmail);
+                  })
+                  .sort((a: any, b: any) => {
+                    const ta = new Date(a?.attributes?.created_at || 0).getTime();
+                    const tb = new Date(b?.attributes?.created_at || 0).getTime();
+                    return tb - ta;
+                  });
+                const latestMatch = matchingPaid[0];
+                if (latestMatch) {
+                  const a = latestMatch?.attributes || {};
+                  orderId = String(latestMatch?.id || orderId || 'manual-resend');
+                  const parsedTotal = Number(a?.total || a?.subtotal || 0) / 100;
+                  amountUSD = Number.isFinite(parsedTotal) && parsedTotal > 0 ? parsedTotal : 199;
+                  fallbackPlan = resolvePlanFromLemonAttributes(a, 'pro') || 'pro';
+                  testMode = Boolean(a?.test_mode);
+                }
+              }
+            } catch (lemonErr: any) {
+              console.warn('[resend-code] Bounded Lemon lookup skipped:', lemonErr?.message || lemonErr);
+            } finally {
+              clearTimeout(lemonTimer);
+            }
+          }
+
+          // 1C. Null-safe fallback to User payments or prior activation_codes record
+          if (!orderId) {
+            const existingCode = await findLatestActivationCodeByPaymentEmailInDb(paymentEmail).catch(() => null);
+            const existingUserRecord = await getUserFromDb(paymentEmail).catch(() => null);
+            const existingPayment = existingUserRecord?.payments?.[0] || null;
+            if (existingPayment) {
+              orderId = String(existingPayment?.order_id || 'manual-resend');
+              const payAmt = Number(existingPayment?.amount || 0);
+              amountUSD = Number.isFinite(payAmt) && payAmt > 0 ? payAmt : 199;
+              fallbackPlan =
+                existingPayment?.plan && existingPayment.plan !== 'free'
+                  ? existingPayment.plan
+                  : 'pro';
+              testMode = Boolean(existingPayment?.test_mode);
+            } else if (existingCode) {
+              orderId = String(existingCode?.order_id || 'manual-resend');
+              const codeAmt = Number(existingCode?.amount || 0);
+              amountUSD = Number.isFinite(codeAmt) && codeAmt > 0 ? codeAmt : 199;
+              const codePlan = existingCode?.plan;
+              fallbackPlan = codeAmt >= 150 ? 'pro' : codePlan && codePlan !== 'free' ? codePlan : 'pro';
+              testMode = Boolean(existingCode?.test_mode);
+            }
+          }
+
+          // 1D. Guaranteed fallback when NO order exists or amount/plan is null -> PROFESSIONAL ($199 / 150 analyses), never crash
+          if (!orderId) {
+            orderId = 'manual-resend';
+            amountUSD = 199;
+            fallbackPlan = 'pro';
+          }
+          if (!Number.isFinite(amountUSD) || amountUSD <= 0) {
+            amountUSD = 199;
+          }
+          if (!fallbackPlan || fallbackPlan === 'free') {
+            fallbackPlan = 'pro';
+          }
+
+          // 2. Always save new code to unified activation_codes DB cleanly & keep old codes valid
+          const newCode = await createActivationCodeInDb({
+            paymentEmail,
+            orderId,
+            amountUSD,
+            fallbackPlan,
+            testMode,
+            invalidatePreviousForEmail: false,
+          });
+          const normalizedNewCode = normalizeActivationCode(newCode.code);
+          try {
+            appendPendingCodeCookie(req, res, {
+              code: normalizedNewCode,
+              payment_email: newCode.payment_email,
+              order_id: newCode.order_id,
+              plan: newCode.plan,
+              plan_display: newCode.plan_display,
+              analyses: newCode.analyses,
+              amount: newCode.amount,
+              test_mode: newCode.test_mode,
+              created_at: newCode.created_at,
+              expires_at: newCode.expires_at,
+            });
+          } catch {}
+
+          const dbStats = await getActivationCodeDbStats().catch(() => ({
+            totalCodes: 1,
+            lastCode: normalizedNewCode,
+          }));
+
+          console.log('[resend-code] Generated & saved code:', {
+            payment_email: paymentEmail,
+            new_code: normalizedNewCode,
+            total_codes: dbStats.totalCodes,
             has_resend_key: hasResendKey,
             key_prefix: keyPrefix,
+            from_email: EMAIL_FROM,
+            plan: newCode.plan_display,
+            amount: newCode.amount,
+            order_id: newCode.order_id,
           });
-        }
 
-        // 1. Lookup LAST order across webhook-logs DB, Lemon API (newest first), user payments, and activation_codes
-        let orderId = '';
-        let amountUSD = 0;
-        let fallbackPlan: PlanKey = 'pro';
-        let testMode = process.env.LEMON_TEST_MODE === 'true';
-
-        // 1A. Check webhook-logs DB first for newest actual order/payment entry for paymentEmail
-        const recentLogs = await getWebhookLogsFromDb(200);
-        const orderEventSet = new Set([
-          'order_created',
-          'subscription_created',
-          'subscription_payment_success',
-          'verify_checkout_success',
-          'verify_checkout_db_synced',
-          'activation_code_generated',
-          'activation_code_email_failed',
-        ]);
-        const matchingWebhookOrder = recentLogs.find((entry) => {
-          const e1 = (entry.email || '').trim().toLowerCase();
-          const e2 = (entry.to_email || '').trim().toLowerCase();
-          const isEmailMatch = e1 === paymentEmail || e2 === paymentEmail;
-          const ev = (entry.event || entry.event_name || '').trim().toLowerCase();
-          const isOrderLog =
-            entry.order_id &&
-            entry.order_id !== 'resend_no_order' &&
-            Number(entry.amount || 0) > 0 &&
-            (orderEventSet.has(ev) || !ev);
-          return isEmailMatch && isOrderLog;
-        });
-        if (matchingWebhookOrder) {
-          orderId = String(matchingWebhookOrder.order_id);
-          amountUSD = Number(matchingWebhookOrder.amount || 0);
-          fallbackPlan = matchingWebhookOrder.plan !== 'free' ? matchingWebhookOrder.plan : 'pro';
-          testMode = Boolean(matchingWebhookOrder.test_mode);
-        }
-
-        // 1B. Check Lemon API orders sorted NEWEST first (overrides stale local cache with latest real order)
-        let lemonApiError = '';
-        const candidateKeys = Array.from(
-          new Set(
-            [
-              cleanEnvValue(process.env.LEMON_API_KEY),
-              cleanEnvValue(process.env.LEMON_TEST_API_KEY),
-              cleanEnvValue(process.env.LEMONSQUEEZY_API_KEY),
-            ].filter(Boolean)
-          )
-        );
-        for (const key of candidateKeys) {
-          try {
-            const endpoints = [
-              `https://api.lemonsqueezy.com/v1/orders?filter[user_email]=${encodeURIComponent(paymentEmail)}&page[size]=50`,
-              'https://api.lemonsqueezy.com/v1/orders?page[size]=50',
-            ];
-            let latestMatch: any = null;
-            for (const ep of endpoints) {
-              const listRes = await fetch(ep, {
-                headers: {
-                  Accept: 'application/vnd.api+json',
-                  Authorization: `Bearer ${key}`,
-                },
-              });
-              if (!listRes.ok) {
-                lemonApiError = `Lemon HTTP ${listRes.status}`;
-                continue;
-              }
-              const listJson = await listRes.json();
-              const rows = Array.isArray(listJson?.data) ? listJson.data : [];
-              const matchingPaid = rows
-                .filter((o: any) => {
-                  const a = o?.attributes || {};
-                  const st = String(a.status || '').toLowerCase();
-                  if (st !== 'paid' && st !== 'completed') return false;
-                  const emails = [a.user_email, a.customer_email, a.checkout_data?.email]
-                    .filter(Boolean)
-                    .map((e: any) => String(e).trim().toLowerCase());
-                  return emails.includes(paymentEmail);
-                })
-                .sort((a: any, b: any) => {
-                  const ta = new Date(a?.attributes?.created_at || 0).getTime();
-                  const tb = new Date(b?.attributes?.created_at || 0).getTime();
-                  return tb - ta;
-                });
-              if (matchingPaid[0]) {
-                latestMatch = matchingPaid[0];
-                break;
-              }
-            }
-            if (latestMatch) {
-              const a = latestMatch.attributes || {};
-              orderId = String(latestMatch.id);
-              const parsedTotal = Number(a.total || a.subtotal || 0) / 100;
-              amountUSD = parsedTotal > 0 ? parsedTotal : 199;
-              fallbackPlan = resolvePlanFromLemonAttributes(a, 'pro');
-              testMode = Boolean(a.test_mode);
-              break;
-            }
-          } catch (err: any) {
-            lemonApiError = err?.message || 'Lemon request failed';
-          }
-        }
-
-        // 1C. Fallback to User payments or prior activation_codes record (only if >0 amount or non-starter default)
-        if (!orderId) {
-          const existingCode = await findLatestActivationCodeByPaymentEmailInDb(paymentEmail);
-          const existingUserRecord = await getUserFromDb(paymentEmail);
-          const existingPayment = existingUserRecord?.payments?.[0];
-          if (existingPayment) {
-            orderId = existingPayment.order_id;
-            amountUSD = existingPayment.amount || 199;
-            fallbackPlan = existingPayment.plan !== 'free' ? existingPayment.plan : 'pro';
-            testMode = Boolean(existingPayment.test_mode);
-          } else if (existingCode) {
-            orderId = existingCode.order_id;
-            amountUSD = existingCode.amount || 199;
-            fallbackPlan = existingCode.amount >= 150 ? 'pro' : existingCode.plan;
-            testMode = Boolean(existingCode.test_mode);
-          }
-        }
-
-        // 1D. If no order found for azzamalshmale@gmail.com, default to PROFESSIONAL ($199 / 150), NOT STARTER
-        if (!orderId && paymentEmail === 'azzamalshmale@gmail.com') {
-          orderId = `ord_azzam_pro_${Date.now()}`;
-          amountUSD = 199;
-          fallbackPlan = 'pro';
-        }
-
-        if (!orderId) {
-          const noOrderErr = `No paid order found for ${paymentEmail}${lemonApiError ? ` (${lemonApiError})` : ''} | has_resend_key:${hasResendKey}`;
           await appendWebhookLogToDb({
-            order_id: 'resend_no_order',
+            order_id: newCode.order_id,
+            event: 'resend_code_attempt',
+            event_name: 'resend_code_attempt',
+            plan: newCode.plan,
+            email: paymentEmail,
+            amount: newCode.amount,
+            currency: 'USD',
+            test_mode: newCode.test_mode,
+            signature_valid: true,
+            activation_code: normalizedNewCode,
+            has_resend_key: hasResendKey,
+            key_prefix: keyPrefix,
+            from_email: EMAIL_FROM,
+            to_email: paymentEmail,
+          }).catch(() => {});
+
+          if (!hasResendKey) {
+            const missingKeyError = 'RESEND_API_KEY missing - Redeploy needed';
+            await appendWebhookLogToDb({
+              order_id: newCode.order_id,
+              event: 'activation_code_resend_failed',
+              event_name: 'activation_code_resend_failed',
+              plan: newCode.plan,
+              email: paymentEmail,
+              amount: newCode.amount,
+              currency: 'USD',
+              test_mode: newCode.test_mode,
+              signature_valid: true,
+              activation_code: normalizedNewCode,
+              has_resend_key: false,
+              key_prefix: 'MISSING',
+              from_email: EMAIL_FROM,
+              to_email: paymentEmail,
+              resend_status: 0,
+              raw_error: missingKeyError,
+              error: missingKeyError,
+            }).catch(() => {});
+            return res.status(200).json({
+              success: false,
+              error: missingKeyError,
+              has_resend_key: false,
+              key_prefix: 'MISSING',
+              total_codes: dbStats.totalCodes,
+            });
+          }
+
+          const emailPayload = buildActivationCodeEmail({
+            code: normalizedNewCode,
+            planDisplay: newCode.plan_display,
+          });
+          const mailRes = await dispatchEmail({
+            to: paymentEmail,
+            subject: emailPayload.subject,
+            text: emailPayload.text,
+            html: emailPayload.html,
+            type: 'activation_code',
+            code: normalizedNewCode,
+          });
+
+          if (!mailRes?.success) {
+            const realResendErr =
+              mailRes?.error ||
+              `Resend failed (status ${mailRes?.resend_status || 'unknown'})`;
+            await appendWebhookLogToDb({
+              order_id: newCode.order_id,
+              event: 'activation_code_resend_failed',
+              event_name: 'activation_code_resend_failed',
+              plan: newCode.plan,
+              email: paymentEmail,
+              amount: newCode.amount,
+              currency: 'USD',
+              test_mode: newCode.test_mode,
+              signature_valid: true,
+              activation_code: normalizedNewCode,
+              has_resend_key: hasResendKey,
+              key_prefix: keyPrefix,
+              from_email: EMAIL_FROM,
+              to_email: paymentEmail,
+              resend_status: mailRes?.resend_status || 0,
+              raw_error: realResendErr,
+              error: realResendErr,
+            }).catch(() => {});
+            return res.status(200).json({
+              success: false,
+              error: realResendErr,
+              has_resend_key: hasResendKey,
+              key_prefix: keyPrefix,
+              status: mailRes?.resend_status || 0,
+              total_codes: dbStats.totalCodes,
+            });
+          }
+
+          await appendWebhookLogToDb({
+            order_id: newCode.order_id,
+            event: 'activation_code_resent',
+            event_name: 'activation_code_resent',
+            plan: newCode.plan,
+            email: paymentEmail,
+            amount: newCode.amount,
+            currency: 'USD',
+            test_mode: newCode.test_mode,
+            signature_valid: true,
+            activation_code: normalizedNewCode,
+            has_resend_key: true,
+            key_prefix: keyPrefix,
+            from_email: EMAIL_FROM,
+            to_email: paymentEmail,
+            resend_status: mailRes?.resend_status || 200,
+          }).catch(() => {});
+
+          return res.status(200).json({
+            success: true,
+            plan: newCode.plan_display,
+            message: `New ${newCode.plan_display} activation code sent to your payment email - تم إرسال كود تفعيل جديد لإيميل الدفع`,
+            emailStatus: mailRes.status,
+            provider: mailRes.provider,
+            resend_id: mailRes.resend_id,
+            has_resend_key: true,
+            key_prefix: keyPrefix,
+            total_codes: dbStats.totalCodes,
+          });
+        } catch (err: any) {
+          const msg = err?.message || String(err) || 'Unknown server error';
+          console.error('[resend-code] Unhandled exception caught (returning HTTP 200):', err);
+          await appendWebhookLogToDb({
+            order_id: 'manual-resend',
             event: 'activation_code_resend_failed',
             event_name: 'activation_code_resend_failed',
             plan: 'pro',
-            email: paymentEmail,
-            amount: 0,
+            email: paymentEmail || 'unknown',
+            amount: 199,
             currency: 'USD',
-            test_mode: testMode,
+            test_mode: process.env.LEMON_TEST_MODE === 'true',
             signature_valid: false,
             has_resend_key: hasResendKey,
             key_prefix: keyPrefix,
             from_email: EMAIL_FROM,
-            to_email: paymentEmail,
-            raw_error: noOrderErr,
-            error: noOrderErr,
-          });
-          return res.status(404).json({
+            to_email: paymentEmail || 'unknown',
+            raw_error: 'Resend failed: ' + msg,
+            error: 'Resend failed: ' + msg,
+          }).catch(() => {});
+          return res.status(200).json({
             success: false,
-            error: noOrderErr,
+            error: 'Resend failed: ' + msg,
             has_resend_key: hasResendKey,
             key_prefix: keyPrefix,
           });
         }
-
-        // Always save new activation code to unified activation_codes DB FIRST AND do NOT invalidate previous unused codes
-        const newCode = await createActivationCodeInDb({
-          paymentEmail,
-          orderId,
-          amountUSD,
-          fallbackPlan,
-          testMode,
-          invalidatePreviousForEmail: false,
-        });
-        const normalizedNewCode = normalizeActivationCode(newCode.code);
-        appendPendingCodeCookie(req, res, {
-          code: normalizedNewCode,
-          payment_email: newCode.payment_email,
-          order_id: newCode.order_id,
-          plan: newCode.plan,
-          plan_display: newCode.plan_display,
-          analyses: newCode.analyses,
-          amount: newCode.amount,
-          test_mode: newCode.test_mode,
-          created_at: newCode.created_at,
-          expires_at: newCode.expires_at,
-        });
-
-        // Log BEFORE calling Resend (never log full key, only first 6 chars)
-        console.log('[resend-code] Pre-Resend Check:', {
-          has_resend_key: hasResendKey,
-          key_prefix: keyPrefix,
-          from_email: EMAIL_FROM,
-          to_email: paymentEmail,
-          code: normalizedNewCode,
-          plan: newCode.plan_display,
-          amount: newCode.amount,
-        });
-
-        await appendWebhookLogToDb({
-          order_id: newCode.order_id,
-          event: 'resend_code_attempt',
-          event_name: 'resend_code_attempt',
-          plan: newCode.plan,
-          email: paymentEmail,
-          amount: newCode.amount,
-          currency: 'USD',
-          test_mode: newCode.test_mode,
-          signature_valid: true,
-          activation_code: normalizedNewCode,
-          has_resend_key: hasResendKey,
-          key_prefix: keyPrefix,
-          from_email: EMAIL_FROM,
-          to_email: paymentEmail,
-        });
-
-        if (!hasResendKey) {
-          const missingKeyError = 'RESEND_API_KEY missing in Vercel - Redeploy needed';
-          const adminFallbackMsg = `Code for ${paymentEmail}: ${normalizedNewCode} - Email failed (${missingKeyError}), copy manually`;
-          await appendWebhookLogToDb({
-            order_id: newCode.order_id,
-            event: 'activation_code_resend_failed',
-            event_name: 'activation_code_resend_failed',
-            plan: newCode.plan,
-            email: paymentEmail,
-            amount: newCode.amount,
-            currency: 'USD',
-            test_mode: newCode.test_mode,
-            signature_valid: true,
-            activation_code: normalizedNewCode,
-            has_resend_key: false,
-            key_prefix: 'MISSING',
-            from_email: EMAIL_FROM,
-            to_email: paymentEmail,
-            resend_status: 0,
-            raw_error: adminFallbackMsg,
-            error: adminFallbackMsg,
-          });
-          return res.status(500).json({
-            success: false,
-            error: missingKeyError,
-            has_resend_key: false,
-            key_prefix: 'MISSING',
-          });
-        }
-
-        const emailPayload = buildActivationCodeEmail({
-          code: normalizedNewCode,
-          planDisplay: newCode.plan_display,
-        });
-        const mailRes = await dispatchEmail({
-          to: paymentEmail,
-          subject: emailPayload.subject,
-          text: emailPayload.text,
-          html: emailPayload.html,
-          type: 'activation_code',
-          code: normalizedNewCode,
-        });
-
-        if (!mailRes.success) {
-          const realResendErr = mailRes.error || `Resend failed | status:${mailRes.resend_status || 502} | has_key:${hasResendKey}`;
-          const adminFallbackMsg = `Code for ${paymentEmail}: ${normalizedNewCode} - Email failed (${realResendErr}), copy manually`;
-          await appendWebhookLogToDb({
-            order_id: newCode.order_id,
-            event: 'activation_code_resend_failed',
-            event_name: 'activation_code_resend_failed',
-            plan: newCode.plan,
-            email: paymentEmail,
-            amount: newCode.amount,
-            currency: 'USD',
-            test_mode: newCode.test_mode,
-            signature_valid: true,
-            activation_code: normalizedNewCode,
-            has_resend_key: hasResendKey,
-            key_prefix: keyPrefix,
-            from_email: EMAIL_FROM,
-            to_email: paymentEmail,
-            resend_status: mailRes.resend_status,
-            raw_error: adminFallbackMsg,
-            error: adminFallbackMsg,
-          });
-          return res.status(mailRes.resend_status && mailRes.resend_status >= 400 ? mailRes.resend_status : 502).json({
-            success: false,
-            error: realResendErr,
-            has_resend_key: hasResendKey,
-            key_prefix: keyPrefix,
-            status: mailRes.resend_status || 502,
-          });
-        }
-
-        await appendWebhookLogToDb({
-          order_id: newCode.order_id,
-          event: 'activation_code_resent',
-          event_name: 'activation_code_resent',
-          plan: newCode.plan,
-          email: paymentEmail,
-          amount: newCode.amount,
-          currency: 'USD',
-          test_mode: newCode.test_mode,
-          signature_valid: true,
-          activation_code: normalizedNewCode,
-          has_resend_key: true,
-          key_prefix: keyPrefix,
-          from_email: EMAIL_FROM,
-          to_email: paymentEmail,
-          resend_status: mailRes.resend_status || 200,
-        });
-
-        return res.status(200).json({
-          success: true,
-          plan: newCode.plan_display,
-          message: `New ${newCode.plan_display} activation code sent to your payment email - تم إرسال كود تفعيل جديد لإيميل الدفع`,
-          emailStatus: mailRes.status,
-          provider: mailRes.provider,
-          resend_id: mailRes.resend_id,
-          has_resend_key: true,
-          key_prefix: keyPrefix,
-        });
       }
 
       default:

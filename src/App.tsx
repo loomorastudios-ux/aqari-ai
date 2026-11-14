@@ -537,7 +537,9 @@ export default function App() {
           data?.error ||
           `HTTP ${res.status} ${res.statusText || 'Server error'}`;
         const formattedErr =
-          rawErr.startsWith('Resend error:') || rawErr.startsWith('RESEND_API_KEY')
+          rawErr.startsWith('Resend error:') ||
+          rawErr.startsWith('Resend failed:') ||
+          rawErr.startsWith('RESEND_API_KEY')
             ? rawErr
             : `Resend error: ${rawErr}`;
         setActivateError(formattedErr);

@@ -195,20 +195,28 @@ export async function dispatchEmail(params: {
 
   // 1. Resend API (always uses onboarding@resend.dev so unverified custom domains never cause rejection)
   try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${resendKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: fromHeader,
-        to: [params.to],
-        subject: params.subject,
-        html: params.html,
-        text: params.text,
-      }),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    let res: Response;
+    try {
+      res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: fromHeader,
+          to: [params.to],
+          subject: params.subject,
+          html: params.html,
+          text: params.text,
+        }),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     const rawText = await res.text();
     let parsed: any = {};

@@ -252,19 +252,23 @@ export function getPendingCodesFromReq(req: any): SignedPendingCodeEntry[] {
 }
 
 export function appendPendingCodeCookie(req: any, res: any, entry: SignedPendingCodeEntry): void {
-  const existing = getPendingCodesFromReq(req).filter((item) => item.code !== entry.code);
-  const items = [entry, ...existing].slice(0, 5);
-  const token = signCookieJson({ items });
-  const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
-  const flags = [
-    `${PENDING_CODES_COOKIE_NAME}=${encodeURIComponent(token)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${24 * 60 * 60}`,
-    ...(isProd ? ['Secure'] : []),
-  ];
-  appendSetCookieHeader(res, flags.join('; '));
+  try {
+    const existing = getPendingCodesFromReq(req).filter((item) => item?.code !== entry.code);
+    const items = [entry, ...existing].slice(0, 10);
+    const token = signCookieJson({ items });
+    const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
+    const flags = [
+      `${PENDING_CODES_COOKIE_NAME}=${encodeURIComponent(token)}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+      `Max-Age=${24 * 60 * 60}`,
+      ...(isProd ? ['Secure'] : []),
+    ];
+    appendSetCookieHeader(res, flags.join('; '));
+  } catch (err) {
+    console.warn('[Security] Failed setting pending codes cookie:', err);
+  }
 }
 
 export function getUsedCodesFromReq(req: any): string[] {

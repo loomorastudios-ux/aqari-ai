@@ -766,7 +766,7 @@ async function kvCommand(args: Array<string | number>): Promise<any> {
   const cfg = getKvConfig();
   if (!cfg) return null;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3500);
+  const timer = setTimeout(() => controller.abort(), 1500);
   try {
     const res = await fetch(cfg.url, {
       method: 'POST',
@@ -1422,14 +1422,14 @@ async function saveActivationCodeRecordToKv(record: ActivationCodeRecord): Promi
 export async function upsertActivationCodeInDb(
   record: ActivationCodeRecord
 ): Promise<ActivationCodeRecord> {
-  const codeKey = normalizeActivationCode(record.code);
+  const codeKey = normalizeActivationCode(record?.code || '');
   const normalizedRecord: ActivationCodeRecord = {
     ...record,
     code: codeKey,
-    payment_email: normalizeEmail(record.payment_email),
+    payment_email: normalizeEmail(record?.payment_email || ''),
   };
   const store = loadStore();
-  if (!store.activation_codes || typeof store.activation_codes !== 'object') {
+  if (!store.activation_codes || typeof store.activation_codes !== 'object' || Array.isArray(store.activation_codes)) {
     store.activation_codes = {};
   }
   store.activation_codes[codeKey] = normalizedRecord;
@@ -1450,6 +1450,9 @@ export async function getActivationCodeFromDb(rawCode: string): Promise<Activati
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (parsed?.code) {
           const store = loadStore();
+          if (!store.activation_codes || typeof store.activation_codes !== 'object' || Array.isArray(store.activation_codes)) {
+            store.activation_codes = {};
+          }
           store.activation_codes[codeKey] = parsed;
           persistStore(store);
           return parsed;
@@ -1458,6 +1461,9 @@ export async function getActivationCodeFromDb(rawCode: string): Promise<Activati
       const map = await readActivationCodesMapFromKv();
       if (map && map[codeKey]) {
         const store = loadStore();
+        if (!store.activation_codes || typeof store.activation_codes !== 'object' || Array.isArray(store.activation_codes)) {
+          store.activation_codes = {};
+        }
         store.activation_codes[codeKey] = map[codeKey];
         persistStore(store);
         return map[codeKey];
@@ -1468,11 +1474,15 @@ export async function getActivationCodeFromDb(rawCode: string): Promise<Activati
   }
 
   const store = loadStore();
-  const direct = store.activation_codes?.[codeKey];
+  const codesTable =
+    store.activation_codes && typeof store.activation_codes === 'object' && !Array.isArray(store.activation_codes)
+      ? store.activation_codes
+      : {};
+  const direct = codesTable[codeKey];
   if (direct) return direct;
 
-  for (const [k, rec] of Object.entries(store.activation_codes || {})) {
-    if (normalizeActivationCode(k) === codeKey || normalizeActivationCode(rec?.code || '') === codeKey) {
+  for (const [k, rec] of Object.entries(codesTable)) {
+    if (rec && (normalizeActivationCode(k) === codeKey || normalizeActivationCode(rec?.code || '') === codeKey)) {
       return rec;
     }
   }
@@ -1484,14 +1494,22 @@ export async function getActivationCodeDbStats(): Promise<{
   lastCode: string | null;
 }> {
   const store = loadStore();
-  const merged: Record<string, ActivationCodeRecord> = { ...(store.activation_codes || {}) };
-  const kvMap = await readActivationCodesMapFromKv();
-  if (kvMap) {
-    for (const [k, v] of Object.entries(kvMap)) {
-      merged[normalizeActivationCode(k)] = v;
+  const safeLocal =
+    store.activation_codes && typeof store.activation_codes === 'object' && !Array.isArray(store.activation_codes)
+      ? store.activation_codes
+      : {};
+  const merged: Record<string, ActivationCodeRecord> = { ...safeLocal };
+  try {
+    const kvMap = await readActivationCodesMapFromKv();
+    if (kvMap && typeof kvMap === 'object') {
+      for (const [k, v] of Object.entries(kvMap)) {
+        if (v) merged[normalizeActivationCode(k)] = v;
+      }
     }
-  }
-  const all = Object.values(merged).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  } catch {}
+  const all = Object.values(merged)
+    .filter((v): v is ActivationCodeRecord => Boolean(v && typeof v === 'object'))
+    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   return {
     totalCodes: all.length,
     lastCode: all[0]?.code || null,
@@ -1507,20 +1525,18 @@ export async function createActivationCodeInDb(params: {
   invalidatePreviousForEmail?: boolean;
 }): Promise<ActivationCodeRecord> {
   const store = loadStore();
-  if (!store.activation_codes || typeof store.activation_codes !== 'object') {
+  if (!store.activation_codes || typeof store.activation_codes !== 'object' || Array.isArray(store.activation_codes)) {
     store.activation_codes = {};
   }
 
-  const normEmail = normalizeEmail(params.paymentEmail || 'unknown@aqari-ai-rho.vercel.app');
-  const tier = mapAmountOrPlanToCodeTier(params.amountUSD, params.fallbackPlan);
+  const normEmail = normalizeEmail(params?.paymentEmail || 'unknown@aqari-ai-rho.vercel.app');
+  const tier = mapAmountOrPlanToCodeTier(Number(params?.amountUSD || 0), params?.fallbackPlan);
 
   // Do NOT invalidate previous unused codes on resend; prior codes remain valid until activated or 24h expires.
 
   let uniqueCode = normalizeActivationCode(generateRandomAqariCode());
   for (let attempt = 0; attempt < 15; attempt++) {
-    const existsLocal = Boolean(store.activation_codes[uniqueCode]);
-    const existsKv = !existsLocal ? Boolean(await getActivationCodeFromDb(uniqueCode)) : true;
-    if (!existsLocal && !existsKv) break;
+    if (!store.activation_codes[uniqueCode]) break;
     uniqueCode = normalizeActivationCode(generateRandomAqariCode());
   }
 
@@ -1528,12 +1544,12 @@ export async function createActivationCodeInDb(params: {
   const record: ActivationCodeRecord = {
     code: uniqueCode,
     payment_email: normEmail,
-    order_id: String(params.orderId || `ord_${now}`),
+    order_id: String(params?.orderId || 'manual-resend'),
     plan: tier.plan,
     plan_display: tier.planDisplay,
     analyses: tier.analyses,
-    amount: Number(params.amountUSD || 0),
-    test_mode: Boolean(params.testMode),
+    amount: Number(params?.amountUSD || 0),
+    test_mode: Boolean(params?.testMode),
     used: false,
     invalidated: false,
     used_by: null,
