@@ -96,6 +96,7 @@ export interface ServerUserRecord {
   refund_notes: string;
   refund_policy_accepted_at: string | null;
   locked_launch_price: number | null;
+  lemon_customer_email: string | null;
 }
 
 export interface WebhookLogEntry {
@@ -264,6 +265,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
     locked_launch_price:
       typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
+    lemon_customer_email: raw?.lemon_customer_email ? String(raw.lemon_customer_email).toLowerCase() : null,
   };
 }
 
@@ -476,6 +478,7 @@ export function activatePaidPlanOnServer(params: {
   testMode?: boolean;
   refundPolicyAcceptedAt?: string | null;
   lockedLaunchPrice?: number | null;
+  lemonCustomerEmail?: string | null;
 }): ServerUserRecord {
   const now = params.paymentTimestamp || Date.now();
   const licenseStart = now;
@@ -539,6 +542,9 @@ export function activatePaidPlanOnServer(params: {
     refund_policy_accepted_at:
       params.refundPolicyAcceptedAt || existing.refund_policy_accepted_at || iso,
     locked_launch_price: resolvedLockedLaunch ?? null,
+    lemon_customer_email: params.lemonCustomerEmail
+      ? normalizeEmail(params.lemonCustomerEmail)
+      : existing.lemon_customer_email || null,
     payments,
     timeline: timeline.slice(0, 200),
   });

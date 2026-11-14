@@ -185,6 +185,14 @@ export default function App() {
     }
   });
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [verifyDebug, setVerifyDebug] = useState<{
+    email_searched?: string;
+    total_orders_checked?: number;
+    lemon_status?: number | string;
+    key_present?: boolean;
+  } | null>(null);
+  const [manualPaymentEmail, setManualPaymentEmail] = useState('');
+  const [manualOrderId, setManualOrderId] = useState('');
   const [verifyFailCount, setVerifyFailCount] = useState(0);
   const [isRetryingVerify, setIsRetryingVerify] = useState(false);
   const [serverSynced, setServerSynced] = useState<boolean>(() => !getSessionUser());
@@ -372,7 +380,7 @@ export default function App() {
     }
   }, [user]);
 
-  const runCheckoutVerification = async () => {
+  const runCheckoutVerification = async (overrides?: { email?: string; orderId?: string }) => {
     const urlParams = new URLSearchParams(window.location.search);
     const parsedPlan = normalizePlanKey(urlParams.get('plan'));
     const returnedPlan: 'starter' | 'pro' | 'enterprise' =
@@ -380,23 +388,30 @@ export default function App() {
     const planCfg = PLANS[returnedPlan];
     setVerifyingPlanName(urlParams.get('plan') ? planCfg.displayName : 'TERMINAL');
     setVerifyError(null);
+    setVerifyDebug(null);
     setIsRetryingVerify(true);
 
     const sessionUser = getSessionUser();
-    const targetEmail = (sessionUser?.email || urlParams.get('email') || '').trim().toLowerCase();
+    const loginEmail = (sessionUser?.email || '').trim().toLowerCase();
+    const targetEmail = (overrides?.email || urlParams.get('email') || loginEmail || '').trim().toLowerCase();
     const checkoutId = urlParams.get('checkout_id') || '';
-    const orderId = urlParams.get('order_id') || '';
+    const orderId = (overrides?.orderId || urlParams.get('order_id') || '').trim();
     const chargedPrice = urlParams.get('charged_price') || '';
     const launchLocked = urlParams.get('launch_locked') || '';
     const testModeParam = urlParams.get('test_mode') || '';
 
+    const qs = new URLSearchParams({ action: 'verify-checkout' });
+    if (targetEmail) qs.set('email', targetEmail);
+    if (orderId) qs.set('order_id', orderId);
+
     try {
-      const res = await fetch('/api/app?action=verify-checkout', {
+      const res = await fetch(`/api/app?${qs.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
           email: targetEmail || undefined,
+          login_email: loginEmail || undefined,
           plan: urlParams.get('plan') ? returnedPlan : undefined,
           checkout_id: checkoutId || undefined,
           order_id: orderId || undefined,
@@ -407,6 +422,9 @@ export default function App() {
       });
 
       const data = await res.json().catch(() => ({}));
+      if (data?.debug) {
+        setVerifyDebug(data.debug);
+      }
 
       if (res.ok && data?.verified && data?.user) {
         // Force refresh session directly from authoritative /api/app?action=me
@@ -488,7 +506,7 @@ export default function App() {
       setVerifyFailCount((c) => c + 1);
       setVerifyError(
         data?.error ||
-          `No order found for email ${targetEmail || 'your account'} - Check LEMON_API_KEY in Vercel and that payment was TEST MODE`
+          `No order found for email ${targetEmail || 'your account'} - Try entering your payment email or Order ID below`
       );
     } catch (err) {
       console.error('Checkout verification error:', err);
@@ -970,6 +988,13 @@ export default function App() {
             <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-500/50 text-left text-xs font-mono text-rose-200 leading-relaxed space-y-2">
               <div className="font-bold text-rose-400 uppercase">Verification Error</div>
               <div>{verifyError}</div>
+              {verifyDebug && (
+                <div className="text-[11px] text-zinc-300 pt-1 border-t border-rose-500/20">
+                  Checked: {verifyDebug.email_searched || activeEmail} • Orders checked:{' '}
+                  {verifyDebug.total_orders_checked ?? 0} • Lemon status: {String(verifyDebug.lemon_status ?? '-')} • Key present:{' '}
+                  {verifyDebug.key_present ? 'true' : 'false'}
+                </div>
+              )}
               {verifyFailCount >= 3 && (
                 <div className="pt-2 border-t border-rose-500/30 text-amber-300 font-semibold">
                   Still locked? Go to Settings &gt; PAYMENT WEBHOOK LOGS and screenshot the error
@@ -979,15 +1004,66 @@ export default function App() {
           )}
 
           {verifyError && (
-            <div className="space-y-2.5 pt-1">
+            <div className="space-y-4 pt-1 text-left">
               <button
                 type="button"
                 disabled={isRetryingVerify}
-                onClick={runCheckoutVerification}
+                onClick={() => runCheckoutVerification()}
                 className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-xs font-mono uppercase tracking-wider transition cursor-pointer shadow-lg disabled:opacity-60 min-h-[48px]"
               >
                 {isRetryingVerify ? 'Unlocking Terminal...' : 'CLICK TO UNLOCK - RETRY'}
               </button>
+
+              {/* Fallback Input 1: Email used for payment */}
+              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5">
+                <label className="block text-xs font-mono font-bold text-[#D4AF37]">
+                  Email used for payment (if different)
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="email"
+                    value={manualPaymentEmail}
+                    onChange={(e) => setManualPaymentEmail(e.target.value)}
+                    placeholder="Email used for payment (if different)"
+                    className="flex-1 px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/15 text-white text-xs font-mono outline-none focus:border-[#D4AF37]"
+                  />
+                  <button
+                    type="button"
+                    disabled={isRetryingVerify || !manualPaymentEmail.trim()}
+                    onClick={() => runCheckoutVerification({ email: manualPaymentEmail.trim() })}
+                    className="px-4 py-2.5 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono transition cursor-pointer disabled:opacity-50 shrink-0 min-h-[44px]"
+                  >
+                    Retry with this email
+                  </button>
+                </div>
+              </div>
+
+              {/* Fallback Input 2: Order ID from Lemon receipt email */}
+              <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5">
+                <label className="block text-xs font-mono font-bold text-[#D4AF37]">
+                  Order ID from Lemon receipt email (optional)
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={manualOrderId}
+                    onChange={(e) => setManualOrderId(e.target.value)}
+                    placeholder="Order ID from Lemon receipt email (optional)"
+                    className="flex-1 px-3.5 py-2.5 rounded-xl bg-black/60 border border-white/15 text-white text-xs font-mono outline-none focus:border-[#D4AF37]"
+                  />
+                  <button
+                    type="button"
+                    disabled={isRetryingVerify || !manualOrderId.trim()}
+                    onClick={() => runCheckoutVerification({ orderId: manualOrderId.trim() })}
+                    className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs font-mono transition cursor-pointer disabled:opacity-50 shrink-0 min-h-[44px]"
+                  >
+                    Verify with Order ID
+                  </button>
+                </div>
+                <p className="text-[11px] font-mono text-zinc-400 leading-relaxed">
+                  Check your Gmail for Lemon receipt - The order ID looks like 123456789 - انسخ Order ID من إيميل فاتورة Lemon
+                </p>
+              </div>
 
               {verifyFailCount >= 3 && user && (
                 <button
