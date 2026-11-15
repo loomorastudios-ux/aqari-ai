@@ -176,7 +176,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   initialToast,
 }) => {
   // Navigation active tab
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'analyze' | 'saved' | 'portfolio' | 'radar' | 'settings'>('analyze');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'analyze' | 'saved' | 'portfolio' | 'radar' | 'settings'>(
+    initialToast?.startsWith('Welcome to AQARI') ? 'dashboard' : 'analyze'
+  );
 
   // Mobile sidebar drawer state
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -190,9 +192,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   useEffect(() => {
     if (initialToast) {
       setToastMessage(initialToast);
+      if (initialToast.startsWith('Welcome to AQARI')) {
+        setActiveTab('dashboard');
+      }
       const timer = setTimeout(() => {
         setToastMessage(null);
-      }, 3000);
+      }, 4000);
       return () => clearTimeout(timer);
     }
   }, [initialToast]);
@@ -294,13 +299,43 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const analysesRemaining = license.isUnlimitedAnalyses ? 9999 : license.analysesLeft;
   const analysesLeftStr = license.isUnlimitedAnalyses ? 'Unlimited analyses left' : `${license.analysesLeft} analyses left`;
 
-  const canSensitivity = canUseFeature(license.planKey, 'yieldSensitivity');
-  const canMonteCarlo = canUseFeature(license.planKey, 'monteCarlo');
-  const canPdfExport = canUseFeature(license.planKey, 'pdfExport');
-  const canPortfolioAgg = canUseFeature(license.planKey, 'portfolioAggregation');
-  const canFullMatrix = canUseFeature(license.planKey, 'crossBorderMatrixFull');
-  const canApiAccess = canUseFeature(license.planKey, 'apiAccess');
-  const canAnalystDesk = canUseFeature(license.planKey, 'analystDesk');
+  const meFeatures: string[] = useMemo(() => {
+    if (Array.isArray(user.features) && user.features.length > 0) {
+      return user.features;
+    }
+    if (Array.isArray(dynamicPlanPricing?.features) && dynamicPlanPricing.features.length > 0) {
+      return dynamicPlanPricing.features;
+    }
+    return PLANS[license.planKey].features;
+  }, [user.features, dynamicPlanPricing?.features, license.planKey]);
+
+  const featureSavedLimit = meFeatures.includes('Unlimited Saved')
+    ? Infinity
+    : meFeatures.includes('Save 200')
+    ? 200
+    : meFeatures.includes('Save 50')
+    ? 50
+    : 0;
+
+  const planDisplayName = user.planName || license.displayName;
+  const planPriceUSD =
+    license.planKey === 'free'
+      ? 0
+      : typeof user.planPrice === 'number'
+      ? user.planPrice
+      : dynamicPlanPricing?.activePrice ?? PLANS[license.planKey].priceUSD;
+
+  const canSensitivity = !isPlanEnded && meFeatures.includes('Yield & Sensitivity Calculator');
+  const canMonteCarlo = !isPlanEnded && meFeatures.includes('Monte Carlo Stress Tests +200bps');
+  const canPdfExport = !isPlanEnded && meFeatures.includes('PDF Memorandum Export');
+  const canPortfolioAgg = !isPlanEnded && meFeatures.includes('Multi-asset Portfolio Aggregation');
+  const canFullMatrix = !isPlanEnded && meFeatures.includes('Cross-border Tax & Visa Matrix');
+  const canApiAccess = !isPlanEnded && meFeatures.includes('Full REST API Credentials');
+  const canAnalystDesk = !isPlanEnded && meFeatures.includes('1-on-1 Dedicated Analyst Desk');
+  const canCustomUnderwriting = !isPlanEnded && meFeatures.includes('White-glove Custom Underwriting');
+  const canSaveProperty =
+    !isPlanEnded &&
+    meFeatures.some((f) => f === 'Save 50' || f === 'Save 200' || f === 'Unlimited Saved');
 
   const loadWebhookLogs = async () => {
     setIsRefreshingWebhookLogs(true);
@@ -711,9 +746,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
 
     const savedList = user.savedAnalyses || [];
-    const maxLimit = license.savedLimit;
+    const maxLimit = Number.isFinite(featureSavedLimit) || featureSavedLimit === Infinity
+      ? featureSavedLimit
+      : license.savedLimit;
 
-    if (!canUseFeature(license.planKey, 'saveProperty') || (!license.isUnlimitedSaved && savedList.length >= maxLimit)) {
+    if (!canSaveProperty || (Number.isFinite(maxLimit) && savedList.length >= maxLimit)) {
       showToast('Upgrade to save more');
       onOpenRenewal();
       return;
@@ -1722,18 +1759,18 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <button
                       onClick={handleSaveAnalysis}
                       className={`py-3.5 px-5 rounded-xl border font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-2 cursor-pointer ${
-                        !canUseFeature(license.planKey, 'saveProperty')
+                        !canSaveProperty
                           ? 'bg-white/[0.02] border-amber-500/30 text-amber-300/80 hover:bg-amber-500/10'
                           : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-white'
                       }`}
                     >
-                      {canUseFeature(license.planKey, 'saveProperty') ? (
+                      {canSaveProperty ? (
                         <BookmarkCheck className="w-4 h-4 text-[#D4AF37]" />
                       ) : (
                         <Lock className="w-4 h-4 text-amber-400" />
                       )}
                       <span>
-                        {canUseFeature(license.planKey, 'saveProperty')
+                        {canSaveProperty
                           ? 'SAVE TO PORTFOLIO'
                           : 'SAVE (UPGRADE)'}
                       </span>
@@ -2467,12 +2504,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-white/[0.08] pb-6">
                   <div>
                     <div className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider">
-                      Aqari AI License Overview
+                      AQARI AI LICENSE OVERVIEW
                     </div>
                     <h3 className="text-2xl font-bold text-white mt-1">
-                      {license.planKey === 'free'
-                        ? 'Aqari AI - FREE Tier (3 Analyses)'
-                        : `Aqari AI - ${license.displayName} ($${dynamicPlanPricing?.activePrice ?? PLANS[license.planKey].launchPrice}/30d)`}
+                      {`Aqari AI - ${planDisplayName} ($${planPriceUSD}/30d)`}
                     </h3>
                   </div>
 
@@ -2480,11 +2515,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <span className={`px-3 py-1 rounded-full text-xs font-mono font-bold uppercase tracking-wider border ${
                       isExpired
                         ? 'bg-rose-500/20 text-rose-400 border-rose-500/40'
-                        : user.plan !== 'free'
+                        : license.planKey !== 'free'
                         ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
                         : 'bg-zinc-500/20 text-zinc-300 border-zinc-500/40'
                     }`}>
-                      {isExpired ? 'STATUS: EXPIRED' : user.plan !== 'free' ? 'STATUS: ACTIVE' : 'STATUS: FREE TIER'}
+                      {isExpired ? 'STATUS: EXPIRED' : license.planKey !== 'free' ? 'STATUS: ACTIVE' : 'STATUS: FREE TIER'}
                     </span>
 
                     <button
@@ -2492,24 +2527,29 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       className="px-4 py-2 rounded-xl bg-[#D4AF37] hover:bg-amber-400 text-black font-bold text-xs font-mono tracking-wide cursor-pointer transition flex items-center gap-1.5 shadow-[0_0_15px_rgba(212,175,55,0.3)]"
                     >
                       <Zap className="w-3.5 h-3.5 fill-black" />
-                      <span>Renew / Upgrade</span>
+                      <span>Switch / Renew Plan</span>
                     </button>
                   </div>
                 </div>
 
-                {/* 4 Metadata Metrics */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-6">
+                {/* 5 Metadata Metrics */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 pt-6">
                   <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">Plan Tier</span>
-                    <strong className="text-base font-bold font-mono text-white capitalize">{user.plan} Terminal</strong>
+                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">PLAN TIER</span>
+                    <strong className="text-base font-bold font-mono text-[#D4AF37]">{planDisplayName} Terminal</strong>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">ANALYSES LEFT</span>
+                    <strong className="text-base font-bold font-mono text-white">{analysesLeftStr}</strong>
                   </div>
 
                   <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
                     <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">Subscription Status</span>
                     <strong className={`text-base font-bold font-mono ${
-                      isExpired ? 'text-rose-400' : user.plan !== 'free' ? 'text-emerald-400' : 'text-zinc-300'
+                      isExpired ? 'text-rose-400' : license.planKey !== 'free' ? 'text-emerald-400' : 'text-zinc-300'
                     }`}>
-                      {isExpired ? 'Expired' : user.plan !== 'free' ? 'Active (30 Days)' : 'Trial'}
+                      {isExpired ? 'Expired' : license.planKey !== 'free' ? 'Active (30 Days)' : 'Trial'}
                     </strong>
                   </div>
 
@@ -2518,7 +2558,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <strong className={`text-base font-bold font-mono ${
                       isExpired ? 'text-rose-400' : isEndingIn24h ? 'text-amber-400' : 'text-white'
                     }`}>
-                      {isExpired ? '0 days (Expired)' : daysLeft !== null ? `${daysLeft} days left` : '3 analyses'}
+                      {isExpired ? '0 days (Expired)' : daysLeft !== null ? `${daysLeft} days left` : '30 days left'}
                     </strong>
                   </div>
 
@@ -2527,6 +2567,37 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <strong className="text-sm font-bold font-mono text-zinc-200">
                       {endsAt ? new Date(endsAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 'No Expiry'}
                     </strong>
+                  </div>
+                </div>
+
+                {/* INCLUDED CAPABILITIES for Current Active Plan Only */}
+                <div className="pt-6 mt-6 border-t border-white/[0.08]">
+                  <div className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-bold mb-3">
+                    INCLUDED CAPABILITIES:
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                    {meFeatures.map((cap, idx) => {
+                      const isExclusion = cap.toLowerCase().startsWith('no ');
+                      return (
+                        <div
+                          key={`${cap}_${idx}`}
+                          className={`flex items-start gap-2.5 p-2.5 rounded-xl border text-xs font-mono ${
+                            isExclusion
+                              ? 'bg-black/30 border-white/[0.04] text-zinc-500'
+                              : 'bg-emerald-500/[0.06] border-emerald-500/20 text-zinc-200'
+                          }`}
+                        >
+                          {isExclusion ? (
+                            <Lock className="w-4 h-4 text-zinc-500 mt-0.5 shrink-0" />
+                          ) : (
+                            <div className="p-0.5 rounded-full bg-emerald-500/20 text-emerald-400 mt-0.5 shrink-0">
+                              <Check className="w-3.5 h-3.5" />
+                            </div>
+                          )}
+                          <span>{cap}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -2848,7 +2919,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     { label: 'PDF Memorandum Export', unlocked: canPdfExport, req: 'PROFESSIONAL' },
                     { label: 'Multi-Asset Portfolio Aggregation', unlocked: canPortfolioAgg, req: 'PROFESSIONAL' },
                     { label: 'Full REST API Credentials', unlocked: canApiAccess, req: 'SOVEREIGN' },
-                    { label: '1-on-1 Dedicated Analyst Desk & Custom Underwriting', unlocked: canAnalystDesk, req: 'SOVEREIGN' },
+                    { label: '1-on-1 Dedicated Analyst Desk & Custom Underwriting', unlocked: canAnalystDesk && canCustomUnderwriting, req: 'SOVEREIGN' },
                   ].map((item) => (
                     <div key={item.label} className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
                       <div className="flex items-center gap-2">

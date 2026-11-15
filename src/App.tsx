@@ -457,21 +457,56 @@ export default function App() {
       }
 
       if (verifyRes.ok && data?.success) {
-        const verifiedPlan = normalizePlanKey(data.planKey || data.user?.plan);
+        // Immediately fetch authoritative /api/app?action=me to sync plan, price, credits & features
+        let meData: any = null;
+        try {
+          const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {
+            credentials: 'include',
+            cache: 'no-store',
+          });
+          if (meRes.ok) {
+            meData = await meRes.json().catch(() => null);
+          }
+        } catch {}
+
+        const verifiedPlan = normalizePlanKey(
+          meData?.planKey || data.planKey || data.user?.plan
+        );
         const verifiedCfg = PLANS[verifiedPlan];
-        const planDisplay = data.plan || verifiedCfg.displayName;
+        const planDisplay =
+          meData?.plan_name ||
+          meData?.plan ||
+          data.plan_name ||
+          data.plan ||
+          verifiedCfg.displayName;
+        const planPrice =
+          typeof meData?.price === 'number'
+            ? meData.price
+            : typeof data.price === 'number'
+            ? data.price
+            : verifiedCfg.priceUSD;
+        const planFeatures: string[] = Array.isArray(meData?.features)
+          ? meData.features
+          : Array.isArray(data.features)
+          ? data.features
+          : verifiedCfg.features;
         const analysesLeftVal =
+          meData?.analyses_left ??
           data.analyses_left ??
           (Number.isFinite(verifiedCfg.analysesLimit) ? verifiedCfg.analysesLimit : 999999);
 
         const existing = sessionUser || user;
-        const serverUsed = Number(data.user?.analyses_used ?? 0);
+        const serverUsed = Number(meData?.analyses_used ?? data.user?.analyses_used ?? 0);
         const numericLeft =
           typeof analysesLeftVal === 'number'
             ? analysesLeftVal
             : Number.isFinite(verifiedCfg.analysesLimit)
             ? verifiedCfg.analysesLimit
             : 999999;
+
+        const licenseStartVal = meData?.license_start ?? data.user?.license_start ?? Date.now();
+        const licenseEndVal =
+          meData?.license_end ?? data.license_end ?? data.user?.license_end ?? null;
 
         const updatedUser: User = {
           ...(existing || {
@@ -483,19 +518,25 @@ export default function App() {
             createdAt: Date.now(),
             savedAnalyses: [],
           }),
-          email: data.login_email || loginEmail,
+          email: meData?.email || data.login_email || loginEmail,
           plan: verifiedPlan,
+          planName: planDisplay,
+          planPrice,
+          features: planFeatures,
           subscriptionPlan: verifiedPlan,
           subscriptionStatus: 'active',
-          subscriptionStartAt: data.user?.license_start ?? Date.now(),
-          subscriptionEndsAt: data.license_end ?? data.user?.license_end ?? null,
-          subscriptionExpiry: data.license_end ?? data.user?.license_end ?? null,
+          subscriptionStartAt: licenseStartVal,
+          subscriptionEndsAt: licenseEndVal,
+          subscriptionExpiry: licenseEndVal,
           analysesUsed: serverUsed,
           freeAnalyses: numericLeft,
           freeAnalysesLeft: numericLeft,
           analysesLeft: numericLeft,
-          lockedLaunchPrice: data.user?.locked_launch_price ?? null,
-          customCities: Array.isArray(data.user?.custom_cities)
+          lockedLaunchPrice:
+            meData?.locked_launch_price ?? data.user?.locked_launch_price ?? null,
+          customCities: Array.isArray(meData?.custom_cities)
+            ? meData.custom_cities
+            : Array.isArray(data.user?.custom_cities)
             ? data.user.custom_cities
             : existing?.customCities || [],
           expiryEmailSent: false,
@@ -503,6 +544,7 @@ export default function App() {
 
         saveUser(updatedUser);
         setUser(updatedUser);
+        setServerSynced(true);
         setVerifyingPlanName(planDisplay);
         setVerifiedSummary({
           plan: planDisplay,
@@ -520,15 +562,19 @@ export default function App() {
         } catch {}
 
         const unlockBanner = `Welcome to ${planDisplay} — Payment Successful! Your Terminal is unlocked.`;
-        const unlockToast = `Welcome to AQARI ${planDisplay} — Unlocked for 30 Days!`;
+        const unlockToast = `Welcome to AQARI ${planDisplay} - Unlocked for 30 Days!`;
         try {
           sessionStorage.setItem('aqari_unlock_msg', unlockBanner);
           sessionStorage.setItem('aqari_unlock_toast', unlockToast);
         } catch {}
 
         setTimeout(() => {
-          window.location.replace('/app');
-        }, 1000);
+          setUnlockSuccessMsg(unlockBanner);
+          showTempToast(unlockToast, 5000);
+          window.history.replaceState({}, document.title, '/app');
+          setRoute('terminal');
+          window.scrollTo(0, 0);
+        }, 850);
         return;
       }
 
@@ -628,7 +674,8 @@ export default function App() {
         const data = await res.json();
         if (data?.user) {
           const serverPlan = normalizePlanKey(data.user.plan);
-          const serverLimit = data.license?.analysesLimit ?? PLANS[serverPlan].analysesLimit;
+          const serverCfg = PLANS[serverPlan];
+          const serverLimit = data.license?.analysesLimit ?? serverCfg.analysesLimit;
           const serverUsed = Number(data.user.analyses_used ?? 0);
           const serverLeft = Number.isFinite(serverLimit)
             ? Math.max(0, serverLimit - serverUsed)
@@ -636,6 +683,9 @@ export default function App() {
           const syncedUser: User = {
             ...newUser,
             plan: serverPlan,
+            planName: data.license?.displayName || serverCfg.displayName,
+            planPrice: serverPlan === 'free' ? 0 : serverCfg.priceUSD,
+            features: Array.isArray(data.features) ? data.features : serverCfg.features,
             subscriptionPlan: serverPlan,
             subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : 'active',
             subscriptionStartAt: data.user.license_start ?? undefined,
@@ -713,6 +763,16 @@ export default function App() {
         }
 
         const serverPlan = normalizePlanKey(data.planKey || data.user?.plan);
+        const serverPlanName = data.plan_name || data.plan || PLANS[serverPlan].displayName;
+        const serverPlanPrice =
+          typeof data.price === 'number'
+            ? data.price
+            : serverPlan === 'free'
+            ? 0
+            : PLANS[serverPlan].priceUSD;
+        const serverFeatures: string[] = Array.isArray(data.features)
+          ? data.features
+          : PLANS[serverPlan].features;
         const serverUsed = Number(data.analyses_used ?? 0);
         const serverEnd = data.license_end ?? null;
         const serverLimit = data.license?.analysesLimit ?? PLANS[serverPlan].analysesLimit;
@@ -733,6 +793,9 @@ export default function App() {
           createdAt: Date.now(),
           savedAnalyses: [],
           plan: 'free',
+          planName: 'FREE',
+          planPrice: 0,
+          features: PLANS.free.features,
           subscriptionExpiry: null,
           analysesUsed: 0,
           freeAnalyses: 3,
@@ -744,6 +807,9 @@ export default function App() {
         const changed =
           !user ||
           normalizePlanKey(user.plan) !== serverPlan ||
+          user.planName !== serverPlanName ||
+          user.planPrice !== serverPlanPrice ||
+          JSON.stringify(user.features || []) !== JSON.stringify(serverFeatures) ||
           (user.analysesUsed ?? 0) !== serverUsed ||
           (user.subscriptionEndsAt ?? null) !== serverEnd ||
           (user.lockedLaunchPrice ?? null) !== serverLockedLaunch ||
@@ -758,6 +824,9 @@ export default function App() {
             email: data.email,
             name: baseUser.name || data.name || data.email.split('@')[0],
             plan: serverPlan,
+            planName: serverPlanName,
+            planPrice: serverPlanPrice,
+            features: serverFeatures,
             subscriptionPlan: serverPlan,
             subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : serverPlan === 'free' ? 'free' : 'active',
             subscriptionStartAt: data.license_start ?? undefined,
@@ -1530,9 +1599,23 @@ export default function App() {
           }
           const planCfg = PLANS[normalizePlanKey(user.plan)];
           const currentSaved = user.savedAnalyses || [];
+          const hasMeFeatures = Array.isArray(user.features) && user.features.length > 0;
+          const isActiveSub = user.subscriptionStatus !== 'expired';
+          const effectiveSavedLimit = hasMeFeatures
+            ? user.features!.includes('Unlimited Saved')
+              ? Infinity
+              : user.features!.includes('Save 200')
+              ? 200
+              : user.features!.includes('Save 50')
+              ? 50
+              : 0
+            : planCfg.savedLimit;
+          const hasSaveFeature = hasMeFeatures
+            ? isActiveSub && effectiveSavedLimit > 0
+            : canUseFeature(user.plan, 'saveProperty');
           const overLimit =
-            !canUseFeature(user.plan, 'saveProperty') ||
-            (Number.isFinite(planCfg.savedLimit) && currentSaved.length >= planCfg.savedLimit);
+            !hasSaveFeature ||
+            (Number.isFinite(effectiveSavedLimit) && currentSaved.length >= effectiveSavedLimit);
           if (overLimit) {
             showTempToast('Upgrade to save more', 3000);
             setIsRenewalOpen(true);

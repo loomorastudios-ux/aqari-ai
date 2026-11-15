@@ -39,6 +39,9 @@ export interface User {
   provider?: 'email' | 'google' | 'guest';
   googleId?: string;
   plan: 'free' | 'starter' | 'pro' | 'enterprise';
+  planName?: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | string;
+  planPrice?: number;
+  features?: string[];
   subscriptionPlan?: 'free' | 'starter' | 'pro' | 'enterprise' | string;
   subscriptionStatus?: 'active' | 'expired' | 'trial' | 'free' | 'cancelled' | 'past_due';
   freeAnalysesLeft?: number;

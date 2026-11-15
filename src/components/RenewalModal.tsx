@@ -167,51 +167,24 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
           {plans.map((p) => {
             const originalUSD = p.originalUSD;
             const discountedUSD = p.activeUSD;
-            const isCurrent = user?.plan === p.id;
+            const isCurrent = user?.plan === p.id && user?.subscriptionStatus !== 'expired';
             const daysRemaining = user?.subscriptionExpiry ? getDaysRemaining(user.subscriptionExpiry) : 30;
-
-            const planRank: Record<string, number> = { free: 0, starter: 1, pro: 2, enterprise: 3 };
-            const userRank = user ? (planRank[user.plan] || 0) : 0;
-            const thisRank = planRank[p.id] || 0;
+            const tierDisplayName =
+              p.id === 'starter' ? 'STARTER' : p.id === 'pro' ? 'PROFESSIONAL' : 'SOVEREIGN';
 
             let badgeText: string | null = null;
-            let buttonLabel = `Select ${p.name.split(' ')[0]}`;
-            let isDisabled = false;
+            let buttonLabel = user && user.plan !== 'free'
+              ? `Switch to ${tierDisplayName}`
+              : `Buy ${tierDisplayName}`;
 
-            if (user?.plan === 'enterprise') {
-              if (p.id === 'enterprise') {
-                badgeText = 'You have all features';
-                buttonLabel = 'Renew Enterprise (+30 Days)';
-              } else {
-                badgeText = 'Included in Enterprise';
-                buttonLabel = 'Included in Plan';
-                isDisabled = true;
-              }
-            } else if (user?.plan === 'pro') {
-              if (p.id === 'pro') {
-                badgeText = `Current Plan: PRO • ${daysRemaining}d left`;
-                buttonLabel = 'Renew PRO (+30 Days)';
-              } else if (p.id === 'enterprise') {
-                buttonLabel = 'Upgrade to Enterprise';
-              } else {
-                badgeText = 'Included in PRO';
-                buttonLabel = 'Included in Plan';
-                isDisabled = true;
-              }
-            } else if (user?.plan === 'starter') {
-              if (p.id === 'starter') {
-                badgeText = `Current Plan: STARTER • ${daysRemaining}d left`;
-                buttonLabel = 'Renew STARTER (+30 Days)';
-              } else {
-                buttonLabel = `Upgrade to ${p.name.split(' ')[0]}`;
-              }
-            } else {
-              // Free tier
-              if (p.popular) {
-                badgeText = 'POPULAR';
-              }
-              buttonLabel = `Upgrade to ${p.name.split(' ')[0]}`;
+            if (isCurrent) {
+              badgeText = `Current Plan: ${tierDisplayName} • ${daysRemaining}d left`;
+              buttonLabel = `Renew ${tierDisplayName} (+30 Days)`;
+            } else if (p.popular) {
+              badgeText = 'POPULAR';
             }
+
+            const isDisabled = false;
 
             return (
               <div

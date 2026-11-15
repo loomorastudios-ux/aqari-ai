@@ -43,13 +43,29 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
 
   if (!property) return null;
 
-  const isProOrEnterprise = canUseFeature(user?.plan, 'pdfExport');
+  const hasMeFeatures = Array.isArray(user?.features) && user.features.length > 0;
+  const isActiveUser = Boolean(user && user.subscriptionStatus !== 'expired');
+  const isProOrEnterprise = hasMeFeatures
+    ? Boolean(isActiveUser && user!.features!.includes('PDF Memorandum Export'))
+    : canUseFeature(user?.plan, 'pdfExport');
   const planCfg = PLANS[normalizePlanKey(user?.plan)];
   const currentSavedCount = (user?.savedAnalyses || []).length;
+  const effectiveSavedLimit = hasMeFeatures
+    ? user!.features!.includes('Unlimited Saved')
+      ? Infinity
+      : user!.features!.includes('Save 200')
+      ? 200
+      : user!.features!.includes('Save 50')
+      ? 50
+      : 0
+    : planCfg.savedLimit;
+  const hasSaveFeature = hasMeFeatures
+    ? Boolean(isActiveUser && effectiveSavedLimit > 0)
+    : canUseFeature(user?.plan, 'saveProperty');
   const canSave =
     Boolean(user) &&
-    canUseFeature(user?.plan, 'saveProperty') &&
-    (!Number.isFinite(planCfg.savedLimit) || currentSavedCount < planCfg.savedLimit);
+    hasSaveFeature &&
+    (!Number.isFinite(effectiveSavedLimit) || currentSavedCount < effectiveSavedLimit);
 
   const handleDownloadMemo = async () => {
     if (!isProOrEnterprise) {

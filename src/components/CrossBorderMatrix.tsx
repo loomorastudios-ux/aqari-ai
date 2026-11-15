@@ -22,7 +22,12 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
   user,
   onOpenPricing,
 }) => {
-  const isLockedFreeUser = Boolean(user && !canUseFeature(user.plan, 'crossBorderMatrixFull'));
+  const hasFullMatrixFeature = user
+    ? Array.isArray(user.features) && user.features.length > 0
+      ? user.features.includes('Cross-border Tax & Visa Matrix') && user.subscriptionStatus !== 'expired'
+      : canUseFeature(user.plan, 'crossBorderMatrixFull') && user.subscriptionStatus !== 'expired'
+    : true;
+  const isLockedFreeUser = Boolean(user && !hasFullMatrixFeature);
   const visibleRows = isLockedFreeUser ? matrixData.slice(0, 2) : matrixData;
   const lockedRows = isLockedFreeUser ? matrixData.slice(2) : [];
 

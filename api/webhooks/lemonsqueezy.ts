@@ -37,7 +37,12 @@ const PLAN_DEFINITIONS: Record<
     launchPrice: 0,
     analysesLimit: 3,
     savedLimit: 0,
-    features: ['3 Analyses / 30 Days', 'Basic Cap Rate', 'Cash-on-Cash only'],
+    features: [
+      '3 Analyses / 30 Days',
+      'Basic Cap Rate',
+      'Cash-on-Cash only',
+      'No Monte Carlo, PDF Export, API, Analyst Desk, Portfolio Aggregation & Full Matrix',
+    ],
   },
   starter: {
     key: 'starter',
@@ -706,11 +711,6 @@ function mapVariantOrProductToPlan(
   if (productId && getEnv('LEMON_SOVEREIGN_PRODUCT_ID') && productId === getEnv('LEMON_SOVEREIGN_PRODUCT_ID')) return 'enterprise';
   if (variantId && VARIANT_ID_TO_PLAN[variantId]) return VARIANT_ID_TO_PLAN[variantId];
 
-  const totalUSD = attributes?.total ? Number(attributes.total) / 100 : Number(attributes?.subtotal || 0) / 100;
-  if (totalUSD >= 500) return 'enterprise';
-  if (totalUSD >= 150) return 'pro';
-  if (totalUSD >= 50) return 'starter';
-
   const productName = (
     attributes?.first_order_item?.product_name ||
     attributes?.first_order_item?.variant_name ||
@@ -724,27 +724,32 @@ function mapVariantOrProductToPlan(
     .toLowerCase();
 
   if (
-    productName.includes('enterprise') ||
     productName.includes('sovereign') ||
-    productName.includes('agency') ||
-    productName.includes('599') ||
-    productName.includes('999')
+    productName.includes('enterprise') ||
+    productName.includes('agency')
   ) {
     return 'enterprise';
   }
-  if (
-    productName.includes('pro') ||
-    productName.includes('professional') ||
-    productName.includes('199') ||
-    productName.includes('349')
-  ) {
+  if (productName.includes('professional') || /\bpro\b/.test(productName)) {
     return 'pro';
   }
-  if (
-    productName.includes('starter') ||
-    productName.includes('79') ||
-    productName.includes('129')
-  ) {
+  if (productName.includes('starter')) {
+    return 'starter';
+  }
+
+  // Exact amount matching in BOTH cents and dollars
+  const rawCents = Number(attributes?.total ?? attributes?.subtotal ?? attributes?.first_order_item?.price ?? 0);
+  const roundedCents = Math.round(rawCents);
+  const usd = rawCents > 1000 ? rawCents / 100 : rawCents;
+  const roundedUsd = Math.round(usd);
+
+  if (roundedCents === 59900 || roundedUsd === 599 || roundedCents === 99900 || roundedUsd === 999) {
+    return 'enterprise';
+  }
+  if (roundedCents === 19900 || roundedUsd === 199 || roundedCents === 34900 || roundedUsd === 349) {
+    return 'pro';
+  }
+  if (roundedCents === 7900 || roundedUsd === 79 || roundedCents === 12900 || roundedUsd === 129) {
     return 'starter';
   }
 
@@ -783,7 +788,13 @@ export default async function handler(req: any, res: any) {
 
     let payload: any = {};
     try {
-      payload = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
+      if (typeof req.body === 'string' || (typeof Buffer !== 'undefined' && Buffer.isBuffer(req.body))) {
+        payload = JSON.parse(rawBody || '{}');
+      } else if (req.body && typeof req.body === 'object') {
+        payload = req.body;
+      } else if (rawBody) {
+        payload = JSON.parse(rawBody);
+      }
     } catch (parseErr: any) {
       console.error('[Lemon Webhook] JSON parse warning:', parseErr?.message || parseErr);
       payload = {};
@@ -966,6 +977,23 @@ export default async function handler(req: any, res: any) {
             test_mode: isTestMode,
             signature_valid: true,
           });
+        }
+        if (targetEmail) {
+          persistedUser = activatePaidPlanOnServer({
+            email: targetEmail,
+            name: customerName,
+            plan: planCode,
+            paymentTimestamp,
+            orderId,
+            amountUSD,
+            currency,
+            testMode: isTestMode,
+            refundPolicyAcceptedAt:
+              customData?.refund_accepted_at || new Date(paymentTimestamp).toISOString(),
+            lockedLaunchPrice,
+            lemonCustomerEmail: paymentEmail || null,
+          });
+          await saveUserToDb(persistedUser);
         }
         break;
       }

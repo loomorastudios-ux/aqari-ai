@@ -35,7 +35,12 @@ const PLANS: Record<
     launchPrice: 0,
     analysesLimit: 3,
     savedLimit: 0,
-    features: ['3 Analyses / 30 Days', 'Basic Cap Rate', 'Cash-on-Cash only'],
+    features: [
+      '3 Analyses / 30 Days',
+      'Basic Cap Rate',
+      'Cash-on-Cash only',
+      'No Monte Carlo, PDF Export, API, Analyst Desk, Portfolio Aggregation & Full Matrix',
+    ],
   },
   starter: {
     key: 'starter',

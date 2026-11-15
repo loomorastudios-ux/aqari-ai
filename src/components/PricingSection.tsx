@@ -99,9 +99,13 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   const launchBadgeText = livePricing?.launchBadgeText || DEFAULT_LAUNCH_BADGE;
   const daysRemaining = livePricing?.daysRemaining ?? 7;
 
-  // Prefetch a plan checkout URL in background (invalidates when pricingVersion updates)
+  const getPrefetchKey = (plan: 'starter' | 'pro' | 'enterprise') =>
+    `${user?.email?.toLowerCase() || 'anon'}:${plan}:${pricingVersion}`;
+
+  // Prefetch a plan checkout URL in background (invalidates when pricingVersion or user updates)
   const prefetchPlan = async (plan: 'starter' | 'pro' | 'enterprise') => {
-    const cached = checkoutPrefetchCache[plan];
+    const cacheKey = getPrefetchKey(plan);
+    const cached = checkoutPrefetchCache[cacheKey];
     if (
       cached &&
       cached.pricingVersion === pricingVersion &&
@@ -129,7 +133,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       if (res.ok) {
         const data = await res.json();
         if (data.url) {
-          checkoutPrefetchCache[plan] = {
+          checkoutPrefetchCache[cacheKey] = {
             url: data.url,
             timestamp: Date.now(),
             pricingVersion,
@@ -175,7 +179,8 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     }
 
     const acceptedAt = new Date().toISOString();
-    const cached = checkoutPrefetchCache[planId];
+    const cacheKey = getPrefetchKey(planId);
+    const cached = checkoutPrefetchCache[cacheKey];
     if (
       cached &&
       cached.pricingVersion === pricingVersion &&
@@ -217,7 +222,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         if (res.ok) {
           const data = await res.json();
           if (data.url) {
-            checkoutPrefetchCache[planId] = {
+            checkoutPrefetchCache[cacheKey] = {
               url: data.url,
               timestamp: Date.now(),
               pricingVersion,
@@ -289,6 +294,15 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   const enterprise = getTierData('enterprise');
   const free = getTierData('free');
 
+  const currentPlanKey: PlanKey | null = user
+    ? (user.plan === 'starter' || user.plan === 'pro' || user.plan === 'enterprise' || user.plan === 'free'
+        ? user.plan
+        : 'free')
+    : null;
+  const hasActivePaidPlan = Boolean(
+    user && currentPlanKey && currentPlanKey !== 'free' && user.subscriptionStatus !== 'expired'
+  );
+
   const tiers: Array<{
     id: PlanKey;
     name: string;
@@ -300,7 +314,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     analysesLimitText: string;
     icon: React.ReactNode;
     features: string[];
-    lockedFeatures?: string[];
     ctaLabel: string;
   }> = [
     {
@@ -313,10 +326,11 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       analysesLimitText: `${free.analysesLimit} Analyses / 30 Days`,
       icon: <Building2 className="w-5 h-5 text-zinc-400" />,
       features: free.features,
-      lockedFeatures: [
-        'Monte Carlo, PDF Export, API, Analyst Desk, Portfolio Aggregation & Full Matrix',
-      ],
-      ctaLabel: user ? 'Current FREE Plan' : `Start FREE (${free.analysesLimit} Analyses)`,
+      ctaLabel: !user
+        ? `Start FREE (${free.analysesLimit} Analyses)`
+        : currentPlanKey === 'free'
+        ? 'Current Plan'
+        : 'Switch to FREE',
     },
     {
       id: 'starter',
@@ -328,7 +342,9 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       analysesLimitText: `${starter.analysesLimit} Analyses / 30 Days`,
       icon: <Building2 className="w-5 h-5 text-zinc-300" />,
       features: starter.features,
-      ctaLabel: `Upgrade to STARTER (${formatPrice(starter.activePrice, currentCurrency)})`,
+      ctaLabel: hasActivePaidPlan
+        ? `Switch to STARTER (${formatPrice(starter.activePrice, currentCurrency)})`
+        : `Buy STARTER (${formatPrice(starter.activePrice, currentCurrency)})`,
     },
     {
       id: 'pro',
@@ -341,7 +357,9 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       analysesLimitText: `${pro.analysesLimit} Analyses / 30 Days`,
       icon: <Zap className="w-5 h-5 text-[#D4AF37]" />,
       features: pro.features,
-      ctaLabel: `Upgrade to PROFESSIONAL (${formatPrice(pro.activePrice, currentCurrency)})`,
+      ctaLabel: hasActivePaidPlan
+        ? `Switch to PROFESSIONAL (${formatPrice(pro.activePrice, currentCurrency)})`
+        : `Buy PROFESSIONAL (${formatPrice(pro.activePrice, currentCurrency)})`,
     },
     {
       id: 'enterprise',
@@ -353,7 +371,9 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       analysesLimitText: `${enterprise.analysesLimit} Analyses / 30 Days`,
       icon: <Crown className="w-5 h-5 text-purple-400" />,
       features: enterprise.features,
-      ctaLabel: `Upgrade to SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`,
+      ctaLabel: hasActivePaidPlan
+        ? `Switch to SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`
+        : `Buy SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`,
     },
   ];
 
@@ -414,8 +434,11 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       {/* Pricing Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-stretch">
         {tiers.map((tier) => {
-          const isCurrentPlan =
-            user?.plan === tier.id && (tier.id === 'free' || user?.subscriptionStatus === 'active');
+          const isCurrentPlan = Boolean(
+            user &&
+              currentPlanKey === tier.id &&
+              (tier.id === 'free' || user.subscriptionStatus !== 'expired')
+          );
           const isLoadingThis = loadingPlan === tier.id;
           const showLaunchStrike =
             launchActive && tier.id !== 'free' && tier.originalPrice > tier.activePrice;
@@ -510,27 +533,26 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   <div className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 font-semibold">
                     Included Capabilities:
                   </div>
-                  {tier.features.map((feature, i) => (
-                    <div
-                      key={i}
-                      className="flex items-start gap-2 text-[11px] text-zinc-300 font-sans leading-tight"
-                    >
-                      <div className="p-0.5 rounded-full bg-emerald-500/10 text-emerald-400 mt-0.5 shrink-0">
-                        <Check className="w-3 h-3" />
-                      </div>
-                      <span>{feature}</span>
-                    </div>
-                  ))}
-                  {tier.lockedFeatures &&
-                    tier.lockedFeatures.map((locked, idx) => (
+                  {tier.features.map((feature, i) => {
+                    const isExclusion = feature.toLowerCase().startsWith('no ');
+                    return (
                       <div
-                        key={`locked_${idx}`}
-                        className="flex items-start gap-2 text-[10px] text-zinc-500 font-mono leading-tight pt-1"
+                        key={i}
+                        className={`flex items-start gap-2 text-[11px] leading-tight ${
+                          isExclusion ? 'text-zinc-500 font-mono text-[10px] pt-1' : 'text-zinc-300 font-sans'
+                        }`}
                       >
-                        <Lock className="w-3 h-3 text-zinc-600 mt-0.5 shrink-0" />
-                        <span>No {locked}</span>
+                        {isExclusion ? (
+                          <Lock className="w-3 h-3 text-zinc-600 mt-0.5 shrink-0" />
+                        ) : (
+                          <div className="p-0.5 rounded-full bg-emerald-500/10 text-emerald-400 mt-0.5 shrink-0">
+                            <Check className="w-3 h-3" />
+                          </div>
+                        )}
+                        <span>{feature}</span>
                       </div>
-                    ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -556,7 +578,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   ) : isCurrentPlan ? (
                     <>
                       <Check className="w-4 h-4 text-emerald-400" />
-                      <span>CURRENT PLAN</span>
+                      <span>Current Plan</span>
                     </>
                   ) : (
                     <>
