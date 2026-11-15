@@ -109,27 +109,28 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
     launchPrice: 0,
     priceUSD: 0,
     analysesLimit: 3,
-    savedLimit: 0,
+    savedLimit: 3,
     licensingDays: 30,
     features: [
       '3 Analyses / 30 Days',
       'Basic Cap Rate',
       'Cash-on-Cash only',
-      'No Monte Carlo, PDF Export, API, Analyst Desk, Portfolio Aggregation & Full Matrix',
     ],
     hiddenFeatures: [
-      'Monte Carlo Stress Tests',
+      'Yield & Sensitivity Calculator',
+      'Cross-border Tax & Visa Matrix',
+      'Monte Carlo Stress Tests +200bps',
       'PDF Memorandum Export',
-      'REST API Credentials',
-      '1-on-1 Dedicated Analyst Desk',
       'Multi-asset Portfolio Aggregation',
-      'Cross-border Tax & Visa Matrix (Full)',
+      'Full REST API Credentials',
+      '1-on-1 Dedicated Analyst Desk',
+      'White-glove Custom Underwriting',
     ],
     capabilities: {
       basicMetrics: true,
       yieldSensitivity: false,
       crossBorderMatrixFull: false,
-      saveProperty: false,
+      saveProperty: true,
       monteCarlo: false,
       pdfExport: false,
       portfolioAggregation: false,
@@ -145,19 +146,21 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
     launchPrice: PLANS.STARTER.price,
     priceUSD: PLANS.STARTER.price,
     analysesLimit: PLANS.STARTER.analyses,
-    savedLimit: 50,
+    savedLimit: 30,
     licensingDays: 30,
     features: [
       '30 Analyses / 30 Days',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 50',
+      'Save 30',
     ],
     hiddenFeatures: [
       'Monte Carlo Stress Tests +200bps',
       'PDF Memorandum Export',
       'Multi-asset Portfolio Aggregation',
       'Full REST API Credentials',
+      '1-on-1 Dedicated Analyst Desk',
+      'White-glove Custom Underwriting',
     ],
     capabilities: {
       basicMetrics: true,
@@ -179,7 +182,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
     launchPrice: PLANS.PROFESSIONAL.price,
     priceUSD: PLANS.PROFESSIONAL.price,
     analysesLimit: PLANS.PROFESSIONAL.analyses,
-    savedLimit: 200,
+    savedLimit: 150,
     licensingDays: 30,
     features: [
       '150 Analyses / 30 Days',
@@ -188,7 +191,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 200',
+      'Save 150',
     ],
     hiddenFeatures: [
       'Full REST API Credentials',
@@ -215,7 +218,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
     launchPrice: PLANS.SOVEREIGN.price,
     priceUSD: PLANS.SOVEREIGN.price,
     analysesLimit: PLANS.SOVEREIGN.analyses,
-    savedLimit: Infinity,
+    savedLimit: 400,
     licensingDays: 30,
     features: [
       '400 Analyses / 30 Days',
@@ -227,7 +230,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Unlimited Saved',
+      'Save 400',
     ],
     hiddenFeatures: [],
     capabilities: {
@@ -266,19 +269,142 @@ function getUpgradeMessage(feature: GatedFeature): string {
     case 'monteCarlo':
     case 'pdfExport':
     case 'portfolioAggregation':
-      return 'Upgrade to Professional to unlock';
+      return 'Available in PROFESSIONAL - Upgrade';
     case 'apiAccess':
     case 'analystDesk':
     case 'customUnderwriting':
-      return 'Upgrade to Sovereign to unlock';
+      return 'Available in SOVEREIGN - Upgrade';
     case 'saveProperty':
       return 'Upgrade to save more';
     case 'yieldSensitivity':
     case 'crossBorderMatrixFull':
-      return 'Upgrade to Starter to unlock';
+      return 'Available in STARTER - Upgrade';
     default:
-      return 'Upgrade to Professional to unlock';
+      return 'Available in PROFESSIONAL - Upgrade';
   }
+}
+
+function runMonteCarlo1000(params: {
+  priceUSD: number;
+  rentUSD: number;
+  downPaymentPct: number;
+  interestRatePct: number;
+  operatingExpensePct: number;
+  seedOffset?: number;
+}) {
+  const cycles = 1000;
+  const price = Math.max(1, params.priceUSD);
+  const baseRent = Math.max(1, params.rentUSD);
+  const downPct = Math.min(100, Math.max(1, params.downPaymentPct));
+  const baseRate = Math.max(0.1, params.interestRatePct);
+  const baseOpex = Math.min(95, Math.max(1, params.operatingExpensePct));
+
+  const downUSD = price * (downPct / 100);
+  const loanUSD = Math.max(0, price - downUSD);
+  const numPayments = 25 * 12;
+
+  let seed =
+    Math.round(price) ^
+    (Math.round(baseRent) << 5) ^
+    (Math.round(baseRate * 100) << 11) ^
+    (params.seedOffset || 1337);
+  const rand = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const randNorm = () => {
+    const u1 = Math.max(1e-7, rand());
+    const u2 = rand();
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  };
+
+  const dscrs: number[] = [];
+  const cocs: number[] = [];
+  let passCount = 0;
+  let positiveCashflowCount = 0;
+  const buckets = [0, 0, 0, 0, 0]; // <1.0, 1.0-1.2, 1.2-1.5, 1.5-1.8, 1.8+
+
+  for (let i = 0; i < cycles; i++) {
+    // Rate shock centered at +200bps (+2.00%) with +/-75bps std dev
+    const shockedRate = Math.max(1.0, baseRate + 2.0 + randNorm() * 0.75);
+    // Vacancy centered at 8.5% with +/-3.5% std dev (clamped 2%..25%)
+    const vacancy = Math.min(0.25, Math.max(0.02, 0.085 + randNorm() * 0.035));
+    // OPEX centered at baseOpex with +/-2.0% std dev
+    const opexPct = Math.min(60, Math.max(2, baseOpex + randNorm() * 2.0));
+
+    const effectiveAnnualRent = baseRent * 12 * (1 - vacancy);
+    const trialNOI = effectiveAnnualRent * (1 - opexPct / 100);
+    const r = shockedRate / 100 / 12;
+    const monthlyDebt =
+      loanUSD > 0 && r > 0
+        ? (loanUSD * r * Math.pow(1 + r, numPayments)) / (Math.pow(1 + r, numPayments) - 1)
+        : 0;
+    const annualDebt = monthlyDebt * 12;
+    const trialDscr = annualDebt > 0 ? trialNOI / annualDebt : 4.0;
+    const trialCashflow = trialNOI - annualDebt;
+    const trialCoc = downUSD > 0 ? (trialCashflow / downUSD) * 100 : 0;
+
+    dscrs.push(trialDscr);
+    cocs.push(trialCoc);
+
+    if (trialDscr >= 1.2) passCount++;
+    if (trialCashflow > 0) positiveCashflowCount++;
+
+    if (trialDscr < 1.0) buckets[0]++;
+    else if (trialDscr < 1.2) buckets[1]++;
+    else if (trialDscr < 1.5) buckets[2]++;
+    else if (trialDscr < 1.8) buckets[3]++;
+    else buckets[4]++;
+  }
+
+  dscrs.sort((a, b) => a - b);
+  cocs.sort((a, b) => a - b);
+
+  // Deterministic +200bps rate shock and 15% vacancy surge metrics
+  const exactShockRate = baseRate + 2.0;
+  const r200 = exactShockRate / 100 / 12;
+  const debt200 =
+    loanUSD > 0 && r200 > 0
+      ? ((loanUSD * r200 * Math.pow(1 + r200, numPayments)) /
+          (Math.pow(1 + r200, numPayments) - 1)) *
+        12
+      : 0;
+  const baseNOI = baseRent * 12 * 0.95 * (1 - baseOpex / 100);
+  const rateShockCoC = downUSD > 0 ? Number((((baseNOI - debt200) / downUSD) * 100).toFixed(2)) : 0;
+  const vacancy15NOI = baseRent * 12 * 0.85 * (1 - baseOpex / 100);
+  const vacancySurgeNetYield = Number(((vacancy15NOI / price) * 100).toFixed(2));
+
+  const meanDscr = Number((dscrs.reduce((s, x) => s + x, 0) / cycles).toFixed(2));
+  const passRatePct = Number(((passCount / cycles) * 100).toFixed(1));
+  const positiveCashflowPct = Number(((positiveCashflowCount / cycles) * 100).toFixed(1));
+
+  return {
+    cycles,
+    rateShockBps: 200,
+    passCount,
+    failCount: cycles - passCount,
+    passRatePct,
+    positiveCashflowPct,
+    meanDscr,
+    minDscr: Number(dscrs[0].toFixed(2)),
+    maxDscr: Number(dscrs[cycles - 1].toFixed(2)),
+    dscrP10: Number(dscrs[Math.floor(cycles * 0.1)].toFixed(2)),
+    dscrP50: Number(dscrs[Math.floor(cycles * 0.5)].toFixed(2)),
+    dscrP90: Number(dscrs[Math.floor(cycles * 0.9)].toFixed(2)),
+    cocP10: Number(cocs[Math.floor(cycles * 0.1)].toFixed(2)),
+    cocP50: Number(cocs[Math.floor(cycles * 0.5)].toFixed(2)),
+    rateShockCoC,
+    vacancySurgeNetYield,
+    distribution: [
+      { label: '< 1.0x', count: buckets[0], pct: Number(((buckets[0] / cycles) * 100).toFixed(1)) },
+      { label: '1.0x-1.2x', count: buckets[1], pct: Number(((buckets[1] / cycles) * 100).toFixed(1)) },
+      { label: '1.2x-1.5x', count: buckets[2], pct: Number(((buckets[2] / cycles) * 100).toFixed(1)) },
+      { label: '1.5x-1.8x', count: buckets[3], pct: Number(((buckets[3] / cycles) * 100).toFixed(1)) },
+      { label: '1.8x+', count: buckets[4], pct: Number(((buckets[4] / cycles) * 100).toFixed(1)) },
+    ],
+  };
 }
 
 function findPlanPricing(
@@ -821,7 +947,7 @@ function createDefaultPricingConfig(): StoredPricingConfig {
         originalPrice: PLAN_DEFINITIONS.enterprise.originalPrice,
         launchPrice: PLAN_DEFINITIONS.enterprise.launchPrice,
         analysesLimit: PLAN_DEFINITIONS.enterprise.analysesLimit,
-        savedLimit: null,
+        savedLimit: PLAN_DEFINITIONS.enterprise.savedLimit,
         features: [...PLAN_DEFINITIONS.enterprise.features],
       },
     },
@@ -901,6 +1027,19 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
   for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
     const r = raw.plans?.[k];
     if (r && typeof r === 'object') {
+      const analysesLimit =
+        Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0
+          ? Number(r.analysesLimit)
+          : def.plans[k].analysesLimit;
+      const rawFeatures: string[] =
+        Array.isArray(r.features) && r.features.length > 0
+          ? r.features.map(String)
+          : def.plans[k].features;
+      const normalizedFeatures = rawFeatures
+        .filter((f) => !(k === 'free' && f.startsWith('No Monte Carlo')))
+        .map((f) =>
+          f === 'Save 50' ? 'Save 30' : f === 'Save 200' ? 'Save 150' : f === 'Unlimited Saved' ? 'Save 400' : f
+        );
       plans[k] = {
         key: k,
         displayName: def.plans[k].displayName,
@@ -910,24 +1049,9 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
         launchPrice: Number.isFinite(Number(r.launchPrice))
           ? Number(r.launchPrice)
           : def.plans[k].launchPrice,
-        analysesLimit:
-          Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0
-            ? Number(r.analysesLimit)
-            : def.plans[k].analysesLimit,
-        savedLimit:
-          r.savedLimit === null
-            ? null
-            : Number.isFinite(Number(r.savedLimit))
-            ? Number(r.savedLimit)
-            : def.plans[k].savedLimit,
-        features:
-          k === 'free' &&
-          (!Array.isArray(r.features) ||
-            r.features.length < 4)
-            ? def.plans[k].features
-            : Array.isArray(r.features) && r.features.length > 0
-            ? r.features.map(String)
-            : def.plans[k].features,
+        analysesLimit,
+        savedLimit: Math.min(analysesLimit, def.plans[k].savedLimit ?? analysesLimit),
+        features: normalizedFeatures.length > 0 ? normalizedFeatures : def.plans[k].features,
       };
     }
   }
@@ -2173,7 +2297,7 @@ const DEMO_ANALYSES: Record<string, any> = {
       'Mortgage Amortization & DSCR Stress Testing',
       '5-Year Net IRR Capital Appreciation Projection',
       '0% UAE Freehold Tax Exemption Breakdown',
-      'Up to 50 Saved Portfolio Properties',
+      'Up to 30 Saved Portfolio Properties',
     ],
     featuresLocked: [
       'Monte Carlo 200-Simulation Stochastic Engine (Pro)',
@@ -2264,7 +2388,7 @@ const DEMO_ANALYSES: Record<string, any> = {
       'Non-Resident CGT & Inheritance Tax Risk Modeling',
       'Monte Carlo Interest Rate Stress Sensitivity',
       'Downloadable PDF Investment Memorandum',
-      'Save up to 200 Institutional Properties',
+      'Save up to 150 Institutional Properties',
     ],
     featuresLocked: ['Direct REST API Endpoints & Syndicate Desk (Agency)'],
     monteCarlo: {
@@ -2483,10 +2607,14 @@ export default async function handler(req: any, res: any) {
             'pricing',
             'verify-checkout',
             'debug-plan',
+            'run-analysis',
             'underwrite',
+            'monte-carlo',
+            'save-to-portfolio',
             'save-property',
             'export',
             'portfolio',
+            'sovereign-request',
             'checkout',
             'session',
             'license',
@@ -2550,6 +2678,16 @@ export default async function handler(req: any, res: any) {
           license.planKey === 'free'
             ? 0
             : dynamicPlan?.activePrice ?? PLAN_DEFINITIONS[license.planKey].priceUSD;
+        const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
+        const apiKey =
+          license.planKey === 'enterprise' && !license.isExpired
+            ? 'aqari_live_' +
+              crypto
+                .createHmac('sha256', getSessionSecret())
+                .update(`api:${dbUser.email}`)
+                .digest('hex')
+                .slice(0, 32)
+            : null;
 
         return res.status(200).json({
           success: true,
@@ -2566,10 +2704,14 @@ export default async function handler(req: any, res: any) {
           license_start: dbUser.license_start,
           license_end: dbUser.license_end,
           days_left: license.daysLeft,
-          analyses_limit: license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLimit,
+          analyses_limit: license.analysesLimit,
           analyses_used: license.analysesUsed,
-          analyses_left: license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLeft,
-          saved_limit: license.isUnlimitedSaved ? 'Unlimited' : license.savedLimit,
+          analyses_left: license.analysesLeft,
+          maxSaved,
+          saved_limit: maxSaved,
+          saved_count: dbUser.saved_analyses.length,
+          saved_analyses: dbUser.saved_analyses,
+          api_key: apiKey,
           locked_launch_price: dbUser.locked_launch_price ?? null,
           custom_cities: dbUser.custom_cities || [],
           features,
@@ -2583,10 +2725,17 @@ export default async function handler(req: any, res: any) {
             license_start: dbUser.license_start,
             license_end: dbUser.license_end,
             analyses_used: dbUser.analyses_used,
+            maxSaved,
+            saved_count: dbUser.saved_analyses.length,
+            api_key: apiKey,
             locked_launch_price: dbUser.locked_launch_price ?? null,
             custom_cities: dbUser.custom_cities || [],
           },
-          license,
+          license: {
+            ...license,
+            savedLimit: maxSaved,
+            isUnlimitedSaved: false,
+          },
         });
       }
 
@@ -3278,6 +3427,7 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'run-analysis':
       case 'underwrite':
       case 'analyze': {
         if (req.method !== 'POST') {
@@ -3286,15 +3436,17 @@ export default async function handler(req: any, res: any) {
 
         const body = parsedBody;
         const sessionEmail = getSessionEmailFromReq(req);
-        const email = (sessionEmail || body.email || '').trim().toLowerCase();
+        const email = String(sessionEmail || body.login_email || body.email || '')
+          .trim()
+          .toLowerCase();
         if (!email) {
           return res.status(401).json({ error: 'Authentication required to run underwriting analysis' });
         }
 
-        const rl = checkRateLimit(`analyze:${email}`, 10, 60 * 1000);
+        const rl = checkRateLimit(`analyze:${email}`, 30, 60 * 1000);
         if (!rl.allowed) {
           return res.status(429).json({
-            error: 'Rate limit exceeded (max 10 analyses per minute). Please wait briefly.',
+            error: 'Rate limit exceeded. Please wait briefly.',
             retryAfterSec: rl.retryAfterSec,
           });
         }
@@ -3309,17 +3461,20 @@ export default async function handler(req: any, res: any) {
 
         if (license.isExpired || (!license.isUnlimitedAnalyses && license.analysesLeft <= 0)) {
           return res.status(403).json({
-            error: 'Licensing window expired - Renew',
-            code: 'LICENSE_EXPIRED_OR_LIMIT_REACHED',
+            success: false,
+            error: 'No analyses left. Renew / Upgrade.',
+            code: 'NO_ANALYSES_LEFT',
             plan: license.planKey,
             displayName: license.displayName,
             analysesLeft: 0,
+            analyses_left: 0,
             daysLeft: license.daysLeft,
           });
         }
 
-        if (body.useMonteCarlo && !canUseFeature(license.planKey, 'monteCarlo')) {
+        if (body.useMonteCarlo === true && !canUseFeature(license.planKey, 'monteCarlo')) {
           return res.status(403).json({
+            success: false,
             error: getUpgradeMessage('monteCarlo'),
             code: 'FEATURE_LOCKED',
             feature: 'monteCarlo',
@@ -3327,22 +3482,34 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (body.useSensitivity && !canUseFeature(license.planKey, 'yieldSensitivity')) {
-          return res.status(403).json({
-            error: getUpgradeMessage('yieldSensitivity'),
-            code: 'FEATURE_LOCKED',
-            feature: 'yieldSensitivity',
-            requiredPlan: 'starter',
-          });
-        }
-
-        const priceUSD = Number(body.priceUSD || 650000);
-        const rentUSD = Number(body.rentUSD || 4500);
-        const downPaymentPct = Number(body.downPaymentPct ?? 30);
-        const interestRatePct = Number(body.interestRatePct ?? 5.5);
-        const operatingExpensePct = Number(body.operatingExpensePct ?? 15);
+        const priceUSD = Number(body.priceUSD ?? body.acquisitionValuation);
+        const rentUSD = Number(body.rentUSD ?? body.monthlyRent);
+        const downPaymentPct = Number(body.downPaymentPct ?? body.equityDownPct ?? 30);
+        const interestRatePct = Number(body.interestRatePct ?? body.mortgageRatePct ?? 5.5);
+        const operatingExpensePct = Number(body.operatingExpensePct ?? body.opexPct ?? 15);
         const propertyTitle = (body.propertyTitle || 'Institutional Asset').toString();
         const city = (body.city || 'Muscat').toString();
+
+        if (
+          !Number.isFinite(priceUSD) ||
+          priceUSD <= 0 ||
+          !Number.isFinite(rentUSD) ||
+          rentUSD <= 0 ||
+          !Number.isFinite(downPaymentPct) ||
+          downPaymentPct <= 0 ||
+          downPaymentPct > 100 ||
+          !Number.isFinite(interestRatePct) ||
+          interestRatePct <= 0 ||
+          !Number.isFinite(operatingExpensePct) ||
+          operatingExpensePct <= 0 ||
+          operatingExpensePct >= 100
+        ) {
+          return res.status(400).json({
+            success: false,
+            error: 'All numeric underwriting inputs must be greater than 0.',
+            code: 'INVALID_INPUTS',
+          });
+        }
 
         const downPaymentUSD = priceUSD * (downPaymentPct / 100);
         const loanAmountUSD = Math.max(0, priceUSD - downPaymentUSD);
@@ -3368,6 +3535,39 @@ export default async function handler(req: any, res: any) {
         const dscr =
           annualDebtServiceUSD > 0 ? (netOperatingIncomeUSD / annualDebtServiceUSD).toFixed(2) : '∞';
 
+        const hasSensitivity = canUseFeature(license.planKey, 'yieldSensitivity');
+        const hasMonteCarlo = canUseFeature(license.planKey, 'monteCarlo');
+
+        const sensitivity = hasSensitivity
+          ? [-10, 0, 10].map((deltaPct) => {
+              const adjRent = rentUSD * (1 + deltaPct / 100);
+              const adjGross = adjRent * 12 * 0.95;
+              const adjOpex = adjGross * (operatingExpensePct / 100);
+              const adjNOI = adjGross - adjOpex;
+              const adjCapRate = Number(((adjNOI / priceUSD) * 100).toFixed(2));
+              const adjCashflow = adjNOI - annualDebtServiceUSD;
+              const adjCoC =
+                downPaymentUSD > 0 ? Number(((adjCashflow / downPaymentUSD) * 100).toFixed(2)) : 0;
+              return {
+                deltaPct,
+                rentUSD: Math.round(adjRent),
+                capRate: adjCapRate,
+                cashOnCash: adjCoC,
+                monthlyCashflowUSD: Math.round(adjCashflow / 12),
+              };
+            })
+          : null;
+
+        const monteCarlo = hasMonteCarlo
+          ? runMonteCarlo1000({
+              priceUSD,
+              rentUSD,
+              downPaymentPct,
+              interestRatePct,
+              operatingExpensePct,
+            })
+          : null;
+
         const updatedUser = recordUserAnalysis(email, {
           property: propertyTitle,
           city,
@@ -3381,27 +3581,86 @@ export default async function handler(req: any, res: any) {
 
         return res.status(200).json({
           success: true,
+          analyzedAt: new Date().toISOString(),
+          inputs: {
+            propertyTitle,
+            city,
+            priceUSD,
+            rentUSD,
+            downPaymentPct,
+            interestRatePct,
+            operatingExpensePct,
+          },
           result: {
             capRate,
             cashOnCash,
-            irr5Yr: canUseFeature(license.planKey, 'yieldSensitivity') ? irr5Yr : null,
-            dscr: canUseFeature(license.planKey, 'yieldSensitivity') ? dscr : null,
-            monthlyCashflowUSD: canUseFeature(license.planKey, 'yieldSensitivity')
-              ? Math.round(monthlyCashflowUSD)
-              : null,
+            irr5Yr: hasSensitivity ? irr5Yr : null,
+            dscr: hasSensitivity ? dscr : null,
+            monthlyCashflowUSD: hasSensitivity ? Math.round(monthlyCashflowUSD) : null,
+            monthlyMortgageUSD: hasSensitivity ? Math.round(monthlyMortgageUSD) : null,
             netOperatingIncomeUSD: Math.round(netOperatingIncomeUSD),
-            monteCarlo: canUseFeature(license.planKey, 'monteCarlo')
-              ? {
-                  rateShockCoC: Number(Math.max(0, cashOnCash - 1.85).toFixed(2)),
-                  vacancySurgeNetYield: Number(Math.max(0, capRate - 1.2).toFixed(2)),
-                }
-              : null,
+            annualGrossRentUSD: Math.round(annualGrossRentUSD),
+            annualOPEXUSD: Math.round(annualOPEXUSD),
+            annualDebtServiceUSD: Math.round(annualDebtServiceUSD),
+            downPaymentUSD: Math.round(downPaymentUSD),
+            sensitivity,
+            monteCarlo,
           },
-          license: nextLicense,
+          analyses_left: nextLicense.analysesLeft,
+          analyses_used: nextLicense.analysesUsed,
+          license: {
+            ...nextLicense,
+            savedLimit: PLAN_DEFINITIONS[nextLicense.planKey].savedLimit,
+            isUnlimitedSaved: false,
+          },
           planCapabilities: PLAN_DEFINITIONS[nextLicense.planKey].capabilities,
         });
       }
 
+      case 'monte-carlo': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const body = parsedBody;
+        const sessionEmail = getSessionEmailFromReq(req);
+        const email = String(sessionEmail || body.login_email || body.email || '')
+          .trim()
+          .toLowerCase();
+        if (!email) {
+          return res.status(401).json({ error: 'Authentication required' });
+        }
+        const userRecord =
+          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+        const license = computeServerLicenseStatus(userRecord);
+        if (license.isExpired || !canUseFeature(license.planKey, 'monteCarlo')) {
+          return res.status(403).json({
+            success: false,
+            error: getUpgradeMessage('monteCarlo'),
+            code: 'FEATURE_LOCKED',
+            feature: 'monteCarlo',
+            requiredPlan: 'pro',
+          });
+        }
+        const priceUSD = Number(body.priceUSD || 650000);
+        const rentUSD = Number(body.rentUSD || 4500);
+        const downPaymentPct = Number(body.downPaymentPct ?? 30);
+        const interestRatePct = Number(body.interestRatePct ?? 5.5);
+        const operatingExpensePct = Number(body.operatingExpensePct ?? 15);
+        const monteCarlo = runMonteCarlo1000({
+          priceUSD,
+          rentUSD,
+          downPaymentPct,
+          interestRatePct,
+          operatingExpensePct,
+          seedOffset: Number(body.seedOffset || Date.now() % 100000),
+        });
+        return res.status(200).json({
+          success: true,
+          monteCarlo,
+        });
+      }
+
+      case 'save-to-portfolio':
       case 'save-property':
       case 'save': {
         if (req.method !== 'POST') {
@@ -3410,7 +3669,9 @@ export default async function handler(req: any, res: any) {
 
         const body = parsedBody;
         const sessionEmail = getSessionEmailFromReq(req);
-        const email = (sessionEmail || body.email || '').trim().toLowerCase();
+        const email = String(sessionEmail || body.login_email || body.email || '')
+          .trim()
+          .toLowerCase();
         if (!email) {
           return res.status(401).json({ error: 'Authentication required to save analyses' });
         }
@@ -3421,39 +3682,50 @@ export default async function handler(req: any, res: any) {
         const license = computeServerLicenseStatus(userRecord);
 
         if (license.isExpired) {
-          return res.status(403).json({
+          return res.status(200).json({
+            success: false,
             error: 'Licensing window expired - Renew',
             code: 'LICENSE_EXPIRED',
           });
         }
 
+        const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
         const currentSavedCount = Math.max(
           userRecord.saved_analyses.length,
-          Number(body.currentSavedCount || 0)
+          Number(body.currentSavedCount ?? body.savedCount ?? 0)
         );
 
-        if (
-          !canUseFeature(license.planKey, 'saveProperty') ||
-          (!license.isUnlimitedSaved && currentSavedCount >= license.savedLimit)
-        ) {
-          return res.status(403).json({
-            error: 'Upgrade to save more',
+        if (currentSavedCount >= maxSaved) {
+          const nextPlanHint =
+            license.planKey === 'free'
+              ? ' Upgrade to STARTER to save more.'
+              : license.planKey === 'starter'
+              ? ' Upgrade to PROFESSIONAL to save more.'
+              : license.planKey === 'pro'
+              ? ' Upgrade to SOVEREIGN to save more.'
+              : '';
+          return res.status(200).json({
+            success: false,
+            error: `Save limit reached for ${license.displayName}: ${currentSavedCount}/${maxSaved}.${nextPlanHint}`,
             code: 'SAVE_LIMIT_REACHED',
-            plan: license.planKey,
+            plan: license.displayName,
+            planKey: license.planKey,
+            saved_count: currentSavedCount,
             savedCount: currentSavedCount,
-            savedLimit: license.savedLimit,
+            maxSaved,
+            savedLimit: maxSaved,
           });
         }
 
-        const analysis = body.analysis;
-        if (!analysis) {
-          return res.status(400).json({ error: 'Analysis payload is required' });
+        const rawAnalysis = body.analysis || (body.property ? body : null);
+        if (!rawAnalysis) {
+          return res.status(400).json({ success: false, error: 'Analysis payload is required' });
         }
 
         const newItem = {
-          ...analysis,
-          id: analysis.id || `saved_${Date.now()}`,
-          date: analysis.date || Date.now(),
+          ...rawAnalysis,
+          id: rawAnalysis.id || `saved_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          date: rawAnalysis.date || Date.now(),
         };
 
         const nextSaved = [newItem, ...userRecord.saved_analyses];
@@ -3464,7 +3736,58 @@ export default async function handler(req: any, res: any) {
           success: true,
           savedItem: newItem,
           savedCount: updated.saved_analyses.length,
-          savedLimit: PLAN_DEFINITIONS[license.planKey].savedLimit,
+          saved_count: updated.saved_analyses.length,
+          maxSaved,
+          savedLimit: maxSaved,
+        });
+      }
+
+      case 'sovereign-request': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const body = parsedBody;
+        const sessionEmail = getSessionEmailFromReq(req);
+        const email = String(sessionEmail || body.login_email || body.email || '')
+          .trim()
+          .toLowerCase();
+        if (!email) {
+          return res.status(401).json({ error: 'Authentication required' });
+        }
+        const userRecord =
+          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+        const license = computeServerLicenseStatus(userRecord);
+        if (license.isExpired || !canUseFeature(license.planKey, 'analystDesk')) {
+          return res.status(403).json({
+            success: false,
+            error: getUpgradeMessage('analystDesk'),
+            code: 'FEATURE_LOCKED',
+          });
+        }
+
+        const reqType = body.type === 'white_glove' ? 'White-glove Custom Underwriting' : '1-on-1 Dedicated Analyst Desk';
+        const now = Date.now();
+        const referenceId = `SOV-${now.toString(36).toUpperCase()}`;
+        const notes = String(body.notes || body.brief || body.preferredSlot || '').trim().slice(0, 500);
+        const updated = updateServerUser(email, {
+          timeline: [
+            {
+              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: new Date(now).toISOString(),
+              type: 'analysis' as const,
+              message: `${reqType} submitted (${referenceId})${notes ? `: ${notes}` : ''}`,
+              actor: email,
+            },
+            ...userRecord.timeline,
+          ].slice(0, 200),
+        });
+        await saveUserToDb(updated).catch(() => {});
+
+        return res.status(200).json({
+          success: true,
+          referenceId,
+          requestType: reqType,
+          message: `${reqType} request confirmed (${referenceId}). Our analyst desk will respond at ${email}.`,
         });
       }
 
@@ -4303,10 +4626,14 @@ export default async function handler(req: any, res: any) {
             'pricing',
             'verify-checkout',
             'debug-plan',
+            'run-analysis',
             'underwrite',
+            'monte-carlo',
+            'save-to-portfolio',
             'save-property',
             'export',
             'portfolio',
+            'sovereign-request',
             'checkout',
             'session',
             'license',

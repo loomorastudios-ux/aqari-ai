@@ -121,7 +121,7 @@ export const DEMO_ANALYSES: Record<string, DemoAnalysisItem> = {
       'Mortgage Amortization & DSCR Stress Testing',
       '5-Year Net IRR Capital Appreciation Projection',
       '0% UAE Freehold Tax Exemption Breakdown',
-      'Up to 50 Saved Portfolio Properties',
+      'Up to 30 Saved Portfolio Properties',
     ],
     featuresLocked: [
       'Monte Carlo 200-Simulation Stochastic Engine (Pro)',
@@ -214,7 +214,7 @@ export const DEMO_ANALYSES: Record<string, DemoAnalysisItem> = {
       'Non-Resident CGT & Inheritance Tax Risk Modeling',
       'Monte Carlo Interest Rate Stress Sensitivity',
       'Downloadable PDF Investment Memorandum',
-      'Save up to 200 Institutional Properties',
+      'Save up to 150 Institutional Properties',
     ],
     featuresLocked: [
       'Direct REST API Endpoints & Syndicate Desk (Agency)',

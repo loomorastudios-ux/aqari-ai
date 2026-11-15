@@ -309,13 +309,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     return PLANS[license.planKey].features;
   }, [user.features, dynamicPlanPricing?.features, license.planKey]);
 
-  const featureSavedLimit = meFeatures.includes('Unlimited Saved')
-    ? Infinity
-    : meFeatures.includes('Save 200')
-    ? 200
-    : meFeatures.includes('Save 50')
-    ? 50
-    : 0;
+  const maxSaved = useMemo(() => {
+    if (typeof user.maxSaved === 'number' && user.maxSaved > 0) {
+      return user.maxSaved;
+    }
+    if (meFeatures.includes('Save 400')) return 400;
+    if (meFeatures.includes('Save 150')) return 150;
+    if (meFeatures.includes('Save 30')) return 30;
+    return PLANS[license.planKey].savedLimit;
+  }, [user.maxSaved, meFeatures, license.planKey]);
 
   const planDisplayName = user.planName || license.displayName;
   const planPriceUSD =
@@ -325,17 +327,31 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       ? user.planPrice
       : dynamicPlanPricing?.activePrice ?? PLANS[license.planKey].priceUSD;
 
-  const canSensitivity = !isPlanEnded && meFeatures.includes('Yield & Sensitivity Calculator');
-  const canMonteCarlo = !isPlanEnded && meFeatures.includes('Monte Carlo Stress Tests +200bps');
-  const canPdfExport = !isPlanEnded && meFeatures.includes('PDF Memorandum Export');
-  const canPortfolioAgg = !isPlanEnded && meFeatures.includes('Multi-asset Portfolio Aggregation');
-  const canFullMatrix = !isPlanEnded && meFeatures.includes('Cross-border Tax & Visa Matrix');
-  const canApiAccess = !isPlanEnded && meFeatures.includes('Full REST API Credentials');
-  const canAnalystDesk = !isPlanEnded && meFeatures.includes('1-on-1 Dedicated Analyst Desk');
-  const canCustomUnderwriting = !isPlanEnded && meFeatures.includes('White-glove Custom Underwriting');
-  const canSaveProperty =
+  const canSensitivity =
     !isPlanEnded &&
-    meFeatures.some((f) => f === 'Save 50' || f === 'Save 200' || f === 'Unlimited Saved');
+    (meFeatures.includes('Yield & Sensitivity Calculator') || canUseFeature(license.planKey, 'yieldSensitivity'));
+  const canMonteCarlo =
+    !isPlanEnded &&
+    (meFeatures.includes('Monte Carlo Stress Tests +200bps') || canUseFeature(license.planKey, 'monteCarlo'));
+  const canPdfExport =
+    !isPlanEnded &&
+    (meFeatures.includes('PDF Memorandum Export') || canUseFeature(license.planKey, 'pdfExport'));
+  const canPortfolioAgg =
+    !isPlanEnded &&
+    (meFeatures.includes('Multi-asset Portfolio Aggregation') || canUseFeature(license.planKey, 'portfolioAggregation'));
+  const canFullMatrix =
+    !isPlanEnded &&
+    (meFeatures.includes('Cross-border Tax & Visa Matrix') || canUseFeature(license.planKey, 'crossBorderMatrixFull'));
+  const canApiAccess =
+    !isPlanEnded &&
+    (meFeatures.includes('Full REST API Credentials') || canUseFeature(license.planKey, 'apiAccess'));
+  const canAnalystDesk =
+    !isPlanEnded &&
+    (meFeatures.includes('1-on-1 Dedicated Analyst Desk') || canUseFeature(license.planKey, 'analystDesk'));
+  const canCustomUnderwriting =
+    !isPlanEnded &&
+    (meFeatures.includes('White-glove Custom Underwriting') || canUseFeature(license.planKey, 'customUnderwriting'));
+  const canSaveProperty = !isPlanEnded && maxSaved > 0;
 
   const loadWebhookLogs = async () => {
     setIsRefreshingWebhookLogs(true);
@@ -421,9 +437,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
   }, [activeTab, canPortfolioAgg]);
 
-  // Analyzer Form State (in base USD)
+  // Analyzer Form State (in base USD — never auto-computes on edit)
   const [selectedPresetId, setSelectedPresetId] = useState<string>(PROPERTY_LISTINGS[0].id);
-  const [searchQuery, setSearchQuery] = useState('');
   const [priceUSD, setPriceUSD] = useState<number>(PROPERTY_LISTINGS[0].basePriceUSD);
   const [rentUSD, setRentUSD] = useState<number>(PROPERTY_LISTINGS[0].baseRentMonthlyUSD);
   const [downPaymentPct, setDownPaymentPct] = useState<number>(30);
@@ -433,9 +448,83 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [propertyName, setPropertyName] = useState<string>(PROPERTY_LISTINGS[0].title);
   const [propertyImageUrl, setPropertyImageUrl] = useState<string>(PROPERTY_LISTINGS[0].imageUrl);
 
-  // Analysis result states - initially false until user runs analysis or loads a saved one
+  // Authoritative Run Analysis result state — null until RUN ANALYSIS (-1 CREDIT) succeeds
   const [hasRunAnalysis, setHasRunAnalysis] = useState(false);
   const [stressTestActive, setStressTestActive] = useState(false);
+  const [runResult, setRunResult] = useState<{
+    analyzedAt: string;
+    inputs: {
+      propertyTitle: string;
+      city: string;
+      priceUSD: number;
+      rentUSD: number;
+      downPaymentPct: number;
+      interestRatePct: number;
+      operatingExpensePct: number;
+    };
+    capRate: number;
+    cashOnCash: number;
+    irr5Yr: number | null;
+    dscr: string | null;
+    monthlyCashflowUSD: number | null;
+    monthlyMortgageUSD: number | null;
+    netOperatingIncomeUSD: number;
+    annualGrossRentUSD: number;
+    annualOPEXUSD: number;
+    annualDebtServiceUSD: number;
+    downPaymentUSD: number;
+    sensitivity: Array<{
+      deltaPct: number;
+      rentUSD: number;
+      capRate: number;
+      cashOnCash: number;
+      monthlyCashflowUSD: number;
+    }> | null;
+    monteCarlo: {
+      cycles: number;
+      passCount: number;
+      failCount: number;
+      passRatePct: number;
+      positiveCashflowPct: number;
+      meanDscr: number;
+      minDscr: number;
+      maxDscr: number;
+      dscrP10: number;
+      dscrP50: number;
+      dscrP90: number;
+      rateShockCoC: number;
+      vacancySurgeNetYield: number;
+      distribution: Array<{ label: string; count: number; pct: number }>;
+    } | null;
+  } | null>(null);
+  const [monteCarloResult, setMonteCarloResult] = useState<{
+    cycles: number;
+    passCount: number;
+    failCount: number;
+    passRatePct: number;
+    positiveCashflowPct: number;
+    meanDscr: number;
+    minDscr: number;
+    maxDscr: number;
+    dscrP10: number;
+    dscrP50: number;
+    dscrP90: number;
+    rateShockCoC: number;
+    vacancySurgeNetYield: number;
+    distribution: Array<{ label: string; count: number; pct: number }>;
+  } | null>(null);
+  const [isRunningMonteCarlo, setIsRunningMonteCarlo] = useState(false);
+  const [sovereignAnalystNotes, setSovereignAnalystNotes] = useState('');
+  const [sovereignWhiteGloveBrief, setSovereignWhiteGloveBrief] = useState('');
+  const [sovereignRequestStatus, setSovereignRequestStatus] = useState<string | null>(null);
+  const [isSubmittingSovereignReq, setIsSubmittingSovereignReq] = useState(false);
+
+  const clearPendingRun = () => {
+    setHasRunAnalysis(false);
+    setRunResult(null);
+    setMonteCarloResult(null);
+    setStressTestActive(false);
+  };
 
   // Saved Analyses filter
   const [savedSearch, setSavedSearch] = useState('');
@@ -569,9 +658,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     setCity(card.city);
     setPriceUSD(card.estimatedAvgPriceUSD);
     setRentUSD(card.estimatedAvgRentUSD);
-    setStressTestActive(false);
-    setHasRunAnalysis(true);
-    showToast(`Loaded ${card.city} benchmark into Underwriting Engine`);
+    clearPendingRun();
+    showToast(`Loaded ${card.city} inputs — click RUN ANALYSIS (-1 CREDIT) to calculate`);
   };
 
   // Load a preset property into analyzer (does NOT deduct credit or auto-run)
@@ -584,65 +672,52 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     setPriceUSD(prop.basePriceUSD);
     setRentUSD(prop.baseRentMonthlyUSD);
     setPropertyImageUrl(prop.imageUrl);
-    setStressTestActive(false);
-    // User must click RUN ANALYSIS (-1 CREDIT) to compute metrics
+    clearPendingRun();
   };
 
-  // Institutional Underwriting Formula Verification:
-  // - NOI = (Monthly Rent * 12 * 0.95 occupancy) - Annual OPEX
-  // - Debt Service = Monthly Mortgage Payment * 12 (25-year amortizing schedule)
-  // - DSCR = NOI / Annual Debt Service
-  // - IRR (5-Year Equity IRR) = annualized compound cashflow yield + equity appreciation benchmark
-  // - Monte Carlo (+200bps) = 1000-trial interest rate shock & 15% vacancy stress test
-  // - Tenant Risk = Covenant yield coverage tiering (AAA / AA)
-  // - Tax Optimization = Cross-border transfer tax & CGT arbitrage adjustment
-  // - PDF Export = Licensed watermarked investor memorandum download
-  const downPaymentUSD = priceUSD * (downPaymentPct / 100);
-  const loanAmountUSD = Math.max(0, priceUSD - downPaymentUSD);
-  const monthlyRate = interestRatePct / 100 / 12;
-  const numPayments = 25 * 12;
-  const monthlyMortgageUSD =
-    loanAmountUSD > 0 && monthlyRate > 0
-      ? (loanAmountUSD * monthlyRate * Math.pow(1 + monthlyRate, numPayments)) /
-        (Math.pow(1 + monthlyRate, numPayments) - 1)
-      : 0;
-
-  const annualGrossRentUSD = rentUSD * 12 * 0.95; // 5% vacancy allowance
-  const annualOPEXUSD = annualGrossRentUSD * (operatingExpensePct / 100);
-  const netOperatingIncomeUSD = annualGrossRentUSD - annualOPEXUSD;
-  const annualDebtServiceUSD = monthlyMortgageUSD * 12;
-  const annualCashflowUSD = netOperatingIncomeUSD - annualDebtServiceUSD;
-  const monthlyCashflowUSD = annualCashflowUSD / 12;
-
-  const capRate = Number(((netOperatingIncomeUSD / priceUSD) * 100).toFixed(2));
-  const cashOnCash = downPaymentUSD > 0 ? Number(((annualCashflowUSD / downPaymentUSD) * 100).toFixed(2)) : 0;
-  const irr5Yr = Number((cashOnCash + 4.8).toFixed(1));
-  const dscr = annualDebtServiceUSD > 0 ? (netOperatingIncomeUSD / annualDebtServiceUSD).toFixed(2) : '∞';
-
-  // Run Analysis Action (Backend enforced + Consumes 1 Credit)
+  // Run Analysis Action (Backend enforced + Consumes 1 Credit — ONLY way metrics calculate)
   const handleRunAnalysis = async () => {
     if (isExpired) {
-      showToast('Licensing window expired - Renew');
+      showToast('No analyses left. Renew / Upgrade.');
       onOpenRenewal();
       return;
     }
 
     if (!license.isUnlimitedAnalyses && analysesRemaining <= 0) {
-      showToast('Licensing window expired - Renew');
+      showToast('No analyses left. Renew / Upgrade.');
       onOpenRenewal();
+      return;
+    }
+
+    if (
+      !Number.isFinite(priceUSD) ||
+      priceUSD <= 0 ||
+      !Number.isFinite(rentUSD) ||
+      rentUSD <= 0 ||
+      !Number.isFinite(downPaymentPct) ||
+      downPaymentPct <= 0 ||
+      downPaymentPct > 100 ||
+      !Number.isFinite(interestRatePct) ||
+      interestRatePct <= 0 ||
+      !Number.isFinite(operatingExpensePct) ||
+      operatingExpensePct <= 0 ||
+      operatingExpensePct >= 100
+    ) {
+      showToast('Please enter valid numeric values greater than 0 for all inputs.');
       return;
     }
 
     setIsAnalyzingApi(true);
     try {
-      const res = await fetch('/api/app?action=underwrite', {
+      const res = await fetch('/api/app?action=run-analysis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
           email: user.email,
+          login_email: user.email,
           name: user.name,
-          propertyTitle: propertyName,
+          propertyTitle: propertyName.trim() || 'Institutional Asset',
           city,
           priceUSD,
           rentUSD,
@@ -656,21 +731,27 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
       const data = await res.json().catch(() => ({}));
       if (res.status === 429) {
-        showToast(data?.error || 'Rate limit exceeded (10 analyses/min). Please wait.');
+        showToast(data?.error || 'Rate limit exceeded. Please wait.');
         return;
       }
-      if (res.status === 403 || !res.ok) {
-        showToast(data?.error || 'Licensing window expired - Renew');
+      if (res.status === 400) {
+        showToast(data?.error || 'Invalid inputs. All numeric fields must be > 0.');
+        return;
+      }
+      if (res.status === 403 || !res.ok || data?.success === false) {
+        showToast(data?.error || 'No analyses left. Renew / Upgrade.');
         onOpenRenewal();
         return;
       }
 
       if (data?.license) {
-        const nextLeft = data.license.isUnlimitedAnalyses ? 999999 : (data.license.analysesLeft ?? Math.max(0, analysesRemaining - 1));
+        const nextLeft = data.license.isUnlimitedAnalyses
+          ? 999999
+          : data.license.analysesLeft ?? Math.max(0, analysesRemaining - 1);
         onUpdateUser({
           ...user,
           plan: data.license.planKey || user.plan,
-          analysesUsed: data.license.analysesUsed ?? ((user.analysesUsed || 0) + 1),
+          analysesUsed: data.license.analysesUsed ?? (user.analysesUsed || 0) + 1,
           freeAnalyses: nextLeft,
           freeAnalysesLeft: nextLeft,
           analysesLeft: nextLeft,
@@ -678,61 +759,127 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       } else if (onConsumeAnalysis) {
         onConsumeAnalysis();
       }
-      setHasRunAnalysis(true);
-      showToast('Underwriting analysis completed. 1 credit deducted.');
-    } catch {
-      if (onConsumeAnalysis) {
-        const ok = onConsumeAnalysis();
-        if (ok) {
-          setHasRunAnalysis(true);
-          showToast('Underwriting analysis completed. 1 credit deducted.');
-        }
+
+      if (data?.result) {
+        setRunResult({
+          analyzedAt: data.analyzedAt || new Date().toISOString(),
+          inputs: data.inputs || {
+            propertyTitle: propertyName,
+            city,
+            priceUSD,
+            rentUSD,
+            downPaymentPct,
+            interestRatePct,
+            operatingExpensePct,
+          },
+          ...data.result,
+        });
+        setMonteCarloResult(data.result.monteCarlo || null);
+        setStressTestActive(Boolean(data.result.monteCarlo));
       }
+      setHasRunAnalysis(true);
+      const nextRemaining =
+        data?.analyses_left ?? data?.license?.analysesLeft ?? Math.max(0, analysesRemaining - 1);
+      showToast(`Analysis complete. 1 credit deducted (${nextRemaining} left).`);
+    } catch {
+      showToast('Network error while running underwriting analysis. Please try again.');
     } finally {
       setIsAnalyzingApi(false);
     }
   };
 
-  // Trigger Monte Carlo Scenario (Backend Gated to Professional+)
+  // Trigger 1000-Cycle Monte Carlo Scenario (Backend Gated to Professional+)
   const handleToggleMonteCarlo = async () => {
     if (!canMonteCarlo) {
-      showToast(getUpgradeMessage('monteCarlo'));
+      showToast('Available in PROFESSIONAL - Upgrade');
       onOpenRenewal();
       return;
     }
+    setIsRunningMonteCarlo(true);
     try {
-      const res = await fetch('/api/app?action=underwrite', {
+      const targetInputs = runResult?.inputs || {
+        priceUSD,
+        rentUSD,
+        downPaymentPct,
+        interestRatePct,
+        operatingExpensePct,
+      };
+      const res = await fetch('/api/app?action=monte-carlo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
           email: user.email,
-          propertyTitle: propertyName,
-          city,
-          priceUSD,
-          rentUSD,
-          downPaymentPct,
-          interestRatePct,
-          operatingExpensePct,
-          useMonteCarlo: true,
+          login_email: user.email,
+          priceUSD: targetInputs.priceUSD,
+          rentUSD: targetInputs.rentUSD,
+          downPaymentPct: targetInputs.downPaymentPct,
+          interestRatePct: targetInputs.interestRatePct,
+          operatingExpensePct: targetInputs.operatingExpensePct,
+          seedOffset: Date.now() % 100000,
         }),
       });
-      if (res.status === 429) {
-        const err = await res.json().catch(() => ({}));
-        showToast(err?.error || 'Rate limit exceeded. Please wait.');
-        return;
-      }
-      if (res.status === 403) {
-        const err = await res.json().catch(() => ({}));
-        showToast(err?.error || 'Upgrade to Professional to unlock');
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403 || !res.ok || data?.success === false) {
+        showToast(data?.error || 'Available in PROFESSIONAL - Upgrade');
         onOpenRenewal();
         return;
       }
-    } catch {}
-    setStressTestActive((prev) => !prev);
+      if (data?.monteCarlo) {
+        setMonteCarloResult(data.monteCarlo);
+        setStressTestActive(true);
+        showToast('1000-cycle Monte Carlo stress test completed.');
+      }
+    } catch {
+      showToast('Unable to run Monte Carlo simulation. Please retry.');
+    } finally {
+      setIsRunningMonteCarlo(false);
+    }
   };
 
-  // Save Analysis to Portfolio (Backend Gated: Free=0, Starter=50, Pro=200, Sovereign=Unlimited)
+  const handleSovereignRequest = async (type: 'analyst_desk' | 'white_glove') => {
+    if (!canAnalystDesk) {
+      showToast('Available in SOVEREIGN - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    const payloadNotes =
+      type === 'analyst_desk' ? sovereignAnalystNotes.trim() : sovereignWhiteGloveBrief.trim();
+    if (!payloadNotes) {
+      showToast('Please enter your deal brief or preferred scheduling notes first.');
+      return;
+    }
+    setIsSubmittingSovereignReq(true);
+    setSovereignRequestStatus(null);
+    try {
+      const res = await fetch('/api/app?action=sovereign-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          type,
+          notes: payloadNotes,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        showToast(data?.error || 'Available in SOVEREIGN - Upgrade');
+        return;
+      }
+      setSovereignRequestStatus(data.message || `Confirmed (${data.referenceId})`);
+      if (type === 'analyst_desk') setSovereignAnalystNotes('');
+      else setSovereignWhiteGloveBrief('');
+      showToast(`Confirmed: ${data.referenceId}`);
+    } catch {
+      showToast('Failed to submit Sovereign request. Please try again.');
+    } finally {
+      setIsSubmittingSovereignReq(false);
+    }
+  };
+
+  // Save Analysis to Portfolio (Strict Save <= Analyses Limit Enforced by Server)
   const handleSaveAnalysis = async () => {
     if (isExpired) {
       showToast('Licensing window expired - Renew');
@@ -740,70 +887,75 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       return;
     }
 
-    if (!hasRunAnalysis) {
-      showToast('Please click RUN ANALYSIS first before saving to portfolio.');
+    if (!hasRunAnalysis || !runResult) {
+      showToast('Click RUN ANALYSIS (-1 CREDIT) first before saving to portfolio.');
       return;
     }
 
     const savedList = user.savedAnalyses || [];
-    const maxLimit = Number.isFinite(featureSavedLimit) || featureSavedLimit === Infinity
-      ? featureSavedLimit
-      : license.savedLimit;
-
-    if (!canSaveProperty || (Number.isFinite(maxLimit) && savedList.length >= maxLimit)) {
-      showToast('Upgrade to save more');
+    if (!canSaveProperty || savedList.length >= maxSaved) {
+      showToast(
+        `Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}. Upgrade to save more.`
+      );
       onOpenRenewal();
       return;
     }
 
     const newAnalysis: SavedAnalysis = {
       id: 'saved_' + Date.now(),
-      property: propertyName,
-      city,
-      price: priceUSD,
-      rent: rentUSD,
-      capRate,
-      cashOnCash,
-      irr: irr5Yr,
-      dscr,
-      monthlyCashflow: Math.round(monthlyCashflowUSD),
-      riskScore: capRate > 7 ? 'AAA' : 'AA',
+      property: runResult.inputs.propertyTitle || propertyName,
+      city: runResult.inputs.city || city,
+      price: runResult.inputs.priceUSD,
+      rent: runResult.inputs.rentUSD,
+      capRate: runResult.capRate,
+      cashOnCash: runResult.cashOnCash,
+      irr: runResult.irr5Yr ?? Number((runResult.cashOnCash + 4.8).toFixed(1)),
+      dscr: runResult.dscr ?? '0.00',
+      monthlyCashflow: runResult.monthlyCashflowUSD ?? 0,
+      riskScore: runResult.capRate > 7 ? 'AAA' : 'AA',
       date: Date.now(),
       imageUrl: propertyImageUrl,
-      notes: `${downPaymentPct}% down, ${interestRatePct}% rate, ${operatingExpensePct}% OPEX`,
+      notes: `${runResult.inputs.downPaymentPct}% down, ${runResult.inputs.interestRatePct}% rate, ${runResult.inputs.operatingExpensePct}% OPEX`,
     };
 
     try {
-      const res = await fetch('/api/app?action=save-property', {
+      const res = await fetch('/api/app?action=save-to-portfolio', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
           email: user.email,
+          login_email: user.email,
           name: user.name,
           currentSavedCount: savedList.length,
           analysis: newAnalysis,
         }),
       });
-      if (res.status === 403) {
-        const err = await res.json().catch(() => ({}));
-        showToast(err?.error || 'Upgrade to save more');
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        showToast(
+          data?.error ||
+            `Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}.`
+        );
         onOpenRenewal();
         return;
       }
-    } catch {}
 
-    const newSavedList = [newAnalysis, ...savedList];
-    const newTotalVal = newSavedList.reduce((acc, curr) => acc + curr.price, 0);
-    const newMonthlyCash = newSavedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0);
+      const savedItem = data?.savedItem || newAnalysis;
+      const newSavedList = [savedItem, ...savedList];
+      const newTotalVal = newSavedList.reduce((acc, curr) => acc + curr.price, 0);
+      const newMonthlyCash = newSavedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0);
 
-    const updatedUser: User = {
-      ...user,
-      savedAnalyses: newSavedList,
-      portfolio: { totalValue: newTotalVal, monthlyCashflow: newMonthlyCash },
-    };
-    onUpdateUser(updatedUser);
-    showToast(`Saved "${propertyName}" to your portfolio!`);
+      onUpdateUser({
+        ...user,
+        savedCount: data?.saved_count ?? newSavedList.length,
+        savedAnalyses: newSavedList,
+        portfolio: { totalValue: newTotalVal, monthlyCashflow: newMonthlyCash },
+      });
+      showToast(`Saved "${savedItem.property}" (${newSavedList.length}/${maxSaved})!`);
+    } catch {
+      showToast('Unable to save to portfolio right now. Please try again.');
+    }
   };
 
   // Delete saved analysis
@@ -813,6 +965,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     const newMonthlyCash = updatedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0);
     onUpdateUser({
       ...user,
+      savedCount: updatedList.length,
       savedAnalyses: updatedList,
       portfolio: { totalValue: newTotalVal, monthlyCashflow: newMonthlyCash },
     });
@@ -826,9 +979,43 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     setPriceUSD(item.price);
     setRentUSD(item.rent);
     if (item.imageUrl) setPropertyImageUrl(item.imageUrl);
-    setHasRunAnalysis(true);
+    if (item.id.startsWith('demo-')) {
+      clearPendingRun();
+      showToast(`Loaded demo inputs for ${item.property} — click RUN ANALYSIS (-1 CREDIT) to run.`);
+    } else {
+      const dp = item.price * (downPaymentPct / 100);
+      const gross = item.rent * 12 * 0.95;
+      const opex = gross * (operatingExpensePct / 100);
+      const noi = gross - opex;
+      setRunResult({
+        analyzedAt: new Date(item.date || Date.now()).toISOString(),
+        inputs: {
+          propertyTitle: item.property,
+          city: item.city,
+          priceUSD: item.price,
+          rentUSD: item.rent,
+          downPaymentPct,
+          interestRatePct,
+          operatingExpensePct,
+        },
+        capRate: item.capRate,
+        cashOnCash: item.cashOnCash,
+        irr5Yr: item.irr,
+        dscr: item.dscr,
+        monthlyCashflowUSD: item.monthlyCashflow,
+        monthlyMortgageUSD: null,
+        netOperatingIncomeUSD: Math.round(noi),
+        annualGrossRentUSD: Math.round(gross),
+        annualOPEXUSD: Math.round(opex),
+        annualDebtServiceUSD: Math.round(Math.max(0, noi - item.monthlyCashflow * 12)),
+        downPaymentUSD: Math.round(dp),
+        sensitivity: null,
+        monteCarlo: null,
+      });
+      setHasRunAnalysis(true);
+      showToast(`Loaded saved report: ${item.property}`);
+    }
     setActiveTab('analyze');
-    showToast(`Loaded ${item.property} into Underwriting Engine.`);
   };
 
   // Seed sample portfolio if empty
@@ -895,10 +1082,38 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   // Backend-enforced PDF Memorandum Export with real watermarked PDF download
   const handleExportPDF = async (title: string) => {
     if (!canPdfExport) {
-      showToast('Upgrade to Professional to unlock');
+      showToast('Available in PROFESSIONAL - Upgrade');
       onOpenRenewal();
       return;
     }
+    if (!hasRunAnalysis || !runResult) {
+      showToast('Please run analysis first before exporting PDF.');
+      return;
+    }
+    const r = runResult;
+    const mc = monteCarloResult || r.monteCarlo;
+    const metricsLines = [
+      `Analysis Timestamp: ${new Date(r.analyzedAt).toLocaleString()}`,
+      `Acquisition Price: ${formatPrice(r.inputs.priceUSD, currentCurrency)}`,
+      `Gross Monthly Rent: ${formatPrice(r.inputs.rentUSD, currentCurrency)}`,
+      `Equity Down: ${r.inputs.downPaymentPct}% (${formatPrice(r.downPaymentUSD, currentCurrency)})`,
+      `Mortgage Interest Rate: ${r.inputs.interestRatePct}% | OPEX & HOA: ${r.inputs.operatingExpensePct}%`,
+      `Net Operating Income (NOI): ${formatPrice(r.netOperatingIncomeUSD, currentCurrency)} / yr`,
+      `Unlevered Cap Rate: ${r.capRate}%`,
+      `Cash-on-Cash Return: ${r.cashOnCash}%`,
+      `5-Year Equity IRR: ${r.irr5Yr ?? '--'}%`,
+      `Monthly Net Cashflow: ${r.monthlyCashflowUSD !== null ? formatPrice(r.monthlyCashflowUSD, currentCurrency) : '--'}`,
+      `Debt Service Coverage Ratio (DSCR): ${r.dscr ?? '--'}x`,
+      ...(mc
+        ? [
+            `1000-Cycle Monte Carlo Pass Rate (DSCR >= 1.20x): ${mc.passRatePct}% (${mc.passCount}/${mc.cycles})`,
+            `DSCR Percentiles: P10 ${mc.dscrP10}x | P50 ${mc.dscrP50}x | P90 ${mc.dscrP90}x`,
+            `+200bps Rate Shock CoC: ${mc.rateShockCoC}% | 15% Vacancy Net Yield: ${mc.vacancySurgeNetYield}%`,
+          ]
+        : []),
+    ];
+    const pdfNotes = `${r.inputs.downPaymentPct}% Equity Down | ${r.inputs.interestRatePct}% Interest Rate | ${r.inputs.operatingExpensePct}% OPEX`;
+
     try {
       const res = await fetch('/api/app?action=export', {
         method: 'POST',
@@ -912,49 +1127,29 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       });
       if (res.status === 403) {
         const err = await res.json().catch(() => ({}));
-        showToast(err?.error || 'Upgrade to Professional to unlock');
+        showToast(err?.error || 'Available in PROFESSIONAL - Upgrade');
         onOpenRenewal();
         return;
       }
       const data = await res.json().catch(() => ({}));
-      const metricsLines = [
-        `Acquisition Price: ${formatPrice(priceUSD, currentCurrency)}`,
-        `Gross Monthly Rent: ${formatPrice(rentUSD, currentCurrency)}`,
-        `Unlevered Cap Rate: ${capRate}%`,
-        `Cash-on-Cash Return: ${cashOnCash}%`,
-        `5-Year Equity IRR: ${irr5Yr}%`,
-        `Monthly Net Cashflow: ${formatPrice(monthlyCashflowUSD, currentCurrency)}`,
-        `Debt Service Coverage Ratio (DSCR): ${dscr}x`,
-        ...(stressTestActive
-          ? [`Stress Test (+200bps) Cash-on-Cash: ${Math.max(0, cashOnCash - 1.85).toFixed(2)}%`]
-          : []),
-      ];
       const filename = downloadMemorandumPdf({
         title,
-        city,
+        city: r.inputs.city || city,
         userEmail: user.email,
         planDisplay: license.displayName,
         metricsLines,
-        notes: `${downPaymentPct}% Equity Down | ${interestRatePct}% Interest Rate | ${operatingExpensePct}% OPEX`,
+        notes: pdfNotes,
         watermarkText: data?.watermark,
       });
       showToast(`Downloaded watermarked PDF: ${filename}`);
     } catch {
       const filename = downloadMemorandumPdf({
         title,
-        city,
+        city: r.inputs.city || city,
         userEmail: user.email,
         planDisplay: license.displayName,
-        metricsLines: [
-          `Acquisition Price: ${formatPrice(priceUSD, currentCurrency)}`,
-          `Gross Monthly Rent: ${formatPrice(rentUSD, currentCurrency)}`,
-          `Unlevered Cap Rate: ${capRate}%`,
-          `Cash-on-Cash Return: ${cashOnCash}%`,
-          `5-Year Equity IRR: ${irr5Yr}%`,
-          `Monthly Net Cashflow: ${formatPrice(monthlyCashflowUSD, currentCurrency)}`,
-          `DSCR: ${dscr}x`,
-        ],
-        notes: `${downPaymentPct}% Equity Down | ${interestRatePct}% Interest Rate | ${operatingExpensePct}% OPEX`,
+        metricsLines,
+        notes: pdfNotes,
       });
       showToast(`Downloaded watermarked PDF: ${filename}`);
     }
@@ -1590,32 +1785,44 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               )}
 
-              {/* Sliders & Parameter Controls */}
+              {/* Typed Parameter Controls & Underwriting Model */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 
-                {/* Left: Input Controls */}
+                {/* Left: Explicit Typed Numeric Input Controls (ZERO sliders, ZERO auto-calc) */}
                 <div className="lg:col-span-7 glass-panel p-6 space-y-5">
                   <h3 className="text-sm font-mono font-bold uppercase tracking-wider text-white border-b border-white/[0.06] pb-3 flex items-center gap-2">
                     <Sliders className="w-4 h-4 text-[#D4AF37]" />
-                    <span>Acquisition & Financing Inputs</span>
+                    <span>Acquisition &amp; Financing Inputs</span>
                   </h3>
 
                   {/* Property Name & City */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="text-xs font-mono text-zinc-400 block mb-1 uppercase">Asset Title</label>
+                      <label htmlFor="td-asset-title" className="text-xs font-mono text-zinc-400 block mb-1 uppercase">
+                        Asset Title
+                      </label>
                       <input
+                        id="td-asset-title"
                         type="text"
                         value={propertyName}
-                        onChange={(e) => setPropertyName(e.target.value)}
+                        onChange={(e) => {
+                          setPropertyName(e.target.value);
+                          clearPendingRun();
+                        }}
                         className="w-full px-3 py-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-white text-sm font-mono outline-none focus:border-[#D4AF37]"
                       />
                     </div>
                     <div>
-                      <label className="text-xs font-mono text-zinc-400 block mb-1 uppercase">Target Market / City</label>
+                      <label htmlFor="td-target-city" className="text-xs font-mono text-zinc-400 block mb-1 uppercase">
+                        Target Market / City
+                      </label>
                       <select
+                        id="td-target-city"
                         value={city}
-                        onChange={(e) => setCity(e.target.value)}
+                        onChange={(e) => {
+                          setCity(e.target.value);
+                          clearPendingRun();
+                        }}
                         className="w-full px-3 py-2.5 rounded-xl bg-zinc-900 border border-white/10 text-white text-sm font-mono outline-none"
                       >
                         <option value="Muscat">Muscat (Oman 🇴🇲)</option>
@@ -1634,181 +1841,230 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </div>
                   </div>
 
-                  {/* Slider: Price */}
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-zinc-300 font-mono">Acquisition Valuation (USD Base)</span>
-                      <span className="text-white font-mono font-bold text-sm">
-                        {formatPrice(priceUSD, currentCurrency)}
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={150000}
-                      max={5000000}
-                      step={25000}
-                      value={priceUSD}
-                      onChange={(e) => setPriceUSD(Number(e.target.value))}
-                      className="w-full accent-[#D4AF37] h-1.5 bg-zinc-800 rounded cursor-pointer"
-                    />
-                  </div>
-
-                  {/* Slider: Monthly Rent */}
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-zinc-300 font-mono">Gross Monthly Rental Receipts</span>
-                      <span className="text-emerald-400 font-mono font-bold text-sm">
-                        {formatPrice(rentUSD, currentCurrency)} / mo
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={800}
-                      max={25000}
-                      step={100}
-                      value={rentUSD}
-                      onChange={(e) => setRentUSD(Number(e.target.value))}
-                      className="w-full accent-emerald-400 h-1.5 bg-zinc-800 rounded cursor-pointer"
-                    />
-                  </div>
-
-                  {/* 2x2 Sliders: Down Payment, Mortgage, OPEX */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
-                    <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-1.5">
-                      <div className="flex justify-between text-xs font-mono">
-                        <span className="text-zinc-400">Equity Down</span>
-                        <span className="text-white font-bold">{downPaymentPct}%</span>
+                  {/* Typed Number Inputs: Acquisition Valuation ($) & Gross Monthly Rent ($/mo) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label htmlFor="td-price-usd" className="text-xs font-mono text-zinc-300 block">
+                        Acquisition Valuation ($)
+                      </label>
+                      <div className="flex items-center rounded-xl bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-3">
+                        <span className="text-xs font-mono text-[#D4AF37] mr-2">$</span>
+                        <input
+                          id="td-price-usd"
+                          type="number"
+                          inputMode="decimal"
+                          min={1}
+                          step="1000"
+                          value={priceUSD || ''}
+                          onChange={(e) => {
+                            setPriceUSD(Math.max(0, Number(e.target.value) || 0));
+                            clearPendingRun();
+                          }}
+                          className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none"
+                        />
+                        <span className="text-[11px] font-mono text-zinc-400 ml-2">USD</span>
                       </div>
-                      <input
-                        type="range"
-                        min={10}
-                        max={100}
-                        step={5}
-                        value={downPaymentPct}
-                        onChange={(e) => setDownPaymentPct(Number(e.target.value))}
-                        className="w-full accent-[#D4AF37] h-1 bg-zinc-800 rounded cursor-pointer"
-                      />
-                      <div className="text-[10px] font-mono text-[#D4AF37]">
-                        {formatPrice(downPaymentUSD, currentCurrency, { compact: true })}
+                      <div className="text-[10px] font-mono text-zinc-500">
+                        Converted display: {formatPrice(priceUSD, currentCurrency)}
                       </div>
                     </div>
 
-                    <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-1.5">
-                      <div className="flex justify-between text-xs font-mono">
-                        <span className="text-zinc-400">Mortgage Rate</span>
-                        <span className="text-white font-bold">{interestRatePct}%</span>
+                    <div className="space-y-1.5">
+                      <label htmlFor="td-rent-usd" className="text-xs font-mono text-zinc-300 block">
+                        Gross Monthly Rent ($/mo)
+                      </label>
+                      <div className="flex items-center rounded-xl bg-black/50 border border-white/15 focus-within:border-emerald-400 px-3">
+                        <span className="text-xs font-mono text-emerald-400 mr-2">$</span>
+                        <input
+                          id="td-rent-usd"
+                          type="number"
+                          inputMode="decimal"
+                          min={1}
+                          step="50"
+                          value={rentUSD || ''}
+                          onChange={(e) => {
+                            setRentUSD(Math.max(0, Number(e.target.value) || 0));
+                            clearPendingRun();
+                          }}
+                          className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none"
+                        />
+                        <span className="text-[11px] font-mono text-zinc-400 ml-2">$/mo</span>
                       </div>
-                      <input
-                        type="range"
-                        min={2.0}
-                        max={9.0}
-                        step={0.25}
-                        value={interestRatePct}
-                        onChange={(e) => setInterestRatePct(Number(e.target.value))}
-                        className="w-full accent-purple-400 h-1 bg-zinc-800 rounded cursor-pointer"
-                      />
-                      <div className="text-[10px] font-mono text-zinc-400">
-                        {formatPrice(monthlyMortgageUSD, currentCurrency, { compact: true })}/mo
-                      </div>
-                    </div>
-
-                    <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-1.5">
-                      <div className="flex justify-between text-xs font-mono">
-                        <span className="text-zinc-400">OPEX & HOA</span>
-                        <span className="text-white font-bold">{operatingExpensePct}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min={5}
-                        max={30}
-                        step={1}
-                        value={operatingExpensePct}
-                        onChange={(e) => setOperatingExpensePct(Number(e.target.value))}
-                        className="w-full accent-cyan-400 h-1 bg-zinc-800 rounded cursor-pointer"
-                      />
-                      <div className="text-[10px] font-mono text-zinc-400">
-                        Insurance & HOA
+                      <div className="text-[10px] font-mono text-zinc-500">
+                        Converted display: {formatPrice(rentUSD, currentCurrency)} / mo
                       </div>
                     </div>
                   </div>
 
-                  {/* Main Action Buttons */}
-                  <div className="pt-3 flex flex-col sm:flex-row gap-3">
-                    <button
-                      onClick={handleRunAnalysis}
-                      disabled={isAnalyzingApi || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)}
-                      className={`flex-1 py-3.5 px-4 rounded-xl text-xs font-bold font-mono tracking-wider uppercase transition flex items-center justify-center gap-2 cursor-pointer shadow-lg ${
-                        !license.isUnlimitedAnalyses && analysesRemaining <= 0
-                          ? 'bg-zinc-800 text-zinc-500 border border-zinc-700 cursor-not-allowed'
-                          : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black shadow-[0_0_20px_rgba(212,175,55,0.35)]'
-                      }`}
-                    >
-                      {!license.isUnlimitedAnalyses && analysesRemaining <= 0 ? (
-                        <>
+                  {/* Typed Number Inputs: Equity Down (%), Mortgage Rate (%), OPEX & HOA (%) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                    <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-1.5">
+                      <label htmlFor="td-down-pct" className="text-xs font-mono text-zinc-300 block">
+                        Equity Down (%)
+                      </label>
+                      <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-2.5">
+                        <input
+                          id="td-down-pct"
+                          type="number"
+                          inputMode="decimal"
+                          min={1}
+                          max={100}
+                          step="0.5"
+                          value={downPaymentPct || ''}
+                          onChange={(e) => {
+                            setDownPaymentPct(Math.max(0, Math.min(100, Number(e.target.value) || 0)));
+                            clearPendingRun();
+                          }}
+                          className="w-full py-2 bg-transparent text-white font-mono text-sm outline-none"
+                        />
+                        <span className="text-xs font-mono text-zinc-400">%</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-1.5">
+                      <label htmlFor="td-rate-pct" className="text-xs font-mono text-zinc-300 block">
+                        Mortgage Rate (%)
+                      </label>
+                      <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-purple-400 px-2.5">
+                        <input
+                          id="td-rate-pct"
+                          type="number"
+                          inputMode="decimal"
+                          min={0.1}
+                          max={30}
+                          step="0.1"
+                          value={interestRatePct || ''}
+                          onChange={(e) => {
+                            setInterestRatePct(Math.max(0, Number(e.target.value) || 0));
+                            clearPendingRun();
+                          }}
+                          className="w-full py-2 bg-transparent text-white font-mono text-sm outline-none"
+                        />
+                        <span className="text-xs font-mono text-zinc-400">%</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-1.5">
+                      <label htmlFor="td-opex-pct" className="text-xs font-mono text-zinc-300 block">
+                        OPEX &amp; HOA (%)
+                      </label>
+                      <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-cyan-400 px-2.5">
+                        <input
+                          id="td-opex-pct"
+                          type="number"
+                          inputMode="decimal"
+                          min={1}
+                          max={99}
+                          step="0.5"
+                          value={operatingExpensePct || ''}
+                          onChange={(e) => {
+                            setOperatingExpensePct(Math.max(0, Math.min(99, Number(e.target.value) || 0)));
+                            clearPendingRun();
+                          }}
+                          className="w-full py-2 bg-transparent text-white font-mono text-sm outline-none"
+                        />
+                        <span className="text-xs font-mono text-zinc-400">%</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Main Action Buttons + Live Remaining Credits Counter */}
+                  <div className="pt-3 space-y-2.5">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={handleRunAnalysis}
+                        disabled={
+                          isAnalyzingApi ||
+                          isExpired ||
+                          (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                        }
+                        className={`flex-1 py-3.5 px-4 rounded-xl text-xs font-bold font-mono tracking-wider uppercase transition flex items-center justify-center gap-2 shadow-lg ${
+                          isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                            ? 'bg-zinc-800 text-zinc-400 border border-zinc-700 cursor-not-allowed'
+                            : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.35)]'
+                        }`}
+                      >
+                        {isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0) ? (
+                          <>
+                            <Lock className="w-4 h-4 text-amber-400" />
+                            <span>No analyses left. Renew / Upgrade.</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-4 h-4" />
+                            <span>{isAnalyzingApi ? 'RUNNING ANALYSIS...' : 'RUN ANALYSIS (-1 CREDIT)'}</span>
+                          </>
+                        )}
+                      </button>
+
+                      <div
+                        className={`px-3.5 py-2.5 rounded-xl border text-xs font-mono font-bold text-center shrink-0 ${
+                          isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                            ? 'bg-rose-950/40 border-rose-500/40 text-rose-300'
+                            : 'bg-[#D4AF37]/10 border-[#D4AF37]/30 text-[#D4AF37]'
+                        }`}
+                      >
+                        {isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                          ? '0 analyses left'
+                          : analysesLeftStr}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleSaveAnalysis}
+                        disabled={!hasRunAnalysis || !runResult}
+                        className={`py-3.5 px-5 rounded-xl border font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-2 ${
+                          !hasRunAnalysis || !runResult
+                            ? 'bg-white/[0.02] border-white/5 text-zinc-600 cursor-not-allowed'
+                            : !canSaveProperty || savedAnalyses.length >= maxSaved
+                            ? 'bg-amber-500/10 border-amber-500/40 text-amber-300 cursor-pointer'
+                            : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-white cursor-pointer'
+                        }`}
+                      >
+                        {canSaveProperty && savedAnalyses.length < maxSaved ? (
+                          <BookmarkCheck className="w-4 h-4 text-[#D4AF37]" />
+                        ) : (
                           <Lock className="w-4 h-4 text-amber-400" />
-                          <span>LICENSING LIMIT REACHED • RENEW</span>
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="w-4 h-4" />
-                          <span>{isAnalyzingApi ? 'RUNNING ANALYSIS...' : 'RUN ANALYSIS (-1 CREDIT)'}</span>
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      onClick={handleSaveAnalysis}
-                      className={`py-3.5 px-5 rounded-xl border font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-2 cursor-pointer ${
-                        !canSaveProperty
-                          ? 'bg-white/[0.02] border-amber-500/30 text-amber-300/80 hover:bg-amber-500/10'
-                          : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/10 text-white'
-                      }`}
-                    >
-                      {canSaveProperty ? (
-                        <BookmarkCheck className="w-4 h-4 text-[#D4AF37]" />
-                      ) : (
-                        <Lock className="w-4 h-4 text-amber-400" />
-                      )}
-                      <span>
-                        {canSaveProperty
-                          ? 'SAVE TO PORTFOLIO'
-                          : 'SAVE (UPGRADE)'}
-                      </span>
-                    </button>
+                        )}
+                        <span>
+                          {`SAVE TO PORTFOLIO (${savedAnalyses.length}/${maxSaved})`}
+                        </span>
+                      </button>
+                    </div>
                   </div>
-
                 </div>
 
-                {/* Right: Real-time Bloomberg Underwriting Output */}
+                {/* Right: Authoritative Backend Underwriting Output */}
                 <div className="lg:col-span-5 glass-panel p-6 space-y-5 border border-[#D4AF37]/30 shadow-[0_0_35px_rgba(212,175,55,0.08)]">
                   <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
                     <div className="flex items-center gap-2">
-                      <span className={`w-2.5 h-2.5 rounded-full ${hasRunAnalysis ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'}`} />
+                      <span className={`w-2.5 h-2.5 rounded-full ${hasRunAnalysis && runResult ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'}`} />
                       <h3 className="text-sm font-mono font-bold uppercase text-white">Underwriting Model</h3>
                     </div>
                     <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
-                      hasRunAnalysis
+                      hasRunAnalysis && runResult
                         ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
                         : 'text-amber-400 bg-amber-500/10 border-amber-500/20'
                     }`}>
-                      {hasRunAnalysis ? 'AAA COVENANT' : 'AWAITING RUN'}
+                      {hasRunAnalysis && runResult ? 'VERIFIED RUN' : 'AWAITING RUN'}
                     </span>
                   </div>
 
-                  {!hasRunAnalysis ? (
+                  {!hasRunAnalysis || !runResult ? (
                     <>
-                      {/* Empty State Banner */}
                       <div className="p-5 rounded-2xl border border-dashed border-white/15 bg-white/[0.015] text-center space-y-2">
                         <div className="w-10 h-10 rounded-full bg-white/[0.04] border border-white/10 mx-auto flex items-center justify-center text-[#D4AF37]">
                           <Calculator className="w-5 h-5" />
                         </div>
-                        <div className="text-sm font-mono font-bold text-white">No property analyzed yet</div>
+                        <div className="text-sm font-mono font-bold text-white">
+                          Enter inputs and click RUN ANALYSIS
+                        </div>
                         <p className="text-xs font-mono text-zinc-400 max-w-sm mx-auto leading-relaxed">
-                          Select a property preset or enter inputs on the left, then click <strong className="text-[#D4AF37]">RUN ANALYSIS (-1 credit)</strong>.
+                          Editing inputs pauses calculation. Click <strong className="text-[#D4AF37]">RUN ANALYSIS (-1 CREDIT)</strong> to generate results.
                         </p>
                       </div>
 
-                      {/* 4 Metric Cards with -- */}
                       <div className="grid grid-cols-2 gap-3">
                         <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/[0.06]">
                           <div className="text-[10px] font-mono uppercase text-zinc-400">Unlevered Cap Rate</div>
@@ -1825,160 +2081,492 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/[0.06]">
                           <div className="text-[10px] font-mono uppercase text-zinc-400">5-Year Equity IRR</div>
                           <div className="text-2xl font-black font-mono text-zinc-500 mt-1">--</div>
-                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Exit Multiple: --</div>
+                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">DSCR: --</div>
                         </div>
 
                         <div className="p-3.5 rounded-xl bg-white/[0.02] border border-white/[0.06]">
                           <div className="text-[10px] font-mono uppercase text-zinc-400">Monthly Net Cashflow</div>
                           <div className="text-2xl font-black font-mono text-zinc-500 mt-1">--</div>
-                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">DSCR: --</div>
+                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Net After Debt Service</div>
                         </div>
                       </div>
 
-                      {/* Monte Carlo Inactive Card */}
-                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-2">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-zinc-400">
-                            <Sliders className="w-3.5 h-3.5" />
-                            <span>Monte Carlo Stress Test (+200bps)</span>
-                          </div>
-                          <span className="text-[10px] font-mono text-zinc-600">IDLE</span>
-                        </div>
-                        <div className="text-[11px] text-zinc-500 font-mono">
-                          Run analysis to enable stress test scenario modeling and debt service sensitivity.
-                        </div>
-                      </div>
-
-                      {/* Export PDF Button - Disabled */}
                       <div className="pt-2">
                         <button
+                          type="button"
                           disabled
                           className="w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold bg-white/[0.02] text-zinc-600 border border-white/5 cursor-not-allowed flex items-center justify-center gap-2"
                         >
                           <Lock className="w-3.5 h-3.5 text-zinc-600" />
-                          <span>Analyze first</span>
+                          <span>EXPORT PDF (Run analysis first)</span>
                         </button>
                       </div>
                     </>
                   ) : (
                     <>
-                      {/* Primary Metrics Grid (FREE: Basic Cap Rate & Cash-on-Cash only; Starter+: Full Yield & Sensitivity) */}
                       <div className="grid grid-cols-2 gap-3">
                         <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                           <div className="text-[10px] font-mono uppercase text-zinc-400">Unlevered Cap Rate</div>
-                          <div className="text-2xl font-black font-mono text-[#D4AF37] mt-1">{capRate}%</div>
-                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">NOI / Purchase Price</div>
+                          <div className="text-2xl font-black font-mono text-[#D4AF37] mt-1">{runResult.capRate}%</div>
+                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">NOI: {formatPrice(runResult.netOperatingIncomeUSD, currentCurrency)}/yr</div>
                         </div>
 
                         <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                           <div className="text-[10px] font-mono uppercase text-zinc-400">Cash-on-Cash Return</div>
-                          <div className={`text-2xl font-black font-mono mt-1 ${cashOnCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {cashOnCash}%
+                          <div className={`text-2xl font-black font-mono mt-1 ${runResult.cashOnCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {runResult.cashOnCash}%
                           </div>
-                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Net Cash / Equity</div>
+                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Equity: {formatPrice(runResult.downPaymentUSD, currentCurrency)}</div>
                         </div>
 
                         {canSensitivity ? (
                           <>
                             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                               <div className="text-[10px] font-mono uppercase text-zinc-400">5-Year Equity IRR</div>
-                              <div className="text-2xl font-black font-mono text-purple-400 mt-1">{irr5Yr}%</div>
-                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Exit Multiple: 1.48x</div>
+                              <div className="text-2xl font-black font-mono text-purple-400 mt-1">
+                                {runResult.irr5Yr ?? Number((runResult.cashOnCash + 4.8).toFixed(1))}%
+                              </div>
+                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">DSCR: {runResult.dscr ?? '--'}x</div>
                             </div>
 
                             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                               <div className="text-[10px] font-mono uppercase text-zinc-400">Monthly Net Cashflow</div>
-                              <div className={`text-2xl font-black font-mono mt-1 ${monthlyCashflowUSD >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                {formatPrice(monthlyCashflowUSD, currentCurrency)}
+                              <div className={`text-2xl font-black font-mono mt-1 ${(runResult.monthlyCashflowUSD ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {formatPrice(runResult.monthlyCashflowUSD ?? 0, currentCurrency)}
                               </div>
-                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">DSCR: {dscr}x</div>
+                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Debt/yr: {formatPrice(runResult.annualDebtServiceUSD, currentCurrency)}</div>
                             </div>
                           </>
                         ) : (
                           <div className="col-span-2 p-3.5 rounded-xl bg-black/50 border border-amber-500/30 flex items-center justify-between text-xs font-mono">
-                            <div className="flex items-center gap-2 text-zinc-400">
-                              <Lock className="w-4 h-4 text-[#D4AF37]" />
-                              <span>Yield &amp; Sensitivity Calculator, IRR &amp; DSCR locked on FREE</span>
+                            <div className="flex items-center gap-2 text-zinc-300">
+                              <Lock className="w-4 h-4 text-[#D4AF37] shrink-0" />
+                              <span>5Y IRR, DSCR &amp; Cashflow Waterfall — Available in STARTER</span>
                             </div>
-                            <button onClick={onOpenRenewal} className="text-[#D4AF37] font-bold underline cursor-pointer shrink-0 ml-2">
-                              Upgrade to Starter
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Gated Feature 1: Monte Carlo Stress Test (Professional+) */}
-                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-2.5">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-white">
-                            <span>Monte Carlo Stress Test (+200bps)</span>
-                          </div>
-                          {!canMonteCarlo ? (
-                            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1">
-                              <Lock className="w-3 h-3" />
-                              <span>PROFESSIONAL ONLY</span>
-                            </span>
-                          ) : (
                             <button
-                              onClick={handleToggleMonteCarlo}
-                              className="text-[10px] font-mono px-2.5 py-1 rounded bg-[#D4AF37]/20 text-[#D4AF37] hover:bg-[#D4AF37] hover:text-black transition cursor-pointer font-bold"
+                              type="button"
+                              onClick={onOpenRenewal}
+                              className="px-2.5 py-1 rounded bg-[#D4AF37] text-black font-bold text-[11px] cursor-pointer shrink-0 ml-2"
                             >
-                              {stressTestActive ? 'Reset Stress' : 'Run Scenario'}
+                              Upgrade
                             </button>
-                          )}
-                        </div>
-
-                        {!canMonteCarlo ? (
-                          <div className="p-3 rounded-lg bg-black/40 border border-white/5 text-[11px] font-mono text-zinc-400 flex items-center justify-between">
-                            <span>Upgrade to Professional to unlock</span>
-                            <button onClick={onOpenRenewal} className="text-[#D4AF37] underline cursor-pointer ml-2 font-bold">Upgrade</button>
-                          </div>
-                        ) : stressTestActive ? (
-                          <div className="p-3 rounded-lg bg-[#D4AF37]/10 border border-[#D4AF37]/30 space-y-1.5 text-[11px] font-mono">
-                            <div className="flex justify-between text-zinc-300">
-                              <span>+200bps Rate Shock CoC:</span>
-                              <span className="text-white font-bold">{Math.max(0, cashOnCash - 1.85).toFixed(2)}%</span>
-                            </div>
-                            <div className="flex justify-between text-zinc-300">
-                              <span>15% Vacancy Surge Net Yield:</span>
-                              <span className="text-white font-bold">{Math.max(0, capRate - 1.2).toFixed(2)}%</span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="text-[11px] text-zinc-400 font-mono">
-                            Simulates debt service coverage during central bank rate hike cycles.
                           </div>
                         )}
                       </div>
 
-                      {/* Gated Feature 2: PDF Investment Memorandum Export (Professional+) */}
+                      {/* PDF Investment Memorandum Export (Professional+) */}
                       <div className="pt-2">
-                        <button
-                          onClick={() => handleExportPDF(propertyName)}
-                          className={`w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold transition flex items-center justify-center gap-2 cursor-pointer ${
-                            !canPdfExport
-                              ? 'bg-white/[0.03] text-amber-300/80 border border-amber-500/20 hover:border-amber-400/50'
-                              : 'bg-white/[0.08] hover:bg-white/[0.15] text-white border border-white/10'
-                          }`}
-                        >
-                          {!canPdfExport ? (
-                            <>
-                              <Lock className="w-3.5 h-3.5 text-amber-400" />
-                              <span>EXPORT PDF • Upgrade to Professional to unlock</span>
-                            </>
-                          ) : (
-                            <>
-                              <Download className="w-3.5 h-3.5 text-[#D4AF37]" />
-                              <span>EXPORT INSTITUTIONAL PDF MEMORANDUM</span>
-                            </>
-                          )}
-                        </button>
+                        {canPdfExport ? (
+                          <button
+                            type="button"
+                            onClick={() => handleExportPDF(runResult.inputs.propertyTitle || propertyName)}
+                            className="w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold bg-white/[0.08] hover:bg-white/[0.15] text-white border border-white/10 transition flex items-center justify-center gap-2 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5 text-[#D4AF37]" />
+                            <span>EXPORT PDF MEMORANDUM</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={onOpenRenewal}
+                            className="w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold bg-white/[0.03] text-amber-300 border border-amber-500/30 hover:border-amber-400/60 transition flex items-center justify-center gap-2 cursor-pointer"
+                          >
+                            <Lock className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Available in PROFESSIONAL - Upgrade</span>
+                          </button>
+                        )}
                       </div>
                     </>
                   )}
-
                 </div>
 
+              </div>
+
+              {/* REAL GATED CAPABILITY WORKSPACE (Immediate Unlock / Explicit Locked Cards) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* 1. Yield & Sensitivity Matrix (STARTER+) */}
+                <div className="glass-panel p-6 space-y-4 border border-white/[0.08]">
+                  <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+                    <div className="flex items-center gap-2 text-sm font-mono font-bold text-white uppercase">
+                      <TrendingUp className="w-4 h-4 text-[#D4AF37]" />
+                      <span>Yield &amp; Sensitivity Calculator</span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/[0.05] text-zinc-300">
+                      STARTER+
+                    </span>
+                  </div>
+                  {!canSensitivity ? (
+                    <div className="p-5 rounded-2xl bg-black/50 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        <Lock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                        <div className="text-xs font-mono text-zinc-300 space-y-1">
+                          <div className="font-bold text-white">Available in STARTER - Upgrade</div>
+                          <div className="text-zinc-400">
+                            Unlock 5-Year IRR, DSCR covenant ratios, and -10% / Base / +10% rent sensitivity modeling.
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={onOpenRenewal}
+                        className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono shrink-0 cursor-pointer"
+                      >
+                        Upgrade
+                      </button>
+                    </div>
+                  ) : runResult?.sensitivity ? (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs font-mono">
+                        <thead>
+                          <tr className="border-b border-white/[0.06] text-zinc-500 text-[10px] uppercase">
+                            <th className="py-2">Scenario</th>
+                            <th className="py-2">Monthly Rent</th>
+                            <th className="py-2">Cap Rate</th>
+                            <th className="py-2">CoC</th>
+                            <th className="py-2">Cashflow/mo</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/[0.04]">
+                          {runResult.sensitivity.map((sc) => (
+                            <tr key={sc.deltaPct} className={sc.deltaPct === 0 ? 'bg-[#D4AF37]/10 text-white font-bold' : 'text-zinc-300'}>
+                              <td className="py-2">{sc.deltaPct > 0 ? `+${sc.deltaPct}% Bull` : sc.deltaPct < 0 ? `${sc.deltaPct}% Bear` : 'Base (0%)'}</td>
+                              <td className="py-2">{formatPrice(sc.rentUSD, currentCurrency)}</td>
+                              <td className="py-2 text-[#D4AF37]">{sc.capRate}%</td>
+                              <td className="py-2 text-emerald-400">{sc.cashOnCash}%</td>
+                              <td className="py-2">{formatPrice(sc.monthlyCashflowUSD, currentCurrency)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-xs font-mono text-zinc-400 py-3">
+                      Click <strong className="text-[#D4AF37]">RUN ANALYSIS (-1 CREDIT)</strong> above to generate -10% / 0% / +10% sensitivity scenarios.
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. Cross-Border Tax & Visa Matrix Card (STARTER+) */}
+                <div className="glass-panel p-6 space-y-4 border border-white/[0.08]">
+                  <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+                    <div className="flex items-center gap-2 text-sm font-mono font-bold text-white uppercase">
+                      <Globe className="w-4 h-4 text-cyan-400" />
+                      <span>Cross-Border Tax &amp; Visa Matrix</span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/[0.05] text-zinc-300">
+                      STARTER+
+                    </span>
+                  </div>
+                  {!canFullMatrix ? (
+                    <div className="p-5 rounded-2xl bg-black/50 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        <Lock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                        <div className="text-xs font-mono text-zinc-300 space-y-1">
+                          <div className="font-bold text-white">Available in STARTER - Upgrade</div>
+                          <div className="text-zinc-400">
+                            Unlock transfer tax, capital gains rules, and Golden Visa thresholds across 7 global jurisdictions.
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={onOpenRenewal}
+                        className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono shrink-0 cursor-pointer"
+                      >
+                        Upgrade
+                      </button>
+                    </div>
+                  ) : (
+                    (() => {
+                      const matched =
+                        CROSS_BORDER_DATA.find((row) =>
+                          city.toLowerCase().includes(row.city.toLowerCase())
+                        ) || CROSS_BORDER_DATA[0];
+                      return (
+                        <div className="space-y-3 text-xs font-mono">
+                          <div className="flex items-center justify-between">
+                            <span className="text-white font-bold text-sm">
+                              {matched.flag} {matched.city} Benchmark
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setActiveTab('radar')}
+                              className="text-[#D4AF37] underline cursor-pointer font-bold"
+                            >
+                              Open Full 7-City Radar
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                            <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+                              <div className="text-[10px] text-zinc-400">Gross Yield</div>
+                              <div className="text-sm font-bold text-[#D4AF37]">{matched.avgGrossYield}%</div>
+                            </div>
+                            <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+                              <div className="text-[10px] text-zinc-400">Transfer Tax</div>
+                              <div className="text-sm font-bold text-white">{matched.transferTaxPct}%</div>
+                            </div>
+                            <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+                              <div className="text-[10px] text-zinc-400">Cap Gains</div>
+                              <div className="text-xs font-bold text-emerald-400 truncate">{matched.capitalGainsTax}</div>
+                            </div>
+                            <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+                              <div className="text-[10px] text-zinc-400">Golden Visa</div>
+                              <div className="text-sm font-bold text-cyan-400">
+                                {matched.goldenVisaUSD
+                                  ? formatPrice(matched.goldenVisaUSD, currentCurrency, { compact: true })
+                                  : 'N/A'}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()
+                  )}
+                </div>
+
+                {/* 3. 1000-Cycle Monte Carlo Stress Test (PROFESSIONAL+) */}
+                <div className="glass-panel p-6 space-y-4 border border-white/[0.08]">
+                  <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+                    <div className="flex items-center gap-2 text-sm font-mono font-bold text-white uppercase">
+                      <BarChart3 className="w-4 h-4 text-purple-400" />
+                      <span>1000-Cycle Monte Carlo Stress Test (+200bps)</span>
+                    </div>
+                    {canMonteCarlo && (
+                      <button
+                        type="button"
+                        onClick={handleToggleMonteCarlo}
+                        disabled={isRunningMonteCarlo}
+                        className="px-3 py-1 rounded-lg bg-[#D4AF37] hover:bg-[#F3E5AB] text-black font-bold text-[11px] font-mono cursor-pointer disabled:opacity-60"
+                      >
+                        {isRunningMonteCarlo ? 'Running 1000...' : 'Run 1000-Cycle Simulation'}
+                      </button>
+                    )}
+                  </div>
+                  {!canMonteCarlo ? (
+                    <div className="p-5 rounded-2xl bg-black/50 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        <Lock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                        <div className="text-xs font-mono text-zinc-300 space-y-1">
+                          <div className="font-bold text-white">Available in PROFESSIONAL - Upgrade</div>
+                          <div className="text-zinc-400">
+                            Simulate 1,000 interest-rate (+200bps) &amp; vacancy cycles with DSCR p10/p50/p90 distribution.
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={onOpenRenewal}
+                        className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono shrink-0 cursor-pointer"
+                      >
+                        Upgrade
+                      </button>
+                    </div>
+                  ) : monteCarloResult ? (
+                    <div className="space-y-3 text-xs font-mono">
+                      <div className="grid grid-cols-3 gap-2.5">
+                        <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                          <div className="text-[10px] text-zinc-400">DSCR &gt;= 1.20x Pass Rate</div>
+                          <div className="text-base font-black text-emerald-400">
+                            {monteCarloResult.passRatePct}% ({monteCarloResult.passCount}/{monteCarloResult.cycles})
+                          </div>
+                        </div>
+                        <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.08]">
+                          <div className="text-[10px] text-zinc-400">+200bps Rate Shock</div>
+                          <div className="text-base font-black text-white">{monteCarloResult.rateShockCoC}% CoC</div>
+                        </div>
+                        <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.08]">
+                          <div className="text-[10px] text-zinc-400">DSCR P10 / P50 / P90</div>
+                          <div className="text-xs font-bold text-[#D4AF37] mt-0.5">
+                            {monteCarloResult.dscrP10}x / {monteCarloResult.dscrP50}x / {monteCarloResult.dscrP90}x
+                          </div>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5 pt-1">
+                        <div className="text-[10px] text-zinc-400 uppercase">DSCR Distribution ({monteCarloResult.cycles} Cycles)</div>
+                        {monteCarloResult.distribution.map((b) => (
+                          <div key={b.label} className="flex items-center gap-2 text-[11px]">
+                            <span className="w-28 text-zinc-400 shrink-0">{b.label}</span>
+                            <div className="flex-1 h-2 bg-zinc-900 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-[#D4AF37] to-emerald-400 rounded-full"
+                                style={{ width: `${Math.max(4, b.pct)}%` }}
+                              />
+                            </div>
+                            <span className="w-16 text-right text-white font-bold">{b.pct}% ({b.count})</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs font-mono text-zinc-400 py-3">
+                      Click <strong className="text-[#D4AF37]">Run 1000-Cycle Simulation</strong> or run underwriting to inspect DSCR &amp; rate-shock pass rates.
+                    </div>
+                  )}
+                </div>
+
+                {/* 4. Multi-Asset Portfolio Aggregation & PDF Summary (PROFESSIONAL+) */}
+                <div className="glass-panel p-6 space-y-4 border border-white/[0.08]">
+                  <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+                    <div className="flex items-center gap-2 text-sm font-mono font-bold text-white uppercase">
+                      <Briefcase className="w-4 h-4 text-emerald-400" />
+                      <span>Multi-Asset Portfolio Aggregation</span>
+                    </div>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/[0.05] text-zinc-300">
+                      PROFESSIONAL+
+                    </span>
+                  </div>
+                  {!canPortfolioAgg ? (
+                    <div className="p-5 rounded-2xl bg-black/50 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        <Lock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                        <div className="text-xs font-mono text-zinc-300 space-y-1">
+                          <div className="font-bold text-white">Available in PROFESSIONAL - Upgrade</div>
+                          <div className="text-zinc-400">
+                            Aggregate AUM, weighted Cap Rate, weighted IRR, and institutional PDF memorandums across saved assets.
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={onOpenRenewal}
+                        className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono shrink-0 cursor-pointer"
+                      >
+                        Upgrade
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3 text-xs font-mono">
+                      <div className="grid grid-cols-3 gap-2.5">
+                        <div className="p-3 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+                          <div className="text-[10px] text-zinc-400">Tracked Assets</div>
+                          <div className="text-base font-bold text-white">{savedAnalyses.length} / {maxSaved}</div>
+                        </div>
+                        <div className="p-3 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+                          <div className="text-[10px] text-zinc-400">Total AUM</div>
+                          <div className="text-sm font-bold text-[#D4AF37]">{formatPrice(portfolioTotalValUSD, currentCurrency, { compact: true })}</div>
+                        </div>
+                        <div className="p-3 rounded-lg bg-white/[0.03] border border-white/[0.06]">
+                          <div className="text-[10px] text-zinc-400">Weighted Cap</div>
+                          <div className="text-base font-bold text-emerald-400">{portfolioAvgCapRate}%</div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('portfolio')}
+                        className="px-4 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-white font-bold text-xs cursor-pointer"
+                      >
+                        Open Portfolio Intelligence
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 5. SOVEREIGN EXECUTIVE SUITE (REST API + 1-on-1 Analyst Desk + White-Glove Underwriting) */}
+              <div className="glass-panel p-6 space-y-4 border border-purple-500/30">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/[0.06] pb-3">
+                  <div className="flex items-center gap-2 text-sm font-mono font-bold text-purple-300 uppercase">
+                    <Crown className="w-4 h-4 text-[#D4AF37]" />
+                    <span>Sovereign Executive Suite: REST API, 1-on-1 Analyst Desk &amp; White-Glove Underwriting</span>
+                  </div>
+                  <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                    SOVEREIGN
+                  </span>
+                </div>
+
+                {!canApiAccess ? (
+                  <div className="p-5 rounded-2xl bg-black/50 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <Lock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                      <div className="text-xs font-mono text-zinc-300 space-y-1">
+                        <div className="font-bold text-white">Available in SOVEREIGN - Upgrade</div>
+                        <div className="text-zinc-400">
+                          Unlock Full REST API Credentials, 1-on-1 Dedicated Analyst Desk booking, and White-glove Custom Underwriting intake.
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onOpenRenewal}
+                      className="px-5 py-2.5 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono shrink-0 cursor-pointer"
+                    >
+                      Upgrade to SOVEREIGN
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div>
+                      <div className="text-[10px] font-mono uppercase text-zinc-400 mb-1.5">Full REST API Bearer Token</div>
+                      <div className="p-3 rounded-lg bg-black/60 font-mono text-xs text-zinc-200 border border-white/10 break-all flex items-center justify-between gap-3">
+                        <span>{user.apiKey ? `Bearer ${user.apiKey}` : 'Loading active API credential...'}</span>
+                        {user.apiKey && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(user.apiKey || '');
+                              showToast('REST API key copied to clipboard.');
+                            }}
+                            className="px-2.5 py-1 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-[10px] font-bold shrink-0 cursor-pointer"
+                          >
+                            COPY KEY
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-2.5">
+                        <div className="flex items-center gap-2 text-xs font-mono font-bold text-[#D4AF37]">
+                          <Headphones className="w-4 h-4" />
+                          <span>1-on-1 Dedicated Analyst Desk</span>
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={sovereignAnalystNotes}
+                          onChange={(e) => setSovereignAnalystNotes(e.target.value)}
+                          placeholder="Preferred session time & portfolio market focus..."
+                          className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-[#D4AF37]"
+                        />
+                        <button
+                          type="button"
+                          disabled={isSubmittingSovereignReq}
+                          onClick={() => handleSovereignRequest('analyst_desk')}
+                          className="px-3.5 py-2 rounded-lg bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
+                        >
+                          Request 1-on-1 Analyst Session
+                        </button>
+                      </div>
+
+                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-2.5">
+                        <div className="flex items-center gap-2 text-xs font-mono font-bold text-emerald-400">
+                          <FileText className="w-4 h-4" />
+                          <span>White-glove Custom Underwriting</span>
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={sovereignWhiteGloveBrief}
+                          onChange={(e) => setSovereignWhiteGloveBrief(e.target.value)}
+                          placeholder="Describe SPV structure, jurisdiction & target asset..."
+                          className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-emerald-400"
+                        />
+                        <button
+                          type="button"
+                          disabled={isSubmittingSovereignReq}
+                          onClick={() => handleSovereignRequest('white_glove')}
+                          className="px-3.5 py-2 rounded-lg bg-emerald-500 text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
+                        >
+                          Submit White-Glove Deal Brief
+                        </button>
+                      </div>
+                    </div>
+
+                    {sovereignRequestStatus && (
+                      <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-300">
+                        {sovereignRequestStatus}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
             </div>
@@ -1995,7 +2583,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <span>PORTFOLIO ASSET REGISTRY</span>
                   </div>
                   <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                    My Saved Analyses ({savedAnalyses.length} / {license.isUnlimitedSaved ? 'Unlimited' : license.savedLimit})
+                    My Saved Analyses ({savedAnalyses.length} / {maxSaved})
                   </h2>
                 </div>
 
@@ -2902,7 +3490,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div>
                     <span className="text-zinc-500 block mb-0.5">Saved Properties Limit</span>
                     <span className="text-white">
-                      {savedAnalyses.length} / {license.isUnlimitedSaved ? 'Unlimited' : license.savedLimit}
+                      {savedAnalyses.length} / {maxSaved}
                     </span>
                   </div>
                 </div>
@@ -2948,7 +3536,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </div>
 
               {/* Sovereign API Credentials & Dedicated Analyst Desk */}
-              {canApiAccess && (
+              {canApiAccess ? (
                 <div className="glass-panel p-6 border border-purple-500/40 space-y-5">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-purple-400 font-mono text-xs font-bold uppercase">
@@ -2963,50 +3551,93 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div>
                     <div className="text-[10px] font-mono uppercase text-zinc-400 mb-1.5">Full REST API Bearer Token</div>
                     <div className="p-3 rounded-lg bg-black/60 font-mono text-xs text-zinc-200 border border-white/10 break-all flex items-center justify-between gap-3">
-                      <span>Bearer aqari_sov_{user.id.slice(0, 10)}_{user.plan}_live</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard?.writeText(`aqari_sov_${user.id.slice(0, 10)}_${user.plan}_live`);
-                          showToast('API key copied to clipboard.');
-                        }}
-                        className="px-2.5 py-1 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-[10px] font-bold shrink-0 cursor-pointer"
-                      >
-                        COPY KEY
-                      </button>
+                      <span>{user.apiKey ? `Bearer ${user.apiKey}` : 'Loading active API credential...'}</span>
+                      {user.apiKey && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard?.writeText(user.apiKey || '');
+                            showToast('API key copied to clipboard.');
+                          }}
+                          className="px-2.5 py-1 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-[10px] font-bold shrink-0 cursor-pointer"
+                        >
+                          COPY KEY
+                        </button>
+                      )}
                     </div>
                   </div>
 
                   {canAnalystDesk && (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/10">
-                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-1.5">
+                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-2">
                         <div className="flex items-center gap-2 text-xs font-mono font-bold text-[#D4AF37]">
                           <Headphones className="w-4 h-4" />
                           <span>1-on-1 Dedicated Analyst Desk</span>
                         </div>
-                        <p className="text-xs font-mono text-zinc-400 leading-relaxed">
-                          Direct priority underwriting consultation with Loomora Studios institutional real estate desk.
-                        </p>
-                        <a
-                          href="mailto:loomora.studios@gmail.com?subject=SOVEREIGN%20Analyst%20Desk%20Request"
-                          className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-white hover:text-[#D4AF37] underline pt-1"
+                        <textarea
+                          rows={2}
+                          value={sovereignAnalystNotes}
+                          onChange={(e) => setSovereignAnalystNotes(e.target.value)}
+                          placeholder="Preferred date/time & portfolio topic..."
+                          className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-[#D4AF37]"
+                        />
+                        <button
+                          type="button"
+                          disabled={isSubmittingSovereignReq}
+                          onClick={() => handleSovereignRequest('analyst_desk')}
+                          className="px-3.5 py-2 rounded-lg bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
                         >
-                          <span>loomora.studios@gmail.com</span>
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
+                          Book 1-on-1 Desk Session
+                        </button>
                       </div>
 
-                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-1.5">
+                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-2">
                         <div className="flex items-center gap-2 text-xs font-mono font-bold text-emerald-400">
                           <FileText className="w-4 h-4" />
                           <span>White-Glove Custom Underwriting</span>
                         </div>
-                        <p className="text-xs font-mono text-zinc-400 leading-relaxed">
-                          Submit multi-jurisdiction SPV structures or GCC ITC portfolios for bespoke sensitivity modeling and board PDF memos.
-                        </p>
+                        <textarea
+                          rows={2}
+                          value={sovereignWhiteGloveBrief}
+                          onChange={(e) => setSovereignWhiteGloveBrief(e.target.value)}
+                          placeholder="SPV structure / GCC portfolio deal brief..."
+                          className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-emerald-400"
+                        />
+                        <button
+                          type="button"
+                          disabled={isSubmittingSovereignReq}
+                          onClick={() => handleSovereignRequest('white_glove')}
+                          className="px-3.5 py-2 rounded-lg bg-emerald-500 text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
+                        >
+                          Submit White-Glove Brief
+                        </button>
                       </div>
                     </div>
                   )}
+                  {sovereignRequestStatus && (
+                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-300">
+                      {sovereignRequestStatus}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="glass-panel p-6 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <Lock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="text-xs font-mono text-zinc-300 space-y-1">
+                      <div className="font-bold text-white">Available in SOVEREIGN - Upgrade</div>
+                      <div className="text-zinc-400">
+                        Unlock Full REST API Credentials, 1-on-1 Dedicated Analyst Desk, and White-glove Custom Underwriting.
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenRenewal}
+                    className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono shrink-0 cursor-pointer"
+                  >
+                    Upgrade to SOVEREIGN
+                  </button>
                 </div>
               )}
 

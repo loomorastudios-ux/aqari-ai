@@ -36,12 +36,11 @@ const PLAN_DEFINITIONS: Record<
     originalPrice: 0,
     launchPrice: 0,
     analysesLimit: 3,
-    savedLimit: 0,
+    savedLimit: 3,
     features: [
       '3 Analyses / 30 Days',
       'Basic Cap Rate',
       'Cash-on-Cash only',
-      'No Monte Carlo, PDF Export, API, Analyst Desk, Portfolio Aggregation & Full Matrix',
     ],
   },
   starter: {
@@ -50,12 +49,12 @@ const PLAN_DEFINITIONS: Record<
     originalPrice: 129,
     launchPrice: PLANS.STARTER.price,
     analysesLimit: PLANS.STARTER.analyses,
-    savedLimit: 50,
+    savedLimit: 30,
     features: [
       '30 Analyses / 30 Days',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 50',
+      'Save 30',
     ],
   },
   pro: {
@@ -64,7 +63,7 @@ const PLAN_DEFINITIONS: Record<
     originalPrice: 349,
     launchPrice: PLANS.PROFESSIONAL.price,
     analysesLimit: PLANS.PROFESSIONAL.analyses,
-    savedLimit: 200,
+    savedLimit: 150,
     features: [
       '150 Analyses / 30 Days',
       'Monte Carlo Stress Tests +200bps',
@@ -72,7 +71,7 @@ const PLAN_DEFINITIONS: Record<
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 200',
+      'Save 150',
     ],
   },
   enterprise: {
@@ -81,7 +80,7 @@ const PLAN_DEFINITIONS: Record<
     originalPrice: 999,
     launchPrice: PLANS.SOVEREIGN.price,
     analysesLimit: PLANS.SOVEREIGN.analyses,
-    savedLimit: Infinity,
+    savedLimit: 400,
     features: [
       '400 Analyses / 30 Days',
       'Full REST API Credentials',
@@ -92,7 +91,7 @@ const PLAN_DEFINITIONS: Record<
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Unlimited Saved',
+      'Save 400',
     ],
   },
 };
@@ -196,7 +195,7 @@ function createDefaultPricingConfig() {
       free: { ...PLAN_DEFINITIONS.free },
       starter: { ...PLAN_DEFINITIONS.starter },
       pro: { ...PLAN_DEFINITIONS.pro },
-      enterprise: { ...PLAN_DEFINITIONS.enterprise, savedLimit: null },
+      enterprise: { ...PLAN_DEFINITIONS.enterprise },
     },
   };
 }

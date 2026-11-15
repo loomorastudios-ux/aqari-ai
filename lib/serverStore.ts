@@ -239,7 +239,7 @@ function createDefaultPricingConfig(): StoredPricingConfig {
         originalPrice: PLANS.enterprise.originalPrice,
         launchPrice: PLANS.enterprise.launchPrice,
         analysesLimit: PLANS.enterprise.analysesLimit,
-        savedLimit: null,
+        savedLimit: PLANS.enterprise.savedLimit,
         features: [...PLANS.enterprise.features],
       },
     },
@@ -310,14 +310,25 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
   for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
     const r = raw.plans?.[k];
     if (r && typeof r === 'object') {
+      const analysesLimit = Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0
+        ? Number(r.analysesLimit)
+        : def.plans[k].analysesLimit;
+      const rawFeatures: string[] = Array.isArray(r.features) && r.features.length > 0
+        ? r.features.map(String)
+        : def.plans[k].features;
+      const normalizedFeatures = rawFeatures
+        .filter((f) => !(k === 'free' && f.startsWith('No Monte Carlo')))
+        .map((f) =>
+          f === 'Save 50' ? 'Save 30' : f === 'Save 200' ? 'Save 150' : f === 'Unlimited Saved' ? 'Save 400' : f
+        );
       plans[k] = {
         key: k,
         displayName: def.plans[k].displayName,
         originalPrice: Number.isFinite(Number(r.originalPrice)) ? Number(r.originalPrice) : def.plans[k].originalPrice,
         launchPrice: Number.isFinite(Number(r.launchPrice)) ? Number(r.launchPrice) : def.plans[k].launchPrice,
-        analysesLimit: Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0 ? Number(r.analysesLimit) : def.plans[k].analysesLimit,
-        savedLimit: r.savedLimit === null ? null : (Number.isFinite(Number(r.savedLimit)) ? Number(r.savedLimit) : def.plans[k].savedLimit),
-        features: Array.isArray(r.features) && r.features.length > 0 ? r.features.map(String) : def.plans[k].features,
+        analysesLimit,
+        savedLimit: Math.min(analysesLimit, def.plans[k].savedLimit ?? analysesLimit),
+        features: normalizedFeatures.length > 0 ? normalizedFeatures : def.plans[k].features,
       };
     }
   }

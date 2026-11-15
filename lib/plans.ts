@@ -24,7 +24,7 @@ export interface PlanDefinition {
   launchPrice: number;
   priceUSD: number;
   analysesLimit: number; // 3 for Free, 30 for Starter, 150 for Pro, 400 for Sovereign
-  savedLimit: number; // 0 for Free, 50 for Starter, 200 for Professional, Infinity for Sovereign
+  savedLimit: number; // 3 for Free, 30 for Starter, 150 for Professional, 400 for Sovereign (always <= analysesLimit)
   licensingDays: number;
   features: string[];
   hiddenFeatures: string[];
@@ -41,7 +41,7 @@ export interface DynamicPlanPublic {
   analyses?: number;
   analysesLimit: number;
   saved?: number | null;
-  savedLimit: number | null; // null = Unlimited
+  savedLimit: number | null;
   features: string[];
   launchDiscountActive?: boolean;
 }
@@ -81,27 +81,28 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
     launchPrice: 0,
     priceUSD: 0,
     analysesLimit: 3,
-    savedLimit: 0,
+    savedLimit: 3,
     licensingDays: 30,
     features: [
       '3 Analyses / 30 Days',
       'Basic Cap Rate',
       'Cash-on-Cash only',
-      'No Monte Carlo, PDF Export, API, Analyst Desk, Portfolio Aggregation & Full Matrix',
     ],
     hiddenFeatures: [
-      'Monte Carlo Stress Tests',
+      'Yield & Sensitivity Calculator',
+      'Cross-border Tax & Visa Matrix',
+      'Monte Carlo Stress Tests +200bps',
       'PDF Memorandum Export',
-      'REST API Credentials',
-      '1-on-1 Dedicated Analyst Desk',
       'Multi-asset Portfolio Aggregation',
-      'Cross-border Tax & Visa Matrix (Full)',
+      'Full REST API Credentials',
+      '1-on-1 Dedicated Analyst Desk',
+      'White-glove Custom Underwriting',
     ],
     capabilities: {
       basicMetrics: true,
       yieldSensitivity: false,
       crossBorderMatrixFull: false,
-      saveProperty: false,
+      saveProperty: true,
       monteCarlo: false,
       pdfExport: false,
       portfolioAggregation: false,
@@ -117,19 +118,21 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
     launchPrice: 79,
     priceUSD: 79,
     analysesLimit: 30,
-    savedLimit: 50,
+    savedLimit: 30,
     licensingDays: 30,
     features: [
       '30 Analyses / 30 Days',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 50',
+      'Save 30',
     ],
     hiddenFeatures: [
       'Monte Carlo Stress Tests +200bps',
       'PDF Memorandum Export',
       'Multi-asset Portfolio Aggregation',
       'Full REST API Credentials',
+      '1-on-1 Dedicated Analyst Desk',
+      'White-glove Custom Underwriting',
     ],
     capabilities: {
       basicMetrics: true,
@@ -151,7 +154,7 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
     launchPrice: 199,
     priceUSD: 199,
     analysesLimit: 150,
-    savedLimit: 200,
+    savedLimit: 150,
     licensingDays: 30,
     features: [
       '150 Analyses / 30 Days',
@@ -160,7 +163,7 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 200',
+      'Save 150',
     ],
     hiddenFeatures: [
       'Full REST API Credentials',
@@ -187,7 +190,7 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
     launchPrice: 599,
     priceUSD: 599,
     analysesLimit: 400,
-    savedLimit: Infinity,
+    savedLimit: 400,
     licensingDays: 30,
     features: [
       '400 Analyses / 30 Days',
@@ -199,7 +202,7 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Unlimited Saved',
+      'Save 400',
     ],
     hiddenFeatures: [],
     capabilities: {
@@ -238,18 +241,18 @@ export function getUpgradeMessage(feature: GatedFeature): string {
     case 'monteCarlo':
     case 'pdfExport':
     case 'portfolioAggregation':
-      return 'Upgrade to Professional to unlock';
+      return 'Available in PROFESSIONAL - Upgrade';
     case 'apiAccess':
     case 'analystDesk':
     case 'customUnderwriting':
-      return 'Upgrade to Sovereign to unlock';
+      return 'Available in SOVEREIGN - Upgrade';
     case 'saveProperty':
       return 'Upgrade to save more';
     case 'yieldSensitivity':
     case 'crossBorderMatrixFull':
-      return 'Upgrade to Starter to unlock';
+      return 'Available in STARTER - Upgrade';
     default:
-      return 'Upgrade to Professional to unlock';
+      return 'Available in PROFESSIONAL - Upgrade';
   }
 }
 

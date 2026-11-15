@@ -57,6 +57,9 @@ export interface User {
   lastReminderDate?: string;
   lockedLaunchPrice?: number | null;
   savedAnalyses?: SavedAnalysis[];
+  maxSaved?: number;
+  savedCount?: number;
+  apiKey?: string | null;
   customCities?: CustomCityCard[];
   portfolio?: {
     totalValue: number;

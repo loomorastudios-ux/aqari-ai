@@ -90,7 +90,11 @@ interface TerminalSubTickerProps {
 
 export const TerminalSubTicker: React.FC<TerminalSubTickerProps> = ({ user, currency }) => {
   const planLabel = user?.plan ? user.plan.toUpperCase() : 'GUEST';
-  const analysesCount = user?.plan === 'enterprise' ? 'Unlimited' : user?.freeAnalysesLeft ?? user?.freeAnalyses ?? 3;
+  const analysesCount =
+    user?.analysesLeft ??
+    user?.freeAnalysesLeft ??
+    user?.freeAnalyses ??
+    (user?.plan === 'enterprise' ? 400 : 3);
 
   const tickerItems = [
     `AQARI TERMINAL`,

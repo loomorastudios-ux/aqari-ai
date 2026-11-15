@@ -508,6 +508,15 @@ export default function App() {
         const licenseEndVal =
           meData?.license_end ?? data.license_end ?? data.user?.license_end ?? null;
 
+        const maxSavedVal =
+          typeof meData?.maxSaved === 'number'
+            ? meData.maxSaved
+            : verifiedCfg.savedLimit;
+        const serverSavedList =
+          Array.isArray(meData?.saved_analyses) && meData.saved_analyses.length > 0
+            ? meData.saved_analyses
+            : existing?.savedAnalyses || [];
+
         const updatedUser: User = {
           ...(existing || {
             id: 'user_' + Date.now(),
@@ -523,6 +532,13 @@ export default function App() {
           planName: planDisplay,
           planPrice,
           features: planFeatures,
+          maxSaved: maxSavedVal,
+          savedCount:
+            typeof meData?.saved_count === 'number'
+              ? meData.saved_count
+              : serverSavedList.length,
+          savedAnalyses: serverSavedList,
+          apiKey: meData?.api_key ?? null,
           subscriptionPlan: verifiedPlan,
           subscriptionStatus: 'active',
           subscriptionStartAt: licenseStartVal,
@@ -680,12 +696,29 @@ export default function App() {
           const serverLeft = Number.isFinite(serverLimit)
             ? Math.max(0, serverLimit - serverUsed)
             : 999999;
+          const serverMaxSaved =
+            typeof data.maxSaved === 'number'
+              ? data.maxSaved
+              : typeof data.user.maxSaved === 'number'
+              ? data.user.maxSaved
+              : serverCfg.savedLimit;
+          const serverSaved =
+            Array.isArray(data.user.saved_analyses) && data.user.saved_analyses.length > 0
+              ? data.user.saved_analyses
+              : newUser.savedAnalyses || [];
           const syncedUser: User = {
             ...newUser,
             plan: serverPlan,
             planName: data.license?.displayName || serverCfg.displayName,
             planPrice: serverPlan === 'free' ? 0 : serverCfg.priceUSD,
             features: Array.isArray(data.features) ? data.features : serverCfg.features,
+            maxSaved: serverMaxSaved,
+            savedCount:
+              typeof data.user.saved_count === 'number'
+                ? data.user.saved_count
+                : serverSaved.length,
+            savedAnalyses: serverSaved,
+            apiKey: data.api_key ?? data.user?.api_key ?? null,
             subscriptionPlan: serverPlan,
             subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : 'active',
             subscriptionStartAt: data.user.license_start ?? undefined,
@@ -784,6 +817,15 @@ export default function App() {
           ? data.user.custom_cities
           : [];
 
+        const serverMaxSaved =
+          typeof data.maxSaved === 'number'
+            ? data.maxSaved
+            : PLANS[serverPlan].savedLimit;
+        const serverSavedList = Array.isArray(data.saved_analyses)
+          ? data.saved_analyses
+          : [];
+        const serverApiKey = typeof data.api_key === 'string' ? data.api_key : null;
+
         const baseUser: User = user || {
           id: 'user_' + Date.now(),
           email: data.email,
@@ -796,6 +838,9 @@ export default function App() {
           planName: 'FREE',
           planPrice: 0,
           features: PLANS.free.features,
+          maxSaved: PLANS.free.savedLimit,
+          savedCount: 0,
+          apiKey: null,
           subscriptionExpiry: null,
           analysesUsed: 0,
           freeAnalyses: 3,
@@ -804,16 +849,22 @@ export default function App() {
           customCities: [],
         };
 
+        const mergedSaved =
+          serverSavedList.length > 0 ? serverSavedList : baseUser.savedAnalyses || [];
+
         const changed =
           !user ||
           normalizePlanKey(user.plan) !== serverPlan ||
           user.planName !== serverPlanName ||
           user.planPrice !== serverPlanPrice ||
           JSON.stringify(user.features || []) !== JSON.stringify(serverFeatures) ||
+          (user.maxSaved ?? -1) !== serverMaxSaved ||
+          (user.apiKey ?? null) !== serverApiKey ||
           (user.analysesUsed ?? 0) !== serverUsed ||
           (user.subscriptionEndsAt ?? null) !== serverEnd ||
           (user.lockedLaunchPrice ?? null) !== serverLockedLaunch ||
           (serverCustomCities.length !== (user.customCities?.length ?? 0)) ||
+          (serverSavedList.length > (user.savedAnalyses?.length ?? 0)) ||
           (Number.isFinite(serverLimit) && (user.analysesLeft ?? -1) !== serverLeft);
 
         if (changed) {
@@ -827,6 +878,13 @@ export default function App() {
             planName: serverPlanName,
             planPrice: serverPlanPrice,
             features: serverFeatures,
+            maxSaved: serverMaxSaved,
+            savedCount:
+              typeof data.saved_count === 'number'
+                ? Math.max(data.saved_count, mergedSaved.length)
+                : mergedSaved.length,
+            savedAnalyses: mergedSaved,
+            apiKey: serverApiKey,
             subscriptionPlan: serverPlan,
             subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : serverPlan === 'free' ? 'free' : 'active',
             subscriptionStartAt: data.license_start ?? undefined,
@@ -936,29 +994,34 @@ export default function App() {
       setIsAuthOpen(true);
       return;
     }
-    fetch('/api/app?action=underwrite', {
+    fetch('/api/app?action=run-analysis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({
         email: user.email,
+        login_email: user.email,
         name: user.name,
         propertyTitle: property.title,
         city: property.city,
         priceUSD: property.basePriceUSD,
         rentUSD: property.baseRentMonthlyUSD,
+        downPaymentPct: 30,
+        interestRatePct: 5.5,
+        operatingExpensePct: 15,
       }),
     })
       .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
         if (res.status === 429) {
-          showTempToast('Rate limit exceeded (10 analyses/min). Please wait.');
+          showTempToast(data?.error || 'Rate limit exceeded. Please wait.');
           return;
         }
-        if (res.status === 403) {
+        if (res.status === 403 || data?.success === false) {
+          showTempToast(data?.error || 'No analyses left. Renew / Upgrade.');
           setIsRenewalOpen(true);
           return;
         }
-        const data = await res.json().catch(() => ({}));
         if (data?.license) {
           const nextLeft = data.license.isUnlimitedAnalyses ? 999999 : data.license.analysesLeft;
           handleSaveUser({
@@ -1592,7 +1655,7 @@ export default function App() {
         user={user}
         onClose={() => setActivePropertyAnalysis(null)}
         onOpenUpgrade={() => setIsRenewalOpen(true)}
-        onSaveAnalysis={(prop) => {
+        onSaveAnalysis={async (prop) => {
           if (!user) {
             setIsAuthOpen(true);
             return;
@@ -1600,27 +1663,28 @@ export default function App() {
           const planCfg = PLANS[normalizePlanKey(user.plan)];
           const currentSaved = user.savedAnalyses || [];
           const hasMeFeatures = Array.isArray(user.features) && user.features.length > 0;
-          const isActiveSub = user.subscriptionStatus !== 'expired';
-          const effectiveSavedLimit = hasMeFeatures
-            ? user.features!.includes('Unlimited Saved')
-              ? Infinity
-              : user.features!.includes('Save 200')
-              ? 200
-              : user.features!.includes('Save 50')
-              ? 50
-              : 0
-            : planCfg.savedLimit;
-          const hasSaveFeature = hasMeFeatures
-            ? isActiveSub && effectiveSavedLimit > 0
-            : canUseFeature(user.plan, 'saveProperty');
-          const overLimit =
-            !hasSaveFeature ||
-            (Number.isFinite(effectiveSavedLimit) && currentSaved.length >= effectiveSavedLimit);
-          if (overLimit) {
-            showTempToast('Upgrade to save more', 3000);
+          const effectiveSavedLimit =
+            typeof user.maxSaved === 'number'
+              ? user.maxSaved
+              : hasMeFeatures
+              ? user.features!.includes('Save 400')
+                ? 400
+                : user.features!.includes('Save 150')
+                ? 150
+                : user.features!.includes('Save 30')
+                ? 30
+                : 3
+              : planCfg.savedLimit;
+
+          if (currentSaved.length >= effectiveSavedLimit) {
+            showTempToast(
+              `Save limit reached for ${user.planName || planCfg.displayName}: ${currentSaved.length}/${effectiveSavedLimit}.`,
+              4000
+            );
             setIsRenewalOpen(true);
             return;
           }
+
           const newAnalysis = {
             id: 'saved_' + Date.now(),
             property: prop.title,
@@ -1636,20 +1700,45 @@ export default function App() {
             date: Date.now(),
             imageUrl: prop.imageUrl,
           };
-          handleSaveUser({
-            ...user,
-            savedAnalyses: [newAnalysis, ...currentSaved],
-          });
-          fetch('/api/app?action=save-property', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-              email: user.email,
-              savedCount: currentSaved.length,
-              analysis: newAnalysis,
-            }),
-          }).catch(() => {});
+
+          try {
+            const res = await fetch('/api/app?action=save-to-portfolio', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({
+                email: user.email,
+                login_email: user.email,
+                currentSavedCount: currentSaved.length,
+                analysis: newAnalysis,
+              }),
+            });
+            const data = await res.json().catch(() => null);
+            if (!res.ok || data?.success === false) {
+              showTempToast(
+                data?.error ||
+                  `Save limit reached for ${user.planName || planCfg.displayName}: ${currentSaved.length}/${effectiveSavedLimit}.`,
+                4000
+              );
+              setIsRenewalOpen(true);
+              return;
+            }
+            const nextList = [data?.savedItem || newAnalysis, ...currentSaved];
+            handleSaveUser({
+              ...user,
+              savedCount: data?.saved_count ?? nextList.length,
+              savedAnalyses: nextList,
+            });
+            showTempToast(`Saved "${prop.title}" to portfolio (${nextList.length}/${effectiveSavedLimit}).`);
+          } catch {
+            const nextList = [newAnalysis, ...currentSaved];
+            handleSaveUser({
+              ...user,
+              savedCount: nextList.length,
+              savedAnalyses: nextList,
+            });
+            showTempToast(`Saved "${prop.title}" to portfolio.`);
+          }
         }}
       />
 

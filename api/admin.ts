@@ -34,12 +34,11 @@ const PLANS: Record<
     originalPrice: 0,
     launchPrice: 0,
     analysesLimit: 3,
-    savedLimit: 0,
+    savedLimit: 3,
     features: [
       '3 Analyses / 30 Days',
       'Basic Cap Rate',
       'Cash-on-Cash only',
-      'No Monte Carlo, PDF Export, API, Analyst Desk, Portfolio Aggregation & Full Matrix',
     ],
   },
   starter: {
@@ -48,12 +47,12 @@ const PLANS: Record<
     originalPrice: 129,
     launchPrice: 79,
     analysesLimit: 30,
-    savedLimit: 50,
+    savedLimit: 30,
     features: [
       '30 Analyses / 30 Days',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 50',
+      'Save 30',
     ],
   },
   pro: {
@@ -62,7 +61,7 @@ const PLANS: Record<
     originalPrice: 349,
     launchPrice: 199,
     analysesLimit: 150,
-    savedLimit: 200,
+    savedLimit: 150,
     features: [
       '150 Analyses / 30 Days',
       'Monte Carlo Stress Tests +200bps',
@@ -70,7 +69,7 @@ const PLANS: Record<
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 200',
+      'Save 150',
     ],
   },
   enterprise: {
@@ -79,7 +78,7 @@ const PLANS: Record<
     originalPrice: 999,
     launchPrice: 599,
     analysesLimit: 400,
-    savedLimit: Infinity,
+    savedLimit: 400,
     features: [
       '400 Analyses / 30 Days',
       'Full REST API Credentials',
@@ -90,7 +89,7 @@ const PLANS: Record<
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Unlimited Saved',
+      'Save 400',
     ],
   },
 };
@@ -221,7 +220,7 @@ function createDefaultPricingConfig() {
       free: { ...PLANS.free },
       starter: { ...PLANS.starter },
       pro: { ...PLANS.pro },
-      enterprise: { ...PLANS.enterprise, savedLimit: null },
+      enterprise: { ...PLANS.enterprise },
     },
   };
 }
@@ -285,14 +284,21 @@ function hydratePricingConfig(raw: any) {
   for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
     const r = raw.plans?.[k];
     if (r && typeof r === 'object') {
+      const analysesLimit = Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0 ? Number(r.analysesLimit) : def.plans[k].analysesLimit;
+      const rawFeatures: string[] = Array.isArray(r.features) && r.features.length > 0 ? r.features.map(String) : def.plans[k].features;
+      const normalizedFeatures = rawFeatures
+        .filter((f) => !(k === 'free' && f.startsWith('No Monte Carlo')))
+        .map((f) =>
+          f === 'Save 50' ? 'Save 30' : f === 'Save 200' ? 'Save 150' : f === 'Unlimited Saved' ? 'Save 400' : f
+        );
       plans[k] = {
         key: k,
         displayName: def.plans[k].displayName,
         originalPrice: Number.isFinite(Number(r.originalPrice)) ? Number(r.originalPrice) : def.plans[k].originalPrice,
         launchPrice: Number.isFinite(Number(r.launchPrice)) ? Number(r.launchPrice) : def.plans[k].launchPrice,
-        analysesLimit: Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0 ? Number(r.analysesLimit) : def.plans[k].analysesLimit,
-        savedLimit: r.savedLimit === null ? null : (Number.isFinite(Number(r.savedLimit)) ? Number(r.savedLimit) : def.plans[k].savedLimit),
-        features: Array.isArray(r.features) && r.features.length > 0 ? r.features.map(String) : def.plans[k].features,
+        analysesLimit,
+        savedLimit: Math.min(analysesLimit, def.plans[k].savedLimit),
+        features: normalizedFeatures.length > 0 ? normalizedFeatures : def.plans[k].features,
       };
     }
   }

@@ -41,7 +41,7 @@ export const LEMON_REDIRECT_URLS: Record<'starter' | 'pro' | 'enterprise', strin
 export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', PlanFeatureConfig> = {
   free: {
     analyses: PLANS.free.analysesLimit,
-    maxSaved: PLANS.free.savedLimit, // 0 saved allowed on FREE
+    maxSaved: PLANS.free.savedLimit, // 3 saved allowed on FREE
     label: 'FREE - 3 Analyses / 30 Days',
     priceUSD: PLANS.free.priceUSD,
     lemon: '',
@@ -52,7 +52,7 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
     hasPortfolioAggregation: PLANS.free.capabilities.portfolioAggregation,
     hasApiAccess: PLANS.free.capabilities.apiAccess,
     hasDedicatedAnalyst: PLANS.free.capabilities.analystDesk,
-    features: [...PLANS.free.features, '0 Saved Properties'],
+    features: [...PLANS.free.features],
   },
   starter: {
     analyses: PLANS.starter.analysesLimit,
@@ -86,7 +86,7 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
   },
   enterprise: {
     analyses: PLANS.enterprise.analysesLimit,
-    maxSaved: 9999,
+    maxSaved: PLANS.enterprise.savedLimit,
     label: `SOVEREIGN - ${PLANS.enterprise.analysesLimit} Analyses / 30 Days`,
     priceUSD: PLANS.enterprise.priceUSD,
     lemon: LEMON_LINKS.enterprise,
