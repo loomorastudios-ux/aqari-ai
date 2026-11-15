@@ -1,43 +1,949 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
-import { PLANS, findPlanPricing, normalizePlanKey } from '../lib/plans';
-import { buildPdfDocument } from '../lib/pdfGenerator';
-import { buildDay29RenewalEmail, dispatchEmail } from '../lib/mailer';
-import { getSessionEmailFromReq, isAdminEmail } from '../lib/security';
-import {
-  adminChangeUserPlan,
-  computeServerLicenseStatus,
-  evaluateRefundEligibility,
-  getAllServerUsers,
-  getEmailLogs,
-  getFailedWebhookLogs,
-  getOrCreateServerUser,
-  getPricingChangeLogs,
-  getPricingPublicPayload,
-  getWebhookLogs,
-  recordRefundDecision,
-  updateLaunchDiscountSettings,
-  updateServerPlanPricing,
-} from '../lib/serverStore';
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+
+// =========================================================================
+// 1. INLINED PLANS, SECURITY & ENV HELPERS (Zero external ../lib imports)
+// =========================================================================
+
+type PlanKey = 'free' | 'starter' | 'pro' | 'enterprise';
+
+const PRODUCTION_URL = 'https://aqari-ai-rho.vercel.app';
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_LAUNCH_BADGE = 'LAUNCH -40% - First 30 users only';
+const SESSION_COOKIE_NAME = 'aqari_session';
+const EMAIL_FROM = 'AQARI Terminal <onboarding@resend.dev>';
+const EMAIL_FROM_ADDRESS = 'onboarding@resend.dev';
+
+const PLANS: Record<
+  PlanKey,
+  {
+    key: PlanKey;
+    displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+    originalPrice: number;
+    launchPrice: number;
+    analysesLimit: number;
+    savedLimit: number;
+    features: string[];
+  }
+> = {
+  free: {
+    key: 'free',
+    displayName: 'FREE',
+    originalPrice: 0,
+    launchPrice: 0,
+    analysesLimit: 3,
+    savedLimit: 0,
+    features: ['3 Analyses / 30 Days', 'Basic Cap Rate', 'Cash-on-Cash only'],
+  },
+  starter: {
+    key: 'starter',
+    displayName: 'STARTER',
+    originalPrice: 129,
+    launchPrice: 79,
+    analysesLimit: 30,
+    savedLimit: 50,
+    features: [
+      '30 Analyses / 30 Days',
+      'Yield & Sensitivity Calculator',
+      'Cross-border Tax & Visa Matrix',
+      'Save 50',
+    ],
+  },
+  pro: {
+    key: 'pro',
+    displayName: 'PROFESSIONAL',
+    originalPrice: 349,
+    launchPrice: 199,
+    analysesLimit: 150,
+    savedLimit: 200,
+    features: [
+      '150 Analyses / 30 Days',
+      'Monte Carlo Stress Tests +200bps',
+      'PDF Memorandum Export',
+      'Multi-asset Portfolio Aggregation',
+      'Yield & Sensitivity Calculator',
+      'Cross-border Tax & Visa Matrix',
+      'Save 200',
+    ],
+  },
+  enterprise: {
+    key: 'enterprise',
+    displayName: 'SOVEREIGN',
+    originalPrice: 999,
+    launchPrice: 599,
+    analysesLimit: 400,
+    savedLimit: Infinity,
+    features: [
+      '400 Analyses / 30 Days',
+      'Full REST API Credentials',
+      '1-on-1 Dedicated Analyst Desk',
+      'White-glove Custom Underwriting',
+      'Monte Carlo Stress Tests +200bps',
+      'PDF Memorandum Export',
+      'Multi-asset Portfolio Aggregation',
+      'Yield & Sensitivity Calculator',
+      'Cross-border Tax & Visa Matrix',
+      'Unlimited Saved',
+    ],
+  },
+};
+
+function normalizePlanKey(raw?: string | null): PlanKey {
+  const val = (raw || '').toLowerCase().trim();
+  if (val === 'starter' || val === 'standard') return 'starter';
+  if (val === 'pro' || val === 'professional') return 'pro';
+  if (val === 'enterprise' || val === 'sovereign' || val === 'agency') return 'enterprise';
+  return 'free';
+}
+
+function findPlanPricing(payload: any, key: PlanKey) {
+  if (!payload) return undefined;
+  if (payload.plansMap?.[key]) return payload.plansMap[key];
+  if (Array.isArray(payload.plans)) {
+    return payload.plans.find((p: any) => p.key === key || p.id === key);
+  }
+  return payload.plans?.[key];
+}
+
+function getEnv(key: string): string {
+  try {
+    return typeof process !== 'undefined' && process?.env ? String(process.env[key] || '') : '';
+  } catch {
+    return '';
+  }
+}
+
+function cleanEnvValue(value?: string | null): string {
+  return (value || '').replace(/^["']|["']$/g, '').trim();
+}
+
+function getAdminEmail(): string {
+  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'loomora.studios@gmail.com').toLowerCase();
+}
+
+function getSessionSecret(): string {
+  return (
+    cleanEnvValue(getEnv('SESSION_SECRET')) ||
+    cleanEnvValue(getEnv('NEXTAUTH_SECRET')) ||
+    cleanEnvValue(getEnv('GOOGLE_CLIENT_SECRET')) ||
+    'aqari-terminal-sovereign-hmac-2026'
+  );
+}
+
+function isAdminEmail(email?: string | null): boolean {
+  const norm = (email || '').trim().toLowerCase();
+  if (!norm) return false;
+  return (
+    norm === getAdminEmail() ||
+    norm === 'loomora.studios@gmail.com' ||
+    norm === 'loomorastudios@gmail.com'
+  );
+}
+
+function parseCookies(cookieHeader?: string | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!cookieHeader) return out;
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx > 0) {
+      const key = part.slice(0, idx).trim();
+      const val = part.slice(idx + 1).trim();
+      try {
+        out[key] = decodeURIComponent(val);
+      } catch {
+        out[key] = val;
+      }
+    }
+  }
+  return out;
+}
+
+function verifySessionToken(token?: string | null): string | null {
+  if (!token || !token.includes('.')) return null;
+  const [payload, sig] = token.split('.');
+  if (!payload || !sig) return null;
+  try {
+    const expected = crypto
+      .createHmac('sha256', getSessionSecret())
+      .update(payload)
+      .digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!decoded?.email || (decoded.exp && Date.now() > decoded.exp)) return null;
+    return String(decoded.email).trim().toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function getSessionEmailFromReq(req: any): string | null {
+  const cookies = parseCookies(req?.headers?.cookie || '');
+  const fromCookie = verifySessionToken(cookies[SESSION_COOKIE_NAME]);
+  if (fromCookie) return fromCookie;
+
+  const authHeader = req?.headers?.authorization || '';
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    const bearerEmail = verifySessionToken(authHeader.slice(7).trim());
+    if (bearerEmail) return bearerEmail;
+  }
+  return null;
+}
+
+// =========================================================================
+// 2. INLINED SERVER STORE HELPERS
+// =========================================================================
+
+function getStoreFile(): string {
+  try {
+    return path.join('/tmp', 'aqari_terminal_store_v1.json');
+  } catch {
+    return '/tmp/aqari_terminal_store_v1.json';
+  }
+}
+
+function createDefaultPricingConfig() {
+  const now = Date.now();
+  return {
+    launchDiscountActive: true,
+    launchBadgeText: DEFAULT_LAUNCH_BADGE,
+    launchEndsAt: now + 7 * 24 * 60 * 60 * 1000,
+    updatedAt: now,
+    plans: {
+      free: { ...PLANS.free },
+      starter: { ...PLANS.starter },
+      pro: { ...PLANS.pro },
+      enterprise: { ...PLANS.enterprise, savedLimit: null },
+    },
+  };
+}
+
+let memoryStoreCache: any = null;
+
+function getMemoryStore() {
+  if (!memoryStoreCache) {
+    memoryStoreCache = {
+      users: {},
+      webhook_logs: [],
+      failed_webhooks: [],
+      email_logs: [],
+      pricing_config: createDefaultPricingConfig(),
+      pricing_logs: [],
+      pending_checkouts: {},
+      used_orders: {},
+    };
+  }
+  return memoryStoreCache;
+}
+
+function normalizeEmail(email: string): string {
+  return (email || '').trim().toLowerCase();
+}
+
+function hydrateUserRecord(raw: any, email: string) {
+  const now = Date.now();
+  return {
+    email,
+    name: raw?.name || email.split('@')[0],
+    plan: normalizePlanKey(raw?.plan),
+    license_start: raw?.license_start ?? now,
+    license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
+    analyses_used: Math.max(0, Number(raw?.analyses_used ?? 0)),
+    saved_analyses: Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [],
+    custom_cities: Array.isArray(raw?.custom_cities) ? raw.custom_cities : [],
+    timezone: raw?.timezone || 'Asia/Muscat',
+    day29_email_sent: Boolean(raw?.day29_email_sent),
+    expired_email_sent: Boolean(raw?.expired_email_sent),
+    updated_at: Number(raw?.updated_at || now),
+    last_login_at: raw?.last_login_at ?? null,
+    total_paid_usd: Number(raw?.total_paid_usd || 0),
+    analyses_log: Array.isArray(raw?.analyses_log) ? raw.analyses_log : [],
+    pdf_downloads: Array.isArray(raw?.pdf_downloads) ? raw.pdf_downloads : [],
+    payments: Array.isArray(raw?.payments) ? raw.payments : [],
+    timeline: Array.isArray(raw?.timeline) ? raw.timeline : [],
+    refund_requested: Boolean(raw?.refund_requested),
+    refund_status: raw?.refund_status || 'none',
+    refund_notes: raw?.refund_notes || '',
+    refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
+    locked_launch_price: typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
+    lemon_customer_email: raw?.lemon_customer_email ? String(raw.lemon_customer_email).toLowerCase() : null,
+  };
+}
+
+function hydratePricingConfig(raw: any) {
+  const def = createDefaultPricingConfig();
+  if (!raw || typeof raw !== 'object') return def;
+  const plans: any = { ...def.plans };
+  for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
+    const r = raw.plans?.[k];
+    if (r && typeof r === 'object') {
+      plans[k] = {
+        key: k,
+        displayName: def.plans[k].displayName,
+        originalPrice: Number.isFinite(Number(r.originalPrice)) ? Number(r.originalPrice) : def.plans[k].originalPrice,
+        launchPrice: Number.isFinite(Number(r.launchPrice)) ? Number(r.launchPrice) : def.plans[k].launchPrice,
+        analysesLimit: Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0 ? Number(r.analysesLimit) : def.plans[k].analysesLimit,
+        savedLimit: r.savedLimit === null ? null : (Number.isFinite(Number(r.savedLimit)) ? Number(r.savedLimit) : def.plans[k].savedLimit),
+        features: Array.isArray(r.features) && r.features.length > 0 ? r.features.map(String) : def.plans[k].features,
+      };
+    }
+  }
+  return {
+    launchDiscountActive: typeof raw.launchDiscountActive === 'boolean' ? raw.launchDiscountActive : def.launchDiscountActive,
+    launchBadgeText: typeof raw.launchBadgeText === 'string' && raw.launchBadgeText.trim() ? raw.launchBadgeText : def.launchBadgeText,
+    launchEndsAt: Number.isFinite(Number(raw.launchEndsAt)) ? Number(raw.launchEndsAt) : def.launchEndsAt,
+    updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Number(raw.updatedAt) : def.updatedAt,
+    plans,
+  };
+}
+
+function loadStore() {
+  try {
+    const storeFile = getStoreFile();
+    if (fs.existsSync(storeFile)) {
+      const parsed = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+      if (parsed && typeof parsed === 'object') {
+        const users: Record<string, any> = {};
+        if (parsed.users && typeof parsed.users === 'object') {
+          for (const [k, v] of Object.entries(parsed.users)) {
+            users[k] = hydrateUserRecord(v, k);
+          }
+        }
+        memoryStoreCache = {
+          users,
+          webhook_logs: Array.isArray(parsed.webhook_logs) ? parsed.webhook_logs : [],
+          failed_webhooks: Array.isArray(parsed.failed_webhooks) ? parsed.failed_webhooks : [],
+          email_logs: Array.isArray(parsed.email_logs) ? parsed.email_logs : [],
+          pricing_config: hydratePricingConfig(parsed.pricing_config),
+          pricing_logs: Array.isArray(parsed.pricing_logs) ? parsed.pricing_logs : [],
+          pending_checkouts: parsed.pending_checkouts || {},
+          used_orders: parsed.used_orders || {},
+        };
+      }
+    }
+  } catch {}
+  return getMemoryStore();
+}
+
+function persistStore(store: any): void {
+  memoryStoreCache = store;
+  try {
+    fs.writeFileSync(getStoreFile(), JSON.stringify(store, null, 2), 'utf8');
+  } catch {}
+}
+
+function enforceServerUserExpiry(rawEmail: string): any {
+  const store = loadStore();
+  const email = normalizeEmail(rawEmail) || 'guest@aqari-ai-rho.vercel.app';
+  const user = store.users[email];
+  const now = Date.now();
+  if (!user) return getOrCreateServerUser(email);
+
+  if (user.plan !== 'free' && user.license_end && now >= user.license_end) {
+    const prevPlan = PLANS[normalizePlanKey(user.plan)].displayName;
+    user.plan = 'free';
+    user.analyses_used = 0;
+    user.license_start = now;
+    user.license_end = now + THIRTY_DAYS_MS;
+    user.day29_email_sent = false;
+    user.updated_at = now;
+    user.timeline.unshift({
+      id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date(now).toISOString(),
+      type: 'expired',
+      message: `30-day ${prevPlan} license expired -> auto-downgraded to FREE`,
+      actor: 'system',
+    });
+    store.users[email] = user;
+    persistStore(store);
+  }
+  return user;
+}
+
+function getOrCreateServerUser(rawEmail: string): any {
+  const store = loadStore();
+  const email = normalizeEmail(rawEmail) || 'guest@aqari-ai-rho.vercel.app';
+  let user = store.users[email];
+  if (!user) {
+    const now = Date.now();
+    user = hydrateUserRecord(
+      {
+        email,
+        name: email.split('@')[0],
+        plan: 'free',
+        license_start: now,
+        license_end: now + THIRTY_DAYS_MS,
+        analyses_used: 0,
+        last_login_at: now,
+      },
+      email
+    );
+    store.users[email] = user;
+    persistStore(store);
+  }
+  return enforceServerUserExpiry(email);
+}
+
+function updateServerUser(email: string, patch: any) {
+  const store = loadStore();
+  const norm = normalizeEmail(email);
+  const existing = getOrCreateServerUser(norm);
+  const updated = {
+    ...existing,
+    ...patch,
+    email: norm,
+    updated_at: Date.now(),
+  };
+  store.users[norm] = updated;
+  persistStore(store);
+  return updated;
+}
+
+function getAllServerUsers() {
+  const store = loadStore();
+  return Object.keys(store.users).map((email) => enforceServerUserExpiry(email));
+}
+
+function getPricingPublicPayload() {
+  const store = loadStore();
+  const cfg = store.pricing_config || createDefaultPricingConfig();
+  const now = Date.now();
+  const daysRemaining = Math.max(0, Math.ceil((cfg.launchEndsAt - now) / (24 * 60 * 60 * 1000)));
+  const plansMap: Record<PlanKey, any> = {} as any;
+  const plansList: any[] = [];
+
+  for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
+    const p = cfg.plans[k];
+    const entry = {
+      id: k,
+      key: k,
+      displayName: p.displayName,
+      originalPrice: p.originalPrice,
+      launchPrice: p.launchPrice,
+      activePrice: k === 'free' ? 0 : cfg.launchDiscountActive ? p.launchPrice : p.originalPrice,
+      analyses: p.analysesLimit,
+      analysesLimit: p.analysesLimit,
+      saved: p.savedLimit,
+      savedLimit: p.savedLimit,
+      features: [...p.features],
+      launchDiscountActive: cfg.launchDiscountActive,
+    };
+    plansMap[k] = entry;
+    plansList.push(entry);
+  }
+  return {
+    success: true,
+    launchDiscountActive: cfg.launchDiscountActive,
+    launchBadgeText: cfg.launchBadgeText,
+    launchEndsAt: cfg.launchEndsAt,
+    daysRemaining,
+    updatedAt: cfg.updatedAt,
+    plans: plansList,
+    plansMap,
+  };
+}
+
+function computeServerLicenseStatus(user: any) {
+  const pricing = getPricingPublicPayload();
+  const rawPlanKey = normalizePlanKey(user.plan);
+  const now = Date.now();
+  const hasPaidEnd = Boolean(rawPlanKey !== 'free' && user.license_end);
+  const isExpired = Boolean(hasPaidEnd && user.license_end <= now);
+  const effectivePlanKey: PlanKey = isExpired ? 'free' : rawPlanKey;
+  const dynamicPlan = pricing.plansMap?.[effectivePlanKey];
+  const planCfg = PLANS[effectivePlanKey];
+  const analysesLimit = dynamicPlan?.analysesLimit || planCfg.analysesLimit;
+  const savedLimit = dynamicPlan?.savedLimit === null ? Infinity : (dynamicPlan?.savedLimit ?? planCfg.savedLimit);
+  const isUnlimitedAnalyses = !Number.isFinite(analysesLimit);
+  const analysesUsed = Math.max(0, Number(user.analyses_used || 0));
+  const analysesLeft = isUnlimitedAnalyses ? Infinity : Math.max(0, analysesLimit - analysesUsed);
+  const daysLeft =
+    effectivePlanKey !== 'free' && user.license_end
+      ? Math.max(0, Math.ceil((user.license_end - now) / (1000 * 60 * 60 * 24)))
+      : isExpired
+      ? 0
+      : 30;
+
+  return {
+    planKey: effectivePlanKey,
+    displayName: planCfg.displayName,
+    isExpired,
+    daysLeft,
+    daysTotal: 30,
+    analysesLimit,
+    analysesUsed,
+    analysesLeft,
+    savedLimit,
+    isUnlimitedAnalyses,
+    isUnlimitedSaved: !Number.isFinite(savedLimit),
+  };
+}
+
+function evaluateRefundEligibility(user: any) {
+  const latestPayment = user.payments?.[0];
+  const purchaseTs = latestPayment
+    ? new Date(latestPayment.timestamp).getTime()
+    : user.license_start || Date.now();
+  const daysSincePurchase = Math.max(
+    0,
+    Math.floor((Date.now() - purchaseTs) / (24 * 60 * 60 * 1000))
+  );
+  const analysesCount = Math.max(user.analyses_used || 0, (user.analyses_log || []).length);
+  const pdfDownloadsCount = (user.pdf_downloads || []).length;
+
+  const reasons: string[] = [];
+  if (daysSincePurchase > 7) reasons.push(`${daysSincePurchase} days passed (7-day window exceeded)`);
+  if (analysesCount > 3) reasons.push(`${analysesCount} analyses run (exceeds max 3 analyses limit)`);
+  if (pdfDownloadsCount > 0) reasons.push(`${pdfDownloadsCount} PDF Memorandum download(s) completed`);
+
+  const eligible = reasons.length === 0;
+  return {
+    eligible,
+    verdict: eligible ? 'ELIGIBLE (Within 7 days, <= 3 analyses, 0 PDF exports)' : `DENIED: ${reasons.join(' + ')}`,
+    reasons,
+    daysSincePurchase,
+    analysesCount,
+    pdfDownloadsCount,
+  };
+}
+
+function adminChangeUserPlan(params: { email: string; newPlan: PlanKey; reason: string; adminEmail: string }) {
+  const user = getOrCreateServerUser(params.email);
+  const now = Date.now();
+  const iso = new Date(now).toISOString();
+  const prevPlanDisplay = PLANS[normalizePlanKey(user.plan)].displayName;
+  const nextPlanDisplay = PLANS[params.newPlan].displayName;
+  const timelineEntry = {
+    id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: iso,
+    type: 'admin_plan_change',
+    message: `Admin changed plan from ${prevPlanDisplay} to ${nextPlanDisplay} - Reason: ${params.reason} - By: ${params.adminEmail} - At: ${iso}`,
+    actor: params.adminEmail,
+  };
+  return updateServerUser(user.email, {
+    plan: params.newPlan,
+    license_start: now,
+    license_end: now + THIRTY_DAYS_MS,
+    analyses_used: 0,
+    timeline: [timelineEntry, ...user.timeline].slice(0, 200),
+  });
+}
+
+function recordRefundDecision(params: {
+  email: string;
+  status: 'pending' | 'approved' | 'denied';
+  notes: string;
+  actorEmail: string;
+}) {
+  const user = getOrCreateServerUser(params.email);
+  const now = Date.now();
+  const iso = new Date(now).toISOString();
+  const evalResult = evaluateRefundEligibility(user);
+  const timelineEntry = {
+    id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: iso,
+    type: 'refund_request',
+    message: `Refund ${params.status.toUpperCase()} - ${params.notes || evalResult.verdict}`,
+    actor: params.actorEmail,
+  };
+  return updateServerUser(user.email, {
+    refund_requested: true,
+    refund_status: params.status,
+    refund_notes: params.notes || evalResult.verdict,
+    timeline: [timelineEntry, ...user.timeline].slice(0, 200),
+  });
+}
+
+function updateServerPlanPricing(params: {
+  planKey: PlanKey;
+  originalPrice?: number;
+  launchPrice?: number;
+  analysesLimit?: number;
+  features?: string[];
+  adminEmail: string;
+}) {
+  const store = loadStore();
+  const cfg = hydratePricingConfig(store.pricing_config);
+  const current = cfg.plans[params.planKey];
+  const now = Date.now();
+  const iso = new Date(now).toISOString();
+
+  const prevPrice = cfg.launchDiscountActive ? current.launchPrice : current.originalPrice;
+  const prevAnalyses = current.analysesLimit;
+
+  const nextOriginal =
+    typeof params.originalPrice === 'number' && Number.isFinite(params.originalPrice) && params.originalPrice >= 0
+      ? Math.round(params.originalPrice)
+      : current.originalPrice;
+  const nextLaunch =
+    typeof params.launchPrice === 'number' && Number.isFinite(params.launchPrice) && params.launchPrice >= 0
+      ? Math.round(params.launchPrice)
+      : current.launchPrice;
+  const nextAnalyses =
+    typeof params.analysesLimit === 'number' && Number.isFinite(params.analysesLimit) && params.analysesLimit > 0
+      ? Math.round(params.analysesLimit)
+      : current.analysesLimit;
+  const nextFeatures =
+    Array.isArray(params.features) && params.features.length > 0
+      ? params.features.map((f) => f.trim()).filter(Boolean)
+      : current.features;
+
+  cfg.plans[params.planKey] = {
+    ...current,
+    originalPrice: nextOriginal,
+    launchPrice: nextLaunch,
+    analysesLimit: nextAnalyses,
+    features: nextFeatures,
+  };
+  cfg.updatedAt = now;
+
+  const nextPrice = cfg.launchDiscountActive ? nextLaunch : nextOriginal;
+  const planTitle =
+    current.displayName === 'PROFESSIONAL'
+      ? 'Professional'
+      : current.displayName === 'STARTER'
+      ? 'Starter'
+      : current.displayName === 'SOVEREIGN'
+      ? 'Sovereign'
+      : 'Free';
+
+  const log = {
+    id: `plog_${now}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: iso,
+    adminEmail: params.adminEmail,
+    planKey: params.planKey,
+    message: `Admin changed ${planTitle} from ${prevPrice}$ / ${prevAnalyses} analyses to ${nextPrice}$ / ${nextAnalyses} analyses - At: ${iso}`,
+  };
+
+  store.pricing_config = cfg;
+  store.pricing_logs = [log, ...(store.pricing_logs || [])].slice(0, 200);
+  persistStore(store);
+
+  return { pricing: getPricingPublicPayload(), log };
+}
+
+function updateLaunchDiscountSettings(params: {
+  launchDiscountActive?: boolean;
+  launchBadgeText?: string;
+  countdownDays?: number;
+  adminEmail: string;
+}) {
+  const store = loadStore();
+  const cfg = hydratePricingConfig(store.pricing_config);
+  const now = Date.now();
+  const iso = new Date(now).toISOString();
+
+  if (typeof params.launchDiscountActive === 'boolean') {
+    cfg.launchDiscountActive = params.launchDiscountActive;
+  }
+  if (typeof params.launchBadgeText === 'string' && params.launchBadgeText.trim()) {
+    cfg.launchBadgeText = params.launchBadgeText.trim();
+  }
+  if (typeof params.countdownDays === 'number' && Number.isFinite(params.countdownDays) && params.countdownDays >= 0) {
+    cfg.launchEndsAt = now + Math.round(params.countdownDays) * 24 * 60 * 60 * 1000;
+  }
+  cfg.updatedAt = now;
+
+  const log = {
+    id: `plog_${now}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: iso,
+    adminEmail: params.adminEmail,
+    planKey: 'global',
+    message: `Admin toggled Launch Discount ${cfg.launchDiscountActive ? 'ON (checkout uses launchPrice)' : 'OFF (checkout uses originalPrice)'} - Badge: "${cfg.launchBadgeText}" - At: ${iso}`,
+  };
+
+  store.pricing_config = cfg;
+  store.pricing_logs = [log, ...(store.pricing_logs || [])].slice(0, 200);
+  persistStore(store);
+
+  return { pricing: getPricingPublicPayload(), log };
+}
+
+// =========================================================================
+// 3. INLINED PDF GENERATOR & DAY-29 TEST EMAILER
+// =========================================================================
+
+function escapePdfText(input: string): string {
+  return (input || '')
+    .replace(/[^\x20-\x7E]/g, '?')
+    .replace(/\\/g, '\\\\')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)');
+}
+
+function wrapLine(text: string, maxChars = 88): string[] {
+  const clean = (text || '').trim();
+  if (!clean) return [''];
+  if (clean.length <= maxChars) return [clean];
+  const words = clean.split(/\s+/);
+  const lines: string[] = [];
+  let current = '';
+  for (const w of words) {
+    if (!current) current = w;
+    else if (current.length + 1 + w.length <= maxChars) current += ' ' + w;
+    else {
+      lines.push(current);
+      current = w;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function buildPdfDocument(opts: {
+  title: string;
+  subtitle?: string;
+  lines: string[];
+  watermark: string;
+  footer: string;
+}): Uint8Array {
+  const wrappedLines: string[] = [];
+  for (const rawLine of opts.lines) {
+    for (const seg of String(rawLine).split('\n')) {
+      wrappedLines.push(...wrapLine(seg, 86));
+    }
+  }
+
+  const linesPerPage = 44;
+  const pages: string[][] = [];
+  for (let i = 0; i < wrappedLines.length; i += linesPerPage) {
+    pages.push(wrappedLines.slice(i, i + linesPerPage));
+  }
+  if (pages.length === 0) pages.push(['']);
+
+  const objects: string[] = [];
+  const pageObjNums: number[] = [];
+  let nextObjNum = 5;
+
+  const pageStreams: string[] = pages.map((pageLines, pageIdx) => {
+    const ops: string[] = [];
+    ops.push('0.08 0.08 0.11 rg');
+    ops.push('36 728 540 50 re f');
+    ops.push('0.83 0.69 0.22 rg');
+    ops.push('36 726 540 2 re f');
+    ops.push('BT');
+    ops.push('/F2 13 Tf');
+    ops.push('0.83 0.69 0.22 rg');
+    ops.push(`48 756 Td (${escapePdfText(opts.title)}) Tj`);
+    ops.push('ET');
+    if (opts.subtitle) {
+      ops.push('BT');
+      ops.push('/F1 9 Tf');
+      ops.push('0.85 0.85 0.88 rg');
+      ops.push(`48 740 Td (${escapePdfText(opts.subtitle)}) Tj`);
+      ops.push('ET');
+    }
+    ops.push('BT');
+    ops.push('/F1 8 Tf');
+    ops.push('0.55 0.45 0.15 rg');
+    ops.push(`36 710 Td (${escapePdfText(opts.watermark)}) Tj`);
+    ops.push('ET');
+
+    let y = 688;
+    for (const line of pageLines) {
+      const isHeading =
+        line.startsWith('===') ||
+        line.endsWith(':') ||
+        line.startsWith('SECTION') ||
+        line.startsWith('REFUND POLICY');
+      ops.push('BT');
+      ops.push(isHeading ? '/F2 10 Tf' : '/F1 9.5 Tf');
+      ops.push(isHeading ? '0.08 0.08 0.12 rg' : '0.18 0.18 0.22 rg');
+      ops.push(`40 ${y} Td (${escapePdfText(line)}) Tj`);
+      ops.push('ET');
+      y -= 14;
+    }
+
+    ops.push('0.82 0.82 0.85 RG');
+    ops.push('36 44 m 576 44 l S');
+    ops.push('BT');
+    ops.push('/F1 8 Tf');
+    ops.push('0.35 0.35 0.40 rg');
+    ops.push(`36 30 Td (${escapePdfText(`${opts.footer} | Page ${pageIdx + 1} of ${pages.length}`)}) Tj`);
+    ops.push('ET');
+
+    return ops.join('\n');
+  });
+
+  for (let i = 0; i < pageStreams.length; i++) {
+    const pageNum = nextObjNum++;
+    const contentNum = nextObjNum++;
+    pageObjNums.push(pageNum);
+    objects[pageNum] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentNum} 0 R >>`;
+    const stream = pageStreams[i];
+    objects[contentNum] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+  }
+
+  objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objects[2] = `<< /Type /Pages /Kids [${pageObjNums.map((n) => `${n} 0 R`).join(' ')}] /Count ${pageObjNums.length} >>`;
+  objects[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
+  objects[4] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>';
+
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [0];
+  for (let i = 1; i < nextObjNum; i++) {
+    offsets[i] = pdf.length;
+    pdf += `${i} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+
+  const xrefStart = pdf.length;
+  pdf += `xref\n0 ${nextObjNum}\n`;
+  pdf += '0000000000 65535 f \n';
+  for (let i = 1; i < nextObjNum; i++) {
+    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${nextObjNum} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+
+  const bytes = new Uint8Array(pdf.length);
+  for (let i = 0; i < pdf.length; i++) {
+    bytes[i] = pdf.charCodeAt(i) & 0xff;
+  }
+  return bytes;
+}
+
+function buildDay29RenewalEmail(params: {
+  name: string;
+  plan: PlanKey;
+  endDateFormatted: string;
+  analysesLeft: number | string;
+}) {
+  const planName = PLANS[params.plan]?.displayName || 'STARTER';
+  const subject = `Your AQARI ${planName} ends tomorrow - Renew in 1 click`;
+  const renewUrl = `${PRODUCTION_URL}/pricing`;
+  const leftText =
+    params.analysesLeft === Infinity || params.analysesLeft === 'Unlimited'
+      ? 'Unlimited'
+      : String(params.analysesLeft);
+
+  const text = [
+    `Hi ${params.name},`,
+    '',
+    `Your ${planName} ends tomorrow (${params.endDateFormatted}). You have ${leftText} analyses left.`,
+    '',
+    `Renew same plan: ${renewUrl}`,
+    `Or Upgrade to Professional ($${PLANS.pro.launchPrice}) / Sovereign ($${PLANS.enterprise.launchPrice}): ${renewUrl}`,
+    '',
+    `If you don't renew, you will return to FREE (3 analyses).`,
+    '',
+    `AQARI Global Terminal`,
+    PRODUCTION_URL,
+  ].join('\n');
+
+  const html = `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#070709;color:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"><div style="max-width:600px;margin:0 auto;padding:32px 24px;background:#0b0b0f;border:1px solid #26262e;border-radius:16px;"><div style="font-family:monospace;color:#D4AF37;font-size:12px;letter-spacing:1.5px;font-weight:bold;margin-bottom:12px;">AQARI GLOBAL TERMINAL • 30-DAY LICENSING NOTICE</div><h1 style="font-size:22px;margin:0 0 16px;color:#ffffff;">Your AQARI ${planName} ends tomorrow</h1><p style="font-size:15px;line-height:1.6;color:#d4d4d8;margin:0 0 16px;">Hi <strong>${params.name}</strong>, your <strong>${planName}</strong> ends tomorrow (<strong>${params.endDateFormatted}</strong>). You have <strong>${leftText}</strong> analyses left.</p><a href="${renewUrl}" style="display:inline-block;padding:12px 22px;background:#D4AF37;color:#000000;font-weight:800;font-family:monospace;text-decoration:none;border-radius:10px;font-size:13px;">Renew ${planName} in 1 Click &rarr;</a><p style="font-size:13px;line-height:1.6;color:#a1a1aa;margin:16px 0 0;border-top:1px solid #27272a;padding-top:16px;">If you don't renew, you will return to <strong>FREE (3 analyses)</strong>.</p></div></body></html>`;
+
+  return { subject, text, html };
+}
+
+async function dispatchEmail(params: {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  type: 'day29_renewal' | 'plan_expired' | 'test_day29';
+}) {
+  const resendKey = cleanEnvValue(getEnv('RESEND_API_KEY'));
+  const hasResendKey = Boolean(resendKey);
+  const keyPrefix = hasResendKey ? resendKey.slice(0, 6) : 'MISSING';
+
+  if (!hasResendKey) {
+    return {
+      success: false,
+      provider: 'resend',
+      status: 'failed',
+      to: params.to,
+      from: EMAIL_FROM_ADDRESS,
+      error: 'RESEND_API_KEY missing in Vercel',
+      has_resend_key: false,
+      key_prefix: 'MISSING',
+    };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    let res: Response;
+    try {
+      res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: EMAIL_FROM,
+          to: [params.to],
+          subject: params.subject,
+          html: params.html,
+          text: params.text,
+        }),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    const rawText = await res.text();
+    let parsed: any = {};
+    try {
+      parsed = rawText ? JSON.parse(rawText) : {};
+    } catch {}
+    return {
+      success: res.ok,
+      provider: 'resend',
+      status: res.ok ? 'sent' : 'failed',
+      to: params.to,
+      from: EMAIL_FROM,
+      has_resend_key: true,
+      key_prefix: keyPrefix,
+      resend_status: res.status,
+      resend_id: parsed?.id,
+      error: res.ok ? undefined : parsed?.message || rawText || res.statusText,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      provider: 'resend',
+      status: 'failed',
+      to: params.to,
+      from: EMAIL_FROM,
+      has_resend_key: true,
+      key_prefix: keyPrefix,
+      error: err?.message || 'Resend network error',
+    };
+  }
+}
 
 function getQueryParam(req: any, url: URL, key: string): string {
-  const q = req.query?.[key];
+  const q = req?.query?.[key];
   if (typeof q === 'string') return q;
   if (Array.isArray(q) && q[0]) return String(q[0]);
   return url.searchParams.get(key) || '';
 }
 
-export default async function handler(req: any, res: any) {
-  const url = new URL(req.url || '/api/admin', `http://${req.headers?.host || 'localhost:3000'}`);
-  const action = (
-    getQueryParam(req, url, 'action') ||
-    (req.body && typeof req.body === 'object' ? req.body.action : '') ||
-    'users'
-  )
-    .toString()
-    .trim()
-    .toLowerCase();
+// =========================================================================
+// 4. ADMIN API HANDLER
+// =========================================================================
 
+export default async function handler(req: any, res: any) {
+  let action = 'users';
   try {
+    let url: URL;
+    try {
+      url = new URL(req?.url || '/api/admin', `http://${req?.headers?.host || 'localhost:3000'}`);
+    } catch {
+      url = new URL('/api/admin', 'http://localhost:3000');
+    }
+    action = (
+      getQueryParam(req, url, 'action') ||
+      (req?.body && typeof req.body === 'object' ? req.body.action : '') ||
+      'users'
+    )
+      .toString()
+      .trim()
+      .toLowerCase();
+
     const sessionEmail = getSessionEmailFromReq(req);
     if (!isAdminEmail(sessionEmail)) {
       return res.status(403).json({
@@ -46,12 +952,9 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
 
     switch (action) {
-      // ------------------------------------------------------------------
-      // 1. GET /api/admin?action=users
-      // ------------------------------------------------------------------
       case 'users': {
         if (req.method !== 'GET') {
           return res.status(405).json({ error: 'Method not allowed' });
@@ -62,9 +965,10 @@ export default async function handler(req: any, res: any) {
         const statusFilter = getQueryParam(req, url, 'status').trim().toLowerCase();
         const minAnalyses = Number(getQueryParam(req, url, 'minAnalyses') || 0);
         const refundOnly = getQueryParam(req, url, 'refundRequested') === 'true';
+        const store = loadStore();
 
         const users = getAllServerUsers()
-          .map((u) => {
+          .map((u: any) => {
             const license = computeServerLicenseStatus(u);
             const refundEval = evaluateRefundEligibility(u);
             return {
@@ -76,7 +980,7 @@ export default async function handler(req: any, res: any) {
               refundEvaluation: refundEval,
             };
           })
-          .filter((u) => {
+          .filter((u: any) => {
             if (search && !u.email.toLowerCase().includes(search)) return false;
             if (
               planFilter &&
@@ -92,21 +996,19 @@ export default async function handler(req: any, res: any) {
             if (refundOnly && !u.refund_requested) return false;
             return true;
           })
-          .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+          .sort((a: any, b: any) => (b.updated_at || 0) - (a.updated_at || 0));
 
         return res.status(200).json({
           success: true,
           admin: sessionEmail,
           totalUsers: users.length,
-          failedWebhooks: getFailedWebhookLogs().slice(0, 50),
+          failedWebhooks: (store.failed_webhooks || []).slice(0, 50),
           users,
         });
       }
 
-      // ------------------------------------------------------------------
-      // 2. GET /api/admin?action=stats
-      // ------------------------------------------------------------------
       case 'stats': {
+        const store = loadStore();
         const allUsers = getAllServerUsers();
         let paidUsers = 0;
         let starterCount = 0;
@@ -157,29 +1059,24 @@ export default async function handler(req: any, res: any) {
             totalRevenueUSD,
             estimatedMrrUSD,
             totalAnalysesUsed,
-            webhookLogsCount: getWebhookLogs().length,
-            failedWebhooksCount: getFailedWebhookLogs().length,
-            emailLogsCount: getEmailLogs().length,
-            pricingChangesCount: getPricingChangeLogs().length,
+            webhookLogsCount: (store.webhook_logs || []).length,
+            failedWebhooksCount: (store.failed_webhooks || []).length,
+            emailLogsCount: (store.email_logs || []).length,
+            pricingChangesCount: (store.pricing_logs || []).length,
           },
         });
       }
 
-      // ------------------------------------------------------------------
-      // 3. GET /api/admin?action=pricing (or pricing-get)
-      // ------------------------------------------------------------------
       case 'pricing':
       case 'pricing-get': {
+        const store = loadStore();
         return res.status(200).json({
           success: true,
           pricing: getPricingPublicPayload(),
-          logs: getPricingChangeLogs(),
+          logs: store.pricing_logs || [],
         });
       }
 
-      // ------------------------------------------------------------------
-      // 4. POST /api/admin?action=pricing-update (or update_plan)
-      // ------------------------------------------------------------------
       case 'pricing-update':
       case 'update_plan': {
         if (req.method !== 'POST') {
@@ -209,13 +1106,10 @@ export default async function handler(req: any, res: any) {
           success: true,
           pricing: result.pricing,
           log: result.log,
-          logs: getPricingChangeLogs(),
+          logs: loadStore().pricing_logs || [],
         });
       }
 
-      // ------------------------------------------------------------------
-      // 5. POST /api/admin?action=toggle-discount (or toggle_launch_discount)
-      // ------------------------------------------------------------------
       case 'toggle-discount':
       case 'toggle_launch_discount': {
         if (req.method !== 'POST') {
@@ -234,13 +1128,10 @@ export default async function handler(req: any, res: any) {
           success: true,
           pricing: result.pricing,
           log: result.log,
-          logs: getPricingChangeLogs(),
+          logs: loadStore().pricing_logs || [],
         });
       }
 
-      // ------------------------------------------------------------------
-      // 6. GET/POST /api/admin?action=user&email=... | ?action=change-plan | ?action=refund-decision
-      // ------------------------------------------------------------------
       case 'user':
       case 'change-plan':
       case 'refund-decision': {
@@ -321,9 +1212,6 @@ export default async function handler(req: any, res: any) {
         return res.status(405).json({ error: 'Method not allowed' });
       }
 
-      // ------------------------------------------------------------------
-      // 7. GET /api/admin?action=export&email=...
-      // ------------------------------------------------------------------
       case 'export': {
         if (req.method !== 'GET') {
           return res.status(405).json({ error: 'Method not allowed' });
@@ -339,7 +1227,7 @@ export default async function handler(req: any, res: any) {
         const license = computeServerLicenseStatus(user);
         const refundEval = evaluateRefundEligibility(user);
         const nowIso = new Date().toISOString();
-        const latestPayment = user.payments[0];
+        const latestPayment = user.payments?.[0];
         const purchaseDate = latestPayment
           ? latestPayment.timestamp
           : user.license_start
@@ -372,7 +1260,7 @@ export default async function handler(req: any, res: any) {
         if (user.analyses_log.length === 0) {
           lines.push('No underwriting analyses logged for this account.');
         } else {
-          user.analyses_log.forEach((a, idx) => {
+          user.analyses_log.forEach((a: any, idx: number) => {
             lines.push(
               `#${idx + 1} | ${a.timestamp} | ${a.property} (${a.city}) | $${a.priceUSD} | ${a.resultSummary}`
             );
@@ -384,7 +1272,7 @@ export default async function handler(req: any, res: any) {
         if (user.pdf_downloads.length === 0) {
           lines.push('No PDF Memorandum downloads logged for this account.');
         } else {
-          user.pdf_downloads.forEach((p, idx) => {
+          user.pdf_downloads.forEach((p: any, idx: number) => {
             lines.push(`#${idx + 1} | ${p.timestamp} | ${p.property} | Format: ${p.format.toUpperCase()}`);
           });
         }
@@ -394,7 +1282,7 @@ export default async function handler(req: any, res: any) {
         if (user.timeline.length === 0) {
           lines.push('No timeline events recorded yet.');
         } else {
-          user.timeline.forEach((t) => {
+          user.timeline.forEach((t: any) => {
             lines.push(`${t.timestamp} - ${t.message}`);
           });
         }
@@ -415,9 +1303,6 @@ export default async function handler(req: any, res: any) {
         return;
       }
 
-      // ------------------------------------------------------------------
-      // 8. GET/POST /api/admin?action=test-email-day29
-      // ------------------------------------------------------------------
       case 'test-email-day29': {
         const body = req.body || {};
         const email = (
@@ -501,6 +1386,6 @@ export default async function handler(req: any, res: any) {
     }
   } catch (err: any) {
     console.error(`/api/admin?action=${action} error:`, err);
-    return res.status(500).json({ error: err?.message || 'Admin API error' });
+    return res.status(200).json({ success: false, error: err?.message || 'Admin API error' });
   }
 }
