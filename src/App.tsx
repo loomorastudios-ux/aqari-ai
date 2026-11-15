@@ -531,11 +531,12 @@ export default function App() {
         return;
       }
 
-      const realError =
-        data?.error ||
-        data?.message ||
-        (rawText && !rawText.trim().startsWith('<') ? rawText.trim().slice(0, 350) : '') ||
-        `Unable to verify payment (status ${verifyRes.status})`;
+      const realError = rawText.includes('FUNCTION_INVOCATION_FAILED')
+        ? `Server function failed to start. Check Vercel > Logs > FUNCTION_INVOCATION_FAILED for first Error line.\n\n${rawText.trim().slice(0, 350)}`
+        : data?.error ||
+          data?.message ||
+          (rawText && !rawText.trim().startsWith('<') ? rawText.trim().slice(0, 350) : '') ||
+          `Unable to verify payment (status ${verifyRes.status})`;
       setVerifyState('error');
       setVerifyError(realError);
     } catch (err: any) {

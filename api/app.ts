@@ -46,11 +46,21 @@ import { getDeterministicMarketData, getLiveMarketDataWithCache } from '../lib/m
 import { fetchGoogleMarketNews } from '../lib/marketNews';
 import { DEMO_ANALYSES } from '../src/constants/demoAnalyses';
 
-const VARIANT_IDS: Record<'starter' | 'pro' | 'enterprise', string> = {
-  starter: process.env.LEMON_STARTER_VARIANT_ID || 'da826632-dcb4-4885-966e-aac1fab84cb3',
-  pro: process.env.LEMON_PRO_VARIANT_ID || '404c54cb-29c5-477a-b8c2-772092f5459a',
-  enterprise: process.env.LEMON_SOVEREIGN_VARIANT_ID || 'ce8dfbdb-cedd-4445-a947-e821522472bb',
-};
+function getEnv(key: string): string {
+  try {
+    return typeof process !== 'undefined' && process?.env ? String(process.env[key] || '') : '';
+  } catch {
+    return '';
+  }
+}
+
+function getVariantIds(): Record<'starter' | 'pro' | 'enterprise', string> {
+  return {
+    starter: getEnv('LEMON_STARTER_VARIANT_ID') || 'da826632-dcb4-4885-966e-aac1fab84cb3',
+    pro: getEnv('LEMON_PRO_VARIANT_ID') || '404c54cb-29c5-477a-b8c2-772092f5459a',
+    enterprise: getEnv('LEMON_SOVEREIGN_VARIANT_ID') || 'ce8dfbdb-cedd-4445-a947-e821522472bb',
+  };
+}
 
 const BUY_URLS: Record<'starter' | 'pro' | 'enterprise', string> = {
   starter: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/da826632-dcb4-4885-966e-aac1fab84cb3',
@@ -64,19 +74,19 @@ const VARIANT_ID_TO_PLAN: Record<string, PlanKey> = {
   'ce8dfbdb-cedd-4445-a947-e821522472bb': 'enterprise',
 };
 
-const SUCCESS_REDIRECT = 'https://aqari-ai-rho.vercel.app/app?checkout=success&order_id={ORDER_ID}';
+const SUCCESS_REDIRECT = 'https://aqari-ai-rho.vercel.app/app?checkout=success';
 const CANCEL_REDIRECT = 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled';
 
 function resolvePlanFromLemonAttributes(attrs: any, fallbackPlan?: PlanKey): PlanKey {
   const variantId = String(attrs?.first_order_item?.variant_id || attrs?.variant_id || '').trim();
   const productId = String(attrs?.first_order_item?.product_id || attrs?.product_id || '').trim();
 
-  if (variantId && process.env.LEMON_STARTER_VARIANT_ID && variantId === process.env.LEMON_STARTER_VARIANT_ID) return 'starter';
-  if (variantId && process.env.LEMON_PRO_VARIANT_ID && variantId === process.env.LEMON_PRO_VARIANT_ID) return 'pro';
-  if (variantId && process.env.LEMON_SOVEREIGN_VARIANT_ID && variantId === process.env.LEMON_SOVEREIGN_VARIANT_ID) return 'enterprise';
-  if (productId && process.env.LEMON_STARTER_PRODUCT_ID && productId === process.env.LEMON_STARTER_PRODUCT_ID) return 'starter';
-  if (productId && process.env.LEMON_PRO_PRODUCT_ID && productId === process.env.LEMON_PRO_PRODUCT_ID) return 'pro';
-  if (productId && process.env.LEMON_SOVEREIGN_PRODUCT_ID && productId === process.env.LEMON_SOVEREIGN_PRODUCT_ID) return 'enterprise';
+  if (variantId && getEnv('LEMON_STARTER_VARIANT_ID') && variantId === getEnv('LEMON_STARTER_VARIANT_ID')) return 'starter';
+  if (variantId && getEnv('LEMON_PRO_VARIANT_ID') && variantId === getEnv('LEMON_PRO_VARIANT_ID')) return 'pro';
+  if (variantId && getEnv('LEMON_SOVEREIGN_VARIANT_ID') && variantId === getEnv('LEMON_SOVEREIGN_VARIANT_ID')) return 'enterprise';
+  if (productId && getEnv('LEMON_STARTER_PRODUCT_ID') && productId === getEnv('LEMON_STARTER_PRODUCT_ID')) return 'starter';
+  if (productId && getEnv('LEMON_PRO_PRODUCT_ID') && productId === getEnv('LEMON_PRO_PRODUCT_ID')) return 'pro';
+  if (productId && getEnv('LEMON_SOVEREIGN_PRODUCT_ID') && productId === getEnv('LEMON_SOVEREIGN_PRODUCT_ID')) return 'enterprise';
   if (variantId && VARIANT_ID_TO_PLAN[variantId]) return VARIANT_ID_TO_PLAN[variantId];
 
   // Prioritize actual paid USD amount BEFORE product name heuristics (199 -> PRO, 79 -> STARTER, 599 -> SOVEREIGN)
@@ -251,9 +261,9 @@ export default async function handler(req: any, res: any) {
         const candidateKeys = Array.from(
           new Set(
             [
-              cleanEnvValue(process.env.LEMONSQUEEZY_API_KEY),
-              cleanEnvValue(process.env.LEMON_API_KEY),
-              cleanEnvValue(process.env.LEMON_TEST_API_KEY),
+              cleanEnvValue(getEnv('LEMONSQUEEZY_API_KEY')),
+              cleanEnvValue(getEnv('LEMON_API_KEY')),
+              cleanEnvValue(getEnv('LEMON_TEST_API_KEY')),
             ].filter(Boolean)
           )
         );
@@ -276,7 +286,6 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          // Clean order_id and ignore unresolved URL placeholders like {ORDER_ID} or [order_id]
           const cleanPlaceholderOrderId = (raw: any): string => {
             const cleaned = normalizeOrderId(String(raw || ''));
             const lower = cleaned.toLowerCase();
@@ -285,6 +294,8 @@ export default async function handler(req: any, res: any) {
               cleaned === '{ORDER_ID}' ||
               cleaned === '[order_id]' ||
               cleaned === '{order_id}' ||
+              lower === 'last' ||
+              lower === 'not found' ||
               lower === 'null' ||
               lower === 'undefined' ||
               lower === 'none' ||
@@ -296,73 +307,111 @@ export default async function handler(req: any, res: any) {
           };
 
           const rawOrderParam = String(src?.order_id || src?.order || '').trim();
-          const isExplicitLastRequest = rawOrderParam.toUpperCase() === 'LAST';
-          orderId = isExplicitLastRequest ? '' : cleanPlaceholderOrderId(rawOrderParam);
-
-          const isValidWebhookOrderEntry = (entry: any): string => {
-            if (!entry || typeof entry !== 'object') return '';
-            const ev = String(entry?.event || entry?.event_name || '').trim().toLowerCase();
-            if (ev && ev !== 'order_created' && ev !== 'subscription_created' && ev !== 'checkout_verify_api') {
-              return '';
-            }
-            const oid = cleanPlaceholderOrderId(entry?.order_id);
-            if (
-              !oid ||
-              oid === 'key_missing' ||
-              oid === 'not_found' ||
-              oid === 'invalid_api_key' ||
-              oid.startsWith('ord_')
-            ) {
-              return '';
-            }
-            return oid;
-          };
-
-          // 2. Missing order_id (or explicit LAST): NEVER call Lemon API with undefined; fallback to webhook-logs
-          if (!orderId) {
-            const recentLogs = await getWebhookLogsFromDb(100).catch(() => []);
-            const logsArr = Array.isArray(recentLogs) ? recentLogs : [];
-
-            const emailMatch = logsArr.find((entry) => {
-              const oid = isValidWebhookOrderEntry(entry);
-              if (!oid) return false;
-              const e1 = String(entry?.email || '').trim().toLowerCase();
-              const e2 = String(entry?.payment_email || '').trim().toLowerCase();
-              return e1 === loginEmail || e2 === loginEmail;
-            });
-
-            if (emailMatch) {
-              orderId = cleanPlaceholderOrderId(emailMatch.order_id);
-            } else if (isExplicitLastRequest) {
-              // If user explicitly clicked "Use Last Order From Webhook Logs", also check latest unused order_created webhook
-              for (const entry of logsArr) {
-                const oid = isValidWebhookOrderEntry(entry);
-                if (!oid) continue;
-                const usedCheck = await getUsedOrderFromDb(oid).catch(() => null);
-                if (!usedCheck) {
-                  orderId = oid;
-                  break;
-                }
-              }
-            }
-
-            if (orderId) {
-              console.log(`order_id from webhook-logs fallback: ${orderId}`);
-            }
-          }
-
-          if (!orderId) {
-            return res.status(200).json({
-              success: false,
-              error: `No order_id in URL and no order found in webhook-logs for ${loginEmail}. Please add &order_id={ORDER_ID} to Lemon Checkout Success URL. Go to Lemon > Product > Checkout Success URL: https://aqari-ai-rho.vercel.app/app?checkout=success&order_id={ORDER_ID}`,
-            });
-          }
+          const lowerOrderParam = rawOrderParam.toLowerCase();
+          const isFallbackMode =
+            !rawOrderParam ||
+            lowerOrderParam === 'last' ||
+            lowerOrderParam === 'not found' ||
+            !cleanPlaceholderOrderId(rawOrderParam);
+          const isExplicitLastRequest = lowerOrderParam === 'last';
+          orderId = isFallbackMode ? '' : cleanPlaceholderOrderId(rawOrderParam);
 
           const pricing = getPricingPublicPayload();
 
-          // Check persistent single-use used_orders list
-          const existingUsedOrder = await getUsedOrderFromDb(orderId).catch(() => null);
-          if (existingUsedOrder) {
+          const completeActivation = async (params: {
+            resolvedOrderId: string;
+            amountUSD: number;
+            fallbackPlan?: PlanKey;
+            paymentEmail: string;
+            testMode: boolean;
+            createdAtIso?: string;
+            skipWebhookLogAppend?: boolean;
+          }) => {
+            const tier = mapAmountOrPlanToOrderTier(params.amountUSD, params.fallbackPlan);
+            const now = Date.now();
+            let dbUser =
+              (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
+            dbUser = activatePaidPlanOnServer({
+              email: loginEmail,
+              name: dbUser?.name,
+              plan: tier.plan,
+              paymentTimestamp: now,
+              orderId: params.resolvedOrderId,
+              amountUSD: params.amountUSD,
+              currency: 'USD',
+              testMode: params.testMode,
+              refundPolicyAcceptedAt: src?.refundAcceptedAt || new Date(now).toISOString(),
+              lockedLaunchPrice: pricing.launchDiscountActive ? params.amountUSD : null,
+              lemonCustomerEmail: params.paymentEmail || null,
+            });
+            await saveUserToDb(dbUser).catch(() => {});
+
+            await markOrderUsedInDb({
+              order_id: params.resolvedOrderId,
+              login_email: loginEmail,
+              payment_email: params.paymentEmail || 'unknown',
+              plan: tier.plan,
+              plan_display: tier.planDisplay,
+              analyses: tier.analyses,
+              amount: params.amountUSD,
+              test_mode: params.testMode,
+              used_at: now,
+            });
+
+            if (!params.skipWebhookLogAppend) {
+              await appendWebhookLogToDb({
+                order_id: params.resolvedOrderId,
+                event: 'checkout_verify_api',
+                event_name: 'checkout_verify_api',
+                plan: tier.plan,
+                email: loginEmail,
+                payment_email: params.paymentEmail || 'unknown',
+                created_at: params.createdAtIso || new Date(now).toISOString(),
+                amount: params.amountUSD,
+                currency: 'USD',
+                test_mode: params.testMode,
+                signature_valid: true,
+              }).catch(() => {});
+            }
+
+            try {
+              setSessionCookie(res, dbUser.email);
+              setEntitlementCookie(res, {
+                email: dbUser.email,
+                plan: tier.plan,
+                orderId: params.resolvedOrderId,
+                licenseStart: dbUser.license_start || now,
+                licenseEnd: dbUser.license_end || now + 30 * 24 * 60 * 60 * 1000,
+                amountUSD: params.amountUSD,
+                testMode: params.testMode,
+                lemonCustomerEmail: params.paymentEmail || null,
+              });
+            } catch {}
+
+            const license = computeServerLicenseStatus(dbUser);
+            const features = findPlanPricing(pricing, tier.plan)?.features || PLANS[tier.plan].features;
+
+            return res.status(200).json({
+              success: true,
+              verified: true,
+              plan: tier.planDisplay,
+              planKey: tier.plan,
+              analyses_left: tier.analyses,
+              payment_email_for_log_only: params.paymentEmail || null,
+              order_id: params.resolvedOrderId,
+              login_email: dbUser.email,
+              license_end: dbUser.license_end,
+              user: dbUser,
+              license: {
+                ...license,
+                analysesLimit: tier.analyses,
+                analysesLeft: tier.analyses,
+              },
+              features,
+            });
+          };
+
+          const returnExistingUsedOrder = async (existingUsedOrder: any) => {
             if (existingUsedOrder.login_email !== loginEmail) {
               return res.status(200).json({
                 success: false,
@@ -378,7 +427,7 @@ export default async function handler(req: any, res: any) {
                 name: existingUser.name,
                 plan: existingUsedOrder.plan,
                 paymentTimestamp: existingUsedOrder.used_at || Date.now(),
-                orderId,
+                orderId: existingUsedOrder.order_id,
                 amountUSD: existingUsedOrder.amount,
                 currency: 'USD',
                 testMode: Boolean(existingUsedOrder.test_mode),
@@ -386,14 +435,15 @@ export default async function handler(req: any, res: any) {
               });
               await saveUserToDb(existingUser).catch(() => {});
             }
+            const usedPlanKey = normalizePlanKey(existingUsedOrder.plan);
             const license = computeServerLicenseStatus(existingUser);
-            const features = findPlanPricing(pricing, existingUsedOrder.plan)?.features || PLANS[existingUsedOrder.plan].features;
+            const features = findPlanPricing(pricing, usedPlanKey)?.features || PLANS[usedPlanKey].features;
             try {
               setSessionCookie(res, existingUser.email);
               setEntitlementCookie(res, {
                 email: existingUser.email,
                 plan: existingUsedOrder.plan,
-                orderId,
+                orderId: existingUsedOrder.order_id,
                 licenseStart: existingUser.license_start || Date.now(),
                 licenseEnd: existingUser.license_end || Date.now() + 30 * 24 * 60 * 60 * 1000,
                 amountUSD: existingUsedOrder.amount,
@@ -409,16 +459,113 @@ export default async function handler(req: any, res: any) {
               planKey: existingUsedOrder.plan,
               analyses_left: existingUsedOrder.analyses,
               payment_email_for_log_only: existingUsedOrder.payment_email || null,
-              order_id: orderId,
+              order_id: existingUsedOrder.order_id,
               login_email: existingUser.email,
               license_end: existingUser.license_end,
               user: existingUser,
               license,
               features,
             });
+          };
+
+          // ------------------------------------------------------------------
+          // PATH A: Missing order_id OR order_id === "LAST" OR "Not found"
+          // DO NOT call Lemon API. Activate directly from webhook-logs!
+          // Works even if LEMONSQUEEZY_API_KEY is missing.
+          // ------------------------------------------------------------------
+          if (isFallbackMode) {
+            const isValidWebhookOrderEntry = (entry: any): string => {
+              if (!entry || typeof entry !== 'object') return '';
+              const ev = String(entry?.event || entry?.event_name || '').trim().toLowerCase();
+              if (ev && ev !== 'order_created' && ev !== 'subscription_created' && ev !== 'checkout_verify_api') {
+                return '';
+              }
+              const oid = cleanPlaceholderOrderId(entry?.order_id);
+              if (
+                !oid ||
+                oid === 'key_missing' ||
+                oid === 'not_found' ||
+                oid === 'invalid_api_key' ||
+                oid.startsWith('ord_')
+              ) {
+                return '';
+              }
+              return oid;
+            };
+
+            const recentLogs = await getWebhookLogsFromDb(100).catch(() => []);
+            const logsArr = Array.isArray(recentLogs) ? recentLogs : [];
+
+            let matchedLog: any = logsArr.find((entry) => {
+              const oid = isValidWebhookOrderEntry(entry);
+              if (!oid) return false;
+              const e1 = String(entry?.email || '').trim().toLowerCase();
+              const e2 = String(entry?.payment_email || '').trim().toLowerCase();
+              return e1 === loginEmail || e2 === loginEmail;
+            });
+
+            // If user explicitly clicked "USE LAST ORDER FROM WEBHOOK LOGS" and paid with a different email,
+            // also allow matching the most recent valid unused order_created webhook entry.
+            if (!matchedLog && isExplicitLastRequest) {
+              for (const entry of logsArr) {
+                const oid = isValidWebhookOrderEntry(entry);
+                if (!oid) continue;
+                const usedCheck = await getUsedOrderFromDb(oid).catch(() => null);
+                if (!usedCheck) {
+                  matchedLog = entry;
+                  break;
+                }
+              }
+            }
+
+            if (!matchedLog) {
+              return res.status(200).json({
+                success: false,
+                error: `No order found in webhook-logs for ${loginEmail}. Pay first, then click USE LAST ORDER.`,
+              });
+            }
+
+            orderId = cleanPlaceholderOrderId(matchedLog.order_id);
+            console.log(`order_id from webhook-logs fallback: ${orderId}`);
+
+            const existingUsedOrder = await getUsedOrderFromDb(orderId).catch(() => null);
+            if (existingUsedOrder) {
+              return await returnExistingUsedOrder(existingUsedOrder);
+            }
+
+            const logAmount = Number(matchedLog?.amount ?? 0);
+            const logPlan = normalizePlanKey(matchedLog?.plan);
+            const fallbackAmount =
+              Number.isFinite(logAmount) && logAmount > 0
+                ? logAmount
+                : logPlan === 'enterprise'
+                ? 599
+                : logPlan === 'starter'
+                ? 79
+                : 199;
+            const logPaymentEmail = String(matchedLog?.payment_email || matchedLog?.email || '')
+              .trim()
+              .toLowerCase();
+
+            return await completeActivation({
+              resolvedOrderId: orderId,
+              amountUSD: fallbackAmount,
+              fallbackPlan: logPlan !== 'free' ? logPlan : 'pro',
+              paymentEmail: logPaymentEmail,
+              testMode: Boolean(matchedLog?.test_mode),
+              createdAtIso: matchedLog?.created_at || matchedLog?.timestamp,
+              skipWebhookLogAppend: true,
+            });
           }
 
-          // 3. Handle missing LEMONSQUEEZY_API_KEY gracefully (HTTP 200)
+          // ------------------------------------------------------------------
+          // PATH B: Explicit order_id provided -> Check single-use, then verify with Lemon API
+          // ------------------------------------------------------------------
+          const existingUsedOrder = await getUsedOrderFromDb(orderId).catch(() => null);
+          if (existingUsedOrder) {
+            return await returnExistingUsedOrder(existingUsedOrder);
+          }
+
           if (!hasLemonKey) {
             return res.status(200).json({
               success: false,
@@ -426,7 +573,6 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          // 4. Call Lemon API GET /v1/orders/{order_id} safely
           let verifiedAttrs: any = null;
           let verifiedOrderData: any = null;
           let lemonIncluded: any[] = [];
@@ -494,7 +640,7 @@ export default async function handler(req: any, res: any) {
               email: loginEmail,
               amount: 0,
               currency: 'USD',
-              test_mode: process.env.LEMON_TEST_MODE === 'true',
+              test_mode: getEnv('LEMON_TEST_MODE') === 'true',
               signature_valid: false,
               raw_error: lastLemonError || `Order not found in Lemon: ${orderId}`,
               error: lastLemonError || `Order not found in Lemon: ${orderId}`,
@@ -528,11 +674,9 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          // Map amount & plan: 79 -> STARTER 30, 199 -> PROFESSIONAL 150, 599 -> SOVEREIGN 400
           const rawTotalCents = Number(verifiedAttrs?.total ?? verifiedAttrs?.subtotal ?? 0);
           const amountUSD = Number.isFinite(rawTotalCents) && rawTotalCents > 0 ? rawTotalCents / 100 : 199;
           const fallbackPlan = resolvePlanFromLemonAttributes(verifiedAttrs, 'pro');
-          const tier = mapAmountOrPlanToOrderTier(amountUSD, fallbackPlan);
           const testMode = Boolean(verifiedAttrs?.test_mode);
           const paymentEmailForLogOnly = String(
             verifiedAttrs?.user_email ||
@@ -543,85 +687,13 @@ export default async function handler(req: any, res: any) {
             .trim()
             .toLowerCase();
 
-          // CRITICAL: Always activate loginEmail (NEVER paymentEmailForLogOnly)
-          const now = Date.now();
-          let dbUser =
-            (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
-          dbUser = activatePaidPlanOnServer({
-            email: loginEmail,
-            name: dbUser?.name,
-            plan: tier.plan,
-            paymentTimestamp: now,
-            orderId: String(verifiedOrderData?.id || orderId),
+          return await completeActivation({
+            resolvedOrderId: String(verifiedOrderData?.id || orderId),
             amountUSD,
-            currency: 'USD',
+            fallbackPlan,
+            paymentEmail: paymentEmailForLogOnly,
             testMode,
-            refundPolicyAcceptedAt: src?.refundAcceptedAt || new Date(now).toISOString(),
-            lockedLaunchPrice: pricing.launchDiscountActive ? amountUSD : null,
-            lemonCustomerEmail: paymentEmailForLogOnly || null,
-          });
-          await saveUserToDb(dbUser).catch(() => {});
-
-          await markOrderUsedInDb({
-            order_id: orderId,
-            login_email: loginEmail,
-            payment_email: paymentEmailForLogOnly || 'unknown',
-            plan: tier.plan,
-            plan_display: tier.planDisplay,
-            analyses: tier.analyses,
-            amount: amountUSD,
-            test_mode: testMode,
-            used_at: now,
-          });
-
-          await appendWebhookLogToDb({
-            order_id: orderId,
-            event: 'checkout_verify_api',
-            event_name: 'checkout_verify_api',
-            plan: tier.plan,
-            email: loginEmail,
-            payment_email: paymentEmailForLogOnly || 'unknown',
-            created_at: verifiedAttrs?.created_at || new Date(now).toISOString(),
-            amount: amountUSD,
-            currency: 'USD',
-            test_mode: testMode,
-            signature_valid: true,
-          }).catch(() => {});
-
-          try {
-            setSessionCookie(res, dbUser.email);
-            setEntitlementCookie(res, {
-              email: dbUser.email,
-              plan: tier.plan,
-              orderId,
-              licenseStart: dbUser.license_start || now,
-              licenseEnd: dbUser.license_end || now + 30 * 24 * 60 * 60 * 1000,
-              amountUSD,
-              testMode,
-              lemonCustomerEmail: paymentEmailForLogOnly || null,
-            });
-          } catch {}
-
-          const license = computeServerLicenseStatus(dbUser);
-          const features = findPlanPricing(pricing, tier.plan)?.features || PLANS[tier.plan].features;
-
-          return res.status(200).json({
-            success: true,
-            verified: true,
-            plan: tier.planDisplay,
-            planKey: tier.plan,
-            analyses_left: tier.analyses,
-            payment_email_for_log_only: paymentEmailForLogOnly || null,
-            order_id: orderId,
-            login_email: dbUser.email,
-            license_end: dbUser.license_end,
-            user: dbUser,
-            license: {
-              ...license,
-              analysesLimit: tier.analyses,
-              analysesLeft: tier.analyses,
-            },
-            features,
+            createdAtIso: verifiedAttrs?.created_at,
           });
         } catch (err: any) {
           console.error('[verify-checkout] Unhandled error (returning HTTP 200):', err);
@@ -1014,7 +1086,7 @@ export default async function handler(req: any, res: any) {
         const { plan, email, userId, refundAcceptedAt } = req.body || {};
         const validPlan: 'starter' | 'pro' | 'enterprise' =
           plan === 'starter' || plan === 'pro' || plan === 'enterprise' ? plan : 'pro';
-        const variantId = VARIANT_IDS[validPlan];
+        const variantId = getVariantIds()[validPlan];
         const buyBaseUrl = BUY_URLS[validPlan];
 
         const pricing = getPricingPublicPayload();
@@ -1741,6 +1813,9 @@ export default async function handler(req: any, res: any) {
     }
   } catch (err: any) {
     console.error(`/api/app?action=${action} error:`, err);
-    return res.status(200).json({ success: false, error: err?.message || 'App API error' });
+    return res.status(200).json({
+      success: false,
+      error: `Verify failed: ${err?.message || String(err || 'App API error')}`,
+    });
   }
 }

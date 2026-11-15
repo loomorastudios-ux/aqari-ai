@@ -246,18 +246,31 @@ function createDefaultPricingConfig(): StoredPricingConfig {
   };
 }
 
-const STORE_FILE = path.join('/tmp', 'aqari_terminal_store_v1.json');
+function getStoreFile(): string {
+  try {
+    return path.join('/tmp', 'aqari_terminal_store_v1.json');
+  } catch {
+    return '/tmp/aqari_terminal_store_v1.json';
+  }
+}
 
-let memoryStore: StoreShape = {
-  users: {},
-  webhook_logs: [],
-  failed_webhooks: [],
-  email_logs: [],
-  pricing_config: createDefaultPricingConfig(),
-  pricing_logs: [],
-  pending_checkouts: {},
-  used_orders: {},
-};
+let memoryStoreCache: StoreShape | null = null;
+
+function getMemoryStore(): StoreShape {
+  if (!memoryStoreCache) {
+    memoryStoreCache = {
+      users: {},
+      webhook_logs: [],
+      failed_webhooks: [],
+      email_logs: [],
+      pricing_config: createDefaultPricingConfig(),
+      pricing_logs: [],
+      pending_checkouts: {},
+      used_orders: {},
+    };
+  }
+  return memoryStoreCache;
+}
 
 function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
   const now = Date.now();
@@ -319,8 +332,9 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
 
 function loadStore(): StoreShape {
   try {
-    if (fs.existsSync(STORE_FILE)) {
-      const raw = fs.readFileSync(STORE_FILE, 'utf8');
+    const storeFile = getStoreFile();
+    if (fs.existsSync(storeFile)) {
+      const raw = fs.readFileSync(storeFile, 'utf8');
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
         const users: Record<string, ServerUserRecord> = {};
@@ -329,7 +343,7 @@ function loadStore(): StoreShape {
             users[k] = hydrateUserRecord(v, k);
           }
         }
-        memoryStore = {
+        memoryStoreCache = {
           users,
           webhook_logs: Array.isArray(parsed.webhook_logs) ? parsed.webhook_logs : [],
           failed_webhooks: Array.isArray(parsed.failed_webhooks) ? parsed.failed_webhooks : [],
@@ -348,15 +362,15 @@ function loadStore(): StoreShape {
       }
     }
   } catch {
-    // Fallback cleanly to memoryStore
+    // Fallback cleanly to getMemoryStore()
   }
-  return memoryStore;
+  return getMemoryStore();
 }
 
 function persistStore(store: StoreShape): void {
-  memoryStore = store;
+  memoryStoreCache = store;
   try {
-    fs.writeFileSync(STORE_FILE, JSON.stringify(store, null, 2), 'utf8');
+    fs.writeFileSync(getStoreFile(), JSON.stringify(store, null, 2), 'utf8');
   } catch {
     // Ignore read-only filesystem errors
   }
@@ -898,8 +912,9 @@ export async function getWebhookLogsFromDb(limit = 20): Promise<WebhookLogEntry[
 
   // Always read directly from disk DB file when present (not stale memory)
   try {
-    if (fs.existsSync(STORE_FILE)) {
-      const raw = fs.readFileSync(STORE_FILE, 'utf8');
+    const storeFile = getStoreFile();
+    if (fs.existsSync(storeFile)) {
+      const raw = fs.readFileSync(storeFile, 'utf8');
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed?.webhook_logs)) {
         return parsed.webhook_logs.slice(0, limit);
@@ -937,8 +952,9 @@ export async function getEmailLogsFromDb(limit = 20): Promise<EmailLogEntry[]> {
   }
 
   try {
-    if (fs.existsSync(STORE_FILE)) {
-      const raw = fs.readFileSync(STORE_FILE, 'utf8');
+    const storeFile = getStoreFile();
+    if (fs.existsSync(storeFile)) {
+      const raw = fs.readFileSync(storeFile, 'utf8');
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed?.email_logs)) {
         return parsed.email_logs.slice(0, limit);
