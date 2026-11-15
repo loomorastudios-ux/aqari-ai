@@ -187,6 +187,7 @@ export default function App() {
   const [verifyState, setVerifyState] = useState<'verifying' | 'activated' | 'error'>('verifying');
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [checkoutUrlOrderId, setCheckoutUrlOrderId] = useState<string | null>(null);
+  const [manualOrderId, setManualOrderId] = useState<string>('');
   const [verifiedSummary, setVerifiedSummary] = useState<{
     plan: string;
     analysesLeft: number | string;
@@ -1046,6 +1047,37 @@ export default function App() {
               <div className="text-[11px] font-mono text-zinc-400">
                 Order ID from URL: <span className="text-zinc-200">{checkoutUrlOrderId || 'Not found'}</span>
               </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const cleaned = cleanPlaceholderOrderId(manualOrderId);
+                  if (!cleaned) {
+                    setVerifyError('Please enter your Order ID (e.g. 5165758) from your Lemon receipt.');
+                    return;
+                  }
+                  runAutoVerifyCheckout(cleaned);
+                }}
+                className="space-y-2.5 text-left p-4 rounded-2xl bg-zinc-900/80 border border-white/15"
+              >
+                <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-300 font-bold">
+                  Enter Order ID (from Lemon receipt, e.g. 5165758)
+                </label>
+                <input
+                  type="text"
+                  value={manualOrderId}
+                  onChange={(e) => setManualOrderId(e.target.value)}
+                  placeholder="Enter Order ID (from Lemon receipt, e.g. 5165758)"
+                  className="w-full px-3.5 py-3 rounded-xl bg-black/70 border border-white/20 text-white font-mono text-sm placeholder:text-zinc-500 focus:outline-none focus:border-[#D4AF37]"
+                />
+                <button
+                  type="submit"
+                  className="w-full py-3.5 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black font-black text-xs sm:text-sm font-mono uppercase tracking-wider transition cursor-pointer shadow-lg"
+                >
+                  ACTIVATE WITH ORDER ID
+                </button>
+              </form>
+
               <div className="space-y-3">
                 <button
                   type="button"

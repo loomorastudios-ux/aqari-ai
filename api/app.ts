@@ -2783,63 +2783,145 @@ export default async function handler(req: any, res: any) {
             const recentLogs = await getWebhookLogsFromDb(100).catch(() => []);
             const logsArr = Array.isArray(recentLogs) ? recentLogs : [];
 
-            let matchedLog: any = logsArr.find((entry) => {
+            // Get LAST order from webhook-logs REGARDLESS of payment_email vs login_email
+            let matchedLog: any = null;
+            let latestAnyValidLog: any = null;
+            for (const entry of logsArr) {
               const oid = isValidWebhookOrderEntry(entry);
-              if (!oid) return false;
-              const e1 = String(entry?.email || '').trim().toLowerCase();
-              const e2 = String(entry?.payment_email || '').trim().toLowerCase();
-              return e1 === loginEmail || e2 === loginEmail;
-            });
+              if (!oid) continue;
+              if (!latestAnyValidLog) latestAnyValidLog = entry;
+              const usedCheck = await getUsedOrderFromDb(oid).catch(() => null);
+              if (!usedCheck || usedCheck.login_email === loginEmail) {
+                matchedLog = entry;
+                break;
+              }
+            }
 
-            if (!matchedLog && isExplicitLastRequest) {
-              for (const entry of logsArr) {
-                const oid = isValidWebhookOrderEntry(entry);
-                if (!oid) continue;
-                const usedCheck = await getUsedOrderFromDb(oid).catch(() => null);
-                if (!usedCheck) {
-                  matchedLog = entry;
-                  break;
+            if (matchedLog) {
+              orderId = cleanPlaceholderOrderId(matchedLog.order_id);
+              console.log(`order_id from webhook-logs fallback (email-agnostic): ${orderId}`);
+
+              const existingUsedOrder = await getUsedOrderFromDb(orderId).catch(() => null);
+              if (existingUsedOrder) {
+                return await returnExistingUsedOrder(existingUsedOrder);
+              }
+
+              const logAmount = Number(matchedLog?.amount ?? 0);
+              const logPlan = normalizePlanKey(matchedLog?.plan);
+              const fallbackAmount =
+                Number.isFinite(logAmount) && logAmount > 0
+                  ? logAmount
+                  : logPlan === 'enterprise'
+                  ? PLANS.SOVEREIGN.price
+                  : logPlan === 'starter'
+                  ? PLANS.STARTER.price
+                  : PLANS.PROFESSIONAL.price;
+              const logPaymentEmail = String(matchedLog?.payment_email || matchedLog?.email || '')
+                .trim()
+                .toLowerCase();
+
+              return await completeActivation({
+                resolvedOrderId: orderId,
+                amountUSD: fallbackAmount,
+                fallbackPlan: logPlan !== 'free' ? logPlan : 'pro',
+                paymentEmail: logPaymentEmail,
+                testMode: Boolean(matchedLog?.test_mode),
+                createdAtIso: matchedLog?.created_at || matchedLog?.timestamp,
+                skipWebhookLogAppend: true,
+              });
+            }
+
+            // webhook-logs empty (or no unused logged order) -> Query Lemon API for latest store order
+            if (hasLemonKey) {
+              const storeId = cleanEnvValue(
+                getEnv('LEMON_TEST_STORE_ID') ||
+                  getEnv('LEMON_STORE_ID') ||
+                  getEnv('LEMONSQUEEZY_STORE_ID')
+              );
+              const listUrl = storeId
+                ? `https://api.lemonsqueezy.com/v1/orders?filter[store_id]=${encodeURIComponent(storeId)}&page[size]=1&sort=-createdAt`
+                : 'https://api.lemonsqueezy.com/v1/orders?page[size]=1&sort=-createdAt';
+
+              for (const apiKey of candidateKeys) {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 5000);
+                try {
+                  const listRes = await fetch(listUrl, {
+                    headers: {
+                      Accept: 'application/vnd.api+json',
+                      Authorization: `Bearer ${apiKey}`,
+                    },
+                    signal: controller.signal,
+                  });
+                  if (!listRes.ok) continue;
+                  const listJson: any = await listRes.json().catch(() => null);
+                  const latestOrder = Array.isArray(listJson?.data) ? listJson.data[0] : null;
+                  if (latestOrder?.id && latestOrder?.attributes) {
+                    const latestOid = cleanPlaceholderOrderId(String(latestOrder.id));
+                    if (!latestOid) continue;
+
+                    const usedCheck = await getUsedOrderFromDb(latestOid).catch(() => null);
+                    if (usedCheck) {
+                      return await returnExistingUsedOrder(usedCheck);
+                    }
+
+                    const attrs = latestOrder.attributes;
+                    const oStatus = String(attrs?.status || '').trim().toLowerCase();
+                    const fStatus = String(attrs?.first_order_item?.status || '').trim().toLowerCase();
+                    const isPaidOrder =
+                      oStatus === 'paid' ||
+                      oStatus === 'completed' ||
+                      fStatus === 'paid' ||
+                      fStatus === 'completed';
+
+                    if (isPaidOrder) {
+                      const rawTotalCents = Number(
+                        attrs?.total ?? attrs?.subtotal ?? attrs?.first_order_item?.price ?? 0
+                      );
+                      const amountUSD =
+                        Number.isFinite(rawTotalCents) && rawTotalCents > 0
+                          ? rawTotalCents / 100
+                          : PLANS.PROFESSIONAL.price;
+                      const fallbackPlan = resolvePlanFromLemonAttributes(attrs, 'pro');
+                      const paymentEmailForLogOnly = String(
+                        attrs?.user_email || attrs?.customer_email || attrs?.checkout_data?.email || ''
+                      )
+                        .trim()
+                        .toLowerCase();
+
+                      return await completeActivation({
+                        resolvedOrderId: latestOid,
+                        amountUSD,
+                        fallbackPlan,
+                        paymentEmail: paymentEmailForLogOnly,
+                        testMode: Boolean(attrs?.test_mode),
+                        createdAtIso: attrs?.created_at,
+                      });
+                    }
+                  }
+                } catch {
+                  // Continue to next candidate key or fallback error
+                } finally {
+                  clearTimeout(timer);
                 }
               }
             }
 
-            if (!matchedLog) {
-              return res.status(200).json({
-                success: false,
-                error: `No order found in webhook-logs for ${loginEmail}. Pay first, then click USE LAST ORDER.`,
-              });
+            // If there was a latest webhook entry that is already claimed by another email and Lemon has no newer order
+            if (latestAnyValidLog) {
+              const claimedOid = cleanPlaceholderOrderId(latestAnyValidLog.order_id);
+              const existingClaim = claimedOid ? await getUsedOrderFromDb(claimedOid).catch(() => null) : null;
+              if (existingClaim && existingClaim.login_email !== loginEmail) {
+                return res.status(200).json({
+                  success: false,
+                  error: 'This order was already used - هذا الطلب تم استخدامه',
+                });
+              }
             }
 
-            orderId = cleanPlaceholderOrderId(matchedLog.order_id);
-            console.log(`order_id from webhook-logs fallback: ${orderId}`);
-
-            const existingUsedOrder = await getUsedOrderFromDb(orderId).catch(() => null);
-            if (existingUsedOrder) {
-              return await returnExistingUsedOrder(existingUsedOrder);
-            }
-
-            const logAmount = Number(matchedLog?.amount ?? 0);
-            const logPlan = normalizePlanKey(matchedLog?.plan);
-            const fallbackAmount =
-              Number.isFinite(logAmount) && logAmount > 0
-                ? logAmount
-                : logPlan === 'enterprise'
-                ? PLANS.SOVEREIGN.price
-                : logPlan === 'starter'
-                ? PLANS.STARTER.price
-                : PLANS.PROFESSIONAL.price;
-            const logPaymentEmail = String(matchedLog?.payment_email || matchedLog?.email || '')
-              .trim()
-              .toLowerCase();
-
-            return await completeActivation({
-              resolvedOrderId: orderId,
-              amountUSD: fallbackAmount,
-              fallbackPlan: logPlan !== 'free' ? logPlan : 'pro',
-              paymentEmail: logPaymentEmail,
-              testMode: Boolean(matchedLog?.test_mode),
-              createdAtIso: matchedLog?.created_at || matchedLog?.timestamp,
-              skipWebhookLogAppend: true,
+            return res.status(200).json({
+              success: false,
+              error: 'No order found. Enter Order ID manually below.',
             });
           }
 
