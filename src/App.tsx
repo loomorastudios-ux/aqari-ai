@@ -555,6 +555,9 @@ export default function App() {
             : Array.isArray(data.user?.custom_cities)
             ? data.user.custom_cities
             : existing?.customCities || [],
+          analystUnread: typeof meData?.analyst_unread === 'number' ? meData.analyst_unread : existing?.analystUnread || 0,
+          whiteGloveRequests: Array.isArray(meData?.whiteglove_requests) ? meData.whiteglove_requests : existing?.whiteGloveRequests || [],
+          whiteGloveDeliverables: Array.isArray(meData?.whiteglove_deliverables) ? meData.whiteglove_deliverables : existing?.whiteGloveDeliverables || [],
           expiryEmailSent: false,
         };
 
@@ -852,6 +855,10 @@ export default function App() {
         const mergedSaved =
           serverSavedList.length > 0 ? serverSavedList : baseUser.savedAnalyses || [];
 
+        const serverAnalystUnread = typeof data.analyst_unread === 'number' ? data.analyst_unread : 0;
+        const serverWgReqs = Array.isArray(data.whiteglove_requests) ? data.whiteglove_requests : [];
+        const serverWgDelivs = Array.isArray(data.whiteglove_deliverables) ? data.whiteglove_deliverables : [];
+
         const changed =
           !user ||
           normalizePlanKey(user.plan) !== serverPlan ||
@@ -863,6 +870,9 @@ export default function App() {
           (user.analysesUsed ?? 0) !== serverUsed ||
           (user.subscriptionEndsAt ?? null) !== serverEnd ||
           (user.lockedLaunchPrice ?? null) !== serverLockedLaunch ||
+          (user.analystUnread ?? 0) !== serverAnalystUnread ||
+          (serverWgReqs.length !== (user.whiteGloveRequests?.length ?? 0)) ||
+          (serverWgDelivs.length !== (user.whiteGloveDeliverables?.length ?? 0)) ||
           (serverCustomCities.length !== (user.customCities?.length ?? 0)) ||
           (serverSavedList.length > (user.savedAnalyses?.length ?? 0)) ||
           (Number.isFinite(serverLimit) && (user.analysesLeft ?? -1) !== serverLeft);
@@ -896,6 +906,9 @@ export default function App() {
             analysesLeft: serverLeft,
             lockedLaunchPrice: serverLockedLaunch,
             customCities: mergedCities,
+            analystUnread: serverAnalystUnread,
+            whiteGloveRequests: serverWgReqs,
+            whiteGloveDeliverables: serverWgDelivs,
           };
           saveUser(syncedUser);
           setUser(syncedUser);
@@ -1663,17 +1676,18 @@ export default function App() {
           const planCfg = PLANS[normalizePlanKey(user.plan)];
           const currentSaved = user.savedAnalyses || [];
           const hasMeFeatures = Array.isArray(user.features) && user.features.length > 0;
+          const parsedSaveFeature = hasMeFeatures
+            ? user.features!
+                .map((f) => /^save\s+(\d+)$/i.exec(f.trim()))
+                .find((m) => Boolean(m))
+            : null;
           const effectiveSavedLimit =
             typeof user.maxSaved === 'number'
               ? user.maxSaved
-              : hasMeFeatures
-              ? user.features!.includes('Save 400')
-                ? 400
-                : user.features!.includes('Save 150')
-                ? 150
-                : user.features!.includes('Save 30')
-                ? 30
-                : 3
+              : parsedSaveFeature
+              ? Number(parsedSaveFeature[1])
+              : hasMeFeatures && user.features!.some((f) => /^unlimited\s+saved$/i.test(f.trim()))
+              ? 400
               : planCfg.savedLimit;
 
           if (currentSaved.length >= effectiveSavedLimit) {

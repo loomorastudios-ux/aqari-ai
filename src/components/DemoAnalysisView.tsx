@@ -194,7 +194,7 @@ export const DemoAnalysisView: React.FC<DemoAnalysisViewProps> = ({
                     {formatPrice(demo.priceUSD, currentCurrency)}
                   </div>
                   <div className="text-[10px] text-zinc-400 font-mono mt-0.5">
-                    ${Math.round(demo.priceUSD / demo.areaSqM).toLocaleString()}/m²
+                    ${Math.round(demo.priceUSD / demo.areaSqM).toLocaleString('en-US')}/m²
                   </div>
                 </div>
 

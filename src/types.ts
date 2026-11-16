@@ -30,6 +30,107 @@ export interface CustomCityCard {
   addedAt: number;
 }
 
+export interface AnalystMessage {
+  id: string;
+  sender: 'client' | 'admin';
+  senderEmail?: string;
+  text: string;
+  timestamp: number | string;
+  attachedAnalysis?: SavedAnalysis | null;
+  attachedAnalysisId?: string;
+  attachedAnalysisTitle?: string;
+  attachedAnalysisSummary?: string;
+  replyByDate?: string;
+  deadline?: string | null;
+  pdfSummary?: string | null;
+  attachmentPdfNote?: string;
+}
+
+export interface AnalystThread {
+  email: string;
+  clientName?: string;
+  plan?: string;
+  status: 'Open' | 'Replied' | 'Closed';
+  unreadForAdmin: number;
+  unreadForClient: number;
+  updatedAt: number;
+  createdAt?: number;
+  deadline?: string | null;
+  messages: AnalystMessage[];
+}
+
+export interface WhiteGlovePropertyInput {
+  id: string;
+  title: string;
+  city: string;
+  currency: string;
+  valuation?: number;
+  monthlyRent?: number;
+  equityPct?: number;
+  ratePct?: number;
+  opexPct?: number;
+  spvNote?: string;
+  priceUSD?: number;
+  rentUSD?: number;
+  downPaymentPct?: number;
+  interestRatePct?: number;
+  operatingExpensePct?: number;
+  capRate?: number;
+  monthlyCashflowUSD?: number;
+  irr5Yr?: number;
+}
+
+export interface WhiteGloveDeliverable {
+  id: string;
+  requestId?: string;
+  title: string;
+  currency?: string;
+  spvNote?: string;
+  spvStructureNote?: string;
+  riskNote?: string;
+  summaryRecommendation?: string;
+  properties: WhiteGlovePropertyInput[];
+  combined?: {
+    totalValuation: number;
+    totalMonthlyRent: number;
+    totalMonthlyCashflow: number;
+    weightedCapRate: number;
+    blendedCoC: number;
+    blendedIrr5Yr: number;
+    portfolioDscr: number;
+  };
+  combinedResults?: {
+    totalValuationUSD: number;
+    totalMonthlyRentUSD: number;
+    totalMonthlyCashflowUSD: number;
+    weightedCapRate: number;
+    weightedIrr5Yr: number;
+  };
+  deliveredAt: number | string;
+  deliveredBy?: string;
+  preparedBy?: string;
+}
+
+export interface WhiteGloveRequest {
+  id: string;
+  email: string;
+  clientName?: string;
+  propertyTitle?: string;
+  dealLink?: string;
+  targetCity?: string;
+  currency?: string;
+  valuation?: number;
+  expectedMonthlyRent?: number;
+  goalNotes?: string;
+  attachments?: string[];
+  brief?: string;
+  status: 'Pending' | 'In Progress' | 'Done';
+  createdAt: number | string;
+  updatedAt?: number | string;
+  deliveredAt?: number | string;
+  deliverable?: WhiteGloveDeliverable | null;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -61,6 +162,9 @@ export interface User {
   savedCount?: number;
   apiKey?: string | null;
   customCities?: CustomCityCard[];
+  analystUnread?: number;
+  whiteGloveRequests?: WhiteGloveRequest[];
+  whiteGloveDeliverables?: WhiteGloveDeliverable[];
   portfolio?: {
     totalValue: number;
     monthlyCashflow: number;

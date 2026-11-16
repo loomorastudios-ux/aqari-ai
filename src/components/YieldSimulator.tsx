@@ -141,7 +141,10 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <input
                   id="sim-price"
                   type="number"
+                  lang="en"
+                  dir="ltr"
                   inputMode="decimal"
+                  style={{ fontFamily: 'ui-monospace, monospace' }}
                   min={1}
                   value={basePriceUSD || ''}
                   onChange={(e) => {
@@ -165,7 +168,10 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <input
                   id="sim-rent"
                   type="number"
+                  lang="en"
+                  dir="ltr"
                   inputMode="decimal"
+                  style={{ fontFamily: 'ui-monospace, monospace' }}
                   min={1}
                   value={baseRentMonthlyUSD || ''}
                   onChange={(e) => {
@@ -191,7 +197,10 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <input
                   id="sim-down"
                   type="number"
+                  lang="en"
+                  dir="ltr"
                   inputMode="decimal"
+                  style={{ fontFamily: 'ui-monospace, monospace' }}
                   min={1}
                   max={100}
                   step="0.5"
@@ -217,7 +226,10 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <input
                   id="sim-rate"
                   type="number"
+                  lang="en"
+                  dir="ltr"
                   inputMode="decimal"
+                  style={{ fontFamily: 'ui-monospace, monospace' }}
                   min={0.1}
                   max={30}
                   step="0.1"
@@ -243,7 +255,10 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <input
                   id="sim-opex"
                   type="number"
+                  lang="en"
+                  dir="ltr"
                   inputMode="decimal"
+                  style={{ fontFamily: 'ui-monospace, monospace' }}
                   min={1}
                   max={99}
                   step="0.5"

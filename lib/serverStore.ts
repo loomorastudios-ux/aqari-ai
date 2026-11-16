@@ -187,6 +187,39 @@ export interface PendingCheckoutEntry {
   checkoutId?: string;
 }
 
+export interface AnalystThreadRecord {
+  email: string;
+  clientName?: string;
+  plan?: string;
+  status: 'Open' | 'Replied' | 'Closed';
+  unreadForAdmin: number;
+  unreadForClient: number;
+  updatedAt: number;
+  createdAt: number;
+  deadline?: string | null;
+  messages: Array<{
+    id: string;
+    sender: 'client' | 'admin';
+    senderEmail?: string;
+    text: string;
+    timestamp: number;
+    attachedAnalysis?: any;
+    deadline?: string | null;
+    pdfSummary?: string | null;
+  }>;
+}
+
+export interface WhiteGloveRequestRecord {
+  id: string;
+  email: string;
+  clientName?: string;
+  brief: string;
+  status: 'Pending' | 'In Progress' | 'Done';
+  createdAt: number;
+  updatedAt: number;
+  deliverable?: any;
+}
+
 interface StoreShape {
   users: Record<string, ServerUserRecord>;
   webhook_logs: WebhookLogEntry[];
@@ -196,6 +229,9 @@ interface StoreShape {
   pricing_logs: PricingChangeLogEntry[];
   pending_checkouts: Record<string, PendingCheckoutEntry>;
   used_orders: Record<string, UsedOrderRecord>;
+  analyst_threads: Record<string, AnalystThreadRecord>;
+  whiteglove_requests: WhiteGloveRequestRecord[];
+  api_keys: Record<string, string>;
 }
 
 function createDefaultPricingConfig(): StoredPricingConfig {
@@ -267,6 +303,9 @@ function getMemoryStore(): StoreShape {
       pricing_logs: [],
       pending_checkouts: {},
       used_orders: {},
+      analyst_threads: {},
+      whiteglove_requests: [],
+      api_keys: {},
     };
   }
   return memoryStoreCache;
@@ -318,9 +357,12 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
         : def.plans[k].features;
       const normalizedFeatures = rawFeatures
         .filter((f) => !(k === 'free' && f.startsWith('No Monte Carlo')))
-        .map((f) =>
-          f === 'Save 50' ? 'Save 30' : f === 'Save 200' ? 'Save 150' : f === 'Unlimited Saved' ? 'Save 400' : f
-        );
+        .map((f) => {
+          if (/^save\s+\d+$/i.test(f.trim()) || /^unlimited\s+saved$/i.test(f.trim())) {
+            return `Save ${def.plans[k].savedLimit}`;
+          }
+          return f;
+        });
       plans[k] = {
         key: k,
         displayName: def.plans[k].displayName,
@@ -368,6 +410,15 @@ function loadStore(): StoreShape {
           used_orders:
             parsed.used_orders && typeof parsed.used_orders === 'object' && !Array.isArray(parsed.used_orders)
               ? parsed.used_orders
+              : {},
+          analyst_threads:
+            parsed.analyst_threads && typeof parsed.analyst_threads === 'object' && !Array.isArray(parsed.analyst_threads)
+              ? parsed.analyst_threads
+              : {},
+          whiteglove_requests: Array.isArray(parsed.whiteglove_requests) ? parsed.whiteglove_requests : [],
+          api_keys:
+            parsed.api_keys && typeof parsed.api_keys === 'object' && !Array.isArray(parsed.api_keys)
+              ? parsed.api_keys
               : {},
         };
       }

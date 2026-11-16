@@ -20,6 +20,10 @@
       "destination": "/api/app?action=google-callback"
     },
     {
+      "source": "/api/analyze",
+      "destination": "/api/app?action=run-analysis"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }

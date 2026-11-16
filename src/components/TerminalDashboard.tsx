@@ -1,11 +1,21 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
-import React, { useState, useMemo, useEffect } from 'react';
-import { CurrencyCode, RemoteConfig, User, SavedAnalysis, MarketMatrixRow, CustomCityCard } from '../types';
-import { 
-  CURRENCY_SYMBOLS, 
-  PLAN_LIMITS, 
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import {
+  CurrencyCode,
+  RemoteConfig,
+  User,
+  SavedAnalysis,
+  MarketMatrixRow,
+  CustomCityCard,
+  AnalystThread,
+  WhiteGloveRequest,
+  WhiteGloveDeliverable,
+} from '../types';
+import {
+  CURRENCY_SYMBOLS,
+  PLAN_LIMITS,
   PROPERTY_LISTINGS,
-  CROSS_BORDER_DATA 
+  CROSS_BORDER_DATA,
 } from '../constants';
 import {
   PLANS,
@@ -14,38 +24,38 @@ import {
   normalizePlanKey,
   computeLicenseStatus,
   canUseFeature,
-  getUpgradeMessage,
 } from '../../lib/plans';
+import { CITIES, findCityEntry, searchCities, CityEntry } from '../../data/cities';
 import { formatPrice } from '../utils/formatters';
 import { formatTimeLeft } from '../utils/emailService';
-import { downloadMemorandumPdf } from '../utils/pdfExport';
+import { downloadMemorandumPdf, downloadWhiteGlovePdf } from '../utils/pdfExport';
 import type { LiveMarketResponse } from '../utils/marketDataService';
-import { 
-  Building2, 
-  Calculator, 
-  BookmarkCheck, 
-  Briefcase, 
-  Globe, 
-  Settings, 
-  Sparkles, 
-  Zap, 
-  Crown, 
-  Lock, 
-  LogOut, 
-  Home, 
-  ChevronDown, 
-  Search, 
-  Trash2, 
-  Download, 
-  Eye, 
-  Plus, 
-  TrendingUp, 
-  ShieldCheck, 
-  AlertTriangle, 
-  Check, 
-  Sliders, 
-  BarChart3, 
-  FileText, 
+import {
+  Building2,
+  Calculator,
+  BookmarkCheck,
+  Briefcase,
+  Globe,
+  Settings,
+  Sparkles,
+  Zap,
+  Crown,
+  Lock,
+  LogOut,
+  Home,
+  ChevronDown,
+  Search,
+  Trash2,
+  Download,
+  Eye,
+  Plus,
+  TrendingUp,
+  ShieldCheck,
+  AlertTriangle,
+  Check,
+  Sliders,
+  BarChart3,
+  FileText,
   Headphones,
   Key,
   ExternalLink,
@@ -58,9 +68,29 @@ import {
   Bot,
   Radar,
   Calendar,
-  RefreshCw
+  RefreshCw,
+  Send,
+  MessageSquare,
+  Copy,
+  Mail,
 } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
+
+function resolveCityFromInput(rawInput: string): CityEntry | null {
+  const cleaned = String(rawInput || '').trim();
+  if (!cleaned) return null;
+  const direct = findCityEntry(cleaned);
+  if (direct) return direct;
+  const strippedParen = cleaned.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const byParen = findCityEntry(strippedParen);
+  if (byParen) return byParen;
+  const beforeComma = cleaned.split(',')[0].trim();
+  return findCityEntry(beforeComma);
+}
+
+function formatCityOptionLabel(entry: CityEntry): string {
+  return `${entry.city} (${entry.country} ${entry.countryCode})`;
+}
 
 // Institutional Demo Benchmarks shown in Empty Saved/Portfolio and kept accessible
 const DEMO_SAVED_BENCHMARKS: SavedAnalysis[] = [
@@ -313,9 +343,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     if (typeof user.maxSaved === 'number' && user.maxSaved > 0) {
       return user.maxSaved;
     }
-    if (meFeatures.includes('Save 400')) return 400;
-    if (meFeatures.includes('Save 150')) return 150;
-    if (meFeatures.includes('Save 30')) return 30;
+    const parsedSaveFeature = meFeatures
+      .map((f) => /^save\s+(\d+)$/i.exec(f.trim()))
+      .find((m) => Boolean(m));
+    if (parsedSaveFeature) return Number(parsedSaveFeature[1]);
+    if (meFeatures.some((f) => /^unlimited\s+saved$/i.test(f.trim()))) return 400;
     return PLANS[license.planKey].savedLimit;
   }, [user.maxSaved, meFeatures, license.planKey]);
 
@@ -444,7 +476,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [downPaymentPct, setDownPaymentPct] = useState<number>(30);
   const [interestRatePct, setInterestRatePct] = useState<number>(5.5);
   const [operatingExpensePct, setOperatingExpensePct] = useState<number>(15);
-  const [city, setCity] = useState<string>(PROPERTY_LISTINGS[0].city);
+  const initialCityEntry = resolveCityFromInput(PROPERTY_LISTINGS[0].city);
+  const [city, setCity] = useState<string>(initialCityEntry?.city || PROPERTY_LISTINGS[0].city);
+  const [cityComboInput, setCityComboInput] = useState<string>(
+    initialCityEntry ? formatCityOptionLabel(initialCityEntry) : PROPERTY_LISTINGS[0].city
+  );
+  const [cityComboOpen, setCityComboOpen] = useState<boolean>(false);
+  const cityComboInputRef = useRef<HTMLInputElement | null>(null);
   const [propertyName, setPropertyName] = useState<string>(PROPERTY_LISTINGS[0].title);
   const [propertyImageUrl, setPropertyImageUrl] = useState<string>(PROPERTY_LISTINGS[0].imageUrl);
 
@@ -514,16 +552,249 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     distribution: Array<{ label: string; count: number; pct: number }>;
   } | null>(null);
   const [isRunningMonteCarlo, setIsRunningMonteCarlo] = useState(false);
-  const [sovereignAnalystNotes, setSovereignAnalystNotes] = useState('');
-  const [sovereignWhiteGloveBrief, setSovereignWhiteGloveBrief] = useState('');
-  const [sovereignRequestStatus, setSovereignRequestStatus] = useState<string | null>(null);
-  const [isSubmittingSovereignReq, setIsSubmittingSovereignReq] = useState(false);
+
+  // Sovereign Suite states (REST API Docs + Analyst Desk Text Chat + White-Glove Intake & Deliverables)
+  const [copiedApiKey, setCopiedApiKey] = useState(false);
+  const [showApiDocs, setShowApiDocs] = useState(false);
+  const [analystThread, setAnalystThread] = useState<AnalystThread | null>(null);
+  const [analystUnread, setAnalystUnread] = useState<number>(user.analystUnread || 0);
+  const [analystChatOpen, setAnalystChatOpen] = useState<boolean>(false);
+  const [analystMsgInput, setAnalystMsgInput] = useState<string>('');
+  const [analystAttachedId, setAnalystAttachedId] = useState<string>('');
+  const [analystReplyBy, setAnalystReplyBy] = useState<string>('');
+  const [isSendingAnalystMsg, setIsSendingAnalystMsg] = useState<boolean>(false);
+
+  const [wgPropertyTitle, setWgPropertyTitle] = useState<string>('');
+  const [wgDealLink, setWgDealLink] = useState<string>('');
+  const [wgTargetCity, setWgTargetCity] = useState<string>('Muscat (Oman OM)');
+  const [wgCityOpen, setWgCityOpen] = useState<boolean>(false);
+  const [wgCurrency, setWgCurrency] = useState<CurrencyCode>('USD');
+  const [wgValuation, setWgValuation] = useState<string>('');
+  const [wgExpectedRent, setWgExpectedRent] = useState<string>('');
+  const [wgGoalNotes, setWgGoalNotes] = useState<string>('');
+  const [isSubmittingWg, setIsSubmittingWg] = useState<boolean>(false);
+  const [wgStatusMsg, setWgStatusMsg] = useState<string | null>(null);
+  const [wgRequests, setWgRequests] = useState<WhiteGloveRequest[]>(user.whiteGloveRequests || []);
+  const [wgDeliverables, setWgDeliverables] = useState<WhiteGloveDeliverable[]>(
+    user.whiteGloveDeliverables || []
+  );
 
   const clearPendingRun = () => {
     setHasRunAnalysis(false);
     setRunResult(null);
     setMonteCarloResult(null);
     setStressTestActive(false);
+  };
+
+  const selectedCityEntry = useMemo(
+    () => resolveCityFromInput(cityComboInput) || resolveCityFromInput(city),
+    [cityComboInput, city]
+  );
+
+  const cityDropdownOptions = useMemo(() => {
+    const q = cityComboInput.trim();
+    const matched = resolveCityFromInput(q);
+    if (matched && q === formatCityOptionLabel(matched)) {
+      return searchCities(matched.city, 25);
+    }
+    if (q.length >= 2) {
+      return searchCities(q, 25);
+    }
+    const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
+    return defaults.map((n) => findCityEntry(n)).filter((c): c is CityEntry => Boolean(c));
+  }, [cityComboInput]);
+
+  const wgCityOptions = useMemo(() => {
+    const q = wgTargetCity.trim();
+    if (q.length >= 2 && !resolveCityFromInput(q)) {
+      return searchCities(q, 20);
+    }
+    if (q.length >= 2) {
+      const m = resolveCityFromInput(q);
+      if (m && q === formatCityOptionLabel(m)) return searchCities(m.city, 15);
+      return searchCities(q, 20);
+    }
+    return ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami']
+      .map((n) => findCityEntry(n))
+      .filter((c): c is CityEntry => Boolean(c));
+  }, [wgTargetCity]);
+
+  const selectTargetCity = (entryOrRaw: CityEntry | string, syncCurrency = true) => {
+    const entry = typeof entryOrRaw === 'string' ? resolveCityFromInput(entryOrRaw) : entryOrRaw;
+    if (entry) {
+      setCity(entry.city);
+      setCityComboInput(formatCityOptionLabel(entry));
+      if (syncCurrency && (entry.currency === 'USD' || entry.currency === 'OMR' || entry.currency === 'AED' || entry.currency === 'GBP')) {
+        onCurrencyChange(entry.currency);
+      }
+    } else if (typeof entryOrRaw === 'string') {
+      setCity(entryOrRaw);
+      setCityComboInput(entryOrRaw);
+    }
+  };
+
+  useEffect(() => {
+    if (!canAnalystDesk || !user?.email) return;
+    let active = true;
+
+    const fetchWhiteGloveAndUnread = async () => {
+      try {
+        const [wgRes, meRes] = await Promise.all([
+          fetch(`/api/app?action=whiteglove-request&email=${encodeURIComponent(user.email)}&t=${Date.now()}`, {
+            credentials: 'include',
+          }),
+          fetch(`/api/app?action=me&t=${Date.now()}`, { credentials: 'include' }),
+        ]);
+        if (!active) return;
+        if (wgRes.ok) {
+          const wgData = await wgRes.json().catch(() => null);
+          if (wgData?.success) {
+            setWgRequests(Array.isArray(wgData.requests) ? wgData.requests : []);
+            setWgDeliverables(Array.isArray(wgData.deliverables) ? wgData.deliverables : []);
+          }
+        }
+        if (meRes.ok) {
+          const meData = await meRes.json().catch(() => null);
+          if (meData?.success) {
+            if (meData.analyst_thread) setAnalystThread(meData.analyst_thread);
+            const nextUnread = Number(meData.analyst_unread || 0);
+            setAnalystUnread((prev) => {
+              if (nextUnread > prev && !analystChatOpen) {
+                showToast('Analyst replied');
+              }
+              return nextUnread;
+            });
+          }
+        }
+      } catch {}
+    };
+
+    fetchWhiteGloveAndUnread();
+    const timer = setInterval(fetchWhiteGloveAndUnread, 15000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [canAnalystDesk, user?.email, analystChatOpen]);
+
+  const handleOpenAnalystChat = async () => {
+    setAnalystChatOpen(true);
+    if (!canAnalystDesk || !user?.email) return;
+    try {
+      const res = await fetch(
+        `/api/app?action=analyst-chat&email=${encodeURIComponent(user.email)}&t=${Date.now()}`,
+        { credentials: 'include' }
+      );
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.thread) {
+          setAnalystThread(data.thread);
+          setAnalystUnread(0);
+        }
+      }
+    } catch {}
+  };
+
+  const handleSendAnalystChat = async () => {
+    if (!canAnalystDesk) {
+      showToast('Available in SOVEREIGN - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    const text = analystMsgInput.trim();
+    if (!text) {
+      showToast('Please enter your question for the analyst first.');
+      return;
+    }
+    const attachedObj = (user.savedAnalyses || []).find((s) => s.id === analystAttachedId) || null;
+    setIsSendingAnalystMsg(true);
+    try {
+      const res = await fetch('/api/app?action=analyst-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          message: text,
+          attachedAnalysisId: attachedObj?.id || undefined,
+          attachedAnalysisTitle: attachedObj ? `${attachedObj.property} (${attachedObj.city})` : undefined,
+          attachedAnalysisSummary: attachedObj
+            ? `Price: $${attachedObj.price.toLocaleString('en-US')} | Cap: ${attachedObj.capRate}% | IRR: ${attachedObj.irr}% | DSCR: ${attachedObj.dscr}x`
+            : undefined,
+          replyByDate: analystReplyBy.trim() || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        showToast(data?.error || 'Unable to send message to analyst desk.');
+        return;
+      }
+      if (data?.thread) setAnalystThread(data.thread);
+      setAnalystMsgInput('');
+      setAnalystAttachedId('');
+      setAnalystReplyBy('');
+      setAnalystChatOpen(true);
+      showToast('Sent - Analyst will reply within 24h');
+    } catch {
+      showToast('Network error sending message to analyst.');
+    } finally {
+      setIsSendingAnalystMsg(false);
+    }
+  };
+
+  const handleSubmitWhiteGloveRequest = async () => {
+    if (!canCustomUnderwriting) {
+      showToast('Available in SOVEREIGN - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    const title = wgPropertyTitle.trim();
+    const cityEntry = resolveCityFromInput(wgTargetCity);
+    const resolvedCity = cityEntry ? cityEntry.city : wgTargetCity.trim();
+    if (!title || !resolvedCity) {
+      showToast('Please enter Property Title and Target City.');
+      return;
+    }
+    setIsSubmittingWg(true);
+    setWgStatusMsg(null);
+    try {
+      const res = await fetch('/api/app?action=whiteglove-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          propertyTitle: title,
+          dealLink: wgDealLink.trim() || undefined,
+          targetCity: resolvedCity,
+          currency: wgCurrency,
+          valuation: Number(wgValuation) || 0,
+          expectedMonthlyRent: Number(wgExpectedRent) || 0,
+          goalNotes: wgGoalNotes.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        showToast(data?.error || 'Unable to submit White-Glove brief.');
+        return;
+      }
+      if (data?.request) {
+        setWgRequests((prev) => [data.request, ...prev]);
+      }
+      setWgPropertyTitle('');
+      setWgDealLink('');
+      setWgValuation('');
+      setWgExpectedRent('');
+      setWgGoalNotes('');
+      setWgStatusMsg('Request received. Analysis will be delivered in 48h.');
+      showToast('Request received. Analysis will be delivered in 48h.');
+    } catch {
+      showToast('Network error submitting White-Glove brief.');
+    } finally {
+      setIsSubmittingWg(false);
+    }
   };
 
   // Saved Analyses filter
@@ -655,11 +926,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const handleSelectCustomCity = (card: CustomCityCard) => {
     setSelectedPresetId(card.id);
     setPropertyName(`${card.city} Prime Residential`);
-    setCity(card.city);
+    selectTargetCity(card.city, false);
     setPriceUSD(card.estimatedAvgPriceUSD);
     setRentUSD(card.estimatedAvgRentUSD);
     clearPendingRun();
-    showToast(`Loaded ${card.city} inputs — click RUN ANALYSIS (-1 CREDIT) to calculate`);
+    showToast(`Loaded ${card.city} inputs - click RUN ANALYSIS (-1 CREDIT) to calculate`);
   };
 
   // Load a preset property into analyzer (does NOT deduct credit or auto-run)
@@ -668,7 +939,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     if (!prop) return;
     setSelectedPresetId(prop.id);
     setPropertyName(prop.title);
-    setCity(prop.city);
+    selectTargetCity(prop.city, true);
     setPriceUSD(prop.basePriceUSD);
     setRentUSD(prop.baseRentMonthlyUSD);
     setPropertyImageUrl(prop.imageUrl);
@@ -687,6 +958,16 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       showToast('No analyses left. Renew / Upgrade.');
       onOpenRenewal();
       return;
+    }
+
+    const validatedCity = resolveCityFromInput(cityComboInput);
+    if (!validatedCity) {
+      showToast('City not supported yet. Choose from list.');
+      return;
+    }
+    const cleanCityName = validatedCity.city;
+    if (city !== cleanCityName) {
+      setCity(cleanCityName);
     }
 
     if (
@@ -718,7 +999,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           login_email: user.email,
           name: user.name,
           propertyTitle: propertyName.trim() || 'Institutional Asset',
-          city,
+          city: cleanCityName,
           priceUSD,
           rentUSD,
           downPaymentPct,
@@ -837,48 +1118,6 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
   };
 
-  const handleSovereignRequest = async (type: 'analyst_desk' | 'white_glove') => {
-    if (!canAnalystDesk) {
-      showToast('Available in SOVEREIGN - Upgrade');
-      onOpenRenewal();
-      return;
-    }
-    const payloadNotes =
-      type === 'analyst_desk' ? sovereignAnalystNotes.trim() : sovereignWhiteGloveBrief.trim();
-    if (!payloadNotes) {
-      showToast('Please enter your deal brief or preferred scheduling notes first.');
-      return;
-    }
-    setIsSubmittingSovereignReq(true);
-    setSovereignRequestStatus(null);
-    try {
-      const res = await fetch('/api/app?action=sovereign-request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          email: user.email,
-          login_email: user.email,
-          type,
-          notes: payloadNotes,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.success === false) {
-        showToast(data?.error || 'Available in SOVEREIGN - Upgrade');
-        return;
-      }
-      setSovereignRequestStatus(data.message || `Confirmed (${data.referenceId})`);
-      if (type === 'analyst_desk') setSovereignAnalystNotes('');
-      else setSovereignWhiteGloveBrief('');
-      showToast(`Confirmed: ${data.referenceId}`);
-    } catch {
-      showToast('Failed to submit Sovereign request. Please try again.');
-    } finally {
-      setIsSubmittingSovereignReq(false);
-    }
-  };
-
   // Save Analysis to Portfolio (Strict Save <= Analyses Limit Enforced by Server)
   const handleSaveAnalysis = async () => {
     if (isExpired) {
@@ -975,7 +1214,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   // Load saved analysis back into calculator
   const handleLoadSaved = (item: SavedAnalysis) => {
     setPropertyName(item.property);
-    setCity(item.city);
+    selectTargetCity(item.city, false);
     setPriceUSD(item.price);
     setRentUSD(item.rent);
     if (item.imageUrl) setPropertyImageUrl(item.imageUrl);
@@ -1093,7 +1332,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     const r = runResult;
     const mc = monteCarloResult || r.monteCarlo;
     const metricsLines = [
-      `Analysis Timestamp: ${new Date(r.analyzedAt).toLocaleString()}`,
+      `Analysis Timestamp: ${new Date(r.analyzedAt).toLocaleString('en-US')}`,
       `Acquisition Price: ${formatPrice(r.inputs.priceUSD, currentCurrency)}`,
       `Gross Monthly Rent: ${formatPrice(r.inputs.rentUSD, currentCurrency)}`,
       `Equity Down: ${r.inputs.downPaymentPct}% (${formatPrice(r.downPaymentUSD, currentCurrency)})`,
@@ -1465,40 +1704,26 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
               <button
                 onClick={() => { setActiveTab('saved'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
                   activeTab === 'saved'
                     ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
                     : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <BookmarkCheck className="w-4 h-4" />
-                  <span>Saved Analyses</span>
-                </div>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
-                  activeTab === 'saved' ? 'bg-black text-[#D4AF37]' : 'bg-white/10 text-white'
-                }`}>
-                  {savedAnalyses.length}
-                </span>
+                <BookmarkCheck className="w-4 h-4" />
+                <span>Saved Analyses</span>
               </button>
 
               <button
                 onClick={() => { setActiveTab('portfolio'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
                   activeTab === 'portfolio'
                     ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
                     : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <Briefcase className="w-4 h-4" />
-                  <span>Portfolio</span>
-                </div>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono ${
-                  activeTab === 'portfolio' ? 'bg-black text-[#D4AF37]' : 'bg-white/10 text-white'
-                }`}>
-                  {savedAnalyses.length}
-                </span>
+                <Briefcase className="w-4 h-4" />
+                <span>Portfolio</span>
               </button>
 
               <button
@@ -1623,18 +1848,19 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <span className="text-[#D4AF37] font-bold">7 Prime Global Assets</span>
                 </div>
 
-                {/* Add Your City Button directly below header, above city cards grid */}
+                {/* Searchable City Shortcut Button */}
                 <div className="flex justify-center">
                   <button
                     type="button"
                     onClick={() => {
-                      setCityError(null);
-                      setIsAddCityOpen(true);
+                      setCityComboOpen(true);
+                      cityComboInputRef.current?.focus();
+                      cityComboInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     }}
                     className="w-full sm:w-auto px-5 py-2.5 rounded-xl border border-[#D4AF37] text-[#D4AF37] hover:bg-[#D4AF37] hover:text-black font-mono text-sm font-bold transition cursor-pointer flex items-center justify-center gap-2 min-h-[44px]"
                   >
                     <Plus className="w-4 h-4 shrink-0" />
-                    <span>+ Add Your City - أضف مدينتك</span>
+                    <span>+ Select From {CITIES.length.toLocaleString('en-US')}+ Global Cities</span>
                   </button>
                 </div>
 
@@ -1795,7 +2021,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <span>Acquisition &amp; Financing Inputs</span>
                   </h3>
 
-                  {/* Property Name & City */}
+                  {/* Property Name & Searchable City Combobox (1,273 Global Cities) */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label htmlFor="td-asset-title" className="text-xs font-mono text-zinc-400 block mb-1 uppercase">
@@ -1812,32 +2038,84 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         className="w-full px-3 py-2.5 rounded-xl bg-white/[0.04] border border-white/10 text-white text-sm font-mono outline-none focus:border-[#D4AF37]"
                       />
                     </div>
-                    <div>
+                    <div className="relative">
                       <label htmlFor="td-target-city" className="text-xs font-mono text-zinc-400 block mb-1 uppercase">
-                        Target Market / City
+                        Target Market / City ({CITIES.length.toLocaleString('en-US')}+ Cities)
                       </label>
-                      <select
-                        id="td-target-city"
-                        value={city}
-                        onChange={(e) => {
-                          setCity(e.target.value);
-                          clearPendingRun();
-                        }}
-                        className="w-full px-3 py-2.5 rounded-xl bg-zinc-900 border border-white/10 text-white text-sm font-mono outline-none"
-                      >
-                        <option value="Muscat">Muscat (Oman 🇴🇲)</option>
-                        <option value="Dubai">Dubai (UAE 🇦🇪)</option>
-                        <option value="London">London (UK 🇬🇧)</option>
-                        <option value="Singapore">Singapore (🇸🇬)</option>
-                        <option value="New York">New York (USA 🇺🇸)</option>
-                        <option value="Riyadh">Riyadh (KSA 🇸🇦)</option>
-                        <option value="Miami">Miami (USA 🇺🇸)</option>
-                        {customCities.map((c) => (
-                          <option key={c.id} value={c.city}>
-                            {c.city} ({c.country})
-                          </option>
-                        ))}
-                      </select>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          ref={cityComboInputRef}
+                          id="td-target-city"
+                          type="text"
+                          value={cityComboInput}
+                          onFocus={() => setCityComboOpen(true)}
+                          onBlur={() => setTimeout(() => setCityComboOpen(false), 180)}
+                          onChange={(e) => {
+                            setCityComboInput(e.target.value);
+                            setCityComboOpen(true);
+                            clearPendingRun();
+                          }}
+                          placeholder="Type city... e.g. Muscat"
+                          autoComplete="off"
+                          className="w-full pl-9 pr-8 py-2.5 rounded-xl bg-zinc-900 border border-white/15 focus:border-[#D4AF37] text-white text-sm font-mono outline-none"
+                        />
+                        {cityComboInput && (
+                          <button
+                            type="button"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              setCityComboInput('');
+                              setCityComboOpen(true);
+                              cityComboInputRef.current?.focus();
+                              clearPendingRun();
+                            }}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white cursor-pointer"
+                            aria-label="Clear city"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+
+                      {cityComboOpen && (
+                        <div className="absolute z-40 left-0 right-0 mt-1.5 max-h-60 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-[0_14px_40px_rgba(0,0,0,0.9)] divide-y divide-white/[0.06]">
+                          {cityDropdownOptions.length === 0 ? (
+                            <div className="px-3.5 py-3 text-xs font-mono text-rose-300">
+                              City not supported yet. Choose from list.
+                            </div>
+                          ) : (
+                            cityDropdownOptions.map((c) => (
+                              <button
+                                key={`${c.city}-${c.countryCode}`}
+                                type="button"
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  selectTargetCity(c, true);
+                                  setCityComboOpen(false);
+                                  clearPendingRun();
+                                }}
+                                className="w-full text-left px-3.5 py-2.5 text-xs font-mono text-zinc-200 hover:bg-[#D4AF37]/20 hover:text-white flex items-center justify-between gap-2 cursor-pointer"
+                              >
+                                <span className="font-bold">{formatCityOptionLabel(c)}</span>
+                                <span className="text-[11px] text-[#D4AF37] shrink-0">
+                                  {c.avgCapRate}% Cap • {c.currency}
+                                </span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
+
+                      {selectedCityEntry ? (
+                        <div className="text-[10px] font-mono text-emerald-400 mt-1 truncate">
+                          Market: {selectedCityEntry.city}, {selectedCityEntry.country} - Avg Cap Rate {selectedCityEntry.avgCapRate}% - Tax {selectedCityEntry.taxRate}% ({selectedCityEntry.currency})
+                        </div>
+                      ) : cityComboInput.trim() ? (
+                        <div className="text-[10px] font-mono text-rose-400 mt-1">
+                          City not supported yet. Choose from list.
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 
@@ -1852,7 +2130,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <input
                           id="td-price-usd"
                           type="number"
+                          lang="en"
+                          dir="ltr"
                           inputMode="decimal"
+                          style={{ fontFamily: 'ui-monospace, monospace' }}
                           min={1}
                           step="1000"
                           value={priceUSD || ''}
@@ -1878,7 +2159,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <input
                           id="td-rent-usd"
                           type="number"
+                          lang="en"
+                          dir="ltr"
                           inputMode="decimal"
+                          style={{ fontFamily: 'ui-monospace, monospace' }}
                           min={1}
                           step="50"
                           value={rentUSD || ''}
@@ -1906,7 +2190,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <input
                           id="td-down-pct"
                           type="number"
+                          lang="en"
+                          dir="ltr"
                           inputMode="decimal"
+                          style={{ fontFamily: 'ui-monospace, monospace' }}
                           min={1}
                           max={100}
                           step="0.5"
@@ -1929,7 +2216,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <input
                           id="td-rate-pct"
                           type="number"
+                          lang="en"
+                          dir="ltr"
                           inputMode="decimal"
+                          style={{ fontFamily: 'ui-monospace, monospace' }}
                           min={0.1}
                           max={30}
                           step="0.1"
@@ -1952,7 +2242,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <input
                           id="td-opex-pct"
                           type="number"
+                          lang="en"
+                          dir="ltr"
                           inputMode="decimal"
+                          style={{ fontFamily: 'ui-monospace, monospace' }}
                           min={1}
                           max={99}
                           step="0.5"
@@ -2094,10 +2387,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="pt-2">
                         <button
                           type="button"
-                          disabled
-                          className="w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold bg-white/[0.02] text-zinc-600 border border-white/5 cursor-not-allowed flex items-center justify-center gap-2"
+                          onClick={() => showToast('Run analysis first')}
+                          className="w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/10 cursor-pointer flex items-center justify-center gap-2 transition"
                         >
-                          <Lock className="w-3.5 h-3.5 text-zinc-600" />
+                          <Download className="w-3.5 h-3.5 text-zinc-400" />
                           <span>EXPORT PDF (Run analysis first)</span>
                         </button>
                       </div>
@@ -2168,11 +2461,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         ) : (
                           <button
                             type="button"
-                            onClick={onOpenRenewal}
+                            onClick={() => {
+                              showToast('PDF Export available in PROFESSIONAL / SOVEREIGN - Upgrade');
+                              onOpenRenewal();
+                            }}
                             className="w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold bg-white/[0.03] text-amber-300 border border-amber-500/30 hover:border-amber-400/60 transition flex items-center justify-center gap-2 cursor-pointer"
                           >
                             <Lock className="w-3.5 h-3.5 text-amber-400" />
-                            <span>Available in PROFESSIONAL - Upgrade</span>
+                            <span>PDF Export available in PROFESSIONAL / SOVEREIGN - Upgrade</span>
                           </button>
                         )}
                       </div>
@@ -2278,43 +2574,47 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </div>
                   ) : (
                     (() => {
-                      const matched =
-                        CROSS_BORDER_DATA.find((row) =>
-                          city.toLowerCase().includes(row.city.toLowerCase())
-                        ) || CROSS_BORDER_DATA[0];
+                      const matchedEntry = resolveCityFromInput(city) || selectedCityEntry || findCityEntry('Muscat')!;
+                      const matchedRadar = CROSS_BORDER_DATA.find(
+                        (row) => row.city.toLowerCase() === matchedEntry.city.toLowerCase()
+                      );
                       return (
                         <div className="space-y-3 text-xs font-mono">
-                          <div className="flex items-center justify-between">
+                          <div className="flex items-center justify-between gap-2">
                             <span className="text-white font-bold text-sm">
-                              {matched.flag} {matched.city} Benchmark
+                              {matchedRadar?.flag || matchedEntry.countryCode} {matchedEntry.city}, {matchedEntry.country} ({matchedEntry.currency})
                             </span>
                             <button
                               type="button"
                               onClick={() => setActiveTab('radar')}
-                              className="text-[#D4AF37] underline cursor-pointer font-bold"
+                              className="text-[#D4AF37] underline cursor-pointer font-bold shrink-0"
                             >
-                              Open Full 7-City Radar
+                              Open Market Radar
                             </button>
                           </div>
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                             <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                              <div className="text-[10px] text-zinc-400">Gross Yield</div>
-                              <div className="text-sm font-bold text-[#D4AF37]">{matched.avgGrossYield}%</div>
+                              <div className="text-[10px] text-zinc-400">Avg Cap Rate</div>
+                              <div className="text-sm font-bold text-[#D4AF37]">
+                                {matchedRadar?.avgGrossYield ?? matchedEntry.avgCapRate}%
+                              </div>
                             </div>
                             <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
                               <div className="text-[10px] text-zinc-400">Transfer Tax</div>
-                              <div className="text-sm font-bold text-white">{matched.transferTaxPct}%</div>
+                              <div className="text-sm font-bold text-white">
+                                {matchedRadar?.transferTaxPct ?? matchedEntry.taxRate}%
+                              </div>
                             </div>
                             <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                              <div className="text-[10px] text-zinc-400">Cap Gains</div>
-                              <div className="text-xs font-bold text-emerald-400 truncate">{matched.capitalGainsTax}</div>
+                              <div className="text-[10px] text-zinc-400">Currency</div>
+                              <div className="text-xs font-bold text-emerald-400 truncate">
+                                {matchedEntry.currency}
+                              </div>
                             </div>
                             <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                              <div className="text-[10px] text-zinc-400">Golden Visa</div>
-                              <div className="text-sm font-bold text-cyan-400">
-                                {matched.goldenVisaUSD
-                                  ? formatPrice(matched.goldenVisaUSD, currentCurrency, { compact: true })
-                                  : 'N/A'}
+                              <div className="text-[10px] text-zinc-400">Residency / Visa</div>
+                              <div className="text-[11px] font-bold text-cyan-400 truncate" title={matchedEntry.visaNote}>
+                                {matchedEntry.visaNote}
                               </div>
                             </div>
                           </div>
@@ -2481,7 +2781,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="text-xs font-mono text-zinc-300 space-y-1">
                         <div className="font-bold text-white">Available in SOVEREIGN - Upgrade</div>
                         <div className="text-zinc-400">
-                          Unlock Full REST API Credentials, 1-on-1 Dedicated Analyst Desk booking, and White-glove Custom Underwriting intake.
+                          Unlock Full REST API Credentials, 1-on-1 Dedicated Analyst Desk messaging, and White-glove Custom Underwriting intake.
                         </div>
                       </div>
                     </div>
@@ -2494,77 +2794,341 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </button>
                   </div>
                 ) : (
-                  <div className="space-y-4">
-                    <div>
-                      <div className="text-[10px] font-mono uppercase text-zinc-400 mb-1.5">Full REST API Bearer Token</div>
-                      <div className="p-3 rounded-lg bg-black/60 font-mono text-xs text-zinc-200 border border-white/10 break-all flex items-center justify-between gap-3">
+                  <div className="space-y-5">
+                    {/* REST API Token + API Docs */}
+                    <div className="p-4 rounded-xl bg-black/50 border border-purple-500/25 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-[11px] font-mono uppercase text-zinc-300 font-bold flex items-center gap-2">
+                          <Key className="w-3.5 h-3.5 text-purple-400" />
+                          <span>Full REST API Bearer Token</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowApiDocs((v) => !v)}
+                          className="px-2.5 py-1 rounded bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-[11px] font-mono text-zinc-200 cursor-pointer"
+                        >
+                          {showApiDocs ? 'Hide API Docs' : 'API Docs'}
+                        </button>
+                      </div>
+
+                      <div className="p-3 rounded-lg bg-black/70 font-mono text-xs text-zinc-200 border border-white/10 break-all flex items-center justify-between gap-3">
                         <span>{user.apiKey ? `Bearer ${user.apiKey}` : 'Loading active API credential...'}</span>
                         {user.apiKey && (
                           <button
                             type="button"
                             onClick={() => {
                               navigator.clipboard?.writeText(user.apiKey || '');
-                              showToast('REST API key copied to clipboard.');
+                              setCopiedApiKey(true);
+                              showToast('Copied');
+                              setTimeout(() => setCopiedApiKey(false), 2000);
                             }}
-                            className="px-2.5 py-1 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-[10px] font-bold shrink-0 cursor-pointer"
+                            className="px-3 py-1 rounded bg-purple-500/25 text-purple-200 hover:bg-purple-500/35 text-[11px] font-bold shrink-0 cursor-pointer flex items-center gap-1"
                           >
-                            COPY KEY
+                            <Copy className="w-3 h-3" />
+                            <span>{copiedApiKey ? 'Copied' : 'COPY KEY'}</span>
                           </button>
                         )}
                       </div>
+
+                      {showApiDocs && (
+                        <div className="p-4 rounded-xl bg-zinc-950 border border-white/10 space-y-2.5 text-xs font-mono text-zinc-300">
+                          <div className="text-purple-300 font-bold">REST API Quickstart</div>
+                          <div className="text-[11px] text-zinc-400">
+                            Endpoint: <code className="text-white">POST https://aqari-ai-rho.vercel.app/api/analyze</code>
+                          </div>
+                          <div className="text-[11px] text-zinc-400">
+                            Header: <code className="text-white">Authorization: Bearer {user.apiKey || 'aqari_live_...'}</code>
+                          </div>
+                          <pre className="p-2.5 rounded-lg bg-black border border-white/10 text-[11px] text-emerald-300 overflow-x-auto">
+{`// Request JSON
+{
+  "city": "Muscat",
+  "valuation": 650000,
+  "rent": 4500,
+  "equity": 30,
+  "rate": 5.5,
+  "opex": 15
+}`}
+                          </pre>
+                          <div className="text-[11px] text-amber-300 font-semibold">
+                            Your developer needs to integrate this. Not automatic.
+                          </div>
+                        </div>
+                      )}
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-2.5">
+                    {/* 1-on-1 Dedicated Analyst Desk - Ask Analyst (Async Chat Thread) */}
+                    <div className="p-4 rounded-xl bg-white/[0.02] border border-[#D4AF37]/30 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-xs font-mono font-bold text-[#D4AF37]">
-                          <Headphones className="w-4 h-4" />
-                          <span>1-on-1 Dedicated Analyst Desk</span>
+                          <MessageSquare className="w-4 h-4" />
+                          <span>1-on-1 Dedicated Analyst Desk - Ask Analyst</span>
+                          {analystUnread > 0 && (
+                            <span className="px-2 py-0.5 rounded-full bg-emerald-500 text-black text-[10px] font-black">
+                              ({analystUnread}) New Reply
+                            </span>
+                          )}
                         </div>
-                        <textarea
-                          rows={2}
-                          value={sovereignAnalystNotes}
-                          onChange={(e) => setSovereignAnalystNotes(e.target.value)}
-                          placeholder="Preferred session time & portfolio market focus..."
-                          className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-[#D4AF37]"
-                        />
                         <button
                           type="button"
-                          disabled={isSubmittingSovereignReq}
-                          onClick={() => handleSovereignRequest('analyst_desk')}
-                          className="px-3.5 py-2 rounded-lg bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
+                          onClick={handleOpenAnalystChat}
+                          className="px-3 py-1 rounded-lg bg-[#D4AF37]/15 hover:bg-[#D4AF37]/25 border border-[#D4AF37]/40 text-[#D4AF37] text-[11px] font-mono font-bold cursor-pointer"
                         >
-                          Request 1-on-1 Analyst Session
+                          {analystChatOpen ? 'Refresh Thread' : 'Open Chat History'}
                         </button>
                       </div>
 
-                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-2.5">
+                      {analystThread && analystThread.messages.length > 0 && (
+                        <div className="max-h-60 overflow-y-auto space-y-2.5 p-3 rounded-xl bg-black/50 border border-white/10">
+                          {analystThread.messages.map((m) => (
+                            <div
+                              key={m.id}
+                              className={`flex flex-col ${m.sender === 'client' ? 'items-end' : 'items-start'}`}
+                            >
+                              <div
+                                className={`max-w-[85%] rounded-xl px-3 py-2 text-xs font-mono space-y-1 ${
+                                  m.sender === 'client'
+                                    ? 'bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-white'
+                                    : 'bg-emerald-950/60 border border-emerald-500/40 text-emerald-100'
+                                }`}
+                              >
+                                <div className="text-[10px] font-bold uppercase text-zinc-400">
+                                  {m.sender === 'client' ? 'You' : 'AQARI Dedicated Analyst'} •{' '}
+                                  {new Date(m.timestamp).toLocaleString('en-US', {
+                                    month: 'short',
+                                    day: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </div>
+                                {m.attachedAnalysisTitle && (
+                                  <div className="text-[10px] px-2 py-1 rounded bg-black/40 border border-white/10 text-[#D4AF37]">
+                                    Attached: {m.attachedAnalysisTitle}
+                                  </div>
+                                )}
+                                {m.replyByDate && (
+                                  <div className="text-[10px] text-amber-300">
+                                    Need reply by: {m.replyByDate}
+                                  </div>
+                                )}
+                                <div className="whitespace-pre-wrap leading-relaxed">{m.text}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs font-mono">
+                        <select
+                          value={analystAttachedId}
+                          onChange={(e) => setAnalystAttachedId(e.target.value)}
+                          className="px-3 py-2 rounded-lg bg-black/60 border border-white/10 text-white outline-none"
+                        >
+                          <option value="">Attach Saved Analysis (optional)</option>
+                          {savedAnalyses.map((sa) => (
+                            <option key={sa.id} value={sa.id}>
+                              {sa.property} ({sa.city}) - {sa.capRate}% Cap
+                            </option>
+                          ))}
+                        </select>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] text-zinc-400 shrink-0">Need reply by:</span>
+                          <input
+                            type="date"
+                            lang="en"
+                            dir="ltr"
+                            value={analystReplyBy}
+                            onChange={(e) => setAnalystReplyBy(e.target.value)}
+                            className="flex-1 px-2.5 py-2 rounded-lg bg-black/60 border border-white/10 text-white text-xs font-mono outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <textarea
+                        rows={2}
+                        value={analystMsgInput}
+                        onChange={(e) => setAnalystMsgInput(e.target.value)}
+                        placeholder="Ask your analyst about a deal, market, portfolio..."
+                        className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-[#D4AF37]"
+                      />
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[11px] font-mono text-zinc-400">
+                          Replies arrive directly in this chat + email notification.
+                        </span>
+                        <button
+                          type="button"
+                          disabled={isSendingAnalystMsg}
+                          onClick={handleSendAnalystChat}
+                          className="px-4 py-2 rounded-lg bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60 flex items-center gap-1.5"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          <span>{isSendingAnalystMsg ? 'Sending...' : 'Send Question'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* White-Glove Custom Underwriting Intake + Deliverables */}
+                    <div className="p-4 rounded-xl bg-white/[0.02] border border-emerald-500/30 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 text-xs font-mono font-bold text-emerald-400">
                           <FileText className="w-4 h-4" />
                           <span>White-glove Custom Underwriting</span>
                         </div>
-                        <textarea
-                          rows={2}
-                          value={sovereignWhiteGloveBrief}
-                          onChange={(e) => setSovereignWhiteGloveBrief(e.target.value)}
-                          placeholder="Describe SPV structure, jurisdiction & target asset..."
-                          className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-emerald-400"
+                        <span className="text-[10px] font-mono text-zinc-400">48h Institutional Turnaround</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs font-mono">
+                        <input
+                          type="text"
+                          value={wgPropertyTitle}
+                          onChange={(e) => setWgPropertyTitle(e.target.value)}
+                          placeholder="Asset / Portfolio Title"
+                          className="px-3 py-2 rounded-lg bg-black/50 border border-white/10 text-white outline-none focus:border-emerald-400"
                         />
+                        <input
+                          type="text"
+                          value={wgDealLink}
+                          onChange={(e) => setWgDealLink(e.target.value)}
+                          placeholder="Listing / Deal Room URL (optional)"
+                          className="px-3 py-2 rounded-lg bg-black/50 border border-white/10 text-white outline-none focus:border-emerald-400"
+                        />
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={wgTargetCity}
+                            onFocus={() => setWgCityOpen(true)}
+                            onBlur={() => setTimeout(() => setWgCityOpen(false), 180)}
+                            onChange={(e) => {
+                              setWgTargetCity(e.target.value);
+                              setWgCityOpen(true);
+                            }}
+                            placeholder="Target City (type 2+ chars)"
+                            className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/10 text-white outline-none focus:border-emerald-400"
+                          />
+                          {wgCityOpen && wgCityOptions.length > 0 && (
+                            <div className="absolute z-40 left-0 right-0 mt-1 max-h-40 overflow-y-auto rounded-lg bg-zinc-950 border border-emerald-500/40 divide-y divide-white/[0.06]">
+                              {wgCityOptions.map((c) => (
+                                <button
+                                  key={`wg-${c.city}-${c.countryCode}`}
+                                  type="button"
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    setWgTargetCity(formatCityOptionLabel(c));
+                                    setWgCityOpen(false);
+                                  }}
+                                  className="w-full text-left px-3 py-1.5 text-xs font-mono text-zinc-200 hover:bg-emerald-500/20 cursor-pointer"
+                                >
+                                  {formatCityOptionLabel(c)}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <select
+                            value={wgCurrency}
+                            onChange={(e) => setWgCurrency(e.target.value as CurrencyCode)}
+                            className="px-2 py-2 rounded-lg bg-zinc-900 border border-white/10 text-white outline-none"
+                          >
+                            <option value="USD">USD</option>
+                            <option value="OMR">OMR</option>
+                            <option value="AED">AED</option>
+                            <option value="GBP">GBP</option>
+                          </select>
+                          <input
+                            id="td-wg-val"
+                            type="number"
+                            lang="en"
+                            dir="ltr"
+                            inputMode="decimal"
+                            style={{ fontFamily: 'ui-monospace, monospace' }}
+                            value={wgValuation}
+                            onChange={(e) => setWgValuation(e.target.value)}
+                            placeholder="Valuation"
+                            className="px-2.5 py-2 rounded-lg bg-black/50 border border-white/10 text-white outline-none"
+                          />
+                          <input
+                            id="td-wg-rent"
+                            type="number"
+                            lang="en"
+                            dir="ltr"
+                            inputMode="decimal"
+                            style={{ fontFamily: 'ui-monospace, monospace' }}
+                            value={wgExpectedRent}
+                            onChange={(e) => setWgExpectedRent(e.target.value)}
+                            placeholder="Rent/mo"
+                            className="px-2.5 py-2 rounded-lg bg-black/50 border border-white/10 text-white outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <textarea
+                        rows={2}
+                        value={wgGoalNotes}
+                        onChange={(e) => setWgGoalNotes(e.target.value)}
+                        placeholder="Describe SPV structure, financing constraints, tax jurisdiction & target IRR..."
+                        className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-emerald-400"
+                      />
+
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <button
                           type="button"
-                          disabled={isSubmittingSovereignReq}
-                          onClick={() => handleSovereignRequest('white_glove')}
-                          className="px-3.5 py-2 rounded-lg bg-emerald-500 text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
+                          disabled={isSubmittingWg}
+                          onClick={handleSubmitWhiteGloveRequest}
+                          className="px-4 py-2 rounded-lg bg-emerald-500 text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
                         >
-                          Submit White-Glove Deal Brief
+                          {isSubmittingWg ? 'Submitting...' : 'Submit White-Glove Deal Brief'}
                         </button>
+                        {wgStatusMsg && (
+                          <span className="text-xs font-mono text-emerald-300">{wgStatusMsg}</span>
+                        )}
                       </div>
-                    </div>
 
-                    {sovereignRequestStatus && (
-                      <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-300">
-                        {sovereignRequestStatus}
-                      </div>
-                    )}
+                      {(wgRequests.length > 0 || wgDeliverables.length > 0) && (
+                        <div className="pt-3 border-t border-white/10 space-y-2">
+                          <div className="text-[11px] font-mono uppercase text-zinc-400 font-bold">
+                            Your White-Glove Briefs &amp; Deliverables ({wgRequests.length})
+                          </div>
+                          {wgRequests.map((reqItem) => (
+                            <div
+                              key={reqItem.id}
+                              className="p-2.5 rounded-lg bg-black/50 border border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs font-mono"
+                            >
+                              <div>
+                                <span className="font-bold text-white">{reqItem.propertyTitle || reqItem.id}</span>{' '}
+                                <span className="text-zinc-400">({reqItem.targetCity || '-'})</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                    reqItem.status === 'Done'
+                                      ? 'bg-emerald-500/20 text-emerald-300'
+                                      : 'bg-amber-500/20 text-amber-300'
+                                  }`}
+                                >
+                                  {reqItem.status}
+                                </span>
+                                {reqItem.status === 'Done' && reqItem.deliverable && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      downloadWhiteGlovePdf({
+                                        deliverable: reqItem.deliverable!,
+                                        userEmail: user.email,
+                                      })
+                                    }
+                                    className="px-2.5 py-1 rounded bg-[#D4AF37] text-black font-bold text-[10px] cursor-pointer flex items-center gap-1"
+                                  >
+                                    <Download className="w-3 h-3" />
+                                    <span>Download Custom PDF</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -2708,7 +3272,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               {item.city}
                             </span>
                             <span className="text-xs font-mono text-zinc-500">
-                              {new Date(item.date).toLocaleDateString()}
+                              {new Date(item.date).toLocaleDateString('en-US')}
                             </span>
                           </div>
 
@@ -2748,7 +3312,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             <button
                               onClick={() => handleExportPDF(item.property)}
                               className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
-                              title="Export PDF Memo (Pro/Enterprise)"
+                              title="Export PDF Memo (PROFESSIONAL / SOVEREIGN)"
                             >
                               <Download className="w-4 h-4" />
                             </button>
@@ -2887,7 +3451,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <span>SOVEREIGN WEALTH AGGREGATOR</span>
                       </div>
                       <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                        Total Portfolio Intelligence
+                        Total Portfolio Intelligence ({savedAnalyses.length} properties)
                       </h2>
                     </div>
                   </div>
@@ -3477,7 +4041,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </span>
                     {endsAt && license.planKey !== 'free' && (
                       <span className="text-xs text-zinc-500 block mt-0.5">
-                        Ends: {new Date(endsAt).toLocaleString()}
+                        Ends: {new Date(endsAt).toLocaleString('en-US')}
                       </span>
                     )}
                   </div>
@@ -3541,7 +4105,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-purple-400 font-mono text-xs font-bold uppercase">
                       <Key className="w-4 h-4" />
-                      <span>Sovereign REST API Credentials &amp; 1-on-1 Dedicated Analyst Desk</span>
+                      <span>Sovereign REST API Credentials &amp; Executive Services</span>
                     </div>
                     <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300 font-bold">
                       WHITE-GLOVE UNDERWRITING ACTIVE
@@ -3549,7 +4113,16 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </div>
 
                   <div>
-                    <div className="text-[10px] font-mono uppercase text-zinc-400 mb-1.5">Full REST API Bearer Token</div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[10px] font-mono uppercase text-zinc-400">Full REST API Bearer Token</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowApiDocs((v) => !v)}
+                        className="text-[11px] font-mono text-purple-300 underline cursor-pointer"
+                      >
+                        {showApiDocs ? 'Hide API Docs' : 'API Docs'}
+                      </button>
+                    </div>
                     <div className="p-3 rounded-lg bg-black/60 font-mono text-xs text-zinc-200 border border-white/10 break-all flex items-center justify-between gap-3">
                       <span>{user.apiKey ? `Bearer ${user.apiKey}` : 'Loading active API credential...'}</span>
                       {user.apiKey && (
@@ -3557,66 +4130,44 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           type="button"
                           onClick={() => {
                             navigator.clipboard?.writeText(user.apiKey || '');
-                            showToast('API key copied to clipboard.');
+                            setCopiedApiKey(true);
+                            showToast('Copied');
+                            setTimeout(() => setCopiedApiKey(false), 2000);
                           }}
                           className="px-2.5 py-1 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-[10px] font-bold shrink-0 cursor-pointer"
                         >
-                          COPY KEY
+                          {copiedApiKey ? 'Copied' : 'COPY KEY'}
                         </button>
                       )}
                     </div>
+                    {showApiDocs && (
+                      <div className="mt-2 p-3 rounded-lg bg-zinc-950 border border-white/10 text-[11px] font-mono text-zinc-300 space-y-1">
+                        <div>POST /api/analyze • Header: Authorization: Bearer {user.apiKey || 'aqari_live_...'}</div>
+                        <div className="text-amber-300">Your developer needs to integrate this. Not automatic.</div>
+                      </div>
+                    )}
                   </div>
 
                   {canAnalystDesk && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-white/10">
-                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-2">
-                        <div className="flex items-center gap-2 text-xs font-mono font-bold text-[#D4AF37]">
-                          <Headphones className="w-4 h-4" />
-                          <span>1-on-1 Dedicated Analyst Desk</span>
-                        </div>
-                        <textarea
-                          rows={2}
-                          value={sovereignAnalystNotes}
-                          onChange={(e) => setSovereignAnalystNotes(e.target.value)}
-                          placeholder="Preferred date/time & portfolio topic..."
-                          className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-[#D4AF37]"
-                        />
-                        <button
-                          type="button"
-                          disabled={isSubmittingSovereignReq}
-                          onClick={() => handleSovereignRequest('analyst_desk')}
-                          className="px-3.5 py-2 rounded-lg bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
-                        >
-                          Book 1-on-1 Desk Session
-                        </button>
-                      </div>
-
-                      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-2">
-                        <div className="flex items-center gap-2 text-xs font-mono font-bold text-emerald-400">
-                          <FileText className="w-4 h-4" />
-                          <span>White-Glove Custom Underwriting</span>
-                        </div>
-                        <textarea
-                          rows={2}
-                          value={sovereignWhiteGloveBrief}
-                          onChange={(e) => setSovereignWhiteGloveBrief(e.target.value)}
-                          placeholder="SPV structure / GCC portfolio deal brief..."
-                          className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-emerald-400"
-                        />
-                        <button
-                          type="button"
-                          disabled={isSubmittingSovereignReq}
-                          onClick={() => handleSovereignRequest('white_glove')}
-                          className="px-3.5 py-2 rounded-lg bg-emerald-500 text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
-                        >
-                          Submit White-Glove Brief
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {sovereignRequestStatus && (
-                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs font-mono text-emerald-300">
-                      {sovereignRequestStatus}
+                    <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('analyze');
+                          handleOpenAnalystChat();
+                        }}
+                        className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono cursor-pointer flex items-center gap-1.5"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span>Open 1-on-1 Analyst Desk Chat {analystUnread > 0 ? `(${analystUnread})` : ''}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('analyze')}
+                        className="px-4 py-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold text-xs font-mono cursor-pointer"
+                      >
+                        Open White-Glove Custom Underwriting ({wgRequests.length})
+                      </button>
                     </div>
                   )}
                 </div>
@@ -3752,7 +4303,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             </td>
                             <td className="py-2.5 text-xs">
                               <div className="text-zinc-400">
-                                {w.timestamp ? new Date(w.timestamp).toLocaleString() : '-'}
+                                {w.timestamp ? new Date(w.timestamp).toLocaleString('en-US') : '-'}
                               </div>
                               {(w.raw_error || w.error) && (
                                 <div className="text-rose-400 mt-0.5">{w.raw_error || w.error}</div>
@@ -3764,6 +4315,58 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </table>
                   </div>
                 )}
+
+                {/* Email Dispatch & Admin Alert Audit Logs */}
+                <div className="pt-4 border-t border-white/10 space-y-2">
+                  <div className="flex items-center gap-2 text-xs font-mono font-bold uppercase text-zinc-300">
+                    <Mail className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <span>Email Dispatch &amp; Admin Alert Logs ({emailLogs.length})</span>
+                  </div>
+                  {emailLogs.length === 0 ? (
+                    <div className="text-xs font-mono text-zinc-400 p-3 rounded-xl bg-black/40 border border-white/10">
+                      No email notifications logged yet.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs font-mono">
+                        <thead className="text-zinc-500 border-b border-white/10 uppercase text-[11px]">
+                          <tr>
+                            <th className="py-2 pr-3">Event</th>
+                            <th className="py-2 pr-3">Recipient</th>
+                            <th className="py-2 pr-3">Subject</th>
+                            <th className="py-2 pr-3">Status</th>
+                            <th className="py-2">Timestamp</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5 text-zinc-300">
+                          {emailLogs.slice(0, 20).map((em) => (
+                            <tr key={em.id}>
+                              <td className="py-2 pr-3 text-[#D4AF37] font-bold">{em.event_type || 'alert'}</td>
+                              <td className="py-2 pr-3">{em.to}</td>
+                              <td className="py-2 pr-3 max-w-[260px] truncate">{em.subject}</td>
+                              <td className="py-2 pr-3">
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                    em.status === 'sent'
+                                      ? 'bg-emerald-500/20 text-emerald-300'
+                                      : em.status === 'simulated'
+                                      ? 'bg-amber-500/20 text-amber-300'
+                                      : 'bg-rose-500/20 text-rose-300'
+                                  }`}
+                                >
+                                  {em.status || 'logged'}
+                                </span>
+                              </td>
+                              <td className="py-2 text-zinc-400">
+                                {em.timestamp ? new Date(em.timestamp).toLocaleString('en-US') : '-'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
 
                 {isOwnerAdmin && (
                   <form

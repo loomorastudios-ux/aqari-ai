@@ -24,7 +24,7 @@ export interface PlanDefinition {
   launchPrice: number;
   priceUSD: number;
   analysesLimit: number; // 3 for Free, 30 for Starter, 150 for Pro, 400 for Sovereign
-  savedLimit: number; // 3 for Free, 30 for Starter, 150 for Professional, 400 for Sovereign (always <= analysesLimit)
+  savedLimit: number; // 3 for Free, 15 for Starter, 75 for Professional, 400 for Sovereign (always <= analysesLimit)
   licensingDays: number;
   features: string[];
   hiddenFeatures: string[];
@@ -118,13 +118,13 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
     launchPrice: 79,
     priceUSD: 79,
     analysesLimit: 30,
-    savedLimit: 30,
+    savedLimit: 15,
     licensingDays: 30,
     features: [
       '30 Analyses / 30 Days',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 30',
+      'Save 15',
     ],
     hiddenFeatures: [
       'Monte Carlo Stress Tests +200bps',
@@ -154,7 +154,7 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
     launchPrice: 199,
     priceUSD: 199,
     analysesLimit: 150,
-    savedLimit: 150,
+    savedLimit: 75,
     licensingDays: 30,
     features: [
       '150 Analyses / 30 Days',
@@ -163,7 +163,7 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 150',
+      'Save 75',
     ],
     hiddenFeatures: [
       'Full REST API Credentials',

@@ -1,7 +1,8 @@
-// © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
-import React, { useState, useEffect } from 'react';
-import { User } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { User, AnalystThread, WhiteGloveRequest } from '../types';
 import { PricingPublicPayload, PlanKey, findPlanPricing } from '../../lib/plans';
+import { CITIES, findCityEntry, searchCities, CityEntry } from '../../data/cities';
+import { downloadWhiteGlovePdf } from '../utils/pdfExport';
 import {
   ShieldCheck,
   Search,
@@ -16,6 +17,13 @@ import {
   Flame,
   Save,
   Users,
+  MessageSquare,
+  FileText,
+  Mail,
+  Send,
+  Plus,
+  Trash2,
+  RefreshCw,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -31,14 +39,38 @@ interface EditablePlanDraft {
   featuresText: string;
 }
 
+interface ComplexPropertyDraft {
+  id: string;
+  title: string;
+  cityInput: string;
+  currency: string;
+  valuation: string;
+  monthlyRent: string;
+  equityPct: string;
+  ratePct: string;
+  opexPct: string;
+  spvNote: string;
+}
+
+function resolveAdminCity(rawInput: string): CityEntry | null {
+  const cleaned = String(rawInput || '').trim();
+  if (!cleaned) return null;
+  const direct = findCityEntry(cleaned);
+  if (direct) return direct;
+  const strippedParen = cleaned.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  return findCityEntry(strippedParen) || findCityEntry(cleaned.split(',')[0].trim());
+}
+
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   currentUser,
   onRedirectHome,
   onPricingUpdated,
 }) => {
-  const [adminTab, setAdminTab] = useState<'users' | 'pricing'>('users');
+  const [adminTab, setAdminTab] = useState<'users' | 'pricing' | 'analyst' | 'whiteglove' | 'logs'>('users');
   const [users, setUsers] = useState<any[]>([]);
   const [failedWebhooks, setFailedWebhooks] = useState<any[]>([]);
+  const [emailLogs, setEmailLogs] = useState<any[]>([]);
+  const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [planFilter, setPlanFilter] = useState('all');
@@ -51,6 +83,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [planReason, setPlanReason] = useState('');
   const [refundNotes, setRefundNotes] = useState('');
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+
+  // Analyst Desk Inbox state
+  const [analystThreads, setAnalystThreads] = useState<AnalystThread[]>([]);
+  const [selectedThreadEmail, setSelectedThreadEmail] = useState<string | null>(null);
+  const [activeThread, setActiveThread] = useState<AnalystThread | null>(null);
+  const [activeClientSaved, setActiveClientSaved] = useState<any[]>([]);
+  const [replyText, setReplyText] = useState('');
+  const [replyAttachedIdx, setReplyAttachedIdx] = useState('');
+  const [replyPdfNote, setReplyPdfNote] = useState('');
+  const [analystAdminMsg, setAnalystAdminMsg] = useState<string | null>(null);
+  const [sendingReply, setSendingReply] = useState(false);
+
+  // White-Glove Requests & Complex Analysis Workspace state
+  const [wgRequests, setWgRequests] = useState<WhiteGloveRequest[]>([]);
+  const [selectedWgId, setSelectedWgId] = useState<string | null>(null);
+  const [wgDraftTitle, setWgDraftTitle] = useState('');
+  const [wgDraftCurrency, setWgDraftCurrency] = useState('USD');
+  const [wgDraftProps, setWgDraftProps] = useState<ComplexPropertyDraft[]>([]);
+  const [wgOpenCityRowId, setWgOpenCityRowId] = useState<string | null>(null);
+  const [wgSpvStructureNote, setWgSpvStructureNote] = useState('');
+  const [wgRiskNote, setWgRiskNote] = useState('');
+  const [wgRecommendation, setWgRecommendation] = useState('');
+  const [wgAdminMsg, setWgAdminMsg] = useState<string | null>(null);
+  const [deliveringWg, setDeliveringWg] = useState(false);
 
   // Dynamic Pricing Control state
   const [pricingState, setPricingState] = useState<PricingPublicPayload | null>(null);
@@ -133,6 +189,253 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  const loadAnalystInbox = async () => {
+    try {
+      const res = await fetch('/api/admin?action=analyst-inbox', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setAnalystThreads(Array.isArray(data?.threads) ? data.threads : []);
+      }
+    } catch {}
+  };
+
+  const openAnalystThread = async (email: string) => {
+    setSelectedThreadEmail(email);
+    setAnalystAdminMsg(null);
+    try {
+      const res = await fetch(`/api/admin?action=analyst-thread&email=${encodeURIComponent(email)}`, {
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.thread) setActiveThread(data.thread);
+        setActiveClientSaved(Array.isArray(data?.savedAnalyses) ? data.savedAnalyses : []);
+        loadAnalystInbox();
+      }
+    } catch {}
+  };
+
+  const handleSendAnalystReply = async () => {
+    if (!selectedThreadEmail || !replyText.trim()) {
+      setAnalystAdminMsg('Select a thread and type a reply message.');
+      return;
+    }
+    setSendingReply(true);
+    setAnalystAdminMsg(null);
+    try {
+      const idxNum = replyAttachedIdx === '' ? -1 : Number(replyAttachedIdx);
+      const attached = idxNum >= 0 ? activeClientSaved[idxNum] : null;
+      const res = await fetch('/api/admin?action=analyst-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: selectedThreadEmail,
+          message: replyText.trim(),
+          attachedAnalysisTitle: attached ? `${attached.property} (${attached.city})` : undefined,
+          attachedAnalysisSummary: attached
+            ? `Price: $${Number(attached.price || 0).toLocaleString('en-US')} | Cap: ${attached.capRate}% | IRR: ${attached.irr}%`
+            : undefined,
+          attachmentPdfNote: replyPdfNote.trim() || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success) {
+        setActiveThread(data.thread);
+        setReplyText('');
+        setReplyAttachedIdx('');
+        setReplyPdfNote('');
+        setAnalystAdminMsg('Reply sent to client & email notification logged.');
+        loadAnalystInbox();
+        loadAdminLogs();
+      } else {
+        setAnalystAdminMsg(data?.error || 'Failed to send reply.');
+      }
+    } catch {
+      setAnalystAdminMsg('Network error sending reply.');
+    } finally {
+      setSendingReply(false);
+    }
+  };
+
+  const handleCloseThread = async () => {
+    if (!selectedThreadEmail) return;
+    try {
+      const res = await fetch('/api/admin?action=analyst-close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: selectedThreadEmail }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.thread) {
+        setActiveThread(data.thread);
+        setAnalystAdminMsg('Thread marked Closed.');
+        loadAnalystInbox();
+      }
+    } catch {}
+  };
+
+  const loadWhiteGloveRequests = async () => {
+    try {
+      const res = await fetch('/api/admin?action=whiteglove-requests', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setWgRequests(Array.isArray(data?.requests) ? data.requests : []);
+      }
+    } catch {}
+  };
+
+  const selectWhiteGloveRequest = (reqItem: WhiteGloveRequest) => {
+    setSelectedWgId(reqItem.id);
+    setWgAdminMsg(null);
+    const deliv = reqItem.deliverable;
+    if (deliv) {
+      setWgDraftTitle(deliv.title || `White-Glove Complex Dossier: ${reqItem.propertyTitle || reqItem.id}`);
+      setWgDraftCurrency(deliv.currency || reqItem.currency || 'USD');
+      setWgSpvStructureNote(deliv.spvStructureNote || deliv.spvNote || '');
+      setWgRiskNote(deliv.riskNote || '');
+      setWgRecommendation(deliv.summaryRecommendation || '');
+      setWgDraftProps(
+        (deliv.properties || []).map((p: any, idx: number) => ({
+          id: p.id || `prop_${idx + 1}`,
+          title: p.title || `Asset #${idx + 1}`,
+          cityInput: p.city || 'Muscat',
+          currency: p.currency || reqItem.currency || 'USD',
+          valuation: String(p.valuation ?? p.priceUSD ?? 650000),
+          monthlyRent: String(p.monthlyRent ?? p.rentUSD ?? 4500),
+          equityPct: String(p.equityPct ?? p.downPaymentPct ?? 30),
+          ratePct: String(p.ratePct ?? p.interestRatePct ?? 5.5),
+          opexPct: String(p.opexPct ?? p.operatingExpensePct ?? 15),
+          spvNote: p.spvNote || '',
+        }))
+      );
+    } else {
+      const cEntry = resolveAdminCity(reqItem.targetCity || 'Muscat');
+      setWgDraftTitle(`White-Glove Underwriting: ${reqItem.propertyTitle || reqItem.id}`);
+      setWgDraftCurrency(reqItem.currency || cEntry?.currency || 'USD');
+      setWgSpvStructureNote('');
+      setWgRiskNote('');
+      setWgRecommendation('');
+      setWgDraftProps([
+        {
+          id: `prop_${Date.now()}`,
+          title: reqItem.propertyTitle || 'Primary Subject Property',
+          cityInput: cEntry ? `${cEntry.city} (${cEntry.country} ${cEntry.countryCode})` : (reqItem.targetCity || 'Muscat'),
+          currency: reqItem.currency || 'USD',
+          valuation: String(reqItem.valuation || 650000),
+          monthlyRent: String(reqItem.expectedMonthlyRent || 4500),
+          equityPct: '30',
+          ratePct: '5.5',
+          opexPct: '15',
+          spvNote: reqItem.goalNotes || '',
+        },
+      ]);
+    }
+  };
+
+  const wgLiveCombined = useMemo(() => {
+    let totalValuation = 0;
+    let totalMonthlyRent = 0;
+    let totalAnnualNOI = 0;
+    let totalAnnualDebt = 0;
+    let totalEquity = 0;
+    for (const p of wgDraftProps) {
+      const val = Math.max(0, Number(p.valuation) || 0);
+      const rent = Math.max(0, Number(p.monthlyRent) || 0);
+      const eqPct = Math.min(100, Math.max(1, Number(p.equityPct) || 30));
+      const ratePct = Math.max(0.1, Number(p.ratePct) || 5.5);
+      const opexPct = Math.min(95, Math.max(0, Number(p.opexPct) || 15));
+      const down = val * (eqPct / 100);
+      const loan = Math.max(0, val - down);
+      const r = ratePct / 100 / 12;
+      const n = 25 * 12;
+      const monthlyDebt = loan > 0 && r > 0 ? (loan * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1) : 0;
+      const annGross = rent * 12 * 0.95;
+      const annNoi = annGross * (1 - opexPct / 100);
+      totalValuation += val;
+      totalMonthlyRent += rent;
+      totalAnnualNOI += annNoi;
+      totalAnnualDebt += monthlyDebt * 12;
+      totalEquity += down;
+    }
+    const weightedCapRate = totalValuation > 0 ? Number(((totalAnnualNOI / totalValuation) * 100).toFixed(2)) : 0;
+    const annualCf = totalAnnualNOI - totalAnnualDebt;
+    const blendedCoC = totalEquity > 0 ? Number(((annualCf / totalEquity) * 100).toFixed(2)) : 0;
+    const dscr = totalAnnualDebt > 0 ? Number((totalAnnualNOI / totalAnnualDebt).toFixed(2)) : 4.0;
+    const irr5Yr = Number((blendedCoC + 4.8).toFixed(1));
+    return {
+      totalValuation: Math.round(totalValuation),
+      totalMonthlyRent: Math.round(totalMonthlyRent),
+      totalMonthlyCashflow: Math.round(annualCf / 12),
+      weightedCapRate,
+      blendedCoC,
+      dscr,
+      irr5Yr,
+    };
+  }, [wgDraftProps]);
+
+  const handleDeliverWhiteGlove = async () => {
+    if (!selectedWgId || wgDraftProps.length === 0) return;
+    setDeliveringWg(true);
+    setWgAdminMsg(null);
+    try {
+      const payloadProps = wgDraftProps.map((p) => {
+        const entry = resolveAdminCity(p.cityInput);
+        return {
+          id: p.id,
+          title: p.title.trim() || 'Subject Property',
+          city: entry ? entry.city : p.cityInput.trim() || 'Muscat',
+          currency: p.currency || wgDraftCurrency,
+          valuation: Math.max(1, Number(p.valuation) || 1),
+          monthlyRent: Math.max(0, Number(p.monthlyRent) || 0),
+          equityPct: Math.min(100, Math.max(1, Number(p.equityPct) || 30)),
+          ratePct: Math.max(0.1, Number(p.ratePct) || 5.5),
+          opexPct: Math.min(95, Math.max(0, Number(p.opexPct) || 15)),
+          spvNote: p.spvNote.trim(),
+        };
+      });
+      const res = await fetch('/api/admin?action=whiteglove-deliver', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          requestId: selectedWgId,
+          title: wgDraftTitle.trim() || 'White-Glove Portfolio Dossier',
+          currency: wgDraftCurrency,
+          properties: payloadProps,
+          spvStructureNote: wgSpvStructureNote.trim(),
+          riskNote: wgRiskNote.trim(),
+          summaryRecommendation: wgRecommendation.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success) {
+        setWgAdminMsg('Sent — Client notified & deliverable ready for PDF download.');
+        await loadWhiteGloveRequests();
+        await loadAdminLogs();
+      } else {
+        setWgAdminMsg(data?.error || 'Failed to deliver White-Glove analysis.');
+      }
+    } catch {
+      setWgAdminMsg('Network error delivering White-Glove analysis.');
+    } finally {
+      setDeliveringWg(false);
+    }
+  };
+
+  const loadAdminLogs = async () => {
+    try {
+      const res = await fetch('/api/admin?action=email-logs', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setEmailLogs(Array.isArray(data?.emailLogs) ? data.emailLogs : []);
+        setWebhookLogs(Array.isArray(data?.webhookLogs) ? data.webhookLogs : []);
+        if (Array.isArray(data?.failedWebhooks)) setFailedWebhooks(data.failedWebhooks);
+      }
+    } catch {}
+  };
+
   useEffect(() => {
     const em = (currentUser?.email || '').toLowerCase();
     if (!em || (em !== 'loomora.studios@gmail.com' && em !== 'loomorastudios@gmail.com')) {
@@ -141,6 +444,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
     loadUsers();
     loadPricingControl();
+    loadAnalystInbox();
+    loadWhiteGloveRequests();
+    loadAdminLogs();
   }, [currentUser?.email]);
 
   const handleToggleLaunchDiscount = async (nextActive: boolean) => {
@@ -313,19 +619,53 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <button
               type="button"
               onClick={() => setAdminTab('users')}
-              className={`px-4 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
                 adminTab === 'users'
                   ? 'bg-[#D4AF37] text-black border-[#D4AF37]'
                   : 'bg-white/[0.05] text-zinc-300 border-white/10 hover:bg-white/10'
               }`}
             >
               <Users className="w-4 h-4" />
-              <span>Users &amp; Evidence ({users.length})</span>
+              <span>Users ({users.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAdminTab('analyst');
+                loadAnalystInbox();
+              }}
+              className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
+                adminTab === 'analyst'
+                  ? 'bg-[#D4AF37] text-black border-[#D4AF37]'
+                  : 'bg-white/[0.05] text-zinc-300 border-white/10 hover:bg-white/10'
+              }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span>
+                ANALYST INBOX ({analystThreads.filter((t) => (t.unreadForAdmin || 0) > 0 || t.status === 'Open').length})
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAdminTab('whiteglove');
+                loadWhiteGloveRequests();
+              }}
+              className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
+                adminTab === 'whiteglove'
+                  ? 'bg-[#D4AF37] text-black border-[#D4AF37]'
+                  : 'bg-white/[0.05] text-zinc-300 border-white/10 hover:bg-white/10'
+              }`}
+            >
+              <FileText className="w-4 h-4" />
+              <span>
+                WHITE-GLOVE REQUESTS ({wgRequests.filter((r) => r.status !== 'Done').length})
+              </span>
             </button>
             <button
               type="button"
               onClick={() => setAdminTab('pricing')}
-              className={`px-4 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
                 adminTab === 'pricing'
                   ? 'bg-[#D4AF37] text-black border-[#D4AF37]'
                   : 'bg-white/[0.05] text-zinc-300 border-white/10 hover:bg-white/10'
@@ -333,6 +673,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             >
               <DollarSign className="w-4 h-4" />
               <span>Pricing Control</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAdminTab('logs');
+                loadAdminLogs();
+              }}
+              className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
+                adminTab === 'logs'
+                  ? 'bg-[#D4AF37] text-black border-[#D4AF37]'
+                  : 'bg-white/[0.05] text-zinc-300 border-white/10 hover:bg-white/10'
+              }`}
+            >
+              <Mail className="w-4 h-4" />
+              <span>ADMIN BACKUP &amp; EMAIL ALERTS ({emailLogs.length})</span>
             </button>
             <button
               type="button"
@@ -403,6 +758,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <div className="flex gap-2">
                     <input
                       type="number"
+                      lang="en"
+                      dir="ltr"
+                      inputMode="decimal"
+                      style={{ fontFamily: 'ui-monospace, monospace' }}
                       min={0}
                       value={countdownDaysInput}
                       onChange={(e) => setCountdownDaysInput(e.target.value)}
@@ -453,6 +812,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </label>
                         <input
                           type="number"
+                          lang="en"
+                          dir="ltr"
+                          inputMode="decimal"
+                          style={{ fontFamily: 'ui-monospace, monospace' }}
                           min={0}
                           value={draft.originalPrice}
                           onChange={(e) =>
@@ -470,6 +833,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </label>
                         <input
                           type="number"
+                          lang="en"
+                          dir="ltr"
+                          inputMode="decimal"
+                          style={{ fontFamily: 'ui-monospace, monospace' }}
                           min={0}
                           value={draft.launchPrice}
                           onChange={(e) =>
@@ -489,6 +856,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </label>
                       <input
                         type="number"
+                        lang="en"
+                        dir="ltr"
+                        inputMode="decimal"
+                        style={{ fontFamily: 'ui-monospace, monospace' }}
                         min={1}
                         value={draft.analysesLimit}
                         onChange={(e) =>
@@ -708,6 +1079,674 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         </div>
           </>
+        )}
+
+        {/* ANALYST INBOX TAB */}
+        {adminTab === 'analyst' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            {/* Client Threads List */}
+            <div className="lg:col-span-4 glass-panel p-4 border border-white/10 space-y-3">
+              <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+                <span className="text-xs font-mono font-bold uppercase text-[#D4AF37]">
+                  Sovereign Client Threads ({analystThreads.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={loadAnalystInbox}
+                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {analystThreads.length === 0 ? (
+                <div className="text-xs font-mono text-zinc-500 py-8 text-center">
+                  No analyst desk messages yet.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[540px] overflow-y-auto">
+                  {analystThreads.map((t) => (
+                    <button
+                      key={t.email}
+                      type="button"
+                      onClick={() => openAnalystThread(t.email)}
+                      className={`w-full text-left p-3 rounded-xl border transition cursor-pointer font-mono text-xs space-y-1 ${
+                        selectedThreadEmail === t.email
+                          ? 'bg-[#D4AF37]/15 border-[#D4AF37] text-white'
+                          : 'bg-black/40 border-white/10 text-zinc-300 hover:border-white/25'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold truncate">{t.email}</span>
+                        {(t.unreadForAdmin || 0) > 0 && (
+                          <span className="px-2 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-black">
+                            {t.unreadForAdmin}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                        <span className="text-[#D4AF37] font-bold">{t.status}</span>
+                        <span>{t.updatedAt ? new Date(t.updatedAt).toLocaleString('en-US') : '-'}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Selected Conversation & Reply Workspace */}
+            <div className="lg:col-span-8 glass-panel p-5 border border-white/10 space-y-4">
+              {!activeThread ? (
+                <div className="text-xs font-mono text-zinc-500 py-16 text-center">
+                  Select a Sovereign client conversation to read questions and send replies.
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
+                    <div>
+                      <div className="text-sm font-bold text-white font-mono">{activeThread.email}</div>
+                      <div className="text-[11px] font-mono text-zinc-400">
+                        Status: <strong className="text-[#D4AF37]">{activeThread.status}</strong> • Client Saved Analyses:{' '}
+                        {activeClientSaved.length}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCloseThread}
+                      className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-mono text-white cursor-pointer"
+                    >
+                      Mark Closed
+                    </button>
+                  </div>
+
+                  {analystAdminMsg && (
+                    <div className="p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-xs font-mono text-emerald-200">
+                      {analystAdminMsg}
+                    </div>
+                  )}
+
+                  <div className="max-h-72 overflow-y-auto space-y-2.5 p-3 rounded-xl bg-black/50 border border-white/10">
+                    {(activeThread.messages || []).map((m) => (
+                      <div
+                        key={m.id}
+                        className={`flex flex-col ${m.sender === 'admin' ? 'items-end' : 'items-start'}`}
+                      >
+                        <div
+                          className={`max-w-[85%] rounded-xl px-3 py-2 text-xs font-mono space-y-1 ${
+                            m.sender === 'admin'
+                              ? 'bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-white'
+                              : 'bg-zinc-900 border border-white/15 text-zinc-200'
+                          }`}
+                        >
+                          <div className="text-[10px] text-zinc-400 font-bold">
+                            {m.sender === 'admin' ? 'Analyst (You)' : activeThread.email} •{' '}
+                            {new Date(m.timestamp).toLocaleString('en-US')}
+                          </div>
+                          {m.attachedAnalysisTitle && (
+                            <div className="text-[10px] text-[#D4AF37]">
+                              Attached: {m.attachedAnalysisTitle} {m.attachedAnalysisSummary ? `(${m.attachedAnalysisSummary})` : ''}
+                            </div>
+                          )}
+                          {m.replyByDate && <div className="text-[10px] text-amber-300">Requested reply by: {m.replyByDate}</div>}
+                          {m.attachmentPdfNote && <div className="text-[10px] text-emerald-300">PDF/Memo Ref: {m.attachmentPdfNote}</div>}
+                          <div className="whitespace-pre-wrap">{m.text}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="space-y-2.5 text-xs font-mono">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <select
+                        value={replyAttachedIdx}
+                        onChange={(e) => setReplyAttachedIdx(e.target.value)}
+                        className="px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white outline-none"
+                      >
+                        <option value="">Attach client saved analysis (optional)</option>
+                        {activeClientSaved.map((s, idx) => (
+                          <option key={s.id || idx} value={String(idx)}>
+                            {s.property} ({s.city}) - {s.capRate}% Cap
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        value={replyPdfNote}
+                        onChange={(e) => setReplyPdfNote(e.target.value)}
+                        placeholder="Optional PDF / Memo reference note..."
+                        className="px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white outline-none"
+                      />
+                    </div>
+                    <textarea
+                      rows={3}
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                      placeholder="Write your institutional analyst response..."
+                      className="w-full p-3 rounded-xl bg-black/60 border border-white/10 text-white outline-none focus:border-[#D4AF37]"
+                    />
+                    <button
+                      type="button"
+                      disabled={sendingReply}
+                      onClick={handleSendAnalystReply}
+                      className="px-4 py-2.5 rounded-xl bg-[#D4AF37] text-black font-bold flex items-center gap-2 cursor-pointer disabled:opacity-60"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{sendingReply ? 'Sending Reply...' : 'Send Reply'}</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* WHITE-GLOVE REQUESTS & COMPLEX MULTI-PROPERTY WORKSPACE TAB */}
+        {adminTab === 'whiteglove' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            {/* Requests Queue */}
+            <div className="lg:col-span-4 glass-panel p-4 border border-white/10 space-y-3">
+              <div className="flex items-center justify-between border-b border-white/10 pb-2.5">
+                <span className="text-xs font-mono font-bold uppercase text-emerald-400">
+                  White-Glove Queue ({wgRequests.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={loadWhiteGloveRequests}
+                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-300 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {wgRequests.length === 0 ? (
+                <div className="text-xs font-mono text-zinc-500 py-8 text-center">
+                  No White-Glove underwriting briefs submitted yet.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[600px] overflow-y-auto">
+                  {wgRequests.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => selectWhiteGloveRequest(r)}
+                      className={`w-full text-left p-3 rounded-xl border transition cursor-pointer font-mono text-xs space-y-1 ${
+                        selectedWgId === r.id
+                          ? 'bg-emerald-950/40 border-emerald-400 text-white'
+                          : 'bg-black/40 border-white/10 text-zinc-300 hover:border-white/25'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold truncate">{r.propertyTitle || r.id}</span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                            r.status === 'Done'
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : 'bg-amber-500/20 text-amber-300'
+                          }`}
+                        >
+                          {r.status}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-zinc-400 truncate">
+                        {r.email} • {r.targetCity || '-'} • {r.currency || 'USD'}{' '}
+                        {Number(r.valuation || 0).toLocaleString('en-US')}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Complex Analysis Builder */}
+            <div className="lg:col-span-8 glass-panel p-5 border border-white/10 space-y-4 text-xs font-mono">
+              {!selectedWgId ? (
+                <div className="text-zinc-500 py-16 text-center">
+                  Select a White-Glove request from the queue to open Complex Multi-Property Underwriting Workspace.
+                </div>
+              ) : (
+                (() => {
+                  const activeReq = wgRequests.find((x) => x.id === selectedWgId);
+                  return (
+                    <>
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
+                        <div>
+                          <div className="text-sm font-bold text-white">{activeReq?.propertyTitle || selectedWgId}</div>
+                          <div className="text-[11px] text-zinc-400">
+                            Client: {activeReq?.email} • City: {activeReq?.targetCity} • Notes:{' '}
+                            {activeReq?.goalNotes || activeReq?.brief || 'None'}
+                          </div>
+                        </div>
+                        {activeReq?.deliverable && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadWhiteGlovePdf({
+                                deliverable: activeReq.deliverable!,
+                                userEmail: activeReq.email,
+                              })
+                            }
+                            className="px-3 py-1.5 rounded-lg bg-[#D4AF37] text-black font-bold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Preview PDF</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {wgAdminMsg && (
+                        <div className="p-2.5 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-emerald-200">
+                          {wgAdminMsg}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <input
+                          type="text"
+                          value={wgDraftTitle}
+                          onChange={(e) => setWgDraftTitle(e.target.value)}
+                          placeholder="Deliverable Report Title"
+                          className="sm:col-span-2 px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white outline-none"
+                        />
+                        <select
+                          value={wgDraftCurrency}
+                          onChange={(e) => setWgDraftCurrency(e.target.value)}
+                          className="px-3 py-2 rounded-xl bg-zinc-900 border border-white/10 text-white outline-none"
+                        >
+                          <option value="USD">USD</option>
+                          <option value="OMR">OMR</option>
+                          <option value="AED">AED</option>
+                          <option value="GBP">GBP</option>
+                        </select>
+                      </div>
+
+                      {/* Multi-Property Lines */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold uppercase text-zinc-300">
+                            Modeled Properties ({wgDraftProps.length})
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setWgDraftProps((prev) => [
+                                ...prev,
+                                {
+                                  id: `prop_${Date.now()}_${prev.length + 1}`,
+                                  title: `Property #${prev.length + 1}`,
+                                  cityInput: 'Muscat (Oman OM)',
+                                  currency: wgDraftCurrency,
+                                  valuation: '650000',
+                                  monthlyRent: '4500',
+                                  equityPct: '30',
+                                  ratePct: '5.5',
+                                  opexPct: '15',
+                                  spvNote: '',
+                                },
+                              ])
+                            }
+                            className="px-3 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>+ Add Property</span>
+                          </button>
+                        </div>
+
+                        {wgDraftProps.map((prop, pIdx) => {
+                          const cOptions =
+                            prop.cityInput.trim().length >= 2
+                              ? searchCities(prop.cityInput.replace(/\s*\([^)]*\)\s*$/, ''), 15)
+                              : ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York']
+                                  .map((n) => findCityEntry(n))
+                                  .filter((c): c is CityEntry => Boolean(c));
+                          return (
+                            <div
+                              key={prop.id}
+                              className="p-3.5 rounded-xl bg-black/50 border border-white/10 space-y-2.5"
+                            >
+                              <div className="flex items-center justify-between">
+                                <span className="font-bold text-[#D4AF37]">Asset #{pIdx + 1}</span>
+                                {wgDraftProps.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setWgDraftProps((prev) => prev.filter((item) => item.id !== prop.id))
+                                    }
+                                    className="text-rose-400 hover:text-rose-300 cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                <input
+                                  type="text"
+                                  value={prop.title}
+                                  onChange={(e) =>
+                                    setWgDraftProps((prev) =>
+                                      prev.map((x) => (x.id === prop.id ? { ...x, title: e.target.value } : x))
+                                    )
+                                  }
+                                  placeholder="Property Name"
+                                  className="px-2.5 py-2 rounded-lg bg-black/60 border border-white/10 text-white"
+                                />
+                                <div className="relative">
+                                  <input
+                                    type="text"
+                                    value={prop.cityInput}
+                                    onFocus={() => setWgOpenCityRowId(prop.id)}
+                                    onBlur={() => setTimeout(() => setWgOpenCityRowId(null), 180)}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setWgOpenCityRowId(prop.id);
+                                      setWgDraftProps((prev) =>
+                                        prev.map((x) => (x.id === prop.id ? { ...x, cityInput: val } : x))
+                                      );
+                                    }}
+                                    placeholder="City (type 2+ chars)"
+                                    className="w-full px-2.5 py-2 rounded-lg bg-black/60 border border-white/10 text-white"
+                                  />
+                                  {wgOpenCityRowId === prop.id && cOptions.length > 0 && (
+                                    <div className="absolute z-40 left-0 right-0 mt-1 max-h-40 overflow-y-auto rounded-lg bg-zinc-950 border border-[#D4AF37]/40 divide-y divide-white/[0.06]">
+                                      {cOptions.map((c) => (
+                                        <button
+                                          key={`${prop.id}-${c.city}-${c.countryCode}`}
+                                          type="button"
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            setWgOpenCityRowId(null);
+                                            setWgDraftProps((prev) =>
+                                              prev.map((x) =>
+                                                x.id === prop.id
+                                                  ? { ...x, cityInput: `${c.city} (${c.country} ${c.countryCode})` }
+                                                  : x
+                                              )
+                                            );
+                                          }}
+                                          className="w-full text-left px-2.5 py-1.5 text-[11px] text-zinc-200 hover:bg-[#D4AF37]/20 cursor-pointer"
+                                        >
+                                          {c.city} ({c.country} {c.countryCode})
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                                <select
+                                  value={prop.currency}
+                                  onChange={(e) =>
+                                    setWgDraftProps((prev) =>
+                                      prev.map((x) => (x.id === prop.id ? { ...x, currency: e.target.value } : x))
+                                    )
+                                  }
+                                  className="px-2.5 py-2 rounded-lg bg-zinc-900 border border-white/10 text-white"
+                                >
+                                  <option value="USD">USD</option>
+                                  <option value="OMR">OMR</option>
+                                  <option value="AED">AED</option>
+                                  <option value="GBP">GBP</option>
+                                </select>
+                              </div>
+
+                              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                                <input
+                                  type="number"
+                                  lang="en"
+                                  dir="ltr"
+                                  inputMode="decimal"
+                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  value={prop.valuation}
+                                  onChange={(e) =>
+                                    setWgDraftProps((prev) =>
+                                      prev.map((x) => (x.id === prop.id ? { ...x, valuation: e.target.value } : x))
+                                    )
+                                  }
+                                  placeholder="Valuation"
+                                  className="px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
+                                />
+                                <input
+                                  type="number"
+                                  lang="en"
+                                  dir="ltr"
+                                  inputMode="decimal"
+                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  value={prop.monthlyRent}
+                                  onChange={(e) =>
+                                    setWgDraftProps((prev) =>
+                                      prev.map((x) => (x.id === prop.id ? { ...x, monthlyRent: e.target.value } : x))
+                                    )
+                                  }
+                                  placeholder="Rent/mo"
+                                  className="px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
+                                />
+                                <input
+                                  type="number"
+                                  lang="en"
+                                  dir="ltr"
+                                  inputMode="decimal"
+                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  value={prop.equityPct}
+                                  onChange={(e) =>
+                                    setWgDraftProps((prev) =>
+                                      prev.map((x) => (x.id === prop.id ? { ...x, equityPct: e.target.value } : x))
+                                    )
+                                  }
+                                  placeholder="Equity %"
+                                  className="px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
+                                />
+                                <input
+                                  type="number"
+                                  lang="en"
+                                  dir="ltr"
+                                  inputMode="decimal"
+                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  value={prop.ratePct}
+                                  onChange={(e) =>
+                                    setWgDraftProps((prev) =>
+                                      prev.map((x) => (x.id === prop.id ? { ...x, ratePct: e.target.value } : x))
+                                    )
+                                  }
+                                  placeholder="Rate %"
+                                  className="px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
+                                />
+                                <input
+                                  type="number"
+                                  lang="en"
+                                  dir="ltr"
+                                  inputMode="decimal"
+                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  value={prop.opexPct}
+                                  onChange={(e) =>
+                                    setWgDraftProps((prev) =>
+                                      prev.map((x) => (x.id === prop.id ? { ...x, opexPct: e.target.value } : x))
+                                    )
+                                  }
+                                  placeholder="OPEX %"
+                                  className="px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
+                                />
+                              </div>
+
+                              <input
+                                type="text"
+                                value={prop.spvNote}
+                                onChange={(e) =>
+                                  setWgDraftProps((prev) =>
+                                    prev.map((x) => (x.id === prop.id ? { ...x, spvNote: e.target.value } : x))
+                                  )
+                                }
+                                placeholder="Per-asset SPV / jurisdiction note..."
+                                className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Combined Results Live Preview */}
+                      <div className="p-4 rounded-xl bg-emerald-950/25 border border-emerald-500/30 space-y-2">
+                        <div className="font-bold uppercase text-emerald-300">Combined Portfolio Results (Live)</div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                          <div>
+                            <div className="text-[10px] text-zinc-400">Total Valuation</div>
+                            <div className="font-bold text-white">
+                              {wgDraftCurrency} {wgLiveCombined.totalValuation.toLocaleString('en-US')}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-zinc-400">Weighted Cap Rate</div>
+                            <div className="font-bold text-[#D4AF37]">{wgLiveCombined.weightedCapRate}%</div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-zinc-400">Blended CoC / IRR</div>
+                            <div className="font-bold text-emerald-300">
+                              {wgLiveCombined.blendedCoC}% / {wgLiveCombined.irr5Yr}%
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-zinc-400">Net Cashflow/mo</div>
+                            <div className="font-bold text-white">
+                              {wgDraftCurrency} {wgLiveCombined.totalMonthlyCashflow.toLocaleString('en-US')}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <textarea
+                          rows={2}
+                          value={wgSpvStructureNote}
+                          onChange={(e) => setWgSpvStructureNote(e.target.value)}
+                          placeholder="SPV Structure & Tax Note..."
+                          className="p-2.5 rounded-xl bg-black/60 border border-white/10 text-white"
+                        />
+                        <textarea
+                          rows={2}
+                          value={wgRiskNote}
+                          onChange={(e) => setWgRiskNote(e.target.value)}
+                          placeholder="Macro / Interest Rate Risk Note..."
+                          className="p-2.5 rounded-xl bg-black/60 border border-white/10 text-white"
+                        />
+                        <textarea
+                          rows={2}
+                          value={wgRecommendation}
+                          onChange={(e) => setWgRecommendation(e.target.value)}
+                          placeholder="Executive Recommendation..."
+                          className="p-2.5 rounded-xl bg-black/60 border border-white/10 text-white"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={deliveringWg}
+                        onClick={handleDeliverWhiteGlove}
+                        className="w-full py-3 rounded-xl bg-[#D4AF37] text-black font-black uppercase tracking-wider cursor-pointer disabled:opacity-60"
+                      >
+                        {deliveringWg ? 'Delivering to Client...' : 'Send to Client (Mark Done + Email Alert)'}
+                      </button>
+                    </>
+                  );
+                })()
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ADMIN BACKUP & EMAIL ALERTS TAB */}
+        {adminTab === 'logs' && (
+          <div className="space-y-6 text-xs font-mono">
+            <div className="glass-panel p-5 border border-white/10 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-bold uppercase text-[#D4AF37]">
+                  Admin Email Alerts &amp; Client Notification Logs ({emailLogs.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={loadAdminLogs}
+                  className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white cursor-pointer flex items-center gap-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Refresh</span>
+                </button>
+              </div>
+              {emailLogs.length === 0 ? (
+                <div className="text-zinc-500 py-4">No email alerts logged yet.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="text-zinc-500 border-b border-white/10 uppercase text-[10px]">
+                      <tr>
+                        <th className="py-2 pr-3">Event</th>
+                        <th className="py-2 pr-3">To</th>
+                        <th className="py-2 pr-3">Subject</th>
+                        <th className="py-2 pr-3">Status</th>
+                        <th className="py-2">Timestamp</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-zinc-300">
+                      {emailLogs.map((em) => (
+                        <tr key={em.id}>
+                          <td className="py-2 pr-3 text-[#D4AF37] font-bold">{em.event_type}</td>
+                          <td className="py-2 pr-3">{em.to}</td>
+                          <td className="py-2 pr-3">{em.subject}</td>
+                          <td className="py-2 pr-3">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                em.status === 'sent'
+                                  ? 'bg-emerald-500/20 text-emerald-300'
+                                  : em.status === 'simulated'
+                                  ? 'bg-amber-500/20 text-amber-300'
+                                  : 'bg-rose-500/20 text-rose-300'
+                              }`}
+                            >
+                              {em.status}
+                            </span>
+                          </td>
+                          <td className="py-2 text-zinc-400">
+                            {em.timestamp ? new Date(em.timestamp).toLocaleString('en-US') : '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="glass-panel p-5 border border-white/10 space-y-3">
+              <div className="font-bold uppercase text-white">
+                Payment Webhook Audit Logs ({webhookLogs.length})
+              </div>
+              {webhookLogs.length === 0 ? (
+                <div className="text-zinc-500 py-4">No payment webhooks logged yet.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="text-zinc-500 border-b border-white/10 uppercase text-[10px]">
+                      <tr>
+                        <th className="py-2 pr-3">Event</th>
+                        <th className="py-2 pr-3">Order ID</th>
+                        <th className="py-2 pr-3">Plan</th>
+                        <th className="py-2 pr-3">Email</th>
+                        <th className="py-2 pr-3">Amount</th>
+                        <th className="py-2">Timestamp</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-zinc-300">
+                      {webhookLogs.map((w) => (
+                        <tr key={w.id}>
+                          <td className="py-2 pr-3">{w.event || w.event_name || 'order_created'}</td>
+                          <td className="py-2 pr-3">{w.order_id}</td>
+                          <td className="py-2 pr-3 uppercase text-[#D4AF37] font-bold">{w.plan}</td>
+                          <td className="py-2 pr-3">{w.payment_email || w.email}</td>
+                          <td className="py-2 pr-3">${w.amount}</td>
+                          <td className="py-2 text-zinc-400">
+                            {w.timestamp ? new Date(w.timestamp).toLocaleString('en-US') : '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
 

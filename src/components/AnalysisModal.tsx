@@ -50,17 +50,18 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
     : canUseFeature(user?.plan, 'pdfExport');
   const planCfg = PLANS[normalizePlanKey(user?.plan)];
   const currentSavedCount = (user?.savedAnalyses || []).length;
+  const parsedSaveFeature = hasMeFeatures
+    ? user!.features!
+        .map((f) => /^save\s+(\d+)$/i.exec(f.trim()))
+        .find((m) => Boolean(m))
+    : null;
   const effectiveSavedLimit =
     typeof user?.maxSaved === 'number'
       ? user.maxSaved
-      : hasMeFeatures
-      ? user!.features!.includes('Save 400')
-        ? 400
-        : user!.features!.includes('Save 150')
-        ? 150
-        : user!.features!.includes('Save 30')
-        ? 30
-        : 3
+      : parsedSaveFeature
+      ? Number(parsedSaveFeature[1])
+      : hasMeFeatures && user!.features!.some((f) => /^unlimited\s+saved$/i.test(f.trim()))
+      ? 400
       : planCfg.savedLimit;
   const hasSaveFeature = Boolean(isActiveUser && effectiveSavedLimit > 0);
   const canSave =

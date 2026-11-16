@@ -49,12 +49,12 @@ const PLAN_DEFINITIONS: Record<
     originalPrice: 129,
     launchPrice: PLANS.STARTER.price,
     analysesLimit: PLANS.STARTER.analyses,
-    savedLimit: 30,
+    savedLimit: 15,
     features: [
       '30 Analyses / 30 Days',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 30',
+      'Save 15',
     ],
   },
   pro: {
@@ -63,7 +63,7 @@ const PLAN_DEFINITIONS: Record<
     originalPrice: 349,
     launchPrice: PLANS.PROFESSIONAL.price,
     analysesLimit: PLANS.PROFESSIONAL.analyses,
-    savedLimit: 150,
+    savedLimit: 75,
     features: [
       '150 Analyses / 30 Days',
       'Monte Carlo Stress Tests +200bps',
@@ -71,7 +71,7 @@ const PLAN_DEFINITIONS: Record<
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 150',
+      'Save 75',
     ],
   },
   enterprise: {
@@ -680,6 +680,111 @@ async function updateWebhookLogInDb(
   return updatedLog;
 }
 
+function getAdminEmailAddress(): string {
+  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'loomora.studios@gmail.com').toLowerCase();
+}
+
+async function appendEmailLogToDb(entry: {
+  to: string;
+  from: string;
+  subject: string;
+  type: string;
+  status: 'sent' | 'failed' | 'simulated';
+  provider: string;
+  error?: string;
+  resend_status?: number;
+}) {
+  const log = {
+    id: `em_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  try {
+    const store = loadStore();
+    store.email_logs = [log, ...(store.email_logs || [])].slice(0, 200);
+    persistStore(store);
+  } catch {}
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['LPUSH', 'aqari:email_logs:v1', JSON.stringify(log)]);
+      await kvCommand(['LTRIM', 'aqari:email_logs:v1', 0, 199]);
+    }
+  } catch {}
+  return log;
+}
+
+async function dispatchAdminEmailAlert(params: {
+  subject: string;
+  text: string;
+  html: string;
+  type: 'admin_payment_success' | 'admin_payment_failed';
+}) {
+  const to = getAdminEmailAddress();
+  const from = 'AQARI Terminal <onboarding@resend.dev>';
+  const resendKey = cleanEnvValue(getEnv('RESEND_API_KEY'));
+  if (!resendKey) {
+    return appendEmailLogToDb({
+      to,
+      from,
+      subject: params.subject,
+      type: params.type,
+      status: 'simulated',
+      provider: 'log',
+      error: 'RESEND_API_KEY missing - logged locally',
+    });
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    let res: Response;
+    try {
+      res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from,
+          to: [to],
+          subject: params.subject,
+          html: params.html,
+          text: params.text,
+        }),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    const rawText = await res.text();
+    let parsed: any = {};
+    try {
+      parsed = rawText ? JSON.parse(rawText) : {};
+    } catch {}
+    return appendEmailLogToDb({
+      to,
+      from,
+      subject: params.subject,
+      type: params.type,
+      status: res.ok ? 'sent' : 'failed',
+      provider: 'resend',
+      resend_status: res.status,
+      error: res.ok ? undefined : parsed?.message || rawText || res.statusText,
+    });
+  } catch (err: any) {
+    return appendEmailLogToDb({
+      to,
+      from,
+      subject: params.subject,
+      type: params.type,
+      status: 'failed',
+      provider: 'resend',
+      error: err?.message || 'Resend network error',
+    });
+  }
+}
+
 // =========================================================================
 // 3. LEMON SQUEEZY PLAN RESOLVER & HANDLER
 // =========================================================================
@@ -891,6 +996,12 @@ export default async function handler(req: any, res: any) {
           error: rawError,
         }).catch((e) => console.error('[Lemon Webhook] DB update failed:', e));
       }
+      await dispatchAdminEmailAlert({
+        type: 'admin_payment_failed',
+        subject: `FAILED - Payment received but NOT activated - Order ID ${orderId} - Activate manually in Admin > ADMIN BACKUP`,
+        text: `Webhook error for Order #${orderId} (${paymentEmail || accountEmail || 'unknown'}): ${rawError}`,
+        html: `<p><strong>FAILED:</strong> Webhook secret missing. Order #${orderId} (${paymentEmail || accountEmail || 'unknown'}) NOT activated. Activate manually in Admin &gt; ADMIN BACKUP.</p>`,
+      }).catch(() => {});
       return res.status(401).json({ error: 'Webhook verification failed: missing secret configuration' });
     }
 
@@ -904,6 +1015,12 @@ export default async function handler(req: any, res: any) {
           error: rawError,
         }).catch((e) => console.error('[Lemon Webhook] DB update failed:', e));
       }
+      await dispatchAdminEmailAlert({
+        type: 'admin_payment_failed',
+        subject: `FAILED - Payment received but NOT activated - Order ID ${orderId} - Activate manually in Admin > ADMIN BACKUP`,
+        text: `Webhook signature missing for Order #${orderId} (${paymentEmail || accountEmail || 'unknown'}).`,
+        html: `<p><strong>FAILED:</strong> Missing X-Signature header for Order #${orderId}. Activate manually in Admin &gt; ADMIN BACKUP.</p>`,
+      }).catch(() => {});
       return res.status(401).json({ error: 'Invalid webhook signature: missing X-Signature' });
     }
 
@@ -921,6 +1038,12 @@ export default async function handler(req: any, res: any) {
           error: rawError,
         }).catch((e) => console.error('[Lemon Webhook] DB update failed:', e));
       }
+      await dispatchAdminEmailAlert({
+        type: 'admin_payment_failed',
+        subject: `FAILED - Payment received but NOT activated - Order ID ${orderId} - Activate manually in Admin > ADMIN BACKUP`,
+        text: `Invalid X-Signature for Order #${orderId} (${paymentEmail || accountEmail || 'unknown'}).`,
+        html: `<p><strong>FAILED:</strong> Invalid webhook signature for Order #${orderId}. Activate manually in Admin &gt; ADMIN BACKUP.</p>`,
+      }).catch(() => {});
       return res.status(401).json({ error: 'Invalid webhook signature' });
     }
 
@@ -993,6 +1116,20 @@ export default async function handler(req: any, res: any) {
             lemonCustomerEmail: paymentEmail || null,
           });
           await saveUserToDb(persistedUser);
+          const planDisplay = PLAN_DEFINITIONS[planCode]?.displayName || 'PROFESSIONAL';
+          await dispatchAdminEmailAlert({
+            type: 'admin_payment_success',
+            subject: `New payment - ${paymentEmail || targetEmail} - ${planDisplay} $${amountUSD} - Activated for ${targetEmail}`,
+            text: `Order #${orderId} activated.\nPlan: ${planDisplay}\nAmount: $${amountUSD} ${currency}\nPayment Email: ${paymentEmail || 'N/A'}\nActivated Account: ${targetEmail}`,
+            html: `<p><strong>New Payment Activated</strong></p><p>Order #${orderId}<br/>Plan: <strong>${planDisplay}</strong> ($${amountUSD} ${currency})<br/>Payment Email: ${paymentEmail || 'N/A'}<br/>Activated For: ${targetEmail}</p>`,
+          }).catch(() => {});
+        } else {
+          await dispatchAdminEmailAlert({
+            type: 'admin_payment_failed',
+            subject: `FAILED - Payment received but NOT activated - Order ID ${orderId} - Activate manually in Admin > ADMIN BACKUP`,
+            text: `Order #${orderId} received ($${amountUSD} ${currency}) but no customer email was provided to activate.`,
+            html: `<p><strong>FAILED:</strong> Payment received for Order #${orderId} ($${amountUSD} ${currency}) but no email found. Activate manually in Admin &gt; ADMIN BACKUP.</p>`,
+          }).catch(() => {});
         }
         break;
       }
@@ -1017,6 +1154,13 @@ export default async function handler(req: any, res: any) {
             lemonCustomerEmail: paymentEmail || null,
           });
           await saveUserToDb(persistedUser);
+          const planDisplay = PLAN_DEFINITIONS[planCode]?.displayName || 'PROFESSIONAL';
+          await dispatchAdminEmailAlert({
+            type: 'admin_payment_success',
+            subject: `New payment - ${paymentEmail || targetEmail} - ${planDisplay} $${amountUSD} - Activated for ${targetEmail}`,
+            text: `Subscription ${eventName} activated for ${targetEmail} (${planDisplay} $${amountUSD}, Order #${orderId}).`,
+            html: `<p><strong>Subscription Payment Activated (${eventName})</strong></p><p>Plan: ${planDisplay} ($${amountUSD} ${currency})<br/>Account: ${targetEmail}<br/>Order #${orderId}</p>`,
+          }).catch(() => {});
         }
         break;
 
@@ -1126,6 +1270,12 @@ export default async function handler(req: any, res: any) {
         error: rawError,
       }).catch((e) => console.error('[Lemon Webhook] DB error update failed:', e));
     }
+    await dispatchAdminEmailAlert({
+      type: 'admin_payment_failed',
+      subject: `FAILED - Payment received but NOT activated - Order ID ${preLog?.order_id || 'unknown'} - Activate manually in Admin > ADMIN BACKUP`,
+      text: `Webhook exception for Order #${preLog?.order_id || 'unknown'}: ${rawError}`,
+      html: `<p><strong>FAILED:</strong> Webhook exception for Order #${preLog?.order_id || 'unknown'}: ${rawError}. Activate manually in Admin &gt; ADMIN BACKUP.</p>`,
+    }).catch(() => {});
     return res.status(200).json({ success: false, error: rawError });
   }
 }

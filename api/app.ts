@@ -146,13 +146,13 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
     launchPrice: PLANS.STARTER.price,
     priceUSD: PLANS.STARTER.price,
     analysesLimit: PLANS.STARTER.analyses,
-    savedLimit: 30,
+    savedLimit: 15,
     licensingDays: 30,
     features: [
       '30 Analyses / 30 Days',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 30',
+      'Save 15',
     ],
     hiddenFeatures: [
       'Monte Carlo Stress Tests +200bps',
@@ -182,7 +182,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
     launchPrice: PLANS.PROFESSIONAL.price,
     priceUSD: PLANS.PROFESSIONAL.price,
     analysesLimit: PLANS.PROFESSIONAL.analyses,
-    savedLimit: 150,
+    savedLimit: 75,
     licensingDays: 30,
     features: [
       '150 Analyses / 30 Days',
@@ -191,7 +191,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 150',
+      'Save 75',
     ],
     hiddenFeatures: [
       'Full REST API Credentials',
@@ -904,6 +904,9 @@ interface StoreShape {
   pricing_logs: any[];
   pending_checkouts: Record<string, PendingCheckoutEntry>;
   used_orders: Record<string, UsedOrderRecord>;
+  analyst_threads: Record<string, any>;
+  whiteglove_requests: any[];
+  api_keys: Record<string, string>;
 }
 
 function createDefaultPricingConfig(): StoredPricingConfig {
@@ -975,6 +978,9 @@ function getMemoryStore(): StoreShape {
       pricing_logs: [],
       pending_checkouts: {},
       used_orders: {},
+      analyst_threads: {},
+      whiteglove_requests: [],
+      api_keys: {},
     };
   }
   return memoryStoreCache;
@@ -1037,9 +1043,12 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
           : def.plans[k].features;
       const normalizedFeatures = rawFeatures
         .filter((f) => !(k === 'free' && f.startsWith('No Monte Carlo')))
-        .map((f) =>
-          f === 'Save 50' ? 'Save 30' : f === 'Save 200' ? 'Save 150' : f === 'Unlimited Saved' ? 'Save 400' : f
-        );
+        .map((f) => {
+          const trimmed = f.trim();
+          if (/^unlimited\s+saved$/i.test(trimmed)) return `Save ${def.plans[k].savedLimit ?? 400}`;
+          if (/^save\s+\d+$/i.test(trimmed)) return `Save ${def.plans[k].savedLimit ?? 15}`;
+          return f;
+        });
       plans[k] = {
         key: k,
         displayName: def.plans[k].displayName,
@@ -1101,6 +1110,21 @@ function loadStore(): StoreShape {
             typeof parsed.used_orders === 'object' &&
             !Array.isArray(parsed.used_orders)
               ? parsed.used_orders
+              : {},
+          analyst_threads:
+            parsed.analyst_threads &&
+            typeof parsed.analyst_threads === 'object' &&
+            !Array.isArray(parsed.analyst_threads)
+              ? parsed.analyst_threads
+              : {},
+          whiteglove_requests: Array.isArray(parsed.whiteglove_requests)
+            ? parsed.whiteglove_requests
+            : [],
+          api_keys:
+            parsed.api_keys &&
+            typeof parsed.api_keys === 'object' &&
+            !Array.isArray(parsed.api_keys)
+              ? parsed.api_keys
               : {},
         };
       }
@@ -1463,9 +1487,28 @@ function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStat
 
 async function saveUserToDb(user: ServerUserRecord): Promise<void> {
   try {
+    const norm = normalizeEmail(user?.email);
+    if (!norm) return;
+    const store = loadStore();
+    store.users[norm] = user;
+    persistStore(store);
+
     const kv = getKvConfig();
-    if (kv && user?.email) {
-      await kvCommand(['SET', `aqari:user:${normalizeEmail(user.email)}`, JSON.stringify(user)]);
+    if (kv) {
+      await kvCommand(['SET', `aqari:user:${norm}`, JSON.stringify(user)]);
+      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
+      let idx: string[] = [];
+      if (Array.isArray(rawIdx)) idx = rawIdx.map(String);
+      else if (typeof rawIdx === 'string') {
+        try {
+          const parsed = JSON.parse(rawIdx);
+          if (Array.isArray(parsed)) idx = parsed.map(String);
+        } catch {}
+      }
+      if (!idx.includes(norm)) {
+        idx.unshift(norm);
+        await kvCommand(['SET', 'aqari:users_index:v1', JSON.stringify(idx.slice(0, 5000))]);
+      }
     }
   } catch (kvErr) {
     console.error('[DB] Failed saving user to KV store:', kvErr);
@@ -1492,6 +1535,308 @@ async function getUserFromDb(rawEmail: string): Promise<ServerUserRecord | null>
     console.error('[DB] Failed reading user from KV store:', kvErr);
   }
   return getServerUserByEmail(email);
+}
+
+function buildApiKeyForEmail(email: string): string {
+  return (
+    'aqari_live_' +
+    crypto
+      .createHmac('sha256', getSessionSecret())
+      .update(`api:${normalizeEmail(email)}`)
+      .digest('hex')
+      .slice(0, 32)
+  );
+}
+
+async function saveApiKeyToDb(token: string, rawEmail: string): Promise<void> {
+  const cleanToken = String(token || '').trim();
+  const email = normalizeEmail(rawEmail);
+  if (!cleanToken || !email) return;
+
+  const store = loadStore();
+  if (!store.api_keys || typeof store.api_keys !== 'object') store.api_keys = {};
+  store.api_keys[cleanToken] = email;
+  persistStore(store);
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['SET', `aqari:apikey:${cleanToken}`, email]);
+    }
+  } catch (err) {
+    console.error('[DB] Failed saving API key:', err);
+  }
+}
+
+async function resolveApiKeyEmail(rawToken: string): Promise<string | null> {
+  const cleanToken = String(rawToken || '').trim();
+  if (!cleanToken.startsWith('aqari_live_')) return null;
+
+  const store = loadStore();
+  if (store.api_keys?.[cleanToken]) {
+    return normalizeEmail(store.api_keys[cleanToken]);
+  }
+
+  for (const email of Object.keys(store.users || {})) {
+    if (buildApiKeyForEmail(email) === cleanToken) {
+      await saveApiKeyToDb(cleanToken, email).catch(() => {});
+      return normalizeEmail(email);
+    }
+  }
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const direct = await kvCommand(['GET', `aqari:apikey:${cleanToken}`]);
+      if (direct && typeof direct === 'string' && direct.includes('@')) {
+        const norm = normalizeEmail(direct);
+        store.api_keys[cleanToken] = norm;
+        persistStore(store);
+        return norm;
+      }
+      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
+      const idx: string[] = Array.isArray(rawIdx)
+        ? rawIdx.map(String)
+        : typeof rawIdx === 'string'
+        ? JSON.parse(rawIdx)
+        : [];
+      for (const email of idx) {
+        if (buildApiKeyForEmail(email) === cleanToken) {
+          const norm = normalizeEmail(email);
+          await saveApiKeyToDb(cleanToken, norm).catch(() => {});
+          return norm;
+        }
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+async function appendEmailLogToDb(entry: {
+  to: string;
+  subject: string;
+  status: string;
+  event_type: string;
+  error?: string;
+}): Promise<any> {
+  const log = {
+    id: `em_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  try {
+    const store = loadStore();
+    if (!Array.isArray(store.email_logs)) store.email_logs = [];
+    store.email_logs.unshift(log);
+    store.email_logs = store.email_logs.slice(0, 200);
+    persistStore(store);
+  } catch {}
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['LPUSH', 'aqari:email_logs:v1', JSON.stringify(log)]);
+      await kvCommand(['LTRIM', 'aqari:email_logs:v1', 0, 199]);
+    }
+  } catch {}
+  return log;
+}
+
+async function getEmailLogsFromDb(limit = 50): Promise<any[]> {
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawItems = await kvCommand(['LRANGE', 'aqari:email_logs:v1', 0, Math.max(0, limit - 1)]);
+      if (Array.isArray(rawItems) && rawItems.length > 0) {
+        const parsed = rawItems
+          .map((item) => {
+            try {
+              return typeof item === 'string' ? JSON.parse(item) : item;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        if (parsed.length > 0) return parsed.slice(0, limit);
+      }
+    }
+  } catch {}
+  return (loadStore().email_logs || []).slice(0, limit);
+}
+
+async function dispatchEmailAlert(params: {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+  eventType: string;
+}): Promise<{ status: 'sent' | 'simulated' | 'failed'; error?: string }> {
+  const toEmail = normalizeEmail(params.to) || getAdminEmail();
+  const resendKey = cleanEnvValue(getEnv('RESEND_API_KEY'));
+  if (!resendKey) {
+    await appendEmailLogToDb({
+      to: toEmail,
+      subject: params.subject,
+      status: 'simulated',
+      event_type: params.eventType,
+      error: 'RESEND_API_KEY missing (logged in email_logs)',
+    });
+    return { status: 'simulated' };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: 'AQARI Terminal <onboarding@resend.dev>',
+          to: [toEmail],
+          subject: params.subject,
+          text: params.text,
+          html: params.html || `<pre style="font-family:sans-serif;white-space:pre-wrap;">${params.text}</pre>`,
+        }),
+      });
+      const rawText = await res.text();
+      let parsed: any = {};
+      try {
+        parsed = rawText ? JSON.parse(rawText) : {};
+      } catch {}
+      const status = res.ok ? 'sent' : 'failed';
+      await appendEmailLogToDb({
+        to: toEmail,
+        subject: params.subject,
+        status,
+        event_type: params.eventType,
+        error: res.ok ? undefined : parsed?.message || rawText || res.statusText,
+      });
+      return { status, error: res.ok ? undefined : parsed?.message || rawText };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err: any) {
+    const msg = err?.message || 'Resend error';
+    await appendEmailLogToDb({
+      to: toEmail,
+      subject: params.subject,
+      status: 'failed',
+      event_type: params.eventType,
+      error: msg,
+    });
+    return { status: 'failed', error: msg };
+  }
+}
+
+async function getAnalystThreadsMap(): Promise<Record<string, any>> {
+  const store = loadStore();
+  let merged: Record<string, any> = { ...(store.analyst_threads || {}) };
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', 'aqari:analyst_threads:v1']);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (parsed && typeof parsed === 'object') {
+          merged = { ...merged, ...parsed };
+          store.analyst_threads = merged;
+          persistStore(store);
+        }
+      }
+    }
+  } catch {}
+  return merged;
+}
+
+async function getAnalystThreadFromDb(rawEmail: string): Promise<any> {
+  const email = normalizeEmail(rawEmail);
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', `aqari:analyst_thread:${email}`]);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (parsed && typeof parsed === 'object') {
+          const store = loadStore();
+          if (!store.analyst_threads) store.analyst_threads = {};
+          store.analyst_threads[email] = parsed;
+          persistStore(store);
+          return parsed;
+        }
+      }
+    }
+  } catch {}
+  const map = await getAnalystThreadsMap();
+  return (
+    map[email] || {
+      email,
+      plan: 'SOVEREIGN',
+      status: 'Open',
+      unreadForAdmin: 0,
+      unreadForClient: 0,
+      updatedAt: Date.now(),
+      messages: [],
+    }
+  );
+}
+
+async function saveAnalystThreadToDb(thread: any): Promise<any> {
+  const email = normalizeEmail(thread?.email);
+  if (!email) return thread;
+  const store = loadStore();
+  if (!store.analyst_threads) store.analyst_threads = {};
+  store.analyst_threads[email] = thread;
+  persistStore(store);
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['SET', `aqari:analyst_thread:${email}`, JSON.stringify(thread)]);
+      const map = await getAnalystThreadsMap();
+      map[email] = thread;
+      await kvCommand(['SET', 'aqari:analyst_threads:v1', JSON.stringify(map)]);
+    }
+  } catch {}
+  return thread;
+}
+
+async function getWhiteGloveRequestsFromDb(): Promise<any[]> {
+  const store = loadStore();
+  let list: any[] = Array.isArray(store.whiteglove_requests) ? [...store.whiteglove_requests] : [];
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', 'aqari:whiteglove_requests:v1']);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (Array.isArray(parsed)) {
+          list = parsed;
+          store.whiteglove_requests = list;
+          persistStore(store);
+        }
+      }
+    }
+  } catch {}
+  return list;
+}
+
+async function saveWhiteGloveRequestsToDb(requests: any[]): Promise<any[]> {
+  const trimmed = requests.slice(0, 300);
+  const store = loadStore();
+  store.whiteglove_requests = trimmed;
+  persistStore(store);
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['SET', 'aqari:whiteglove_requests:v1', JSON.stringify(trimmed)]);
+    }
+  } catch {}
+  return trimmed;
 }
 
 async function appendWebhookLogToDb(
@@ -1783,6 +2128,211 @@ interface LiveMarketResponse {
 const MARKET_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 let cachedMarketResponse: LiveMarketResponse | null = null;
 let cachedMarketAt = 0;
+
+interface InlinedCityEntry {
+  city: string;
+  country: string;
+  countryCode: string;
+  currency: string;
+  taxRate: number;
+  visaNote: string;
+  avgCapRate: number;
+}
+
+const CITY_COUNTRIES: Record<string, [string, string, string, number, string]> = {
+  OM: ['Oman', 'OM', 'OMR', 3.0, 'ITC Freehold Residency ($650k+)'],
+  AE: ['UAE', 'AE', 'AED', 4.0, '10-Yr UAE Golden Visa ($545k+)'],
+  SA: ['Saudi Arabia', 'SA', 'SAR', 5.0, 'Premium Residency ($1.06M+)'],
+  QA: ['Qatar', 'QA', 'QAR', 0.25, 'Permanent Residency ($1M+) / Temp ($200k+)'],
+  KW: ['Kuwait', 'KW', 'KWD', 0.0, 'GCC Citizens & Approved Entities Only'],
+  BH: ['Bahrain', 'BH', 'BHD', 2.0, 'Golden Residency ($530k+)'],
+  EG: ['Egypt', 'EG', 'EGP', 2.5, 'Residency / Citizenship ($300k+)'],
+  JO: ['Jordan', 'JO', 'JOD', 9.0, 'Investor Residency / Citizenship Program'],
+  MA: ['Morocco', 'MA', 'MAD', 4.0, 'Long-Term Investor Residency'],
+  TN: ['Tunisia', 'TN', 'TND', 5.0, 'Foreign Ownership Requires Governor Approval'],
+  LB: ['Lebanon', 'LB', 'USD', 6.0, 'Residency via Property ($330k+)'],
+  US: ['United States', 'US', 'USD', 2.5, 'EB-5 Regional Center ($800k+)'],
+  GB: ['United Kingdom', 'GB', 'GBP', 7.5, 'No Property Golden Visa / Open Freehold'],
+  SG: ['Singapore', 'SG', 'SGD', 60.0, 'GIP Investor Program ($1.85M+ / 60% ABSD)'],
+  CA: ['Canada', 'CA', 'CAD', 3.5, 'Foreign Buyer Restrictions in Metro Areas'],
+  AU: ['Australia', 'AU', 'AUD', 5.5, 'FIRB Approval Required for Foreign Buyers'],
+  NZ: ['New Zealand', 'NZ', 'NZD', 0.0, 'Active Investor Plus Visa (NZD $5M+)'],
+  FR: ['France', 'FR', 'EUR', 7.5, 'Talent Passport Investor Residency'],
+  DE: ['Germany', 'DE', 'EUR', 5.5, 'Open Freehold / No Direct Golden Visa'],
+  ES: ['Spain', 'ES', 'EUR', 8.0, 'Non-Lucrative / Wealth Residency Rules'],
+  IT: ['Italy', 'IT', 'EUR', 9.0, 'Elective Residency & Investor Visa ($540k+)'],
+  PT: ['Portugal', 'PT', 'EUR', 6.5, 'D7 Passive Income & Fund Golden Visa'],
+  NL: ['Netherlands', 'NL', 'EUR', 10.4, 'Open Freehold / 10.4% Investor Transfer Tax'],
+  CH: ['Switzerland', 'CH', 'CHF', 3.0, 'Lex Koller Quota for Foreign Buyers'],
+  BE: ['Belgium', 'BE', 'EUR', 12.0, 'Open Freehold / Regional Transfer Tax'],
+  AT: ['Austria', 'AT', 'EUR', 3.5, 'Land Authority Approval for Non-EU Buyers'],
+  IE: ['Ireland', 'IE', 'EUR', 2.0, 'Stamp Duty 1%-2% / Open Freehold'],
+  SE: ['Sweden', 'SE', 'SEK', 1.5, 'Open Freehold / 1.5% Stamp Duty'],
+  NO: ['Norway', 'NO', 'NOK', 2.5, 'Open Freehold / 2.5% Document Fee'],
+  DK: ['Denmark', 'DK', 'DKK', 0.6, '5-Yr Residency Rule for Foreign Buyers'],
+  FI: ['Finland', 'FI', 'EUR', 3.0, 'Defence Permit for Non-EU Freehold'],
+  PL: ['Poland', 'PL', 'PLN', 2.0, 'Open Apartment Freehold / Land Permit'],
+  CZ: ['Czechia', 'CZ', 'CZK', 0.0, 'Open Freehold / 0% Acquisition Tax'],
+  GR: ['Greece', 'GR', 'EUR', 3.09, 'Greece Golden Visa (€400k-€800k Zones)'],
+  CY: ['Cyprus', 'CY', 'EUR', 4.0, 'Permanent Residency (€300k+ New Build)'],
+  MT: ['Malta', 'MT', 'EUR', 5.0, 'MPRP Permanent Residency (€350k+)'],
+  HU: ['Hungary', 'HU', 'HUF', 4.0, 'Guest Investor Program (€250k+ Fund)'],
+  RO: ['Romania', 'RO', 'RON', 3.0, 'Open Apartment Ownership / Company Land'],
+  HR: ['Croatia', 'HR', 'EUR', 3.0, 'Reciprocity Basis for Non-EU Buyers'],
+  EE: ['Estonia', 'EE', 'EUR', 0.5, 'e-Residency & Open Freehold Ownership'],
+  LV: ['Latvia', 'LV', 'EUR', 2.0, 'Temporary Residency (€250k+ Property)'],
+  LT: ['Lithuania', 'LT', 'EUR', 0.5, 'Open Apartment Ownership'],
+  LU: ['Luxembourg', 'LU', 'EUR', 7.0, 'Open Freehold / Investor Residence Permit'],
+  MC: ['Monaco', 'MC', 'EUR', 6.5, 'Residency via Property + Local Bank Deposit'],
+  TR: ['Turkey', 'TR', 'TRY', 4.0, 'Turkish Citizenship by Investment ($400k+)'],
+  IN: ['India', 'IN', 'INR', 6.0, 'NRI/OCI Open Freehold (No Agri Land)'],
+  PK: ['Pakistan', 'PK', 'PKR', 4.0, 'POC / NICOP Open Urban Freehold'],
+  ID: ['Indonesia', 'ID', 'IDR', 5.0, 'Hak Pakai / PT PMA Corporate Leasehold'],
+  MY: ['Malaysia', 'MY', 'MYR', 4.0, 'MM2H Residency Program (State Minimums)'],
+  TH: ['Thailand', 'TH', 'THB', 2.0, '49% Foreign Condo Freehold Quota / LTR Visa'],
+  VN: ['Vietnam', 'VN', 'VND', 0.5, '50-Yr Foreign Leasehold / 30% Condo Quota'],
+  PH: ['Philippines', 'PH', 'PHP', 6.0, '40% Foreign Condo Freehold Quota / SRRV'],
+  JP: ['Japan', 'JP', 'JPY', 4.0, '100% Foreign Freehold Ownership Open'],
+  KR: ['South Korea', 'KR', 'KRW', 4.6, 'F-2/F-5 Investor Visa Designated Zones'],
+  CN: ['China', 'CN', 'CNY', 3.0, '1-Yr Local Residence Rule for Foreign Buyers'],
+  HK: ['Hong Kong', 'HK', 'HKD', 4.25, 'Open Freehold / CIES Capital Entrant'],
+  TW: ['Taiwan', 'TW', 'TWD', 6.0, 'Reciprocity Freehold Ownership Rules'],
+  LK: ['Sri Lanka', 'LK', 'LKR', 4.0, 'Condo Ownership Open Above 4th Floor'],
+  BD: ['Bangladesh', 'BD', 'BDT', 6.5, 'BIDA Approval for Foreign Entities'],
+  KZ: ['Kazakhstan', 'KZ', 'KZT', 0.0, 'Residency Permit Required for Individuals'],
+  UZ: ['Uzbekistan', 'UZ', 'UZS', 1.0, 'Residence Permit via New Real Estate ($100k+)'],
+  AZ: ['Azerbaijan', 'AZ', 'AZN', 0.5, 'Temporary Residency ($59k+ Property)'],
+  GE: ['Georgia', 'GE', 'GEL', 0.0, 'Residency Permit ($100k+ / 0% Transfer Tax)'],
+  AM: ['Armenia', 'AM', 'AMD', 0.5, 'Open Urban Freehold Ownership'],
+  MX: ['Mexico', 'MX', 'MXN', 3.5, 'Fideicomiso Bank Trust in Coastal Zones'],
+  BR: ['Brazil', 'BR', 'BRL', 3.0, 'VIPER Investor Visa ($140k-$200k Urban)'],
+  AR: ['Argentina', 'AR', 'USD', 3.6, 'Open Foreign Freehold / Rentista Visa'],
+  CL: ['Chile', 'CL', 'CLP', 1.0, 'Open Foreign Freehold / Investor Visa'],
+  CO: ['Colombia', 'CO', 'COP', 2.5, 'M-Type Migrant Visa (~$100k+ Property)'],
+  PE: ['Peru', 'PE', 'PEN', 3.0, 'Open Urban Freehold / Investor Visa'],
+  PA: ['Panama', 'PA', 'USD', 2.0, 'Qualified Investor Visa ($300k+ Property)'],
+  CR: ['Costa Rica', 'CR', 'USD', 1.5, 'Investor Residency ($150k+ Property)'],
+  DO: ['Dominican Republic', 'DO', 'USD', 3.0, 'Investor Residency ($200k+ Property)'],
+  BS: ['Bahamas', 'BS', 'BSD', 8.0, 'Permanent Residency ($750k+ Property)'],
+  ZA: ['South Africa', 'ZA', 'ZAR', 8.0, 'Open Freehold Ownership / Retired Visa'],
+  KE: ['Kenya', 'KE', 'KES', 4.0, '99-Yr Urban Leasehold for Non-Citizens'],
+  NG: ['Nigeria', 'NG', 'NGN', 5.0, 'State Governor Consent for Foreign Title'],
+  GH: ['Ghana', 'GH', 'GHS', 1.0, '50-Yr Renewable Leasehold for Foreigners'],
+  MU: ['Mauritius', 'MU', 'MUR', 5.0, 'Permanent Residency ($375k+ PDS/IRS)'],
+  RW: ['Rwanda', 'RW', 'RWF', 0.5, 'Long-Term Leasehold / Open Investor Rules'],
+  TZ: ['Tanzania', 'TZ', 'TZS', 4.0, 'TIC Derivative Right of Occupancy'],
+  GL: ['Global', 'GL', 'USD', 3.0, 'Standard International Freehold/Leasehold'],
+};
+
+const CITY_RAW: Array<[string, string, number]> = [
+  ['Muscat','OM',8.4],['Dubai','AE',8.8],['Riyadh','SA',8.8],['London','GB',4.8],['New York','US',4.6],['Singapore','SG',3.9],['Miami','US',6.7],
+  ['Salalah','OM',7.8],['Sohar','OM',8.1],['Nizwa','OM',7.4],['Sur','OM',7.2],['Duqm','OM',8.6],['Barka','OM',7.6],['Seeb','OM',8.0],['Ibri','OM',7.1],['Rustaq','OM',7.0],['Khasab','OM',7.3],['Buraimi','OM',7.4],['Saham','OM',7.2],['Ibra','OM',7.1],['Bahla','OM',7.0],
+  ['Abu Dhabi','AE',7.6],['Sharjah','AE',7.9],['Ajman','AE',8.5],['Ras Al Khaimah','AE',8.2],['Fujairah','AE',7.5],['Al Ain','AE',7.4],['Umm Al Quwain','AE',7.6],['Khor Fakkan','AE',7.3],
+  ['Jeddah','SA',8.1],['Dammam','SA',7.9],['Khobar','SA',8.0],['Mecca','SA',7.5],['Medina','SA',7.6],['Abha','SA',7.4],['Tabuk','SA',7.8],['Taif','SA',7.2],['Jubail','SA',8.3],['Yanbu','SA',7.9],['Diriyah','SA',8.4],['AlUla','SA',8.2],['NEOM','SA',8.9],['Hail','SA',7.3],['Buraydah','SA',7.4],['Al-Ahsa','SA',7.5],['Jazan','SA',7.6],['Najran','SA',7.2],['Khamis Mushait','SA',7.4],['Dhahran','SA',8.0],
+  ['Doha','QA',7.2],['Lusail','QA',7.6],['Al Wakrah','QA',7.1],['Al Khor','QA',7.0],['Kuwait City','KW',6.8],['Salmiya','KW',7.0],['Hawalli','KW',7.1],['Jahra','KW',6.9],['Manama','BH',7.8],['Riffa','BH',7.4],['Muharraq','BH',7.5],['Amwaj Islands','BH',8.0],
+  ['Cairo','EG',8.2],['New Cairo','EG',8.6],['New Administrative Capital','EG',8.8],['Alexandria','EG',7.5],['Giza','EG',7.9],['Sheikh Zayed City','EG',8.4],['Hurghada','EG',8.5],['Sharm El Sheikh','EG',8.3],['El Gouna','EG',8.7],['Mansoura','EG',7.2],['Tanta','EG',7.0],['Aswan','EG',7.1],['Luxor','EG',7.2],
+  ['Amman','JO',7.4],['Aqaba','JO',7.8],['Irbid','JO',7.1],['Zarqa','JO',7.0],['Madaba','JO',6.9],
+  ['Casablanca','MA',7.1],['Marrakech','MA',8.2],['Rabat','MA',6.8],['Tangier','MA',7.6],['Agadir','MA',7.5],['Fez','MA',6.9],['Meknes','MA',6.8],['Oujda','MA',6.7],['Essaouira','MA',7.7],
+  ['Tunis','TN',6.9],['Sousse','TN',7.1],['Sfax','TN',6.8],['Hammamet','TN',7.4],['Beirut','LB',6.2],['Jounieh','LB',6.0],['Byblos','LB',6.1],
+  ['Los Angeles','US',5.1],['Austin','US',6.4],['Dallas','US',6.9],['Houston','US',7.1],['Chicago','US',6.8],['San Francisco','US',4.5],['Seattle','US',5.2],['Boston','US',5.0],['Atlanta','US',6.7],['Phoenix','US',6.5],['Denver','US',5.8],['San Diego','US',4.9],['Nashville','US',6.3],['Orlando','US',6.8],['Tampa','US',6.9],['Charlotte','US',6.6],['Las Vegas','US',6.4],['Washington','US',5.4],['Philadelphia','US',6.9],['San Jose','US',4.4],['Jacksonville','US',7.0],['Fort Worth','US',6.8],['Columbus','US',7.2],['Indianapolis','US',7.4],['San Antonio','US',6.9],['Portland','US',5.6],['Sacramento','US',5.9],['Salt Lake City','US',5.8],['Minneapolis','US',6.5],['Raleigh','US',6.4],['Richmond','US',6.6],['Detroit','US',8.4],['Cleveland','US',8.2],['Pittsburgh','US',7.6],['St. Louis','US',7.7],['Kansas City','US',7.5],['Cincinnati','US',7.4],['Milwaukee','US',7.5],['New Orleans','US',6.8],['Honolulu','US',4.8],['Scottsdale','US',6.0],['Boca Raton','US',6.2],['West Palm Beach','US',6.4],['Naples','US',5.9],['Sarasota','US',6.3],['Fort Lauderdale','US',6.5],['Coral Gables','US',5.8],['Jersey City','US',5.7],['Hoboken','US',5.4],['Brooklyn','US',4.9],['Palo Alto','US',3.9],['Santa Monica','US',4.5],['Beverly Hills','US',4.2],['Bellevue','US',5.0],['Boulder','US',5.2],['Charleston','US',6.1],['Savannah','US',6.5],['Baltimore','US',7.5],['Memphis','US',8.1],['Louisville','US',7.2],['Oklahoma City','US',7.4],['Tucson','US',6.8],['Fresno','US',6.4],['Mesa','US',6.5],['Albuquerque','US',6.7],['Omaha','US',7.1],['Colorado Springs','US',6.1],['Tulsa','US',7.5],['Arlington','US',6.6],['Bakersfield','US',6.8],['Wichita','US',7.4],['Aurora','US',6.0],['Anaheim','US',5.2],['Santa Ana','US',5.3],['Riverside','US',6.0],['Lexington','US',6.9],['Stockton','US',6.3],['St. Paul','US',6.6],['Anchorage','US',6.7],['Newark','US',6.8],['Buffalo','US',7.8],['Plano','US',6.4],['Henderson','US',6.3],['Chandler','US',6.2],['Irvine','US',4.8],['Madison','US',6.5],['Boise','US',6.1],['Des Moines','US',7.3],['Birmingham','US',7.8],['Knoxville','US',6.9],['Chattanooga','US',6.8],['Greenville','US',6.7],['Asheville','US',6.0],['Palm Springs','US',6.2],['Aspen','US',4.3],
+  ['Manchester','GB',6.9],['Edinburgh','GB',5.8],['Glasgow','GB',7.1],['Liverpool','GB',7.5],['Leeds','GB',6.8],['Bristol','GB',5.6],['Sheffield','GB',7.0],['Newcastle','GB',7.2],['Nottingham','GB',6.9],['Cardiff','GB',6.4],['Belfast','GB',6.8],['Oxford','GB',4.9],['Cambridge','GB',4.8],['Brighton','GB',5.3],['Reading','GB',5.9],['Southampton','GB',6.3],['Portsmouth','GB',6.4],['Bath','GB',5.1],['York','GB',5.7],['Leicester','GB',6.6],['Coventry','GB',6.7],['Aberdeen','GB',7.0],['Exeter','GB',5.8],['Milton Keynes','GB',6.1],['Bournemouth','GB',5.9],['Norwich','GB',6.2],['Swansea','GB',6.8],['Dundee','GB',7.3],['Preston','GB',7.2],['Bradford','GB',7.4],['Hull','GB',7.6],['Derby','GB',6.7],['Plymouth','GB',6.5],['Sunderland','GB',7.7],['Wolverhampton','GB',6.9],
+  ['Toronto','CA',4.9],['Vancouver','CA',4.3],['Montreal','CA',5.8],['Calgary','CA',6.5],['Ottawa','CA',5.6],['Edmonton','CA',6.7],['Winnipeg','CA',6.6],['Quebec City','CA',6.1],['Hamilton','CA',5.7],['Kitchener','CA',5.8],['Halifax','CA',6.0],['Victoria','CA',5.0],['Kelowna','CA',5.4],['Mississauga','CA',5.1],['Markham','CA',4.8],['Brampton','CA',5.2],['Surrey','CA',4.9],['Burnaby','CA',4.6],['Saskatoon','CA',6.8],['Regina','CA',6.9],['Moncton','CA',6.7],['Waterloo','CA',5.9],['Oakville','CA',4.7],['Richmond BC','CA',4.5],
+  ['Sydney','AU',4.4],['Melbourne','AU',4.9],['Brisbane','AU',5.6],['Perth','AU',6.2],['Adelaide','AU',5.8],['Gold Coast','AU',5.5],['Canberra','AU',5.7],['Hobart','AU',5.6],['Darwin','AU',6.8],['Newcastle AU','AU',5.4],['Sunshine Coast','AU',5.3],['Wollongong','AU',5.2],['Geelong','AU',5.1],['Cairns','AU',6.1],['Townsville','AU',6.4],['Parramatta','AU',4.8],
+  ['Auckland','NZ',5.0],['Wellington','NZ',5.5],['Christchurch','NZ',5.8],['Queenstown','NZ',5.2],['Hamilton NZ','NZ',5.6],['Tauranga','NZ',5.3],['Dunedin','NZ',6.0],
+  ['Paris','FR',4.3],['Lyon','FR',5.2],['Marseille','FR',5.9],['Nice','FR',5.1],['Bordeaux','FR',5.0],['Toulouse','FR',5.4],['Nantes','FR',5.3],['Strasbourg','FR',5.4],['Montpellier','FR',5.5],['Lille','FR',5.8],['Rennes','FR',5.2],['Cannes','FR',4.8],['Antibes','FR',4.9],['Aix-en-Provence','FR',4.9],['Annecy','FR',4.7],['Grenoble','FR',5.6],['Rouen','FR',5.9],['Reims','FR',5.7],
+  ['Berlin','DE',4.6],['Munich','DE',3.9],['Frankfurt','DE',4.5],['Hamburg','DE',4.4],['Cologne','DE',4.7],['Dusseldorf','DE',4.6],['Stuttgart','DE',4.3],['Leipzig','DE',5.5],['Dresden','DE',5.3],['Hannover','DE',5.0],['Nuremberg','DE',4.9],['Dortmund','DE',5.6],['Essen','DE',5.7],['Bremen','DE',5.2],['Bonn','DE',4.8],['Heidelberg','DE',4.5],['Freiburg','DE',4.4],['Mannheim','DE',5.1],
+  ['Madrid','ES',5.5],['Barcelona','ES',5.3],['Valencia','ES',6.2],['Malaga','ES',6.0],['Marbella','ES',5.7],['Seville','ES',5.9],['Bilbao','ES',5.4],['Alicante','ES',6.5],['Palma de Mallorca','ES',5.1],['Ibiza','ES',4.9],['Granada','ES',6.1],['Zaragoza','ES',6.0],['Murcia','ES',6.4],['San Sebastian','ES',4.6],['Las Palmas','ES',6.2],['Tenerife','ES',6.3],['Benidorm','ES',6.6],['Estepona','ES',5.8],
+  ['Milan','IT',5.1],['Rome','IT',5.2],['Florence','IT',5.0],['Venice','IT',4.8],['Turin','IT',5.9],['Bologna','IT',5.4],['Naples','IT',6.0],['Verona','IT',5.5],['Genoa','IT',6.2],['Palermo','IT',6.4],['Bari','IT',6.1],['Catania','IT',6.3],['Padua','IT',5.6],['Como','IT',4.9],['Bergamo','IT',5.7],['Trieste','IT',5.8],
+  ['Lisbon','PT',5.4],['Porto','PT',5.9],['Cascais','PT',4.9],['Faro','PT',6.1],['Albufeira','PT',6.4],['Lagos','PT',6.0],['Coimbra','PT',6.2],['Braga','PT',6.3],['Funchal','PT',5.8],['Vilamoura','PT',5.7],['Setubal','PT',6.1],['Aveiro','PT',6.0],
+  ['Amsterdam','NL',4.7],['Rotterdam','NL',5.5],['The Hague','NL',5.3],['Utrecht','NL',5.0],['Eindhoven','NL',5.6],['Groningen','NL',5.8],['Maastricht','NL',5.7],['Haarlem','NL',4.8],['Delft','NL',5.1],
+  ['Zurich','CH',3.4],['Geneva','CH',3.5],['Basel','CH',3.9],['Lausanne','CH',3.8],['Bern','CH',3.9],['Lugano','CH',4.1],['Zug','CH',3.5],['Lucerne','CH',3.7],['St. Moritz','CH',3.3],
+  ['Brussels','BE',5.3],['Antwerp','BE',5.4],['Ghent','BE',5.2],['Bruges','BE',5.0],['Liege','BE',6.0],['Vienna','AT',4.4],['Salzburg','AT',4.3],['Innsbruck','AT',4.2],['Graz','AT',5.1],['Linz','AT',5.0],['Dublin','IE',5.8],['Cork','IE',6.2],['Galway','IE',6.0],['Limerick','IE',6.5],
+  ['Stockholm','SE',4.6],['Gothenburg','SE',5.0],['Malmo','SE',5.3],['Uppsala','SE',4.9],['Oslo','NO',4.5],['Bergen','NO',5.1],['Trondheim','NO',5.2],['Stavanger','NO',5.4],['Copenhagen','DK',4.6],['Aarhus','DK',5.1],['Odense','DK',5.4],['Helsinki','FI',5.0],['Tampere','FI',5.5],['Turku','FI',5.4],['Espoo','FI',4.9],
+  ['Warsaw','PL',6.2],['Krakow','PL',6.4],['Wroclaw','PL',6.3],['Gdansk','PL',6.5],['Poznan','PL',6.4],['Lodz','PL',7.0],['Prague','CZ',5.1],['Brno','CZ',5.6],['Ostrava','CZ',6.5],
+  ['Athens','GR',6.4],['Thessaloniki','GR',6.6],['Mykonos','GR',6.8],['Santorini','GR',6.9],['Heraklion','GR',6.5],['Rhodes','GR',6.7],['Limassol','CY',6.5],['Nicosia','CY',6.3],['Paphos','CY',6.6],['Larnaca','CY',6.4],['Valletta','MT',5.6],['Sliema','MT',5.8],['St. Julians','MT',5.9],
+  ['Budapest','HU',6.3],['Debrecen','HU',6.5],['Bucharest','RO',6.9],['Cluj-Napoca','RO',6.5],['Timisoara','RO',6.7],['Brasov','RO',6.8],['Constanta','RO',7.0],['Zagreb','HR',5.8],['Split','HR',6.3],['Dubrovnik','HR',6.1],['Zadar','HR',6.2],['Tallinn','EE',5.9],['Tartu','EE',6.1],['Riga','LV',6.5],['Jurmala','LV',6.0],['Vilnius','LT',6.2],['Kaunas','LT',6.5],['Luxembourg City','LU',4.1],['Monaco','MC',2.8],
+  ['Istanbul','TR',6.8],['Ankara','TR',6.5],['Izmir','TR',6.4],['Antalya','TR',7.2],['Bodrum','TR',6.9],['Bursa','TR',6.6],['Alanya','TR',7.3],['Fethiye','TR',7.0],['Adana','TR',6.5],['Gaziantep','TR',6.4],['Konya','TR',6.2],['Mersin','TR',6.9],['Trabzon','TR',6.7],['Kayseri','TR',6.3],['Eskisehir','TR',6.4],
+  ['Mumbai','IN',4.2],['Delhi','IN',4.5],['New Delhi','IN',4.4],['Bengaluru','IN',5.4],['Hyderabad','IN',5.6],['Pune','IN',5.3],['Chennai','IN',5.0],['Kolkata','IN',4.9],['Ahmedabad','IN',5.5],['Gurugram','IN',5.2],['Noida','IN',5.4],['Jaipur','IN',5.6],['Surat','IN',5.5],['Kochi','IN',5.8],['Chandigarh','IN',4.8],['Lucknow','IN',5.4],['Indore','IN',5.7],['Nagpur','IN',5.6],['Coimbatore','IN',5.5],['Visakhapatnam','IN',5.7],['Thiruvananthapuram','IN',5.4],['Panaji','IN',6.1],['Bhubaneswar','IN',5.6],['Vadodara','IN',5.5],['Mysuru','IN',5.3],['Thane','IN',4.6],['Navi Mumbai','IN',4.9],['Nashik','IN',5.4],['Guwahati','IN',5.8],['Udaipur','IN',5.7],
+  ['Karachi','PK',6.5],['Lahore','PK',6.3],['Islamabad','PK',6.1],['Rawalpindi','PK',6.2],['Faisalabad','PK',6.4],['Multan','PK',6.3],['Peshawar','PK',6.0],['Quetta','PK',5.8],['Sialkot','PK',6.2],['Gujranwala','PK',6.3],['Bahawalpur','PK',6.1],['Abbottabad','PK',6.0],['Gwadar','PK',6.8],
+  ['Jakarta','ID',6.9],['Bali','ID',8.9],['Denpasar','ID',8.5],['Surabaya','ID',6.8],['Bandung','ID',6.7],['Medan','ID',6.6],['Semarang','ID',6.7],['Yogyakarta','ID',7.0],['Makassar','ID',6.8],['Batam','ID',7.4],['Lombok','ID',8.6],['Ubud','ID',8.8],['Canggu','ID',9.2],
+  ['Kuala Lumpur','MY',5.9],['Penang','MY',5.8],['George Town','MY',5.8],['Johor Bahru','MY',6.5],['Kota Kinabalu','MY',6.1],['Kuching','MY',5.9],['Ipoh','MY',5.7],['Malacca','MY',5.9],['Petaling Jaya','MY',5.6],['Cyberjaya','MY',6.3],['Langkawi','MY',6.4],
+  ['Bangkok','TH',5.8],['Phuket','TH',7.6],['Chiang Mai','TH',6.5],['Pattaya','TH',7.2],['Koh Samui','TH',7.8],['Hua Hin','TH',6.6],['Krabi','TH',7.1],
+  ['Ho Chi Minh City','VN',5.6],['Hanoi','VN',5.4],['Da Nang','VN',6.2],['Nha Trang','VN',6.4],['Phu Quoc','VN',6.6],['Hai Phong','VN',5.8],['Can Tho','VN',5.7],
+  ['Manila','PH',6.4],['Makati','PH',6.5],['Taguig','PH',6.4],['Cebu City','PH',6.8],['Davao City','PH',6.6],['Quezon City','PH',6.3],['Iloilo City','PH',6.7],['Boracay','PH',7.2],['Clark','PH',6.9],
+  ['Tokyo','JP',4.6],['Osaka','JP',5.8],['Kyoto','JP',4.9],['Yokohama','JP',5.1],['Nagoya','JP',5.5],['Fukuoka','JP',6.0],['Sapporo','JP',6.3],['Kobe','JP',5.6],['Naha','JP',5.9],['Sendai','JP',6.1],['Hiroshima','JP',5.9],['Niseko','JP',6.5],
+  ['Seoul','KR',4.1],['Busan','KR',4.9],['Incheon','KR',5.0],['Daegu','KR',5.1],['Daejeon','KR',5.0],['Gwangju','KR',5.1],['Suwon','KR',4.7],['Jeju City','KR',5.5],['Seongnam','KR',4.3],
+  ['Shanghai','CN',3.2],['Beijing','CN',3.0],['Shenzhen','CN',3.3],['Guangzhou','CN',3.6],['Chengdu','CN',4.1],['Hangzhou','CN',3.7],['Chongqing','CN',4.4],['Nanjing','CN',3.8],['Wuhan','CN',4.2],['Tianjin','CN',4.0],['Suzhou','CN',3.9],['Xian','CN',4.3],['Qingdao','CN',4.1],['Xiamen','CN',3.6],['Sanya','CN',4.5],['Ningbo','CN',4.0],['Changsha','CN',4.4],['Dalian','CN',4.3],
+  ['Hong Kong','HK',3.4],['Kowloon','HK',3.5],['Taipei','TW',2.8],['New Taipei','TW',3.0],['Taichung','TW',3.5],['Kaohsiung','TW',3.8],['Tainan','TW',3.6],['Hsinchu','TW',3.4],
+  ['Colombo','LK',6.4],['Kandy','LK',6.2],['Galle','LK',6.8],['Dhaka','BD',5.6],['Chattogram','BD',5.8],['Almaty','KZ',7.4],['Astana','KZ',7.2],['Shymkent','KZ',7.0],['Tashkent','UZ',7.8],['Samarkand','UZ',7.5],['Baku','AZ',7.1],['Tbilisi','GE',8.4],['Batumi','GE',8.9],['Yerevan','AM',7.6],
+  ['Mexico City','MX',6.8],['Monterrey','MX',7.2],['Guadalajara','MX',6.9],['Cancun','MX',8.1],['Playa del Carmen','MX',8.4],['Tulum','MX',8.6],['Puerto Vallarta','MX',7.9],['Los Cabos','MX',7.8],['Merida','MX',7.3],['Queretaro','MX',7.1],['San Miguel de Allende','MX',7.0],['Puebla','MX',6.9],['Tijuana','MX',7.4],
+  ['Sao Paulo','BR',6.5],['Rio de Janeiro','BR',6.8],['Belo Horizonte','BR',6.9],['Curitiba','BR',7.1],['Brasilia','BR',6.6],['Florianopolis','BR',7.4],['Porto Alegre','BR',6.8],['Salvador','BR',7.0],['Fortaleza','BR',7.3],['Recife','BR',7.1],['Campinas','BR',6.7],['Balneario Camboriu','BR',7.6],
+  ['Buenos Aires','AR',6.2],['Cordoba','AR',6.4],['Mendoza','AR',6.5],['Bariloche','AR',6.8],['Santiago','CL',5.8],['Vina del Mar','CL',6.1],['Valparaiso','CL',6.0],['Bogota','CO',6.9],['Medellin','CO',7.8],['Cartagena','CO',8.2],['Cali','CO',7.2],['Barranquilla','CO',7.1],['Santa Marta','CO',7.7],
+  ['Lima','PE',6.4],['Cusco','PE',7.1],['Arequipa','PE',6.5],['Panama City','PA',7.6],['Coronado','PA',7.2],['Boquete','PA',7.0],['San Jose CR','CR',7.1],['Tamarindo','CR',8.0],['Santa Teresa','CR',8.2],['Jaco','CR',7.7],['Santo Domingo','DO',7.5],['Punta Cana','DO',8.5],['Santiago de los Caballeros','DO',7.3],['Nassau','BS',6.9],
+  ['Cape Town','ZA',7.9],['Johannesburg','ZA',8.6],['Pretoria','ZA',8.2],['Durban','ZA',8.4],['Stellenbosch','ZA',7.6],['Sandton','ZA',8.3],['Nairobi','KE',8.1],['Mombasa','KE',7.8],['Kisumu','KE',7.4],['Lagos','NG',8.5],['Abuja','NG',8.0],['Port Harcourt','NG',7.9],['Accra','GH',8.3],['Kumasi','GH',7.6],['Port Louis','MU',7.1],['Grand Baie','MU',7.5],['Kigali','RW',8.2],['Dar es Salaam','TZ',8.0],['Zanzibar','TZ',8.6],['Arusha','TZ',7.7],
+  ['Baghdad','GL',7.5],['Erbil','GL',7.8],['Basra','GL',7.4],['Algiers','GL',6.5],['Oran','GL',6.6],['Tripoli','GL',6.2],['Addis Ababa','GL',8.1],['Kampala','GL',8.0],['Dakar','GL',7.6],['Abidjan','GL',7.8],['Casablanca Finance City','MA',7.4],['Luanda','GL',8.2],['Maputo','GL',7.5],['Gaborone','GL',7.3],['Windhoek','GL',7.2],['Lusaka','GL',7.9],['Harare','GL',7.4],['Victoria Seychelles','GL',7.2],['Tunis Carthage','TN',7.2],['Baku White City','AZ',7.4],
+  ['Sofia','GL',6.4],['Plovdiv','GL',6.5],['Varna','GL',6.7],['Belgrade','GL',6.6],['Novi Sad','GL',6.5],['Ljubljana','GL',5.2],['Bratislava','GL',5.6],['Kosice','GL',6.0],['Tirana','GL',6.9],['Sarajevo','GL',6.3],['Podgorica','GL',6.4],['Budva','GL',6.8],['Tivat','GL',6.9],['Skopje','GL',6.2],['Chisinau','GL',6.7],['Reykjavik','GL',5.1],['Andorra la Vella','GL',4.8],['San Marino','GL',4.9],['Vaduz','CH',3.7],['Kyiv','GL',7.2],['Lviv','GL',7.0],['Minsk','GL',6.5],
+  ['Kathmandu','GL',6.1],['Pokhara','GL',6.3],['Thimphu','GL',5.8],['Male','GL',7.0],['Bishkek','GL',7.3],['Dushanbe','GL',7.0],['Ashgabat','GL',6.4],['Ulaanbaatar','GL',7.6],['Phnom Penh','GL',6.9],['Siem Reap','GL',7.2],['Sihanoukville','GL',7.1],['Vientiane','GL',6.7],['Yangon','GL',6.4],['Bandar Seri Begawan','GL',6.0],['Suva','GL',6.5],['Port Moresby','GL',7.4],['Havana','GL',5.5],['Kingston','GL',7.0],['Montego Bay','GL',7.5],['Bridgetown','GL',6.8],['Port of Spain','GL',6.6],['Georgetown Guyana','GL',7.9],['Montevideo','GL',6.3],['Punta del Este','GL',6.7],['Asuncion','GL',7.6],['Quito','GL',6.8],['Guayaquil','GL',6.9],['Cuenca','GL',6.7],['La Paz','GL',6.4],['Santa Cruz de la Sierra','GL',7.0],['Guatemala City','GL',7.1],['Antigua Guatemala','GL',7.3],['San Salvador','GL',7.2],['Tegucigalpa','GL',6.9],['Managua','GL',6.8],['San Juan','US',6.9],['George Town Cayman','GL',6.4],['Hamilton Bermuda','GL',5.8],['Providenciales','GL',7.2],['Oranjestad','GL',7.1],['Willemstad','GL',7.0],['Castries','GL',6.8],
+  ['Bournemouth Coastal','GB',5.8],['Cheltenham','GB',5.5],['Guildford','GB',5.1],['Winchester','GB',4.9],['Canterbury','GB',5.7],['Chester','GB',6.1],['Lancaster','GB',6.9],['Durham','GB',6.7],['St. Andrews','GB',5.4],['Inverness','GB',6.4],['Warrington','GB',6.8],['Stockport','GB',6.6],['Salford','GB',7.0],['Watford','GB',5.4],['St Albans','GB',4.9],['Aylesbury','GB',5.6],['Ipswich','GB',6.3],['Colchester','GB',6.1],['Peterborough','GB',6.6],['Lincoln','GB',6.7],
+  ['Nimes','FR',5.8],['Toulon','FR',5.7],['Brest','FR',6.0],['Angers','FR',5.6],['Dijon','FR',5.7],['Clermont-Ferrand','FR',5.9],['Tours','FR',5.6],['Limoges','FR',6.3],['Amiens','FR',6.1],['Metz','FR',6.0],['Besancon','FR',5.9],['Perpignan','FR',6.2],['Biarritz','FR',4.8],['Saint-Tropez','FR',4.2],['Chamonix','FR',5.0],['Courchevel','FR',4.4],['Megeve','FR',4.5],['Avignon','FR',5.7],
+  ['Karlsruhe','DE',4.9],['Augsburg','DE',4.8],['Wiesbaden','DE',4.6],['Mainz','DE',4.7],['Muenster','DE',4.8],['Bochum','DE',5.6],['Wuppertal','DE',5.8],['Bielefeld','DE',5.4],['Aachen','DE',5.2],['Kiel','DE',5.3],['Luebeck','DE',5.1],['Potsdam','DE',4.4],['Rostock','DE',5.4],['Regensburg','DE',4.7],['Wuerzburg','DE',4.8],['Ulm','DE',4.9],
+  ['Cordoba ES','ES',6.1],['Valladolid','ES',5.9],['Vigo','ES',5.8],['Gijon','ES',5.9],['A Coruna','ES',5.7],['Vitoria-Gasteiz','ES',5.5],['Elche','ES',6.3],['Oviedo','ES',5.8],['Cartagena ES','ES',6.4],['Jerez de la Frontera','ES',6.2],['Pamplona','ES',5.4],['Santander','ES',5.5],['Almeria','ES',6.3],['Tarragona','ES',6.0],['Girona','ES',5.5],['Cadiz','ES',5.8],['Sitges','ES',5.0],['Sotogrande','ES',5.4],
+  ['Brescia','IT',5.7],['Parma','IT',5.6],['Modena','IT',5.5],['Reggio Emilia','IT',5.8],['Perugia','IT',5.9],['Livorno','IT',6.0],['Cagliari','IT',6.0],['Pisa','IT',5.5],['Lucca','IT',5.3],['Siena','IT',5.2],['Salerno','IT',5.9],['Lecce','IT',6.2],['Taormina','IT',6.0],['Olbia','IT',6.1],['Portofino','IT',4.3],['Sorrento','IT',5.4],['Bolzano','IT',4.6],
+  ['Cascais Marina','PT',4.8],['Sintra','PT',5.2],['Oeiras','PT',5.3],['Almada','PT',5.9],['Tavira','PT',6.1],['Portimao','PT',6.3],['Alvor','PT',6.2],['Evora','PT',6.0],['Viseu','PT',6.2],['Comporta','PT',5.1],
+  ['Almere','NL',5.6],['Breda','NL',5.5],['Tilburg','NL',5.6],['Nijmegen','NL',5.4],['Arnhem','NL',5.5],['Leiden','NL',4.9],['Amersfoort','NL',5.2],['Zwolle','NL',5.6],['Enschede','NL',5.9],['Leeuwarden','NL',6.0],
+  ['Winterthur','CH',3.8],['St. Gallen','CH',4.0],['Biel','CH',4.2],['Thun','CH',3.9],['Fribourg','CH',4.0],['Schaffhausen','CH',4.1],['Chur','CH',3.9],['Montreux','CH',3.7],['Verbier','CH',3.4],['Gstaad','CH',3.1],['Zermatt','CH',3.5],['Davos','CH',3.6],
+  ['Marmaris','TR',6.9],['Kusadasi','TR',7.0],['Didim','TR',7.1],['Cesme','TR',6.6],['Alacati','TR',6.5],['Kas','TR',6.8],['Gocek','TR',6.7],['Yalova','TR',6.8],['Sakarya','TR',6.6],['Kocaeli','TR',6.5],['Samsun','TR',6.4],['Denizli','TR',6.3],['Canakkale','TR',6.5],
+  ['Rajkot','IN',5.6],['Madurai','IN',5.5],['Jodhpur','IN',5.6],['Raipur','IN',5.7],['Kota','IN',5.9],['Vijayawada','IN',5.6],['Amritsar','IN',5.4],['Varanasi','IN',5.5],['Srinagar','IN',5.3],['Dehradun','IN',5.5],['Mangaluru','IN',5.6],['Faridabad','IN',5.3],['Ghaziabad','IN',5.4],['Patna','IN',5.5],['Bhopal','IN',5.6],['Ranchi','IN',5.6],['Jamshedpur','IN',5.7],['Tiruchirappalli','IN',5.5],['Salem','IN',5.5],['Hubballi','IN',5.6],
+  ['Hyderabad PK','PK',6.2],['Sukkur','PK',6.0],['Mardan','PK',6.0],['Sargodha','PK',6.1],['Jhelum','PK',6.1],['Gujrat','PK',6.1],['Mirpur','PK',6.2],['Wah Cantt','PK',6.0],
+  ['Balikpapan','ID',7.2],['Palembang','ID',6.7],['Malang','ID',6.9],['Bekasi','ID',6.6],['Tangerang','ID',6.8],['Depok','ID',6.7],['Bogor','ID',6.8],['Manado','ID',7.0],['Pekanbaru','ID',6.8],['Labuan Bajo','ID',8.4],
+  ['Shah Alam','MY',5.8],['Subang Jaya','MY',5.7],['Seremban','MY',6.0],['Kuantan','MY',6.1],['Miri','MY',6.2],['Kota Bharu','MY',5.9],['Alor Setar','MY',5.8],['Putrajaya','MY',5.6],
+  ['Rayong','TH',6.8],['Chonburi','TH',6.7],['Chiang Rai','TH',6.4],['Khon Kaen','TH',6.5],['Udon Thani','TH',6.4],['Hat Yai','TH',6.5],['Phang Nga','TH',7.3],['Koh Phangan','TH',7.9],
+  ['Vung Tau','VN',6.3],['Da Lat','VN',6.1],['Hue','VN',5.8],['Quy Nhon','VN',6.2],['Ha Long','VN',6.4],['Bien Hoa','VN',5.9],['Binh Duong','VN',6.2],
+  ['Baguio','PH',6.5],['Bacolod','PH',6.7],['Cagayan de Oro','PH',6.8],['Santa Rosa','PH',6.6],['Pasig','PH',6.4],['Mandaluyong','PH',6.5],['Pasay','PH',6.6],['Siargao','PH',7.5],['Palawan','PH',7.3],
+  ['Kawasaki','JP',5.0],['Saitama','JP',5.3],['Chiba','JP',5.5],['Kumamoto','JP',6.1],['Kagoshima','JP',6.0],['Okayama','JP',5.9],['Kanazawa','JP',5.7],['Nagasaki','JP',5.8],['Matsuyama','JP',5.9],['Takamatsu','JP',5.8],['Karuizawa','JP',5.4],['Hakuba','JP',6.2],
+  ['Ulsan','KR',5.1],['Changwon','KR',5.0],['Yongin','KR',4.6],['Goyang','KR',4.7],['Cheongju','KR',5.1],['Jeonju','KR',5.0],['Cheonan','KR',5.2],['Gangneung','KR',5.3],
+  ['Zhuhai','CN',3.7],['Foshan','CN',3.9],['Dongguan','CN',4.0],['Wuxi','CN',4.0],['Hefei','CN',4.1],['Fuzhou','CN',3.9],['Kunming','CN',4.3],['Zhengzhou','CN',4.2],['Jinan','CN',4.1],['Harbin','CN',4.4],['Shenyang','CN',4.4],['Haikou','CN',4.4],['Guiyang','CN',4.5],['Nanchang','CN',4.3],['Nanning','CN',4.3],
+  ['Girona Costa Brava','ES',5.6],['Oaxaca','MX',7.2],['Mazatlan','MX',7.7],['La Paz MX','MX',7.6],['San Luis Potosi','MX',7.1],['Aguascalientes','MX',7.0],['Leon','MX',7.0],['Morelia','MX',6.8],['Cabo San Lucas','MX',7.9],['San Jose del Cabo','MX',7.7],['Sayulita','MX',8.1],['Valle de Bravo','MX',7.0],
+  ['Goiania','BR',6.9],['Belem','BR',7.0],['Manaus','BR',7.1],['Vitoria','BR',6.8],['Ribeirao Preto','BR',6.9],['Joinville','BR',7.0],['Natal','BR',7.2],['Maceio','BR',7.3],['Buzios','BR',7.5],['Gramado','BR',7.4],
+  ['Key West','US',5.8],['Clearwater','US',6.5],['St. Petersburg','US',6.6],['Destin','US',6.8],['Park City','US',5.2],['Jackson Hole','US',4.5],['Sedona','US',6.1],['Santa Barbara','US',4.4],['Napa','US',4.8],['Carmel','US',4.2],['Laguna Beach','US',4.3],['Newport Beach','US',4.4],['La Jolla','US',4.6],['Malibu','US',4.1],['Greenwich','US',4.7],['Hamptons','US',4.5],['Stamford','US',5.8],['Providence','US',6.6],['Portland ME','US',6.1],['Burlington','US',6.0],['Ann Arbor','US',6.2],['Chapel Hill','US',5.9],['Durham NC','US',6.4],['Bentonville','US',6.8],['Fayetteville','US',6.9],['Huntsville','US',7.1],['Reno','US',6.2],['Spokane','US',6.5],['Tacoma','US',5.9],['Bend','US',5.6],['Provo','US',6.0],['Frisco','US',6.1],['McKinney','US',6.2],['The Woodlands','US',6.4],['Coral Springs','US',6.3],['Aventura','US',6.1],['Brickell','US',6.4],['Sunny Isles','US',6.0],['Palm Beach','US',5.3],['Vero Beach','US',6.2],
+  ['Bathurst','AU',5.8],['Byron Bay','AU',4.9],['Noosa','AU',5.1],['Toowoomba','AU',6.2],['Ballarat','AU',5.6],['Bendigo','AU',5.7],['Launceston','AU',6.0],['Fremantle','AU',5.9],['Mandurah','AU',6.3],['Bunbury','AU',6.4],
+  ['Tauranga Bay','NZ',5.3],['Napier','NZ',5.7],['Nelson','NZ',5.6],['Rotorua','NZ',6.1],['Wanaka','NZ',5.1],['Palmerston North','NZ',6.0],
+  ['Ajman Corniche','AE',8.6],['Al Khobar Bay','SA',8.1],['Jebel Akhdar','OM',7.9],['Musandam','OM',7.5],['Al Mouj Muscat','OM',8.4],['Lusail Marina','QA',7.7],['Seef District','BH',7.9],['El Alamein','EG',8.4],['North Coast Egypt','EG',8.5],['Ain Sokhna','EG',8.0],['Dakhla','MA',7.6],['Taghazout','MA',8.0],['Dead Sea','JO',7.7],['Petra','JO',7.5],
+  ['Capri','IT',4.6],['Amalfi','IT',4.9],['Sardinia','IT',5.8],['Corsica','FR',5.1],['Mallorca','ES',5.2],['Menorca','ES',5.4],['Lanzarote','ES',6.1],['Fuerteventura','ES',6.2],['Crete','GR',6.6],['Corfu','GR',6.5],['Paros','GR',6.7],['Naxos','GR',6.6],['Kefalonia','GR',6.4],['Ayia Napa','CY',6.8],['Protaras','CY',6.7],['Gozo','MT',5.9],['Algarve','PT',6.1],['Madeira','PT',5.9],['Azores','PT',6.2],
+  ['Lofoten','NO',5.6],['Tromso','NO',5.5],['Rovaniemi','FI',6.1],['Oulu','FI',5.7],['Zakopane','PL',6.7],['Sopot','PL',6.0],['Gdynia','PL',6.3],['Katowice','PL',6.9],['Karlovy Vary','CZ',5.8],['Cesky Krumlov','CZ',5.7],['Sibiu','RO',6.6],['Iasi','RO',6.8],['Rijeka','HR',6.1],['Pula','HR',6.2],['Rovinj','HR',6.0],['Hvar','HR',6.4],['Szekesfehervar','HU',6.2],['Gyor','HU',6.3],['Szeged','HU',6.4],['Klaipeda','LT',6.4],['Parnu','EE',6.0],['Liepaja','LV',6.6],
+  ['Baku Caspian','AZ',7.2],['Gudauri','GE',9.1],['Kazbegi','GE',8.5],['Kutaisi','GE',8.0],['Dilijan','AM',7.3],['Bukhara','UZ',7.4],['Aktau','KZ',7.3],['Bishkek Chuy','GL',7.3],['Galle Fort','LK',6.9],['Negombo','LK',6.5],['Sylhet','BD',5.7],['Coxs Bazar','BD',6.0],['Hua Hin Beach','TH',6.7],['Khao Lak','TH',7.0],['Hoi An','VN',6.4],['Mui Ne','VN',6.3],['Cebu Mactan','PH',6.9],['Subic Bay','PH',6.7],['Okinawa','JP',5.8],['Furano','JP',6.3],['Hakone','JP',5.5],['Gyeongju','KR',5.1],['Seogwipo','KR',5.6],['Macau','HK',3.8],['Hualien','TW',3.7],['Kenting','TW',4.1],
+  ['Rosario','AR',6.3],['Mar del Plata','AR',6.4],['Ushuaia','AR',6.6],['Antofagasta','CL',6.3],['Puerto Varas','CL',6.0],['Bucaramanga','CO',7.1],['Pereira','CO',7.3],['Trujillo','PE',6.5],['David PA','PA',7.0],['Liberia CR','CR',7.5],['Nosara','CR',7.9],['Puerto Plata','DO',7.8],['Las Terrenas','DO',8.1],['Freeport','BS',7.1],['Exuma','BS',7.0],
+  ['Knysna','ZA',7.8],['Umhlanga','ZA',8.3],['Paarl','ZA',7.7],['Nakuru','KE',7.6],['Naivasha','KE',7.5],['Diani Beach','KE',8.2],['Lekki','NG',8.6],['Ikoyi','NG',8.0],['Takoradi','GH',7.8],['Flic en Flac','MU',7.4],['Tamarin','MU',7.3],['Gisenyi','RW',7.8],['Mwanza','TZ',7.5],['Nungwi','TZ',8.7],
+  ['Charlottesville','US',5.9],['Wilmington','US',6.5],['Myrtle Beach','US',7.0],['St. Augustine','US',6.4],['Ocala','US',7.0],['Lakeland','US',6.9],['Cape Coral','US',6.6],['Fort Myers','US',6.7],['Gainesville','US',6.8],['Tallahassee','US',6.9],['Pensacola','US',6.8],['Mobile','US',7.4],['Baton Rouge','US',7.2],['Little Rock','US',7.5],['Springfield MO','US',7.3],['Columbia SC','US',7.0],['Columbia MO','US',6.9],['Fargo','US',7.1],['Sioux Falls','US',7.0],['Rapid City','US',6.8],['Missoula','US',5.9],['Bozeman','US',5.4],['Whitefish','US',5.2],['Sun Valley','US',4.8],['Telluride','US',4.4],['Vail','US',4.5],['Breckenridge','US',5.1],['Steamboat Springs','US',5.3],['Santa Fe','US',5.8],['Flagstaff','US',6.0],['Lake Tahoe','US',5.4],['Big Bear','US',6.3],['Joshua Tree','US',6.9],['Gatlinburg','US',7.5],['Pigeon Forge','US',7.4],['Branson','US',7.3],['Galveston','US',6.8],['Corpus Christi','US',7.0],['Fredericksburg','US',6.6],['Katy','US',6.7],['Round Rock','US',6.3],['Tempe','US',6.2],['Gilbert','US',6.1],['Peoria AZ','US',6.3],['Glendale AZ','US',6.5],['Carlsbad','US',4.9],['Oceanside','US',5.3],['Monterey','US',4.8],['San Luis Obispo','US',5.1],['Eugene','US',5.8],['Salem OR','US',6.0],['Vancouver WA','US',5.9],['Bellingham','US',5.6],['Olympia','US',5.8],['Anchorage Midtown','US',6.8],['Kailua-Kona','US',5.4],['Maui','US',4.9],['Kihei','US',5.2],['Kauai','US',5.0],
+  ['Kingston ON','CA',5.9],['London ON','CA',6.1],['Windsor ON','CA',6.5],['Oshawa','CA',5.8],['Barrie','CA',5.7],['Guelph','CA',5.5],['Sudbury','CA',6.9],['Thunder Bay','CA',7.0],['Laval','CA',5.7],['Gatineau','CA',5.9],['Sherbrooke','CA',6.3],['Trois-Rivieres','CA',6.4],['St. Johns NL','CA',6.6],['Charlottetown','CA',6.2],['Fredericton','CA',6.5],['Saint John NB','CA',6.9],['Banff','CA',5.3],['Canmore','CA',5.4],['Whistler','CA',4.8],['Nanaimo','CA',5.6],['Kamloops','CA',6.0],['Red Deer','CA',6.8],['Lethbridge','CA',6.9],['Abbotsford','CA',5.1],['Coquitlam','CA',4.7],
+];
+
+const INLINED_CITIES_MAP = new Map<string, InlinedCityEntry>();
+for (const [city, countryKey, avgCapRate] of CITY_RAW) {
+  const norm = city.trim().toLowerCase();
+  if (INLINED_CITIES_MAP.has(norm)) continue;
+  const spec = CITY_COUNTRIES[countryKey] || CITY_COUNTRIES.GL;
+  INLINED_CITIES_MAP.set(norm, {
+    city,
+    country: spec[0],
+    countryCode: spec[1],
+    currency: spec[2],
+    taxRate: spec[3],
+    visaNote: spec[4],
+    avgCapRate,
+  });
+}
+
+function findInlinedCity(rawCity?: string | null): InlinedCityEntry | null {
+  const raw = String(rawCity || '').trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (INLINED_CITIES_MAP.has(lower)) return INLINED_CITIES_MAP.get(lower)!;
+  const strippedParen = raw.replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
+  if (INLINED_CITIES_MAP.has(strippedParen)) return INLINED_CITIES_MAP.get(strippedParen)!;
+  const beforeComma = raw.split(',')[0].trim().toLowerCase();
+  if (INLINED_CITIES_MAP.has(beforeComma)) return INLINED_CITIES_MAP.get(beforeComma)!;
+  return null;
+}
 
 const OFFICIAL_CITIES = [
   {
@@ -2609,11 +3159,14 @@ export default async function handler(req: any, res: any) {
             'debug-plan',
             'run-analysis',
             'underwrite',
+            'analyze',
             'monte-carlo',
             'save-to-portfolio',
             'save-property',
             'export',
             'portfolio',
+            'analyst-chat',
+            'whiteglove-request',
             'sovereign-request',
             'checkout',
             'session',
@@ -2681,13 +3234,25 @@ export default async function handler(req: any, res: any) {
         const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
         const apiKey =
           license.planKey === 'enterprise' && !license.isExpired
-            ? 'aqari_live_' +
-              crypto
-                .createHmac('sha256', getSessionSecret())
-                .update(`api:${dbUser.email}`)
-                .digest('hex')
-                .slice(0, 32)
+            ? buildApiKeyForEmail(dbUser.email)
             : null;
+        if (apiKey) {
+          await saveApiKeyToDb(apiKey, dbUser.email).catch(() => {});
+        }
+        const analystThread =
+          license.planKey === 'enterprise'
+            ? await getAnalystThreadFromDb(dbUser.email).catch(() => null)
+            : null;
+        const allWhiteGlove =
+          license.planKey === 'enterprise'
+            ? await getWhiteGloveRequestsFromDb().catch(() => [])
+            : [];
+        const userWhiteGlove = Array.isArray(allWhiteGlove)
+          ? allWhiteGlove.filter((r: any) => normalizeEmail(r?.email) === dbUser.email)
+          : [];
+        const userDeliverables = userWhiteGlove
+          .filter((r: any) => r?.status === 'Done' && r?.deliverable)
+          .map((r: any) => ({ ...r.deliverable, requestId: r.id, deliveredAt: r.deliveredAt }));
 
         return res.status(200).json({
           success: true,
@@ -2716,6 +3281,10 @@ export default async function handler(req: any, res: any) {
           custom_cities: dbUser.custom_cities || [],
           features,
           capabilities: PLAN_DEFINITIONS[license.planKey].capabilities,
+          analyst_unread: Number(analystThread?.unreadForClient || 0),
+          analyst_thread: analystThread,
+          whiteglove_requests: userWhiteGlove,
+          whiteglove_deliverables: userDeliverables,
           user: {
             email: dbUser.email,
             login_email: dbUser.email,
@@ -2730,6 +3299,9 @@ export default async function handler(req: any, res: any) {
             api_key: apiKey,
             locked_launch_price: dbUser.locked_launch_price ?? null,
             custom_cities: dbUser.custom_cities || [],
+            analyst_unread: Number(analystThread?.unreadForClient || 0),
+            whiteglove_requests: userWhiteGlove,
+            whiteglove_deliverables: userDeliverables,
           },
           license: {
             ...license,
@@ -3435,10 +4007,27 @@ export default async function handler(req: any, res: any) {
         }
 
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = String(sessionEmail || body.login_email || body.email || '')
-          .trim()
-          .toLowerCase();
+        const authHeader = String(req?.headers?.authorization || '');
+        const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
+        let email = getSessionEmailFromReq(req) || '';
+
+        if (isApiKeyBearer) {
+          const apiOwner = await resolveApiKeyEmail(bearerRaw);
+          if (!apiOwner) {
+            return res.status(401).json({
+              success: false,
+              error: 'Invalid or inactive REST API token. Copy your live token from SOVEREIGN Settings.',
+              code: 'INVALID_API_KEY',
+            });
+          }
+          email = apiOwner;
+        } else if (!email) {
+          email = String(body.login_email || body.email || '')
+            .trim()
+            .toLowerCase();
+        }
+
         if (!email) {
           return res.status(401).json({ error: 'Authentication required to run underwriting analysis' });
         }
@@ -3458,6 +4047,15 @@ export default async function handler(req: any, res: any) {
             timezone: body.timezone,
           });
         const license = computeServerLicenseStatus(userRecord);
+
+        if (isApiKeyBearer && (!canUseFeature(license.planKey, 'apiAccess') || license.isExpired)) {
+          return res.status(403).json({
+            success: false,
+            error: 'Full REST API Access requires an active SOVEREIGN license.',
+            code: 'FEATURE_LOCKED',
+            requiredPlan: 'enterprise',
+          });
+        }
 
         if (license.isExpired || (!license.isUnlimitedAnalyses && license.analysesLeft <= 0)) {
           return res.status(403).json({
@@ -3482,13 +4080,35 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const priceUSD = Number(body.priceUSD ?? body.acquisitionValuation);
-        const rentUSD = Number(body.rentUSD ?? body.monthlyRent);
-        const downPaymentPct = Number(body.downPaymentPct ?? body.equityDownPct ?? 30);
-        const interestRatePct = Number(body.interestRatePct ?? body.mortgageRatePct ?? 5.5);
-        const operatingExpensePct = Number(body.operatingExpensePct ?? body.opexPct ?? 15);
-        const propertyTitle = (body.propertyTitle || 'Institutional Asset').toString();
-        const city = (body.city || 'Muscat').toString();
+        const rawCityInput = String(body.city || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput);
+        if (!cityEntry) {
+          return res.status(400).json({
+            success: false,
+            error: 'City not supported yet. Choose from list.',
+            code: 'INVALID_CITY',
+            city: rawCityInput,
+          });
+        }
+
+        const priceUSD = Number(body.priceUSD ?? body.acquisitionValuation ?? body.valuation);
+        const rentUSD = Number(body.rentUSD ?? body.monthlyRent ?? body.rent);
+        const downPaymentPct = Number(
+          body.downPaymentPct ?? body.equityDownPct ?? body.equity ?? 30
+        );
+        const interestRatePct = Number(
+          body.interestRatePct ?? body.mortgageRatePct ?? body.rate ?? 5.5
+        );
+        const operatingExpensePct = Number(
+          body.operatingExpensePct ?? body.opexPct ?? body.opex ?? 15
+        );
+        const propertyTitle = (
+          body.propertyTitle ||
+          body.title ||
+          `${cityEntry.city} Prime Institutional Asset`
+        ).toString();
+        const city = cityEntry.city;
+        const currency = String(body.currency || cityEntry.currency || 'USD').toUpperCase();
 
         if (
           !Number.isFinite(priceUSD) ||
@@ -3585,12 +4205,16 @@ export default async function handler(req: any, res: any) {
           inputs: {
             propertyTitle,
             city,
+            country: cityEntry.country,
+            countryCode: cityEntry.countryCode,
+            currency,
             priceUSD,
             rentUSD,
             downPaymentPct,
             interestRatePct,
             operatingExpensePct,
           },
+          cityData: cityEntry,
           result: {
             capRate,
             cashOnCash,
@@ -3697,13 +4321,9 @@ export default async function handler(req: any, res: any) {
 
         if (currentSavedCount >= maxSaved) {
           const nextPlanHint =
-            license.planKey === 'free'
-              ? ' Upgrade to STARTER to save more.'
-              : license.planKey === 'starter'
-              ? ' Upgrade to PROFESSIONAL to save more.'
-              : license.planKey === 'pro'
-              ? ' Upgrade to SOVEREIGN to save more.'
-              : '';
+            license.planKey === 'enterprise'
+              ? ''
+              : ' Upgrade to SOVEREIGN (400 saves) to save more.';
           return res.status(200).json({
             success: false,
             error: `Save limit reached for ${license.displayName}: ${currentSavedCount}/${maxSaved}.${nextPlanHint}`,
@@ -3740,6 +4360,162 @@ export default async function handler(req: any, res: any) {
           maxSaved,
           savedLimit: maxSaved,
         });
+      }
+
+      case 'analyst-chat': {
+        const sessionEmail = getSessionEmailFromReq(req);
+        const body = parsedBody;
+        const email = String(sessionEmail || getQueryParam(req, url, 'email') || body.login_email || body.email || '')
+          .trim()
+          .toLowerCase();
+        if (!email) {
+          return res.status(401).json({ error: 'Authentication required' });
+        }
+        const userRecord =
+          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+        const license = computeServerLicenseStatus(userRecord);
+        if (license.isExpired || !canUseFeature(license.planKey, 'analystDesk')) {
+          return res.status(403).json({
+            success: false,
+            error: getUpgradeMessage('analystDesk'),
+            code: 'FEATURE_LOCKED',
+          });
+        }
+
+        if (req.method === 'GET') {
+          const thread = await getAnalystThreadFromDb(email);
+          if ((thread.unreadForClient || 0) > 0) {
+            thread.unreadForClient = 0;
+            await saveAnalystThreadToDb(thread);
+          }
+          return res.status(200).json({
+            success: true,
+            thread,
+          });
+        }
+
+        if (req.method === 'POST') {
+          const text = String(body.message || '').trim().slice(0, 2000);
+          if (!text) {
+            return res.status(400).json({ success: false, error: 'Message cannot be empty' });
+          }
+          const thread = await getAnalystThreadFromDb(email);
+          const now = Date.now();
+          const msg = {
+            id: `msg_${now}_${Math.random().toString(36).slice(2, 6)}`,
+            sender: 'client',
+            senderEmail: email,
+            text,
+            timestamp: new Date(now).toISOString(),
+            attachedAnalysisId: body.attachedAnalysisId || undefined,
+            attachedAnalysisTitle: body.attachedAnalysisTitle || undefined,
+            attachedAnalysisSummary: body.attachedAnalysisSummary || undefined,
+            replyByDate: body.replyByDate || undefined,
+          };
+          thread.status = 'Open';
+          thread.plan = 'SOVEREIGN';
+          thread.updatedAt = now;
+          thread.unreadForAdmin = Number(thread.unreadForAdmin || 0) + 1;
+          thread.messages = [...(thread.messages || []), msg].slice(-200);
+          await saveAnalystThreadToDb(thread);
+
+          await dispatchEmailAlert({
+            to: getAdminEmail(),
+            subject: `AQARI Analyst Desk: New question from ${email}`,
+            text: `Client: ${email} (SOVEREIGN)\n${
+              msg.replyByDate ? `Requested Reply By: ${msg.replyByDate}\n` : ''
+            }${msg.attachedAnalysisTitle ? `Attached Property: ${msg.attachedAnalysisTitle}\n` : ''}\nMessage:\n${text}`,
+            eventType: 'analyst_question',
+          }).catch(() => {});
+
+          return res.status(200).json({
+            success: true,
+            thread,
+            message: 'Sent - Analyst will reply within 24h',
+          });
+        }
+
+        return res.status(405).json({ error: 'Method not allowed' });
+      }
+
+      case 'whiteglove-request': {
+        const sessionEmail = getSessionEmailFromReq(req);
+        const body = parsedBody;
+        const email = String(sessionEmail || getQueryParam(req, url, 'email') || body.login_email || body.email || '')
+          .trim()
+          .toLowerCase();
+        if (!email) {
+          return res.status(401).json({ error: 'Authentication required' });
+        }
+        const userRecord =
+          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+        const license = computeServerLicenseStatus(userRecord);
+        if (license.isExpired || !canUseFeature(license.planKey, 'customUnderwriting')) {
+          return res.status(403).json({
+            success: false,
+            error: getUpgradeMessage('customUnderwriting'),
+            code: 'FEATURE_LOCKED',
+          });
+        }
+
+        if (req.method === 'GET') {
+          const all = await getWhiteGloveRequestsFromDb();
+          const mine = all.filter((r: any) => normalizeEmail(r?.email) === email);
+          const deliverables = mine
+            .filter((r: any) => r?.status === 'Done' && r?.deliverable)
+            .map((r: any) => ({ ...r.deliverable, requestId: r.id, deliveredAt: r.deliveredAt }));
+          return res.status(200).json({
+            success: true,
+            requests: mine,
+            deliverables,
+          });
+        }
+
+        if (req.method === 'POST') {
+          const propertyTitle = String(body.propertyTitle || '').trim();
+          const targetCity = String(body.targetCity || body.city || '').trim();
+          const valuation = Number(body.valuation || 0);
+          const expectedMonthlyRent = Number(body.expectedMonthlyRent || 0);
+          if (!propertyTitle || !targetCity) {
+            return res.status(400).json({
+              success: false,
+              error: 'Property title and target city are required',
+            });
+          }
+          const now = Date.now();
+          const requestItem = {
+            id: `WG-${now.toString(36).toUpperCase()}`,
+            email,
+            clientName: userRecord.name || email.split('@')[0],
+            propertyTitle,
+            dealLink: String(body.dealLink || '').trim() || undefined,
+            targetCity,
+            currency: String(body.currency || 'USD').toUpperCase(),
+            valuation: Number.isFinite(valuation) ? valuation : 0,
+            expectedMonthlyRent: Number.isFinite(expectedMonthlyRent) ? expectedMonthlyRent : 0,
+            goalNotes: String(body.goalNotes || '').trim().slice(0, 2000),
+            attachments: Array.isArray(body.attachments) ? body.attachments.slice(0, 10) : [],
+            status: 'Pending',
+            createdAt: new Date(now).toISOString(),
+          };
+          const all = await getWhiteGloveRequestsFromDb();
+          await saveWhiteGloveRequestsToDb([requestItem, ...all]);
+
+          await dispatchEmailAlert({
+            to: getAdminEmail(),
+            subject: `AQARI White-Glove Request (${requestItem.id}) from ${email}`,
+            text: `Client: ${email} (SOVEREIGN)\nProperty: ${propertyTitle}\nTarget City: ${targetCity}\nValuation: ${requestItem.currency} ${requestItem.valuation}\nExpected Rent/mo: ${requestItem.expectedMonthlyRent}\nDeal Link: ${requestItem.dealLink || 'N/A'}\nNotes:\n${requestItem.goalNotes}`,
+            eventType: 'whiteglove_request',
+          }).catch(() => {});
+
+          return res.status(200).json({
+            success: true,
+            request: requestItem,
+            message: 'Request received. Analysis will be delivered in 48h.',
+          });
+        }
+
+        return res.status(405).json({ error: 'Method not allowed' });
       }
 
       case 'sovereign-request': {
@@ -3787,7 +4563,7 @@ export default async function handler(req: any, res: any) {
           success: true,
           referenceId,
           requestType: reqType,
-          message: `${reqType} request confirmed (${referenceId}). Our analyst desk will respond at ${email}.`,
+          message: `${reqType} request confirmed (${referenceId}). Our analyst desk will respond within 24h.`,
         });
       }
 
@@ -4219,6 +4995,7 @@ export default async function handler(req: any, res: any) {
       case 'webhook-logs': {
         res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
         const logs = await getWebhookLogsFromDb(50);
+        const emailLogs = await getEmailLogsFromDb(50);
         const webhookSecretPresent = Boolean(
           cleanEnvValue(getEnv('LEMON_WEBHOOK_SECRET')) ||
             cleanEnvValue(getEnv('LEMONSQUEEZY_WEBHOOK_SECRET'))
@@ -4236,6 +5013,8 @@ export default async function handler(req: any, res: any) {
           logs,
           webhookLogs: logs,
           webhooks: logs,
+          emailLogs,
+          emails: emailLogs,
           envStatus: {
             webhookSecretPresent,
             apiKeyPresent,
@@ -4628,11 +5407,14 @@ export default async function handler(req: any, res: any) {
             'debug-plan',
             'run-analysis',
             'underwrite',
+            'analyze',
             'monte-carlo',
             'save-to-portfolio',
             'save-property',
             'export',
             'portfolio',
+            'analyst-chat',
+            'whiteglove-request',
             'sovereign-request',
             'checkout',
             'session',

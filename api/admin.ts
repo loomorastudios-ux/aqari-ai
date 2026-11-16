@@ -47,12 +47,12 @@ const PLANS: Record<
     originalPrice: 129,
     launchPrice: 79,
     analysesLimit: 30,
-    savedLimit: 30,
+    savedLimit: 15,
     features: [
       '30 Analyses / 30 Days',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 30',
+      'Save 15',
     ],
   },
   pro: {
@@ -61,7 +61,7 @@ const PLANS: Record<
     originalPrice: 349,
     launchPrice: 199,
     analysesLimit: 150,
-    savedLimit: 150,
+    savedLimit: 75,
     features: [
       '150 Analyses / 30 Days',
       'Monte Carlo Stress Tests +200bps',
@@ -69,7 +69,7 @@ const PLANS: Record<
       'Multi-asset Portfolio Aggregation',
       'Yield & Sensitivity Calculator',
       'Cross-border Tax & Visa Matrix',
-      'Save 150',
+      'Save 75',
     ],
   },
   enterprise: {
@@ -238,6 +238,9 @@ function getMemoryStore() {
       pricing_logs: [],
       pending_checkouts: {},
       used_orders: {},
+      analyst_threads: {},
+      whiteglove_requests: [],
+      api_keys: {},
     };
   }
   return memoryStoreCache;
@@ -288,9 +291,12 @@ function hydratePricingConfig(raw: any) {
       const rawFeatures: string[] = Array.isArray(r.features) && r.features.length > 0 ? r.features.map(String) : def.plans[k].features;
       const normalizedFeatures = rawFeatures
         .filter((f) => !(k === 'free' && f.startsWith('No Monte Carlo')))
-        .map((f) =>
-          f === 'Save 50' ? 'Save 30' : f === 'Save 200' ? 'Save 150' : f === 'Unlimited Saved' ? 'Save 400' : f
-        );
+        .map((f) => {
+          const trimmed = f.trim();
+          if (/^unlimited\s+saved$/i.test(trimmed)) return `Save ${def.plans[k].savedLimit}`;
+          if (/^save\s+\d+$/i.test(trimmed)) return `Save ${def.plans[k].savedLimit}`;
+          return f;
+        });
       plans[k] = {
         key: k,
         displayName: def.plans[k].displayName,
@@ -332,6 +338,9 @@ function loadStore() {
           pricing_logs: Array.isArray(parsed.pricing_logs) ? parsed.pricing_logs : [],
           pending_checkouts: parsed.pending_checkouts || {},
           used_orders: parsed.used_orders || {},
+          analyst_threads: parsed.analyst_threads || {},
+          whiteglove_requests: Array.isArray(parsed.whiteglove_requests) ? parsed.whiteglove_requests : [],
+          api_keys: parsed.api_keys || {},
         };
       }
     }
@@ -416,6 +425,296 @@ function updateServerUser(email: string, patch: any) {
 function getAllServerUsers() {
   const store = loadStore();
   return Object.keys(store.users).map((email) => enforceServerUserExpiry(email));
+}
+
+function getKvConfig(): { url: string; token: string } | null {
+  const url = cleanEnvValue(getEnv('KV_REST_API_URL') || getEnv('UPSTASH_REDIS_REST_URL'));
+  const token = cleanEnvValue(getEnv('KV_REST_API_TOKEN') || getEnv('UPSTASH_REDIS_REST_TOKEN'));
+  if (!url || !token) return null;
+  return { url: url.replace(/\/+$/, ''), token };
+}
+
+async function kvCommand(args: Array<string | number>): Promise<any> {
+  const cfg = getKvConfig();
+  if (!cfg) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1500);
+  try {
+    const res = await fetch(cfg.url, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${cfg.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(args),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json?.result ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getServerUserFromDb(rawEmail: string): Promise<any> {
+  const norm = normalizeEmail(rawEmail);
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', `aqari:user:${norm}`]);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const hydrated = hydrateUserRecord(parsed, norm);
+        const store = loadStore();
+        store.users[norm] = hydrated;
+        persistStore(store);
+      }
+    }
+  } catch {}
+  return getOrCreateServerUser(norm);
+}
+
+async function saveServerUserToDb(user: any): Promise<void> {
+  const norm = normalizeEmail(user?.email);
+  if (!norm) return;
+  const store = loadStore();
+  store.users[norm] = user;
+  persistStore(store);
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['SET', `aqari:user:${norm}`, JSON.stringify(user)]);
+    }
+  } catch {}
+}
+
+async function getAllServerUsersFromDb(): Promise<any[]> {
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
+      const idx: string[] = Array.isArray(rawIdx)
+        ? rawIdx.map(String)
+        : typeof rawIdx === 'string'
+        ? JSON.parse(rawIdx)
+        : [];
+      const store = loadStore();
+      for (const em of idx.slice(0, 200)) {
+        const norm = normalizeEmail(em);
+        if (!norm) continue;
+        const raw = await kvCommand(['GET', `aqari:user:${norm}`]);
+        if (raw) {
+          const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          store.users[norm] = hydrateUserRecord(parsed, norm);
+        }
+      }
+      persistStore(store);
+    }
+  } catch {}
+  return getAllServerUsers();
+}
+
+async function appendEmailLogToDb(entry: {
+  to: string;
+  subject: string;
+  status: string;
+  event_type: string;
+  error?: string;
+}): Promise<any> {
+  const log = {
+    id: `em_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  try {
+    const store = loadStore();
+    if (!Array.isArray(store.email_logs)) store.email_logs = [];
+    store.email_logs.unshift(log);
+    store.email_logs = store.email_logs.slice(0, 200);
+    persistStore(store);
+  } catch {}
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['LPUSH', 'aqari:email_logs:v1', JSON.stringify(log)]);
+      await kvCommand(['LTRIM', 'aqari:email_logs:v1', 0, 199]);
+    }
+  } catch {}
+  return log;
+}
+
+async function getEmailLogsFromDb(limit = 50): Promise<any[]> {
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawItems = await kvCommand(['LRANGE', 'aqari:email_logs:v1', 0, Math.max(0, limit - 1)]);
+      if (Array.isArray(rawItems) && rawItems.length > 0) {
+        const parsed = rawItems
+          .map((item) => {
+            try {
+              return typeof item === 'string' ? JSON.parse(item) : item;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        if (parsed.length > 0) return parsed.slice(0, limit);
+      }
+    }
+  } catch {}
+  return (loadStore().email_logs || []).slice(0, limit);
+}
+
+async function getWebhookLogsFromDb(limit = 50): Promise<any[]> {
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawItems = await kvCommand(['LRANGE', 'aqari:webhook_logs:v1', 0, Math.max(0, limit - 1)]);
+      if (Array.isArray(rawItems) && rawItems.length > 0) {
+        const parsed = rawItems
+          .map((item) => {
+            try {
+              return typeof item === 'string' ? JSON.parse(item) : item;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        if (parsed.length > 0) return parsed.slice(0, limit);
+      }
+    }
+  } catch {}
+  return (loadStore().webhook_logs || []).slice(0, limit);
+}
+
+async function getFailedWebhooksFromDb(limit = 50): Promise<any[]> {
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawItems = await kvCommand(['LRANGE', 'aqari:failed_webhooks:v1', 0, Math.max(0, limit - 1)]);
+      if (Array.isArray(rawItems) && rawItems.length > 0) {
+        const parsed = rawItems
+          .map((item) => {
+            try {
+              return typeof item === 'string' ? JSON.parse(item) : item;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        if (parsed.length > 0) return parsed.slice(0, limit);
+      }
+    }
+  } catch {}
+  return (loadStore().failed_webhooks || []).slice(0, limit);
+}
+
+async function getAnalystThreadsMap(): Promise<Record<string, any>> {
+  const store = loadStore();
+  let merged: Record<string, any> = { ...(store.analyst_threads || {}) };
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', 'aqari:analyst_threads:v1']);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (parsed && typeof parsed === 'object') {
+          merged = { ...merged, ...parsed };
+          store.analyst_threads = merged;
+          persistStore(store);
+        }
+      }
+    }
+  } catch {}
+  return merged;
+}
+
+async function getAnalystThreadFromDb(rawEmail: string): Promise<any> {
+  const email = normalizeEmail(rawEmail);
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', `aqari:analyst_thread:${email}`]);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (parsed && typeof parsed === 'object') {
+          const store = loadStore();
+          if (!store.analyst_threads) store.analyst_threads = {};
+          store.analyst_threads[email] = parsed;
+          persistStore(store);
+          return parsed;
+        }
+      }
+    }
+  } catch {}
+  const map = await getAnalystThreadsMap();
+  return (
+    map[email] || {
+      email,
+      plan: 'SOVEREIGN',
+      status: 'Open',
+      unreadForAdmin: 0,
+      unreadForClient: 0,
+      updatedAt: Date.now(),
+      messages: [],
+    }
+  );
+}
+
+async function saveAnalystThreadToDb(thread: any): Promise<any> {
+  const email = normalizeEmail(thread?.email);
+  if (!email) return thread;
+  const store = loadStore();
+  if (!store.analyst_threads) store.analyst_threads = {};
+  store.analyst_threads[email] = thread;
+  persistStore(store);
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['SET', `aqari:analyst_thread:${email}`, JSON.stringify(thread)]);
+      const map = await getAnalystThreadsMap();
+      map[email] = thread;
+      await kvCommand(['SET', 'aqari:analyst_threads:v1', JSON.stringify(map)]);
+    }
+  } catch {}
+  return thread;
+}
+
+async function getWhiteGloveRequestsFromDb(): Promise<any[]> {
+  const store = loadStore();
+  let list: any[] = Array.isArray(store.whiteglove_requests) ? [...store.whiteglove_requests] : [];
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', 'aqari:whiteglove_requests:v1']);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (Array.isArray(parsed)) {
+          list = parsed;
+          store.whiteglove_requests = list;
+          persistStore(store);
+        }
+      }
+    }
+  } catch {}
+  return list;
+}
+
+async function saveWhiteGloveRequestsToDb(requests: any[]): Promise<any[]> {
+  const trimmed = requests.slice(0, 300);
+  const store = loadStore();
+  store.whiteglove_requests = trimmed;
+  persistStore(store);
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['SET', 'aqari:whiteglove_requests:v1', JSON.stringify(trimmed)]);
+    }
+  } catch {}
+  return trimmed;
 }
 
 function getPricingPublicPayload() {
@@ -853,17 +1152,24 @@ async function dispatchEmail(params: {
   subject: string;
   text: string;
   html: string;
-  type: 'day29_renewal' | 'plan_expired' | 'test_day29';
+  type: 'day29_renewal' | 'plan_expired' | 'test_day29' | 'analyst_reply' | 'whiteglove_ready' | 'admin_alert';
 }) {
   const resendKey = cleanEnvValue(getEnv('RESEND_API_KEY'));
   const hasResendKey = Boolean(resendKey);
   const keyPrefix = hasResendKey ? resendKey.slice(0, 6) : 'MISSING';
 
   if (!hasResendKey) {
+    await appendEmailLogToDb({
+      to: params.to,
+      subject: params.subject,
+      status: 'simulated',
+      event_type: params.type,
+      error: 'RESEND_API_KEY missing in Vercel (logged to email_logs)',
+    });
     return {
       success: false,
       provider: 'resend',
-      status: 'failed',
+      status: 'simulated',
       to: params.to,
       from: EMAIL_FROM_ADDRESS,
       error: 'RESEND_API_KEY missing in Vercel',
@@ -900,6 +1206,13 @@ async function dispatchEmail(params: {
     try {
       parsed = rawText ? JSON.parse(rawText) : {};
     } catch {}
+    await appendEmailLogToDb({
+      to: params.to,
+      subject: params.subject,
+      status: res.ok ? 'sent' : 'failed',
+      event_type: params.type,
+      error: res.ok ? undefined : parsed?.message || rawText || res.statusText,
+    });
     return {
       success: res.ok,
       provider: 'resend',
@@ -913,6 +1226,13 @@ async function dispatchEmail(params: {
       error: res.ok ? undefined : parsed?.message || rawText || res.statusText,
     };
   } catch (err: any) {
+    await appendEmailLogToDb({
+      to: params.to,
+      subject: params.subject,
+      status: 'failed',
+      event_type: params.type,
+      error: err?.message || 'Resend network error',
+    });
     return {
       success: false,
       provider: 'resend',
@@ -976,9 +1296,10 @@ export default async function handler(req: any, res: any) {
         const statusFilter = getQueryParam(req, url, 'status').trim().toLowerCase();
         const minAnalyses = Number(getQueryParam(req, url, 'minAnalyses') || 0);
         const refundOnly = getQueryParam(req, url, 'refundRequested') === 'true';
-        const store = loadStore();
+        const allUsers = await getAllServerUsersFromDb();
+        const failedWebhooks = await getFailedWebhooksFromDb(50);
 
-        const users = getAllServerUsers()
+        const users = allUsers
           .map((u: any) => {
             const license = computeServerLicenseStatus(u);
             const refundEval = evaluateRefundEligibility(u);
@@ -1013,14 +1334,20 @@ export default async function handler(req: any, res: any) {
           success: true,
           admin: sessionEmail,
           totalUsers: users.length,
-          failedWebhooks: (store.failed_webhooks || []).slice(0, 50),
+          failedWebhooks,
           users,
         });
       }
 
       case 'stats': {
         const store = loadStore();
-        const allUsers = getAllServerUsers();
+        const allUsers = await getAllServerUsersFromDb();
+        const webhookLogs = await getWebhookLogsFromDb(100);
+        const failedWebhooks = await getFailedWebhooksFromDb(100);
+        const emailLogs = await getEmailLogsFromDb(100);
+        const threadsMap = await getAnalystThreadsMap();
+        const wgList = await getWhiteGloveRequestsFromDb();
+
         let paidUsers = 0;
         let starterCount = 0;
         let proCount = 0;
@@ -1054,6 +1381,11 @@ export default async function handler(req: any, res: any) {
         const estimatedMrrUSD =
           starterCount * starterPrice + proCount * proPrice + enterpriseCount * entPrice;
 
+        const analystOpenCount = Object.values(threadsMap).filter(
+          (t: any) => t?.status !== 'Closed' && (t?.messages?.length || 0) > 0
+        ).length;
+        const whiteGlovePendingCount = wgList.filter((r: any) => r?.status === 'Pending').length;
+
         return res.status(200).json({
           success: true,
           admin: sessionEmail,
@@ -1070,10 +1402,12 @@ export default async function handler(req: any, res: any) {
             totalRevenueUSD,
             estimatedMrrUSD,
             totalAnalysesUsed,
-            webhookLogsCount: (store.webhook_logs || []).length,
-            failedWebhooksCount: (store.failed_webhooks || []).length,
-            emailLogsCount: (store.email_logs || []).length,
+            webhookLogsCount: webhookLogs.length,
+            failedWebhooksCount: failedWebhooks.length,
+            emailLogsCount: emailLogs.length,
             pricingChangesCount: (store.pricing_logs || []).length,
+            analystOpenCount,
+            whiteGlovePendingCount,
           },
         });
       }
@@ -1378,6 +1712,247 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'analyst-inbox': {
+        if (req.method !== 'GET') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const map = await getAnalystThreadsMap();
+        const threads = Object.values(map)
+          .filter((t: any) => t && t.email)
+          .sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        return res.status(200).json({
+          success: true,
+          threads,
+        });
+      }
+
+      case 'analyst-thread': {
+        if (req.method !== 'GET') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const targetEmail = decodeURIComponent(getQueryParam(req, url, 'email')).trim().toLowerCase();
+        if (!targetEmail || !targetEmail.includes('@')) {
+          return res.status(400).json({ error: 'Valid client email is required' });
+        }
+        const thread = await getAnalystThreadFromDb(targetEmail);
+        if ((thread.unreadForAdmin || 0) > 0) {
+          thread.unreadForAdmin = 0;
+          await saveAnalystThreadToDb(thread);
+        }
+        const clientUser = await getServerUserFromDb(targetEmail);
+        return res.status(200).json({
+          success: true,
+          thread,
+          savedAnalyses: clientUser?.saved_analyses || [],
+          clientName: clientUser?.name || targetEmail.split('@')[0],
+        });
+      }
+
+      case 'analyst-reply': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const body = req.body || {};
+        const targetEmail = String(body.email || '').trim().toLowerCase();
+        const text = String(body.message || body.text || '').trim().slice(0, 3000);
+        if (!targetEmail || !targetEmail.includes('@') || !text) {
+          return res.status(400).json({ success: false, error: 'Client email and reply message are required' });
+        }
+
+        const thread = await getAnalystThreadFromDb(targetEmail);
+        const now = Date.now();
+        const msg = {
+          id: `msg_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          sender: 'admin',
+          senderEmail: sessionEmail,
+          text,
+          timestamp: new Date(now).toISOString(),
+          attachedAnalysisTitle: body.attachedAnalysisTitle || undefined,
+          attachedAnalysisSummary: body.attachedAnalysisSummary || undefined,
+          attachmentPdfNote: body.attachmentPdfNote || undefined,
+        };
+        thread.status = 'Replied';
+        thread.updatedAt = now;
+        thread.unreadForAdmin = 0;
+        thread.unreadForClient = Number(thread.unreadForClient || 0) + 1;
+        thread.messages = [...(thread.messages || []), msg].slice(-200);
+        await saveAnalystThreadToDb(thread);
+
+        const delivery = await dispatchEmail({
+          to: targetEmail,
+          subject: 'AQARI Analyst Desk: Analyst replied to your question',
+          text: `Your AQARI Sovereign Analyst replied:\n\n${text}\n\nOpen your AQARI Terminal Analyst Desk to view the full thread: ${PRODUCTION_URL}/app`,
+          html: `<div style="font-family:sans-serif;padding:20px;background:#0b0b0f;color:#fff;border:1px solid #D4AF37;border-radius:12px;"><h2 style="color:#D4AF37;margin-top:0;">Analyst Replied to Your Question</h2><p style="white-space:pre-wrap;line-height:1.6;">${text.replace(/</g, '&lt;')}</p><a href="${PRODUCTION_URL}/app" style="display:inline-block;margin-top:12px;padding:10px 18px;background:#D4AF37;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;">Open AQARI Analyst Desk &rarr;</a></div>`,
+          type: 'analyst_reply',
+        });
+
+        return res.status(200).json({
+          success: true,
+          thread,
+          delivery,
+          message: 'Reply sent to client',
+        });
+      }
+
+      case 'analyst-close': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const targetEmail = String(req.body?.email || '').trim().toLowerCase();
+        if (!targetEmail) return res.status(400).json({ error: 'Client email required' });
+        const thread = await getAnalystThreadFromDb(targetEmail);
+        thread.status = 'Closed';
+        thread.unreadForAdmin = 0;
+        thread.updatedAt = Date.now();
+        await saveAnalystThreadToDb(thread);
+        return res.status(200).json({ success: true, thread });
+      }
+
+      case 'whiteglove-requests': {
+        if (req.method !== 'GET') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const requests = await getWhiteGloveRequestsFromDb();
+        return res.status(200).json({
+          success: true,
+          requests,
+        });
+      }
+
+      case 'whiteglove-deliver': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const body = req.body || {};
+        const requestId = String(body.requestId || '').trim();
+        const rawProps = Array.isArray(body.properties) ? body.properties : [];
+        if (!requestId || rawProps.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Request ID and at least one property underwriting block are required',
+          });
+        }
+
+        const all = await getWhiteGloveRequestsFromDb();
+        const idx = all.findIndex((r: any) => r.id === requestId);
+        if (idx === -1) {
+          return res.status(404).json({ success: false, error: `Request ${requestId} not found` });
+        }
+        const reqItem = all[idx];
+
+        let totalValuation = 0;
+        let totalAnnualRent = 0;
+        let totalAnnualNOI = 0;
+        let totalAnnualDebt = 0;
+        let totalEquity = 0;
+        const normalizedProps = rawProps.map((p: any, pIdx: number) => {
+          const val = Math.max(1, Number(p.valuation || 0));
+          const rent = Math.max(0, Number(p.monthlyRent || 0));
+          const eqPct = Math.min(100, Math.max(1, Number(p.equityPct ?? 30)));
+          const ratePct = Math.max(0.1, Number(p.ratePct ?? 5.5));
+          const opexPct = Math.min(95, Math.max(0, Number(p.opexPct ?? 15)));
+          const down = val * (eqPct / 100);
+          const loan = Math.max(0, val - down);
+          const r = ratePct / 100 / 12;
+          const n = 25 * 12;
+          const monthlyDebt =
+            loan > 0 && r > 0 ? (loan * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1) : 0;
+          const annualRent = rent * 12 * 0.95;
+          const annualNOI = annualRent * (1 - opexPct / 100);
+          const annualDebt = monthlyDebt * 12;
+
+          totalValuation += val;
+          totalAnnualRent += annualRent;
+          totalAnnualNOI += annualNOI;
+          totalAnnualDebt += annualDebt;
+          totalEquity += down;
+
+          return {
+            id: p.id || `wgp_${pIdx + 1}`,
+            title: String(p.title || `Property #${pIdx + 1}`),
+            city: String(p.city || reqItem.targetCity || 'Muscat'),
+            currency: String(p.currency || body.currency || reqItem.currency || 'USD').toUpperCase(),
+            valuation: val,
+            monthlyRent: rent,
+            equityPct: eqPct,
+            ratePct,
+            opexPct,
+            spvNote: String(p.spvNote || ''),
+          };
+        });
+
+        const weightedCapRate =
+          totalValuation > 0 ? Number(((totalAnnualNOI / totalValuation) * 100).toFixed(2)) : 0;
+        const annualCashflow = totalAnnualNOI - totalAnnualDebt;
+        const blendedCoC =
+          totalEquity > 0 ? Number(((annualCashflow / totalEquity) * 100).toFixed(2)) : 0;
+        const portfolioDscr =
+          totalAnnualDebt > 0 ? Number((totalAnnualNOI / totalAnnualDebt).toFixed(2)) : 4.0;
+        const blendedIrr5Yr = Number((blendedCoC + 4.8).toFixed(1));
+        const now = Date.now();
+        const currency = String(body.currency || reqItem.currency || 'USD').toUpperCase();
+
+        const deliverable = {
+          id: `WGD-${now.toString(36).toUpperCase()}`,
+          title: String(body.title || `White-Glove Complex Dossier: ${reqItem.propertyTitle}`),
+          currency,
+          properties: normalizedProps,
+          combined: {
+            totalValuation: Math.round(totalValuation),
+            totalMonthlyRent: Math.round(totalAnnualRent / 12),
+            totalMonthlyCashflow: Math.round(annualCashflow / 12),
+            weightedCapRate,
+            blendedCoC,
+            blendedIrr5Yr,
+            portfolioDscr,
+          },
+          spvStructureNote: String(body.spvStructureNote || ''),
+          riskNote: String(body.riskNote || ''),
+          summaryRecommendation: String(body.summaryRecommendation || ''),
+          preparedBy: sessionEmail || 'AQARI Executive Desk',
+          deliveredAt: new Date(now).toISOString(),
+        };
+
+        const updatedRequest = {
+          ...reqItem,
+          status: 'Done',
+          deliveredAt: deliverable.deliveredAt,
+          deliverable,
+        };
+        all[idx] = updatedRequest;
+        await saveWhiteGloveRequestsToDb(all);
+
+        const deliveryEmail = await dispatchEmail({
+          to: reqItem.email,
+          subject: 'Your White-glove analysis is ready',
+          text: `Hello ${reqItem.clientName || reqItem.email},\n\nYour White-glove Custom Underwriting analysis (${requestId}) is ready for download in your AQARI Terminal.\n\nCombined Portfolio Summary:\n- Properties Modeled: ${normalizedProps.length}\n- Total Valuation: ${currency} ${deliverable.combined.totalValuation.toLocaleString('en-US')}\n- Weighted Cap Rate: ${weightedCapRate}%\n- Blended Cash-on-Cash: ${blendedCoC}%\n- 5-Yr Net IRR: ${blendedIrr5Yr}%\n\nDownload your Institutional PDF Report inside Terminal -> Sovereign Suite: ${PRODUCTION_URL}/app`,
+          html: `<div style="font-family:sans-serif;padding:20px;background:#0b0b0f;color:#fff;border:1px solid #D4AF37;border-radius:12px;"><h2 style="color:#D4AF37;margin-top:0;">Your White-glove analysis is ready</h2><p>Your bespoke custom underwriting dossier for <strong>${reqItem.propertyTitle}</strong> (${normalizedProps.length} asset(s)) is now available in your AQARI Sovereign Suite.</p><p><strong>Weighted Cap Rate:</strong> ${weightedCapRate}% | <strong>Blended CoC:</strong> ${blendedCoC}% | <strong>5-Yr IRR:</strong> ${blendedIrr5Yr}%</p><a href="${PRODUCTION_URL}/app" style="display:inline-block;margin-top:12px;padding:10px 18px;background:#D4AF37;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;">Download Custom PDF Report &rarr;</a></div>`,
+          type: 'whiteglove_ready',
+        });
+
+        return res.status(200).json({
+          success: true,
+          request: updatedRequest,
+          deliveryEmail,
+          message: 'Sent',
+        });
+      }
+
+      case 'email-logs': {
+        if (req.method !== 'GET') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const emailLogs = await getEmailLogsFromDb(100);
+        const webhookLogs = await getWebhookLogsFromDb(100);
+        const failedWebhooks = await getFailedWebhooksFromDb(100);
+        return res.status(200).json({
+          success: true,
+          emailLogs,
+          webhookLogs,
+          failedWebhooks,
+        });
+      }
+
       default:
         return res.status(400).json({
           error: `Unknown admin action '${action}'`,
@@ -1392,6 +1967,13 @@ export default async function handler(req: any, res: any) {
             'refund-decision',
             'export',
             'test-email-day29',
+            'analyst-inbox',
+            'analyst-thread',
+            'analyst-reply',
+            'analyst-close',
+            'whiteglove-requests',
+            'whiteglove-deliver',
+            'email-logs',
           ],
         });
     }
