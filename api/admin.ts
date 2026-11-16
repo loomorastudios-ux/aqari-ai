@@ -234,6 +234,7 @@ function getMemoryStore() {
       webhook_logs: [],
       failed_webhooks: [],
       email_logs: [],
+      cancellation_logs: [],
       pricing_config: createDefaultPricingConfig(),
       pricing_logs: [],
       pending_checkouts: {},
@@ -259,6 +260,7 @@ function hydrateUserRecord(raw: any, email: string) {
     license_start: raw?.license_start ?? now,
     license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
     analyses_used: Math.max(0, Number(raw?.analyses_used ?? 0)),
+    successful_analyses: Math.max(0, Number(raw?.successful_analyses ?? 0)),
     saved_analyses: Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [],
     custom_cities: Array.isArray(raw?.custom_cities) ? raw.custom_cities : [],
     timezone: raw?.timezone || 'Asia/Muscat',
@@ -277,6 +279,25 @@ function hydrateUserRecord(raw: any, email: string) {
     refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
     locked_launch_price: typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
     lemon_customer_email: raw?.lemon_customer_email ? String(raw.lemon_customer_email).toLowerCase() : null,
+    has_reported_issue: Boolean(raw?.has_reported_issue),
+    issue_reported_at: typeof raw?.issue_reported_at === 'number' ? raw.issue_reported_at : null,
+    issue_resolved_at: typeof raw?.issue_resolved_at === 'number' ? raw.issue_resolved_at : null,
+    issue_description: typeof raw?.issue_description === 'string' ? raw.issue_description : '',
+    issue_status:
+      raw?.issue_status === 'open' || raw?.issue_status === 'resolved'
+        ? raw.issue_status
+        : raw?.has_reported_issue
+        ? raw?.issue_resolved_at
+          ? 'resolved'
+          : 'open'
+        : 'none',
+    cancel_status: raw?.cancel_status === 'refunded' ? 'refunded' : 'none',
+    last_order_id:
+      typeof raw?.last_order_id === 'string' && raw.last_order_id.trim()
+        ? raw.last_order_id.trim()
+        : Array.isArray(raw?.payments) && raw.payments[0]?.order_id
+        ? String(raw.payments[0].order_id)
+        : null,
   };
 }
 
@@ -334,6 +355,7 @@ function loadStore() {
           webhook_logs: Array.isArray(parsed.webhook_logs) ? parsed.webhook_logs : [],
           failed_webhooks: Array.isArray(parsed.failed_webhooks) ? parsed.failed_webhooks : [],
           email_logs: Array.isArray(parsed.email_logs) ? parsed.email_logs : [],
+          cancellation_logs: Array.isArray(parsed.cancellation_logs) ? parsed.cancellation_logs : [],
           pricing_config: hydratePricingConfig(parsed.pricing_config),
           pricing_logs: Array.isArray(parsed.pricing_logs) ? parsed.pricing_logs : [],
           pending_checkouts: parsed.pending_checkouts || {},
@@ -544,6 +566,28 @@ async function appendEmailLogToDb(entry: {
     }
   } catch {}
   return log;
+}
+
+async function getCancellationLogsFromDb(limit = 100): Promise<any[]> {
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawItems = await kvCommand(['LRANGE', 'aqari:cancellation_logs:v1', 0, Math.max(0, limit - 1)]);
+      if (Array.isArray(rawItems) && rawItems.length > 0) {
+        const parsed = rawItems
+          .map((item) => {
+            try {
+              return typeof item === 'string' ? JSON.parse(item) : item;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        if (parsed.length > 0) return parsed.slice(0, limit);
+      }
+    }
+  } catch {}
+  return (loadStore().cancellation_logs || []).slice(0, limit);
 }
 
 async function getEmailLogsFromDb(limit = 50): Promise<any[]> {
@@ -793,30 +837,70 @@ function computeServerLicenseStatus(user: any) {
 }
 
 function evaluateRefundEligibility(user: any) {
+  const DAY_MS = 86_400_000;
+  const now = Date.now();
   const latestPayment = user.payments?.[0];
   const purchaseTs = latestPayment
     ? new Date(latestPayment.timestamp).getTime()
-    : user.license_start || Date.now();
-  const daysSincePurchase = Math.max(
-    0,
-    Math.floor((Date.now() - purchaseTs) / (24 * 60 * 60 * 1000))
-  );
+    : user.license_start || now;
+  const daysSincePurchase = Math.max(0, Math.floor((now - purchaseTs) / DAY_MS));
+  const daysSinceExact = Math.max(0, (now - purchaseTs) / DAY_MS);
+  const successfulAnalyses = Math.max(0, Number(user.successful_analyses || 0));
   const analysesCount = Math.max(user.analyses_used || 0, (user.analyses_log || []).length);
   const pdfDownloadsCount = (user.pdf_downloads || []).length;
 
-  const reasons: string[] = [];
-  if (daysSincePurchase > 7) reasons.push(`${daysSincePurchase} days passed (7-day window exceeded)`);
-  if (analysesCount > 3) reasons.push(`${analysesCount} analyses run (exceeds max 3 analyses limit)`);
-  if (pdfDownloadsCount > 0) reasons.push(`${pdfDownloadsCount} PDF Memorandum download(s) completed`);
+  const hasReportedIssue = Boolean(user.has_reported_issue);
+  const issueReportedAt = user.issue_reported_at ? Number(user.issue_reported_at) : null;
+  const issueResolvedAt = user.issue_resolved_at ? Number(user.issue_resolved_at) : null;
+  const resolvedWithin7Days = Boolean(
+    hasReportedIssue && issueResolvedAt && issueReportedAt && issueResolvedAt - issueReportedAt <= 7 * DAY_MS
+  );
+  const unresolvedOver7Days = Boolean(
+    hasReportedIssue && !issueResolvedAt && issueReportedAt && now - issueReportedAt >= 7 * DAY_MS
+  );
 
-  const eligible = reasons.length === 0;
+  let eligible = false;
+  let verdict = '';
+  const reasons: string[] = [];
+
+  if (successfulAnalyses >= 1) {
+    eligible = false;
+    reasons.push(`Rule A: ${successfulAnalyses} successful analysis completed`);
+    verdict = `DENIED (Rule A): User completed ${successfulAnalyses} successful analysis`;
+  } else if (daysSinceExact > 7 && !hasReportedIssue) {
+    eligible = false;
+    reasons.push(`Rule B: ${daysSincePurchase} days passed with no tool issue reported`);
+    verdict = `DENIED (Rule B): ${daysSincePurchase} days passed and no tool issue reported`;
+  } else if (hasReportedIssue && resolvedWithin7Days && daysSinceExact > 7) {
+    eligible = false;
+    reasons.push('Rule E: Issue resolved within 7 days and 7-day window passed');
+    verdict = 'DENIED (Rule E): Tool issue resolved within 7 days and 7-day window passed';
+  } else if (hasReportedIssue && unresolvedOver7Days && successfulAnalyses === 0) {
+    eligible = true;
+    verdict = 'ELIGIBLE (Rule D): Reported tool issue unresolved > 7 days and 0 successful analyses';
+  } else if (daysSinceExact <= 7 && successfulAnalyses === 0) {
+    eligible = true;
+    verdict = 'ELIGIBLE (Rule C): Within 7 days and 0 successful analyses';
+  } else if (hasReportedIssue && !issueResolvedAt && !unresolvedOver7Days) {
+    eligible = false;
+    reasons.push('Issue reported under 7-day resolution review');
+    verdict = 'PENDING REVIEW: Issue reported - Under 7-day review';
+  } else {
+    eligible = false;
+    verdict = 'DENIED: Outside eligibility criteria';
+  }
+
   return {
     eligible,
-    verdict: eligible ? 'ELIGIBLE (Within 7 days, <= 3 analyses, 0 PDF exports)' : `DENIED: ${reasons.join(' + ')}`,
+    verdict,
     reasons,
     daysSincePurchase,
     analysesCount,
+    successfulAnalyses,
     pdfDownloadsCount,
+    hasReportedIssue,
+    resolvedWithin7Days,
+    unresolvedOver7Days,
   };
 }
 
@@ -1595,9 +1679,9 @@ export default async function handler(req: any, res: any) {
           `Total PDF Memoranda Downloaded: ${user.pdf_downloads.length}`,
           '',
           '=== OFFICIAL REFUND POLICY & ELIGIBILITY VERDICT ===',
-          'Refund ONLY within 5-7 days AND <=3 analyses. No refund after 7 days or >3 analyses or PDF download.',
+          '7-Day No-Usage Refund Rule (Rules A-E): Eligible ONLY if 0 successful analyses within 7 days, OR unresolved tool issue >= 7 days.',
           `System Evaluation Verdict: ${refundEval.verdict}`,
-          `Days Since Purchase: ${refundEval.daysSincePurchase} | Analyses Run: ${refundEval.analysesCount} | PDF Downloads: ${refundEval.pdfDownloadsCount}`,
+          `Days Since Purchase: ${refundEval.daysSincePurchase} | Successful Analyses: ${refundEval.successfulAnalyses} | Total Runs: ${refundEval.analysesCount} | Issue Status: ${user.issue_status || 'none'}`,
           '',
           '=== FULL ANALYSES EXECUTION LOG (TIMESTAMPED) ===',
         ];
@@ -1871,7 +1955,7 @@ export default async function handler(req: any, res: any) {
             id: p.id || `wgp_${pIdx + 1}`,
             title: String(p.title || `Property #${pIdx + 1}`),
             city: String(p.city || reqItem.targetCity || 'Muscat'),
-            currency: String(p.currency || body.currency || reqItem.currency || 'USD').toUpperCase(),
+            currency: 'USD',
             valuation: val,
             monthlyRent: rent,
             equityPct: eqPct,
@@ -1890,7 +1974,7 @@ export default async function handler(req: any, res: any) {
           totalAnnualDebt > 0 ? Number((totalAnnualNOI / totalAnnualDebt).toFixed(2)) : 4.0;
         const blendedIrr5Yr = Number((blendedCoC + 4.8).toFixed(1));
         const now = Date.now();
-        const currency = String(body.currency || reqItem.currency || 'USD').toUpperCase();
+        const currency = 'USD';
 
         const deliverable = {
           id: `WGD-${now.toString(36).toUpperCase()}`,
@@ -1945,11 +2029,95 @@ export default async function handler(req: any, res: any) {
         const emailLogs = await getEmailLogsFromDb(100);
         const webhookLogs = await getWebhookLogsFromDb(100);
         const failedWebhooks = await getFailedWebhooksFromDb(100);
+        const cancellationLogs = await getCancellationLogsFromDb(100);
         return res.status(200).json({
           success: true,
           emailLogs,
           webhookLogs,
           failedWebhooks,
+          cancellationLogs,
+        });
+      }
+
+      case 'issues': {
+        if (req.method !== 'GET') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const allUsers = await getAllServerUsersFromDb();
+        const issues = allUsers
+          .filter((u: any) => Boolean(u.has_reported_issue) || (u.issue_status && u.issue_status !== 'none'))
+          .map((u: any) => ({
+            email: u.email,
+            name: u.name,
+            plan: PLANS[normalizePlanKey(u.plan)].displayName,
+            successful_analyses: Number(u.successful_analyses || 0),
+            issue_description: u.issue_description || '',
+            issue_status: u.issue_status || (u.issue_resolved_at ? 'resolved' : 'open'),
+            issue_reported_at: u.issue_reported_at || null,
+            issue_resolved_at: u.issue_resolved_at || null,
+            cancel_status: u.cancel_status || 'none',
+            refundEvaluation: evaluateRefundEligibility(u),
+          }))
+          .sort((a: any, b: any) => Number(b.issue_reported_at || 0) - Number(a.issue_reported_at || 0));
+
+        const cancellationLogs = await getCancellationLogsFromDb(100);
+        return res.status(200).json({
+          success: true,
+          issues,
+          cancellationLogs,
+        });
+      }
+
+      case 'resolve-issue': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const targetEmail = String(req.body?.email || '').trim().toLowerCase();
+        if (!targetEmail || !targetEmail.includes('@')) {
+          return res.status(400).json({ success: false, error: 'Valid client email is required' });
+        }
+        const targetUser = await getServerUserFromDb(targetEmail);
+        const now = Date.now();
+        const iso = new Date(now).toISOString();
+        const timelineEntry = {
+          id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: iso,
+          type: 'issue_resolved',
+          message: `Tool issue marked RESOLVED by admin (${sessionEmail}) at ${iso}`,
+          actor: sessionEmail,
+        };
+        const updated = updateServerUser(targetEmail, {
+          issue_resolved_at: now,
+          issue_status: 'resolved',
+          timeline: [timelineEntry, ...(targetUser.timeline || [])].slice(0, 200),
+        });
+        await saveServerUserToDb(updated);
+
+        await dispatchEmail({
+          to: targetEmail,
+          subject: 'AQARI Terminal: Your Reported Tool Issue Has Been Resolved',
+          text: `Hello ${updated.name || targetEmail},\n\nOur engineering team has resolved the tool issue you reported:\n"${updated.issue_description || 'Reported Terminal Issue'}"\n\nPlease log back in to continue using your AQARI Terminal: ${PRODUCTION_URL}/app`,
+          html: `<div style="font-family:sans-serif;padding:20px;background:#0b0b0f;color:#fff;border:1px solid #D4AF37;border-radius:12px;"><h2 style="color:#D4AF37;margin-top:0;">Tool Issue Resolved</h2><p>Our engineering team has resolved the issue you reported.</p><a href="${PRODUCTION_URL}/app" style="display:inline-block;margin-top:12px;padding:10px 18px;background:#D4AF37;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;">Open AQARI Terminal &rarr;</a></div>`,
+          type: 'admin_alert',
+        }).catch(() => {});
+
+        return res.status(200).json({
+          success: true,
+          email: targetEmail,
+          issue_resolved_at: now,
+          issue_status: 'resolved',
+          message: 'Issue marked Resolved',
+        });
+      }
+
+      case 'cancellations': {
+        if (req.method !== 'GET') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const cancellationLogs = await getCancellationLogsFromDb(100);
+        return res.status(200).json({
+          success: true,
+          cancellationLogs,
         });
       }
 
@@ -1974,6 +2142,9 @@ export default async function handler(req: any, res: any) {
             'whiteglove-requests',
             'whiteglove-deliver',
             'email-logs',
+            'issues',
+            'resolve-issue',
+            'cancellations',
           ],
         });
     }

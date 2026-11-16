@@ -173,7 +173,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
 
     if (!refundAccepted) {
       setHighlightPolicy(true);
-      showError('Please agree to the "5-7 Day Refund Policy - Max 3 analyses" checkbox below before checkout.');
+      showError('Please agree to the "7-Day Refund & Issue Policy" checkbox below before checkout.');
       setTimeout(() => setHighlightPolicy(false), 3000);
       return;
     }
@@ -589,7 +589,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                 </button>
                 {tier.activePrice > 0 && (
                   <p className="text-[10px] font-mono text-zinc-400 text-center leading-snug">
-                    5-7 Day Refund - If technical issue, max 3 analyses
+                    7-Day Refund - 0 successful analyses or unresolved tool issue
                   </p>
                 )}
               </div>
@@ -626,7 +626,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
               }}
               className="text-[#D4AF37] underline font-bold hover:text-amber-300 cursor-pointer"
             >
-              5-7 Day Refund Policy - Max 3 analyses
+              7-Day No-Usage Refund Policy (0 successful analyses)
             </button>{' '}
             and{' '}
             <button
@@ -655,7 +655,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         <span className="text-zinc-600">•</span>
         <span>30-Day Subscription Window</span>
         <span className="text-zinc-600">•</span>
-        <span>5-7 Day Refund - If technical issue, max 3 analyses</span>
+        <span>7-Day Refund - 0 successful analyses or unresolved 7d issue</span>
       </div>
     </section>
   );

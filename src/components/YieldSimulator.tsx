@@ -1,6 +1,11 @@
 import React, { useState } from 'react';
 import { CurrencyCode, User } from '../types';
-import { formatPrice } from '../utils/formatters';
+import {
+  formatPrice,
+  formatUsdInputDisplay,
+  parseEnglishNumber,
+  sanitizeEnglishDecimal,
+} from '../utils/formatters';
 import { 
   Calculator, 
   TrendingUp, 
@@ -19,18 +24,26 @@ interface YieldSimulatorProps {
   onAnalyzeSimulation: () => void;
 }
 
+const EN_INPUT_STYLE: React.CSSProperties = {
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  unicodeBidi: 'embed',
+  direction: 'ltr',
+};
+
 export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
-  currentCurrency,
   user,
   onAnalyzeSimulation,
 }) => {
-  // Base USD values (editable numeric inputs — never trigger live auto-calculation)
+  // Base USD values (editable English numeric inputs — never trigger live auto-calculation)
   const [basePriceUSD, setBasePriceUSD] = useState<number>(650000);
   const [downPaymentPct, setDownPaymentPct] = useState<number>(30);
+  const [downDraft, setDownDraft] = useState<string>('30');
   const [interestRatePct, setInterestRatePct] = useState<number>(5.5);
+  const [rateDraft, setRateDraft] = useState<string>('5.5');
   const [loanTermYears] = useState<number>(25);
   const [baseRentMonthlyUSD, setBaseRentMonthlyUSD] = useState<number>(4800);
   const [operatingExpensePct, setOperatingExpensePct] = useState<number>(15);
+  const [opexDraft, setOpexDraft] = useState<string>('15');
   const [vacancyPct] = useState<number>(5);
 
   const [computedSnapshot, setComputedSnapshot] = useState<{
@@ -127,7 +140,7 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
               <h3 className="text-base font-semibold text-white">Acquisition Parameters</h3>
             </div>
             <span className="text-xs font-mono text-zinc-400">
-              Currency: <strong className="text-white">{currentCurrency}</strong>
+              Currency: <strong className="text-white">USD ($)</strong>
             </span>
           </div>
 
@@ -140,22 +153,31 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <span className="text-xs font-mono text-zinc-400 mr-2">$</span>
                 <input
                   id="sim-price"
-                  type="number"
+                  type="text"
+                  data-numeric="true"
                   lang="en"
                   dir="ltr"
                   inputMode="decimal"
-                  style={{ fontFamily: 'ui-monospace, monospace' }}
-                  min={1}
-                  value={basePriceUSD || ''}
+                  autoComplete="off"
+                  style={EN_INPUT_STYLE}
+                  value={formatUsdInputDisplay(basePriceUSD)}
                   onChange={(e) => {
-                    setBasePriceUSD(Math.max(0, Number(e.target.value) || 0));
+                    const num = Math.max(0, Math.round(parseEnglishNumber(e.target.value, 0)));
+                    setBasePriceUSD(num);
+                    setComputedSnapshot(null);
+                  }}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const text = e.clipboardData?.getData('text') || '';
+                    const num = Math.max(0, Math.round(parseEnglishNumber(text, 0)));
+                    setBasePriceUSD(num);
                     setComputedSnapshot(null);
                   }}
                   className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none"
                 />
               </div>
               <div className="text-[10px] font-mono text-zinc-500">
-                Display: {formatPrice(basePriceUSD, currentCurrency)}
+                USD Valuation: {formatPrice(basePriceUSD, 'USD')}
               </div>
             </div>
 
@@ -167,15 +189,24 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <span className="text-xs font-mono text-emerald-400 mr-2">$</span>
                 <input
                   id="sim-rent"
-                  type="number"
+                  type="text"
+                  data-numeric="true"
                   lang="en"
                   dir="ltr"
                   inputMode="decimal"
-                  style={{ fontFamily: 'ui-monospace, monospace' }}
-                  min={1}
-                  value={baseRentMonthlyUSD || ''}
+                  autoComplete="off"
+                  style={EN_INPUT_STYLE}
+                  value={formatUsdInputDisplay(baseRentMonthlyUSD)}
                   onChange={(e) => {
-                    setBaseRentMonthlyUSD(Math.max(0, Number(e.target.value) || 0));
+                    const num = Math.max(0, Math.round(parseEnglishNumber(e.target.value, 0)));
+                    setBaseRentMonthlyUSD(num);
+                    setComputedSnapshot(null);
+                  }}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const text = e.clipboardData?.getData('text') || '';
+                    const num = Math.max(0, Math.round(parseEnglishNumber(text, 0)));
+                    setBaseRentMonthlyUSD(num);
                     setComputedSnapshot(null);
                   }}
                   className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none"
@@ -183,7 +214,7 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <span className="text-xs font-mono text-zinc-400 ml-2">/mo</span>
               </div>
               <div className="text-[10px] font-mono text-zinc-500">
-                Display: {formatPrice(baseRentMonthlyUSD, currentCurrency)} / mo
+                Monthly Rent: {formatPrice(baseRentMonthlyUSD, 'USD')} / mo
               </div>
             </div>
           </div>
@@ -196,17 +227,26 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
               <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-2.5">
                 <input
                   id="sim-down"
-                  type="number"
+                  type="text"
+                  data-numeric="true"
                   lang="en"
                   dir="ltr"
                   inputMode="decimal"
-                  style={{ fontFamily: 'ui-monospace, monospace' }}
-                  min={1}
-                  max={100}
-                  step="0.5"
-                  value={downPaymentPct || ''}
+                  autoComplete="off"
+                  style={EN_INPUT_STYLE}
+                  value={downDraft}
                   onChange={(e) => {
-                    setDownPaymentPct(Math.max(0, Math.min(100, Number(e.target.value) || 0)));
+                    const clean = sanitizeEnglishDecimal(e.target.value, true);
+                    setDownDraft(clean);
+                    setDownPaymentPct(Math.max(0, Math.min(100, parseEnglishNumber(clean, 0))));
+                    setComputedSnapshot(null);
+                  }}
+                  onBlur={() => setDownDraft(String(downPaymentPct))}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const clean = sanitizeEnglishDecimal(e.clipboardData?.getData('text') || '', true);
+                    setDownDraft(clean);
+                    setDownPaymentPct(Math.max(0, Math.min(100, parseEnglishNumber(clean, 0))));
                     setComputedSnapshot(null);
                   }}
                   className="w-full py-2 bg-transparent text-white font-mono text-sm outline-none"
@@ -214,7 +254,7 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <span className="text-xs font-mono text-zinc-400">%</span>
               </div>
               <div className="text-[10px] text-[#D4AF37] font-mono">
-                {formatPrice(downPaymentUSD, currentCurrency, { compact: true })}
+                {formatPrice(downPaymentUSD, 'USD', { compact: true })}
               </div>
             </div>
 
@@ -225,17 +265,26 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
               <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-2.5">
                 <input
                   id="sim-rate"
-                  type="number"
+                  type="text"
+                  data-numeric="true"
                   lang="en"
                   dir="ltr"
                   inputMode="decimal"
-                  style={{ fontFamily: 'ui-monospace, monospace' }}
-                  min={0.1}
-                  max={30}
-                  step="0.1"
-                  value={interestRatePct || ''}
+                  autoComplete="off"
+                  style={EN_INPUT_STYLE}
+                  value={rateDraft}
                   onChange={(e) => {
-                    setInterestRatePct(Math.max(0, Number(e.target.value) || 0));
+                    const clean = sanitizeEnglishDecimal(e.target.value, true);
+                    setRateDraft(clean);
+                    setInterestRatePct(Math.max(0, Math.min(30, parseEnglishNumber(clean, 0))));
+                    setComputedSnapshot(null);
+                  }}
+                  onBlur={() => setRateDraft(String(interestRatePct))}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const clean = sanitizeEnglishDecimal(e.clipboardData?.getData('text') || '', true);
+                    setRateDraft(clean);
+                    setInterestRatePct(Math.max(0, Math.min(30, parseEnglishNumber(clean, 0))));
                     setComputedSnapshot(null);
                   }}
                   className="w-full py-2 bg-transparent text-white font-mono text-sm outline-none"
@@ -243,7 +292,7 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 <span className="text-xs font-mono text-zinc-400">%</span>
               </div>
               <div className="text-[10px] text-zinc-500 font-mono">
-                {loanTermYears}yr Fixed • {formatPrice(loanAmountUSD, currentCurrency, { compact: true })} debt
+                {loanTermYears}yr Fixed • {formatPrice(loanAmountUSD, 'USD', { compact: true })} debt
               </div>
             </div>
 
@@ -254,17 +303,26 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
               <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-cyan-400 px-2.5">
                 <input
                   id="sim-opex"
-                  type="number"
+                  type="text"
+                  data-numeric="true"
                   lang="en"
                   dir="ltr"
                   inputMode="decimal"
-                  style={{ fontFamily: 'ui-monospace, monospace' }}
-                  min={1}
-                  max={99}
-                  step="0.5"
-                  value={operatingExpensePct || ''}
+                  autoComplete="off"
+                  style={EN_INPUT_STYLE}
+                  value={opexDraft}
                   onChange={(e) => {
-                    setOperatingExpensePct(Math.max(0, Math.min(99, Number(e.target.value) || 0)));
+                    const clean = sanitizeEnglishDecimal(e.target.value, true);
+                    setOpexDraft(clean);
+                    setOperatingExpensePct(Math.max(0, Math.min(99, parseEnglishNumber(clean, 0))));
+                    setComputedSnapshot(null);
+                  }}
+                  onBlur={() => setOpexDraft(String(operatingExpensePct))}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    const clean = sanitizeEnglishDecimal(e.clipboardData?.getData('text') || '', true);
+                    setOpexDraft(clean);
+                    setOperatingExpensePct(Math.max(0, Math.min(99, parseEnglishNumber(clean, 0))));
                     setComputedSnapshot(null);
                   }}
                   className="w-full py-2 bg-transparent text-white font-mono text-sm outline-none"
@@ -368,24 +426,24 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
           <div className="space-y-2.5 text-xs font-mono">
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-400">Gross Annual Revenue:</span>
-              <span className="text-white font-semibold">{sim ? formatPrice(sim.annGross, currentCurrency) : '--'}</span>
+              <span className="text-white font-semibold">{sim ? formatPrice(sim.annGross, 'USD') : '--'}</span>
             </div>
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-400">Operating Expenses &amp; Vacancy:</span>
-              <span className="text-rose-400 font-semibold">{sim ? `-${formatPrice(sim.annOpex, currentCurrency)}` : '--'}</span>
+              <span className="text-rose-400 font-semibold">{sim ? `-${formatPrice(sim.annOpex, 'USD')}` : '--'}</span>
             </div>
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-300 font-bold">Net Operating Income (NOI):</span>
-              <span className="text-[#D4AF37] font-bold">{sim ? formatPrice(sim.noi, currentCurrency) : '--'}</span>
+              <span className="text-[#D4AF37] font-bold">{sim ? formatPrice(sim.noi, 'USD') : '--'}</span>
             </div>
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-400">Annual Debt Service (P&amp;I):</span>
-              <span className="text-rose-400 font-semibold">{sim ? `-${formatPrice(sim.annDebt, currentCurrency)}` : '--'}</span>
+              <span className="text-rose-400 font-semibold">{sim ? `-${formatPrice(sim.annDebt, 'USD')}` : '--'}</span>
             </div>
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-300 font-bold">Net Annual Cashflow:</span>
               <span className={`font-bold ${!sim ? 'text-zinc-500' : sim.annCf >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {sim ? formatPrice(sim.annCf, currentCurrency) : '--'}
+                {sim ? formatPrice(sim.annCf, 'USD') : '--'}
               </span>
             </div>
             <div className="flex justify-between py-1.5">
@@ -435,7 +493,7 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                         <td className="py-1.5">
                           {sc.deltaPct > 0 ? `+${sc.deltaPct}% Bull` : sc.deltaPct < 0 ? `${sc.deltaPct}% Bear` : 'Base (0%)'}
                         </td>
-                        <td className="py-1.5">{formatPrice(sc.rentUSD, currentCurrency)}</td>
+                        <td className="py-1.5">{formatPrice(sc.rentUSD, 'USD')}</td>
                         <td className="py-1.5 text-[#D4AF37] font-semibold">{sc.capRate}%</td>
                         <td className="py-1.5 text-emerald-400 font-semibold">{sc.coc}%</td>
                       </tr>

@@ -131,6 +131,22 @@ export interface WhiteGloveRequest {
   deliverable?: WhiteGloveDeliverable | null;
 }
 
+export interface CancellationEligibility {
+  canCancel: boolean;
+  rule: 'A' | 'B' | 'C' | 'D' | 'E' | 'PENDING_REVIEW' | string;
+  reason: string;
+  buttonText: string;
+  daysSinceActivation: number;
+  successfulAnalyses: number;
+  hasReportedIssue: boolean;
+  issueStatus: string;
+  issueReportedAt?: number | null;
+  issueResolvedAt?: number | null;
+  refundableAmountUSD: number;
+  lastOrderId?: string | null;
+  cancelStatus?: string;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -149,6 +165,7 @@ export interface User {
   freeAnalyses?: number; // fallback alias
   analysesLeft?: number;
   analysesUsed: number;
+  successfulAnalyses?: number;
   subscriptionExpiry: number | null;
   subscriptionStartAt?: number | null;
   subscriptionEndsAt?: number | null;
@@ -165,6 +182,14 @@ export interface User {
   analystUnread?: number;
   whiteGloveRequests?: WhiteGloveRequest[];
   whiteGloveDeliverables?: WhiteGloveDeliverable[];
+  hasReportedIssue?: boolean;
+  issueReportedAt?: number | null;
+  issueResolvedAt?: number | null;
+  issueDescription?: string;
+  issueStatus?: 'none' | 'reported' | 'resolved' | string;
+  cancelStatus?: 'none' | 'refunded' | string;
+  lastOrderId?: string | null;
+  cancellationEligibility?: CancellationEligibility | null;
   portfolio?: {
     totalValue: number;
     monthlyCashflow: number;

@@ -164,55 +164,64 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                 <RefreshCw className="w-6 h-6 text-[#D4AF37]" />
                 <div>
                   <div className="text-[10px] font-mono uppercase tracking-wider text-[#D4AF37]">
-                    OFFICIAL BINDING POLICY • PRIMARY LEGAL SOURCE
+                    OFFICIAL BINDING POLICY • AUTOMATED RULES A–E
                   </div>
-                  <h1 className="text-2xl sm:text-3xl font-bold text-white">Refund Policy</h1>
+                  <h1 className="text-2xl sm:text-3xl font-bold text-white">Subscription Cancellation &amp; Refund Policy</h1>
                 </div>
               </div>
               <div className="p-4 rounded-xl bg-amber-500/10 border border-[#D4AF37]/40 text-xs font-mono text-amber-200">
-                IMPORTANT: 5-7 Day Refund Window ONLY. Because 30-day digital SaaS access and institutional
-                underwriting credits are provisioned and consumed immediately upon payment, strict usage
-                and time conditions apply.
+                IMPORTANT: Cancellation &amp; automatic Lemon Squeezy refund is strictly server-verified under
+                our 7-Day No-Usage &amp; Unresolved Technical Issue Policy. Self-serve cancellation is
+                available directly inside Settings &rarr; Subscription &amp; Cancellation.
               </div>
               <div className="space-y-4 text-sm text-zinc-300">
                 <p>
-                  <strong>1. Eligibility Conditions (ALL must be met):</strong> A customer may request a
-                  refund within <strong>5–7 calendar days</strong> of initial purchase <strong>IF AND ONLY IF</strong>:
+                  <strong>1. Refund Eligibility Conditions (Rules C &amp; D):</strong> A full refund to the
+                  original payment method via Lemon Squeezy is issued automatically when:
                 </p>
                 <ul className="list-disc pl-6 space-y-1.5">
                   <li>
-                    A verified technical failure prevents access to AQARI TERMINAL that our support team
-                    cannot resolve; <strong>OR</strong>
+                    <strong>7-Day No-Usage Window (Rule C):</strong> You cancel within{' '}
+                    <strong>7 calendar days</strong> of subscription activation AND have{' '}
+                    <strong>0 successful underwriting analyses</strong> run; <strong>OR</strong>
                   </li>
                   <li>
-                    The customer ran <strong>3 underwriting analyses or less</strong> AND submits the
-                    refund request within <strong>7 days</strong> of purchase.
+                    <strong>Unresolved Technical Issue (Rule D):</strong> You reported a tool issue via the
+                    in-app <em>Report Tool Issue</em> button, the issue remained{' '}
+                    <strong>unresolved for 7+ days</strong> from the report date, AND you still have{' '}
+                    <strong>0 successful analyses</strong>.
                   </li>
                 </ul>
                 <p>
-                  <strong>2. Strict Non-Refundable Conditions:</strong>
+                  <strong>2. Strict Non-Refundable / Locked Conditions (Rules A, B &amp; E):</strong>
                 </p>
                 <ul className="list-disc pl-6 space-y-1.5 text-rose-200">
                   <li>
-                    <strong>NO refund after 7 days</strong> from the purchase timestamp.
+                    <strong>Rule A — Any Successful Analysis Run:</strong> Once{' '}
+                    <strong>1 or more successful analyses</strong> are completed (Cap Rate / Cash-on-Cash / IRR
+                    output generated), cancellation with refund is permanently locked.
                   </li>
                   <li>
-                    <strong>NO refund after running more than 3 analyses</strong> (4+ analyses executed).
+                    <strong>Rule B — 7-Day Window Expired Without Issue Report:</strong> After{' '}
+                    <strong>7 calendar days</strong> from activation with no reported tool issue, refund is
+                    no longer eligible.
                   </li>
                   <li>
-                    <strong>NO refund after downloading any PDF Memorandum</strong> export.
+                    <strong>Rule E — Issue Resolved Within 7 Days:</strong> If a reported technical issue is
+                    resolved by our engineering team within 7 days and the initial 7-day window has passed,
+                    refund eligibility ends.
                   </li>
                 </ul>
                 <p>
                   <strong>3. Checkout Consent Record:</strong> Every paid checkout requires explicit
-                  acceptance of the checkbox:{' '}
-                  <em>&ldquo;I agree to the 5-7 Day Refund Policy - Max 3 analyses&rdquo;</em>, whose
-                  timestamp is recorded alongside server analysis and PDF download audit logs.
+                  acceptance of:{' '}
+                  <em>&ldquo;I agree to the 7-Day No-Usage Refund Policy (0 successful analyses)&rdquo;</em>,
+                  whose timestamp is logged alongside server analysis and issue resolution audit records.
                 </p>
                 <p>
-                  <strong>4. Processing &amp; Contact:</strong> Approved refunds are processed within{' '}
-                  <strong>5–7 business days</strong> via the original payment method through Lemon
-                  Squeezy. Contact:{' '}
+                  <strong>4. Processing &amp; Contact:</strong> Approved refunds are issued immediately via
+                  the Lemon Squeezy API and settle to your original payment method in{' '}
+                  <strong>5–10 business days</strong>. Contact:{' '}
                   <a href="mailto:loomora.studios@gmail.com" className="text-[#D4AF37] underline">
                     loomora.studios@gmail.com
                   </a>

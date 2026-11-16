@@ -3,6 +3,7 @@ import { User, AnalystThread, WhiteGloveRequest } from '../types';
 import { PricingPublicPayload, PlanKey, findPlanPricing } from '../../lib/plans';
 import { CITIES, findCityEntry, searchCities, CityEntry } from '../../data/cities';
 import { downloadWhiteGlovePdf } from '../utils/pdfExport';
+import { parseEnglishNumber, sanitizeEnglishDecimal } from '../utils/formatters';
 import {
   ShieldCheck,
   Search,
@@ -61,16 +62,26 @@ function resolveAdminCity(rawInput: string): CityEntry | null {
   return findCityEntry(strippedParen) || findCityEntry(cleaned.split(',')[0].trim());
 }
 
+const EN_ADMIN_INPUT_STYLE: React.CSSProperties = {
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  unicodeBidi: 'embed',
+  direction: 'ltr',
+};
+
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   currentUser,
   onRedirectHome,
   onPricingUpdated,
 }) => {
-  const [adminTab, setAdminTab] = useState<'users' | 'pricing' | 'analyst' | 'whiteglove' | 'logs'>('users');
+  const [adminTab, setAdminTab] = useState<'users' | 'pricing' | 'analyst' | 'whiteglove' | 'issues' | 'logs'>('users');
   const [users, setUsers] = useState<any[]>([]);
   const [failedWebhooks, setFailedWebhooks] = useState<any[]>([]);
   const [emailLogs, setEmailLogs] = useState<any[]>([]);
   const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
+  const [issuesList, setIssuesList] = useState<any[]>([]);
+  const [cancellationsList, setCancellationsList] = useState<any[]>([]);
+  const [resolvingIssueEmail, setResolvingIssueEmail] = useState<string | null>(null);
+  const [issuesMsg, setIssuesMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [planFilter, setPlanFilter] = useState('all');
@@ -99,7 +110,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [wgRequests, setWgRequests] = useState<WhiteGloveRequest[]>([]);
   const [selectedWgId, setSelectedWgId] = useState<string | null>(null);
   const [wgDraftTitle, setWgDraftTitle] = useState('');
-  const [wgDraftCurrency, setWgDraftCurrency] = useState('USD');
   const [wgDraftProps, setWgDraftProps] = useState<ComplexPropertyDraft[]>([]);
   const [wgOpenCityRowId, setWgOpenCityRowId] = useState<string | null>(null);
   const [wgSpvStructureNote, setWgSpvStructureNote] = useState('');
@@ -292,7 +302,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const deliv = reqItem.deliverable;
     if (deliv) {
       setWgDraftTitle(deliv.title || `White-Glove Complex Dossier: ${reqItem.propertyTitle || reqItem.id}`);
-      setWgDraftCurrency(deliv.currency || reqItem.currency || 'USD');
       setWgSpvStructureNote(deliv.spvStructureNote || deliv.spvNote || '');
       setWgRiskNote(deliv.riskNote || '');
       setWgRecommendation(deliv.summaryRecommendation || '');
@@ -301,7 +310,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           id: p.id || `prop_${idx + 1}`,
           title: p.title || `Asset #${idx + 1}`,
           cityInput: p.city || 'Muscat',
-          currency: p.currency || reqItem.currency || 'USD',
+          currency: 'USD',
           valuation: String(p.valuation ?? p.priceUSD ?? 650000),
           monthlyRent: String(p.monthlyRent ?? p.rentUSD ?? 4500),
           equityPct: String(p.equityPct ?? p.downPaymentPct ?? 30),
@@ -313,7 +322,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     } else {
       const cEntry = resolveAdminCity(reqItem.targetCity || 'Muscat');
       setWgDraftTitle(`White-Glove Underwriting: ${reqItem.propertyTitle || reqItem.id}`);
-      setWgDraftCurrency(reqItem.currency || cEntry?.currency || 'USD');
       setWgSpvStructureNote('');
       setWgRiskNote('');
       setWgRecommendation('');
@@ -322,7 +330,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           id: `prop_${Date.now()}`,
           title: reqItem.propertyTitle || 'Primary Subject Property',
           cityInput: cEntry ? `${cEntry.city} (${cEntry.country} ${cEntry.countryCode})` : (reqItem.targetCity || 'Muscat'),
-          currency: reqItem.currency || 'USD',
+          currency: 'USD',
           valuation: String(reqItem.valuation || 650000),
           monthlyRent: String(reqItem.expectedMonthlyRent || 4500),
           equityPct: '30',
@@ -386,12 +394,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           id: p.id,
           title: p.title.trim() || 'Subject Property',
           city: entry ? entry.city : p.cityInput.trim() || 'Muscat',
-          currency: p.currency || wgDraftCurrency,
-          valuation: Math.max(1, Number(p.valuation) || 1),
-          monthlyRent: Math.max(0, Number(p.monthlyRent) || 0),
-          equityPct: Math.min(100, Math.max(1, Number(p.equityPct) || 30)),
-          ratePct: Math.max(0.1, Number(p.ratePct) || 5.5),
-          opexPct: Math.min(95, Math.max(0, Number(p.opexPct) || 15)),
+          currency: 'USD',
+          valuation: Math.max(1, parseEnglishNumber(p.valuation, 1)),
+          monthlyRent: Math.max(0, parseEnglishNumber(p.monthlyRent, 0)),
+          equityPct: Math.min(100, Math.max(1, parseEnglishNumber(p.equityPct, 30))),
+          ratePct: Math.max(0.1, parseEnglishNumber(p.ratePct, 5.5)),
+          opexPct: Math.min(95, Math.max(0, parseEnglishNumber(p.opexPct, 15))),
           spvNote: p.spvNote.trim(),
         };
       });
@@ -402,7 +410,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         body: JSON.stringify({
           requestId: selectedWgId,
           title: wgDraftTitle.trim() || 'White-Glove Portfolio Dossier',
-          currency: wgDraftCurrency,
+          currency: 'USD',
           properties: payloadProps,
           spvStructureNote: wgSpvStructureNote.trim(),
           riskNote: wgRiskNote.trim(),
@@ -421,6 +429,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setWgAdminMsg('Network error delivering White-Glove analysis.');
     } finally {
       setDeliveringWg(false);
+    }
+  };
+
+  const loadIssuesAndCancellations = async () => {
+    try {
+      const res = await fetch('/api/admin?action=issues', { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setIssuesList(Array.isArray(data?.issues) ? data.issues : []);
+        setCancellationsList(Array.isArray(data?.cancellations) ? data.cancellations : []);
+      }
+    } catch {}
+  };
+
+  const handleResolveIssue = async (email: string) => {
+    setResolvingIssueEmail(email);
+    setIssuesMsg(null);
+    try {
+      const res = await fetch('/api/admin?action=resolve-issue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success) {
+        setIssuesMsg(`Marked issue resolved for ${email}. User notified & Rule E clock updated.`);
+        await loadIssuesAndCancellations();
+        await loadUsers();
+        await loadAdminLogs();
+      } else {
+        setIssuesMsg(data?.error || 'Failed to mark issue resolved.');
+      }
+    } catch {
+      setIssuesMsg('Network error resolving issue.');
+    } finally {
+      setResolvingIssueEmail(null);
     }
   };
 
@@ -446,6 +491,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     loadPricingControl();
     loadAnalystInbox();
     loadWhiteGloveRequests();
+    loadIssuesAndCancellations();
     loadAdminLogs();
   }, [currentUser?.email]);
 
@@ -677,6 +723,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <button
               type="button"
               onClick={() => {
+                setAdminTab('issues');
+                loadIssuesAndCancellations();
+              }}
+              className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
+                adminTab === 'issues'
+                  ? 'bg-[#D4AF37] text-black border-[#D4AF37]'
+                  : 'bg-white/[0.05] text-zinc-300 border-white/10 hover:bg-white/10'
+              }`}
+            >
+              <AlertTriangle className="w-4 h-4" />
+              <span>
+                ISSUES ({issuesList.filter((i) => i.issue_status === 'reported').length})
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
                 setAdminTab('logs');
                 loadAdminLogs();
               }}
@@ -757,14 +820,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </label>
                   <div className="flex gap-2">
                     <input
-                      type="number"
+                      type="text"
+                      data-numeric="true"
                       lang="en"
                       dir="ltr"
                       inputMode="decimal"
-                      style={{ fontFamily: 'ui-monospace, monospace' }}
-                      min={0}
+                      autoComplete="off"
+                      style={EN_ADMIN_INPUT_STYLE}
                       value={countdownDaysInput}
-                      onChange={(e) => setCountdownDaysInput(e.target.value)}
+                      onChange={(e) => setCountdownDaysInput(sanitizeEnglishDecimal(e.target.value, false))}
                       className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white"
                     />
                     <button
@@ -811,17 +875,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           Original Price ($)
                         </label>
                         <input
-                          type="number"
+                          type="text"
+                          data-numeric="true"
                           lang="en"
                           dir="ltr"
                           inputMode="decimal"
-                          style={{ fontFamily: 'ui-monospace, monospace' }}
-                          min={0}
+                          autoComplete="off"
+                          style={EN_ADMIN_INPUT_STYLE}
                           value={draft.originalPrice}
                           onChange={(e) =>
                             setPlanDrafts((prev) => ({
                               ...prev,
-                              [planKey]: { ...prev[planKey], originalPrice: e.target.value },
+                              [planKey]: {
+                                ...prev[planKey],
+                                originalPrice: sanitizeEnglishDecimal(e.target.value, true),
+                              },
                             }))
                           }
                           className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white"
@@ -832,17 +900,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           Launch Price ($)
                         </label>
                         <input
-                          type="number"
+                          type="text"
+                          data-numeric="true"
                           lang="en"
                           dir="ltr"
                           inputMode="decimal"
-                          style={{ fontFamily: 'ui-monospace, monospace' }}
-                          min={0}
+                          autoComplete="off"
+                          style={EN_ADMIN_INPUT_STYLE}
                           value={draft.launchPrice}
                           onChange={(e) =>
                             setPlanDrafts((prev) => ({
                               ...prev,
-                              [planKey]: { ...prev[planKey], launchPrice: e.target.value },
+                              [planKey]: {
+                                ...prev[planKey],
+                                launchPrice: sanitizeEnglishDecimal(e.target.value, true),
+                              },
                             }))
                           }
                           className="w-full px-3 py-2 rounded-xl bg-black/60 border border-[#D4AF37]/40 text-[#D4AF37] font-bold"
@@ -855,17 +927,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         Analyses Limit (30 Days)
                       </label>
                       <input
-                        type="number"
+                        type="text"
+                        data-numeric="true"
                         lang="en"
                         dir="ltr"
                         inputMode="decimal"
-                        style={{ fontFamily: 'ui-monospace, monospace' }}
-                        min={1}
+                        autoComplete="off"
+                        style={EN_ADMIN_INPUT_STYLE}
                         value={draft.analysesLimit}
                         onChange={(e) =>
                           setPlanDrafts((prev) => ({
                             ...prev,
-                            [planKey]: { ...prev[planKey], analysesLimit: e.target.value },
+                            [planKey]: {
+                              ...prev[planKey],
+                              analysesLimit: sanitizeEnglishDecimal(e.target.value, false),
+                            },
                           }))
                         }
                         className="w-full px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white"
@@ -1337,24 +1413,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </div>
                       )}
 
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
                         <input
                           type="text"
                           value={wgDraftTitle}
                           onChange={(e) => setWgDraftTitle(e.target.value)}
                           placeholder="Deliverable Report Title"
-                          className="sm:col-span-2 px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white outline-none"
+                          className="sm:col-span-3 px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white outline-none"
                         />
-                        <select
-                          value={wgDraftCurrency}
-                          onChange={(e) => setWgDraftCurrency(e.target.value)}
-                          className="px-3 py-2 rounded-xl bg-zinc-900 border border-white/10 text-white outline-none"
-                        >
-                          <option value="USD">USD</option>
-                          <option value="OMR">OMR</option>
-                          <option value="AED">AED</option>
-                          <option value="GBP">GBP</option>
-                        </select>
+                        <div className="px-3 py-2 rounded-xl bg-zinc-900 border border-white/10 text-[#D4AF37] font-bold flex items-center justify-center">
+                          USD ($)
+                        </div>
                       </div>
 
                       {/* Multi-Property Lines */}
@@ -1372,7 +1441,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   id: `prop_${Date.now()}_${prev.length + 1}`,
                                   title: `Property #${prev.length + 1}`,
                                   cityInput: 'Muscat (Oman OM)',
-                                  currency: wgDraftCurrency,
+                                  currency: 'USD',
                                   valuation: '650000',
                                   monthlyRent: '4500',
                                   equityPct: '30',
@@ -1469,93 +1538,112 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                     </div>
                                   )}
                                 </div>
-                                <select
-                                  value={prop.currency}
-                                  onChange={(e) =>
-                                    setWgDraftProps((prev) =>
-                                      prev.map((x) => (x.id === prop.id ? { ...x, currency: e.target.value } : x))
-                                    )
-                                  }
-                                  className="px-2.5 py-2 rounded-lg bg-zinc-900 border border-white/10 text-white"
-                                >
-                                  <option value="USD">USD</option>
-                                  <option value="OMR">OMR</option>
-                                  <option value="AED">AED</option>
-                                  <option value="GBP">GBP</option>
-                                </select>
+                                <div className="px-2.5 py-2 rounded-lg bg-zinc-900 border border-white/10 text-[#D4AF37] font-bold flex items-center justify-center">
+                                  USD ($)
+                                </div>
                               </div>
 
                               <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                                 <input
-                                  type="number"
+                                  type="text"
+                                  data-numeric="true"
                                   lang="en"
                                   dir="ltr"
                                   inputMode="decimal"
-                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  autoComplete="off"
+                                  style={EN_ADMIN_INPUT_STYLE}
                                   value={prop.valuation}
                                   onChange={(e) =>
                                     setWgDraftProps((prev) =>
-                                      prev.map((x) => (x.id === prop.id ? { ...x, valuation: e.target.value } : x))
+                                      prev.map((x) =>
+                                        x.id === prop.id
+                                          ? { ...x, valuation: sanitizeEnglishDecimal(e.target.value, true) }
+                                          : x
+                                      )
                                     )
                                   }
-                                  placeholder="Valuation"
+                                  placeholder="Valuation (USD)"
                                   className="px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
                                 />
                                 <input
-                                  type="number"
+                                  type="text"
+                                  data-numeric="true"
                                   lang="en"
                                   dir="ltr"
                                   inputMode="decimal"
-                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  autoComplete="off"
+                                  style={EN_ADMIN_INPUT_STYLE}
                                   value={prop.monthlyRent}
                                   onChange={(e) =>
                                     setWgDraftProps((prev) =>
-                                      prev.map((x) => (x.id === prop.id ? { ...x, monthlyRent: e.target.value } : x))
+                                      prev.map((x) =>
+                                        x.id === prop.id
+                                          ? { ...x, monthlyRent: sanitizeEnglishDecimal(e.target.value, true) }
+                                          : x
+                                      )
                                     )
                                   }
-                                  placeholder="Rent/mo"
+                                  placeholder="Rent/mo (USD)"
                                   className="px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
                                 />
                                 <input
-                                  type="number"
+                                  type="text"
+                                  data-numeric="true"
                                   lang="en"
                                   dir="ltr"
                                   inputMode="decimal"
-                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  autoComplete="off"
+                                  style={EN_ADMIN_INPUT_STYLE}
                                   value={prop.equityPct}
                                   onChange={(e) =>
                                     setWgDraftProps((prev) =>
-                                      prev.map((x) => (x.id === prop.id ? { ...x, equityPct: e.target.value } : x))
+                                      prev.map((x) =>
+                                        x.id === prop.id
+                                          ? { ...x, equityPct: sanitizeEnglishDecimal(e.target.value, true) }
+                                          : x
+                                      )
                                     )
                                   }
                                   placeholder="Equity %"
                                   className="px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
                                 />
                                 <input
-                                  type="number"
+                                  type="text"
+                                  data-numeric="true"
                                   lang="en"
                                   dir="ltr"
                                   inputMode="decimal"
-                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  autoComplete="off"
+                                  style={EN_ADMIN_INPUT_STYLE}
                                   value={prop.ratePct}
                                   onChange={(e) =>
                                     setWgDraftProps((prev) =>
-                                      prev.map((x) => (x.id === prop.id ? { ...x, ratePct: e.target.value } : x))
+                                      prev.map((x) =>
+                                        x.id === prop.id
+                                          ? { ...x, ratePct: sanitizeEnglishDecimal(e.target.value, true) }
+                                          : x
+                                      )
                                     )
                                   }
                                   placeholder="Rate %"
                                   className="px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
                                 />
                                 <input
-                                  type="number"
+                                  type="text"
+                                  data-numeric="true"
                                   lang="en"
                                   dir="ltr"
                                   inputMode="decimal"
-                                  style={{ fontFamily: 'ui-monospace, monospace' }}
+                                  autoComplete="off"
+                                  style={EN_ADMIN_INPUT_STYLE}
                                   value={prop.opexPct}
                                   onChange={(e) =>
                                     setWgDraftProps((prev) =>
-                                      prev.map((x) => (x.id === prop.id ? { ...x, opexPct: e.target.value } : x))
+                                      prev.map((x) =>
+                                        x.id === prop.id
+                                          ? { ...x, opexPct: sanitizeEnglishDecimal(e.target.value, true) }
+                                          : x
+                                      )
                                     )
                                   }
                                   placeholder="OPEX %"
@@ -1586,7 +1674,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <div>
                             <div className="text-[10px] text-zinc-400">Total Valuation</div>
                             <div className="font-bold text-white">
-                              {wgDraftCurrency} {wgLiveCombined.totalValuation.toLocaleString('en-US')}
+                              USD ${wgLiveCombined.totalValuation.toLocaleString('en-US')}
                             </div>
                           </div>
                           <div>
@@ -1602,7 +1690,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           <div>
                             <div className="text-[10px] text-zinc-400">Net Cashflow/mo</div>
                             <div className="font-bold text-white">
-                              {wgDraftCurrency} {wgLiveCombined.totalMonthlyCashflow.toLocaleString('en-US')}
+                              USD ${wgLiveCombined.totalMonthlyCashflow.toLocaleString('en-US')}
                             </div>
                           </div>
                         </div>
@@ -1643,6 +1731,147 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </>
                   );
                 })()
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ISSUES & CANCELLATIONS TAB */}
+        {adminTab === 'issues' && (
+          <div className="space-y-6 text-xs font-mono">
+            {issuesMsg && (
+              <div className="p-3.5 rounded-2xl bg-emerald-950/50 border border-emerald-500/40 text-emerald-200 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{issuesMsg}</span>
+              </div>
+            )}
+
+            {/* Reported Tool Issues Table */}
+            <div className="glass-panel p-5 border border-white/10 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-bold uppercase text-[#D4AF37]">
+                  Reported Tool Issues ({issuesList.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={loadIssuesAndCancellations}
+                  className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white cursor-pointer flex items-center gap-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Refresh</span>
+                </button>
+              </div>
+              {issuesList.length === 0 ? (
+                <div className="text-zinc-500 py-6 text-center">No tool issues reported yet.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="text-zinc-500 border-b border-white/10 uppercase text-[10px]">
+                      <tr>
+                        <th className="py-2.5 pr-3">Email</th>
+                        <th className="py-2.5 pr-3">Plan</th>
+                        <th className="py-2.5 pr-3">Issue Description</th>
+                        <th className="py-2.5 pr-3">Reported At</th>
+                        <th className="py-2.5 pr-3">Successful Runs</th>
+                        <th className="py-2.5 pr-3">Status</th>
+                        <th className="py-2.5">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-zinc-200">
+                      {issuesList.map((iss) => (
+                        <tr key={iss.email}>
+                          <td className="py-2.5 pr-3 font-bold text-white">{iss.email}</td>
+                          <td className="py-2.5 pr-3 uppercase text-[#D4AF37] font-bold">{iss.plan}</td>
+                          <td className="py-2.5 pr-3 max-w-[300px] whitespace-pre-wrap text-zinc-300">
+                            {iss.issue_description || '-'}
+                          </td>
+                          <td className="py-2.5 pr-3 text-zinc-400">
+                            {iss.issue_reported_at
+                              ? new Date(iss.issue_reported_at).toLocaleString('en-US')
+                              : '-'}
+                          </td>
+                          <td className="py-2.5 pr-3 font-bold">
+                            {iss.successful_analyses ?? 0}
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                iss.issue_status === 'resolved'
+                                  ? 'bg-emerald-500/20 text-emerald-300'
+                                  : 'bg-amber-500/20 text-amber-300'
+                              }`}
+                            >
+                              {iss.issue_status === 'resolved' ? 'Resolved' : 'Reported Issue'}
+                            </span>
+                          </td>
+                          <td className="py-2.5">
+                            {iss.issue_status === 'resolved' ? (
+                              <span className="text-[11px] text-emerald-400">
+                                {iss.issue_resolved_at
+                                  ? new Date(iss.issue_resolved_at).toLocaleDateString('en-US')
+                                  : 'Done'}
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={resolvingIssueEmail === iss.email}
+                                onClick={() => handleResolveIssue(iss.email)}
+                                className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-[11px] cursor-pointer disabled:opacity-60"
+                              >
+                                {resolvingIssueEmail === iss.email ? 'Resolving...' : 'Mark Resolved'}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Cancellations & Lemon Refunds Log */}
+            <div className="glass-panel p-5 border border-white/10 space-y-3">
+              <div className="font-bold uppercase text-rose-300">
+                Cancellations &amp; Lemon Squeezy Refunds ({cancellationsList.length})
+              </div>
+              {cancellationsList.length === 0 ? (
+                <div className="text-zinc-500 py-6 text-center">No cancellations processed yet.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead className="text-zinc-500 border-b border-white/10 uppercase text-[10px]">
+                      <tr>
+                        <th className="py-2.5 pr-3">Email</th>
+                        <th className="py-2.5 pr-3">Previous Plan</th>
+                        <th className="py-2.5 pr-3">Order ID</th>
+                        <th className="py-2.5 pr-3">Refunded (USD)</th>
+                        <th className="py-2.5 pr-3">Rule</th>
+                        <th className="py-2.5">Timestamp</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 text-zinc-200">
+                      {cancellationsList.map((c: any) => (
+                        <tr key={c.id || `${c.email}-${c.timestamp}`}>
+                          <td className="py-2.5 pr-3 font-bold text-white">{c.email}</td>
+                          <td className="py-2.5 pr-3 uppercase text-[#D4AF37] font-bold">
+                            {c.previous_plan || '-'}
+                          </td>
+                          <td className="py-2.5 pr-3">{c.order_id || '-'}</td>
+                          <td className="py-2.5 pr-3 text-emerald-400 font-bold">
+                            ${c.refunded_amount_usd ?? 0}
+                          </td>
+                          <td className="py-2.5 pr-3 uppercase text-amber-300 font-bold">
+                            Rule {c.rule || '-'}
+                          </td>
+                          <td className="py-2.5 text-zinc-400">
+                            {c.timestamp ? new Date(c.timestamp).toLocaleString('en-US') : '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </div>
@@ -1810,7 +2039,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   Refund Policy Verdict: {selectedUser.refundEvaluation?.verdict}
                 </div>
                 <div className="text-[11px] opacity-80">
-                  Policy: Refund ONLY within 5–7 days AND &lt;= 3 analyses AND 0 PDF downloads.
+                  Policy (Rules A–E): Refund allowed ONLY if 0 successful analyses AND (within 7 days OR unresolved tool issue for 7+ days).
                 </div>
                 <div className="flex flex-wrap items-center gap-2 pt-2">
                   <input

@@ -256,6 +256,19 @@ function normalizePlanKey(raw?: string | null): PlanKey {
   return 'free';
 }
 
+function toEnglishDigitsServer(raw: any): string {
+  return String(raw ?? '')
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+}
+
+function parseEnglishNumberServer(raw: any): number {
+  if (typeof raw === 'number') return raw;
+  const normalized = toEnglishDigitsServer(raw).replace(/,/g, '').replace(/[^0-9.\-]/g, '');
+  if (!normalized) return NaN;
+  return Number(normalized);
+}
+
 function getPlanConfig(raw?: string | null): PlanDefinition {
   return PLAN_DEFINITIONS[normalizePlanKey(raw)];
 }
@@ -792,7 +805,10 @@ interface ForensicTimelineEntry {
     | 'login'
     | 'refund_request'
     | 'admin_plan_change'
-    | 'expired';
+    | 'expired'
+    | 'issue_reported'
+    | 'issue_resolved'
+    | 'cancellation';
   message: string;
   actor?: string;
 }
@@ -817,6 +833,7 @@ interface ServerUserRecord {
   license_start: number | null;
   license_end: number | null;
   analyses_used: number;
+  successful_analyses: number;
   saved_analyses: any[];
   custom_cities: CustomCityRecord[];
   timezone: string;
@@ -835,6 +852,13 @@ interface ServerUserRecord {
   refund_policy_accepted_at: string | null;
   locked_launch_price: number | null;
   lemon_customer_email: string | null;
+  has_reported_issue: boolean;
+  issue_reported_at: number | null;
+  issue_resolved_at: number | null;
+  issue_description: string;
+  issue_status: 'none' | 'open' | 'resolved';
+  cancel_status: 'none' | 'refunded';
+  last_order_id?: string | null;
 }
 
 interface WebhookLogEntry {
@@ -900,6 +924,7 @@ interface StoreShape {
   webhook_logs: WebhookLogEntry[];
   failed_webhooks: any[];
   email_logs: any[];
+  cancellation_logs: any[];
   pricing_config: StoredPricingConfig;
   pricing_logs: any[];
   pending_checkouts: Record<string, PendingCheckoutEntry>;
@@ -974,6 +999,7 @@ function getMemoryStore(): StoreShape {
       webhook_logs: [],
       failed_webhooks: [],
       email_logs: [],
+      cancellation_logs: [],
       pricing_config: createDefaultPricingConfig(),
       pricing_logs: [],
       pending_checkouts: {},
@@ -1003,6 +1029,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     license_start: raw?.license_start ?? now,
     license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
     analyses_used: Math.max(0, Number(raw?.analyses_used ?? 0)),
+    successful_analyses: Math.max(0, Number(raw?.successful_analyses ?? 0)),
     saved_analyses: Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [],
     custom_cities: Array.isArray(raw?.custom_cities) ? raw.custom_cities : [],
     timezone: raw?.timezone || 'Asia/Muscat',
@@ -1023,6 +1050,25 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     lemon_customer_email: raw?.lemon_customer_email
       ? String(raw.lemon_customer_email).toLowerCase()
       : null,
+    has_reported_issue: Boolean(raw?.has_reported_issue),
+    issue_reported_at: typeof raw?.issue_reported_at === 'number' ? raw.issue_reported_at : null,
+    issue_resolved_at: typeof raw?.issue_resolved_at === 'number' ? raw.issue_resolved_at : null,
+    issue_description: typeof raw?.issue_description === 'string' ? raw.issue_description : '',
+    issue_status:
+      raw?.issue_status === 'open' || raw?.issue_status === 'resolved'
+        ? raw.issue_status
+        : raw?.has_reported_issue
+        ? raw?.issue_resolved_at
+          ? 'resolved'
+          : 'open'
+        : 'none',
+    cancel_status: raw?.cancel_status === 'refunded' ? 'refunded' : 'none',
+    last_order_id:
+      typeof raw?.last_order_id === 'string' && raw.last_order_id.trim()
+        ? raw.last_order_id.trim()
+        : Array.isArray(raw?.payments) && raw.payments[0]?.order_id
+        ? String(raw.payments[0].order_id)
+        : null,
   };
 }
 
@@ -1099,6 +1145,7 @@ function loadStore(): StoreShape {
           webhook_logs: Array.isArray(parsed.webhook_logs) ? parsed.webhook_logs : [],
           failed_webhooks: Array.isArray(parsed.failed_webhooks) ? parsed.failed_webhooks : [],
           email_logs: Array.isArray(parsed.email_logs) ? parsed.email_logs : [],
+          cancellation_logs: Array.isArray(parsed.cancellation_logs) ? parsed.cancellation_logs : [],
           pricing_config: hydratePricingConfig(parsed.pricing_config),
           pricing_logs: Array.isArray(parsed.pricing_logs) ? parsed.pricing_logs : [],
           pending_checkouts:
@@ -1403,6 +1450,14 @@ function activatePaidPlanOnServer(params: {
     license_start: licenseStart,
     license_end: licenseEnd,
     analyses_used: 0,
+    successful_analyses: 0,
+    has_reported_issue: false,
+    issue_reported_at: null,
+    issue_resolved_at: null,
+    issue_description: '',
+    issue_status: 'none',
+    cancel_status: 'none',
+    last_order_id: orderId,
     day29_email_sent: false,
     expired_email_sent: false,
     total_paid_usd: alreadyRecorded ? existing.total_paid_usd : existing.total_paid_usd + amount,
@@ -1417,6 +1472,162 @@ function activatePaidPlanOnServer(params: {
   });
 }
 
+function evaluateCancelRefundEligibility(user: ServerUserRecord, now = Date.now()) {
+  const DAY_MS = 86_400_000;
+  const planKey = normalizePlanKey(user.plan);
+  const successfulAnalyses = Math.max(0, Number(user.successful_analyses || 0));
+  const licenseStart = Number(
+    user.license_start ||
+      (user.payments?.[0]?.timestamp ? new Date(user.payments[0].timestamp).getTime() : now)
+  );
+  const daysSinceActivation = Math.max(0, (now - licenseStart) / DAY_MS);
+  const daysSinceActivationRounded = Math.floor(daysSinceActivation);
+  const hasReportedIssue = Boolean(user.has_reported_issue);
+  const issueReportedAt = user.issue_reported_at ? Number(user.issue_reported_at) : null;
+  const issueResolvedAt = user.issue_resolved_at ? Number(user.issue_resolved_at) : null;
+  const resolvedWithin7Days = Boolean(
+    hasReportedIssue &&
+      issueResolvedAt &&
+      issueReportedAt &&
+      issueResolvedAt - issueReportedAt <= 7 * DAY_MS
+  );
+  const unresolvedOver7Days = Boolean(
+    hasReportedIssue &&
+      !issueResolvedAt &&
+      issueReportedAt &&
+      now - issueReportedAt >= 7 * DAY_MS
+  );
+
+  const isActivePaid = planKey !== 'free' && (!user.license_end || user.license_end > now);
+
+  if (!isActivePaid) {
+    return {
+      canCancel: false,
+      eligibleRule: 'FREE',
+      statusLabel: 'Free Tier / Inactive',
+      reason: 'Cancellation unavailable - Free tier or expired plan has no active paid subscription.',
+      daysSinceActivation: daysSinceActivationRounded,
+      successfulAnalyses,
+      hasReportedIssue,
+      resolvedWithin7Days,
+      unresolvedOver7Days,
+      toolStatus: user.issue_status === 'resolved' ? 'Resolved' : hasReportedIssue ? 'Reported Issue' : 'Working',
+    };
+  }
+
+  // Rule A: ANY >= 1 successful analysis -> permanently locked (even if issue reported or resolved)
+  if (successfulAnalyses >= 1) {
+    return {
+      canCancel: false,
+      eligibleRule: 'RULE_A_USED_ANALYSIS',
+      statusLabel: 'Locked - Analysis completed',
+      reason:
+        successfulAnalyses === 1
+          ? 'Cancellation unavailable - You completed 1 successful analysis. Refund not eligible.'
+          : `Cancellation unavailable - You completed ${successfulAnalyses} successful analyses. Refund not eligible.`,
+      daysSinceActivation: daysSinceActivationRounded,
+      successfulAnalyses,
+      hasReportedIssue,
+      resolvedWithin7Days,
+      unresolvedOver7Days,
+      toolStatus: user.issue_status === 'resolved' ? 'Resolved' : hasReportedIssue ? 'Reported Issue' : 'Working',
+    };
+  }
+
+  // Rule B: > 7 days and NO issue reported -> locked
+  if (daysSinceActivation > 7 && !hasReportedIssue) {
+    return {
+      canCancel: false,
+      eligibleRule: 'RULE_B_WINDOW_PASSED',
+      statusLabel: 'Locked - 7-day window passed',
+      reason: 'Cancellation unavailable - 7-day window passed and no tool issue reported.',
+      daysSinceActivation: daysSinceActivationRounded,
+      successfulAnalyses,
+      hasReportedIssue,
+      resolvedWithin7Days,
+      unresolvedOver7Days,
+      toolStatus: 'Working',
+    };
+  }
+
+  // Rule E: Issue resolved within 7 days AND > 7 days passed -> locked
+  if (hasReportedIssue && resolvedWithin7Days && daysSinceActivation > 7) {
+    return {
+      canCancel: false,
+      eligibleRule: 'RULE_E_RESOLVED_IN_7D',
+      statusLabel: 'Locked - Issue resolved within 7 days',
+      reason: 'Cancellation unavailable - Tool issue resolved within 7 days and 7-day window passed.',
+      daysSinceActivation: daysSinceActivationRounded,
+      successfulAnalyses,
+      hasReportedIssue,
+      resolvedWithin7Days,
+      unresolvedOver7Days,
+      toolStatus: 'Resolved',
+    };
+  }
+
+  // Rule D: Issue reported & NOT resolved within 7 days -> unlocked (with 0 successful analyses)
+  if (hasReportedIssue && successfulAnalyses === 0 && unresolvedOver7Days) {
+    return {
+      canCancel: true,
+      eligibleRule: 'RULE_D_UNRESOLVED_7D',
+      statusLabel: 'Cancel - Tool issue not resolved in 7 days',
+      reason: 'Eligible for cancellation & refund - Tool issue unresolved for 7+ days with 0 successful analyses.',
+      daysSinceActivation: daysSinceActivationRounded,
+      successfulAnalyses,
+      hasReportedIssue,
+      resolvedWithin7Days,
+      unresolvedOver7Days,
+      toolStatus: 'Reported Issue',
+    };
+  }
+
+  // Rule C: <= 7 days AND 0 successful analyses -> unlocked
+  if (daysSinceActivation <= 7 && successfulAnalyses === 0) {
+    return {
+      canCancel: true,
+      eligibleRule: 'RULE_C_WITHIN_7D',
+      statusLabel: 'Cancel within 7 days - No successful analysis yet',
+      reason: 'Eligible for cancellation & full refund - Within 7-day window with 0 successful analyses.',
+      daysSinceActivation: daysSinceActivationRounded,
+      successfulAnalyses,
+      hasReportedIssue,
+      resolvedWithin7Days,
+      unresolvedOver7Days,
+      toolStatus: user.issue_status === 'resolved' ? 'Resolved' : hasReportedIssue ? 'Reported Issue' : 'Working',
+    };
+  }
+
+  // Edge case: > 7 days, issue reported < 7 days ago, still unresolved and 0 analyses
+  if (hasReportedIssue && !issueResolvedAt && !unresolvedOver7Days && successfulAnalyses === 0) {
+    return {
+      canCancel: false,
+      eligibleRule: 'UNDER_REVIEW_7D',
+      statusLabel: 'Issue reported - Under 7-day review',
+      reason: 'Issue reported - Under 7-day review.',
+      daysSinceActivation: daysSinceActivationRounded,
+      successfulAnalyses,
+      hasReportedIssue,
+      resolvedWithin7Days,
+      unresolvedOver7Days,
+      toolStatus: 'Reported Issue',
+    };
+  }
+
+  return {
+    canCancel: false,
+    eligibleRule: 'NOT_ELIGIBLE',
+    statusLabel: 'Locked',
+    reason: 'Cancellation unavailable.',
+    daysSinceActivation: daysSinceActivationRounded,
+    successfulAnalyses,
+    hasReportedIssue,
+    resolvedWithin7Days,
+    unresolvedOver7Days,
+    toolStatus: user.issue_status === 'resolved' ? 'Resolved' : hasReportedIssue ? 'Reported Issue' : 'Working',
+  };
+}
+
 function recordUserAnalysis(
   email: string,
   entry: Omit<ForensicAnalysisEntry, 'id' | 'timestamp'>
@@ -1425,6 +1636,7 @@ function recordUserAnalysis(
   const now = Date.now();
   const iso = new Date(now).toISOString();
   const analysisNum = user.analyses_used + 1;
+  const successfulNum = (user.successful_analyses || 0) + 1;
   const logEntry: ForensicAnalysisEntry = {
     id: `ana_${now}_${Math.random().toString(36).slice(2, 6)}`,
     timestamp: iso,
@@ -1440,6 +1652,7 @@ function recordUserAnalysis(
 
   return updateServerUser(user.email, {
     analyses_used: analysisNum,
+    successful_analyses: successfulNum,
     analyses_log: [logEntry, ...user.analyses_log].slice(0, 500),
     timeline: [timelineEntry, ...user.timeline].slice(0, 200),
   });
@@ -1662,6 +1875,29 @@ async function getEmailLogsFromDb(limit = 50): Promise<any[]> {
     }
   } catch {}
   return (loadStore().email_logs || []).slice(0, limit);
+}
+
+async function appendCancellationLogToDb(entry: any): Promise<any> {
+  const log = {
+    id: `can_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: new Date().toISOString(),
+    ...entry,
+  };
+  try {
+    const store = loadStore();
+    if (!Array.isArray(store.cancellation_logs)) store.cancellation_logs = [];
+    store.cancellation_logs.unshift(log);
+    store.cancellation_logs = store.cancellation_logs.slice(0, 200);
+    persistStore(store);
+  } catch {}
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['LPUSH', 'aqari:cancellation_logs:v1', JSON.stringify(log)]);
+      await kvCommand(['LTRIM', 'aqari:cancellation_logs:v1', 0, 199]);
+    }
+  } catch {}
+  return log;
 }
 
 async function dispatchEmailAlert(params: {
@@ -3178,6 +3414,8 @@ export default async function handler(req: any, res: any) {
             'city-search',
             'city-analyze',
             'macro-sync',
+            'report-issue',
+            'cancel-subscription',
             'google-callback',
             'nextauth',
           ],
@@ -3254,6 +3492,8 @@ export default async function handler(req: any, res: any) {
           .filter((r: any) => r?.status === 'Done' && r?.deliverable)
           .map((r: any) => ({ ...r.deliverable, requestId: r.id, deliveredAt: r.deliveredAt }));
 
+        const cancellationEligibility = evaluateCancelRefundEligibility(dbUser);
+
         return res.status(200).json({
           success: true,
           authenticated: true,
@@ -3272,6 +3512,15 @@ export default async function handler(req: any, res: any) {
           analyses_limit: license.analysesLimit,
           analyses_used: license.analysesUsed,
           analyses_left: license.analysesLeft,
+          successful_analyses: dbUser.successful_analyses || 0,
+          has_reported_issue: Boolean(dbUser.has_reported_issue),
+          issue_reported_at: dbUser.issue_reported_at ?? null,
+          issue_resolved_at: dbUser.issue_resolved_at ?? null,
+          issue_description: dbUser.issue_description || '',
+          issue_status: dbUser.issue_status || 'none',
+          cancel_status: dbUser.cancel_status || 'none',
+          last_order_id: dbUser.last_order_id || dbUser.payments?.[0]?.order_id || null,
+          cancellationEligibility,
           maxSaved,
           saved_limit: maxSaved,
           saved_count: dbUser.saved_analyses.length,
@@ -3294,6 +3543,14 @@ export default async function handler(req: any, res: any) {
             license_start: dbUser.license_start,
             license_end: dbUser.license_end,
             analyses_used: dbUser.analyses_used,
+            successful_analyses: dbUser.successful_analyses || 0,
+            has_reported_issue: Boolean(dbUser.has_reported_issue),
+            issue_reported_at: dbUser.issue_reported_at ?? null,
+            issue_resolved_at: dbUser.issue_resolved_at ?? null,
+            issue_description: dbUser.issue_description || '',
+            issue_status: dbUser.issue_status || 'none',
+            cancel_status: dbUser.cancel_status || 'none',
+            last_order_id: dbUser.last_order_id || dbUser.payments?.[0]?.order_id || null,
             maxSaved,
             saved_count: dbUser.saved_analyses.length,
             api_key: apiKey,
@@ -4091,15 +4348,19 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const priceUSD = Number(body.priceUSD ?? body.acquisitionValuation ?? body.valuation);
-        const rentUSD = Number(body.rentUSD ?? body.monthlyRent ?? body.rent);
-        const downPaymentPct = Number(
+        const priceUSD = parseEnglishNumberServer(
+          body.priceUSD ?? body.acquisitionValuation ?? body.valuation
+        );
+        const rentUSD = parseEnglishNumberServer(
+          body.rentUSD ?? body.monthlyRent ?? body.rent
+        );
+        const downPaymentPct = parseEnglishNumberServer(
           body.downPaymentPct ?? body.equityDownPct ?? body.equity ?? 30
         );
-        const interestRatePct = Number(
+        const interestRatePct = parseEnglishNumberServer(
           body.interestRatePct ?? body.mortgageRatePct ?? body.rate ?? 5.5
         );
-        const operatingExpensePct = Number(
+        const operatingExpensePct = parseEnglishNumberServer(
           body.operatingExpensePct ?? body.opexPct ?? body.opex ?? 15
         );
         const propertyTitle = (
@@ -4108,7 +4369,7 @@ export default async function handler(req: any, res: any) {
           `${cityEntry.city} Prime Institutional Asset`
         ).toString();
         const city = cityEntry.city;
-        const currency = String(body.currency || cityEntry.currency || 'USD').toUpperCase();
+        const currency = 'USD';
 
         if (
           !Number.isFinite(priceUSD) ||
@@ -4198,6 +4459,7 @@ export default async function handler(req: any, res: any) {
         });
         await saveUserToDb(updatedUser).catch(() => {});
         const nextLicense = computeServerLicenseStatus(updatedUser);
+        const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
         return res.status(200).json({
           success: true,
@@ -4207,7 +4469,7 @@ export default async function handler(req: any, res: any) {
             city,
             country: cityEntry.country,
             countryCode: cityEntry.countryCode,
-            currency,
+            currency: 'USD',
             priceUSD,
             rentUSD,
             downPaymentPct,
@@ -4232,6 +4494,8 @@ export default async function handler(req: any, res: any) {
           },
           analyses_left: nextLicense.analysesLeft,
           analyses_used: nextLicense.analysesUsed,
+          successful_analyses: updatedUser.successful_analyses || 0,
+          cancellationEligibility,
           license: {
             ...nextLicense,
             savedLimit: PLAN_DEFINITIONS[nextLicense.planKey].savedLimit,
@@ -4474,8 +4738,8 @@ export default async function handler(req: any, res: any) {
         if (req.method === 'POST') {
           const propertyTitle = String(body.propertyTitle || '').trim();
           const targetCity = String(body.targetCity || body.city || '').trim();
-          const valuation = Number(body.valuation || 0);
-          const expectedMonthlyRent = Number(body.expectedMonthlyRent || 0);
+          const valuation = parseEnglishNumberServer(body.valuation || 0);
+          const expectedMonthlyRent = parseEnglishNumberServer(body.expectedMonthlyRent || 0);
           if (!propertyTitle || !targetCity) {
             return res.status(400).json({
               success: false,
@@ -4490,7 +4754,7 @@ export default async function handler(req: any, res: any) {
             propertyTitle,
             dealLink: String(body.dealLink || '').trim() || undefined,
             targetCity,
-            currency: String(body.currency || 'USD').toUpperCase(),
+            currency: 'USD',
             valuation: Number.isFinite(valuation) ? valuation : 0,
             expectedMonthlyRent: Number.isFinite(expectedMonthlyRent) ? expectedMonthlyRent : 0,
             goalNotes: String(body.goalNotes || '').trim().slice(0, 2000),
@@ -4871,14 +5135,16 @@ export default async function handler(req: any, res: any) {
           if (!sessionEmail) {
             return res.status(200).json({ authenticated: false, email: null, isAdmin: false });
           }
-          const user = getOrCreateServerUser(sessionEmail);
+          const user = (await getUserFromDb(sessionEmail).catch(() => null)) || getOrCreateServerUser(sessionEmail);
           const license = computeServerLicenseStatus(user);
+          const cancellationEligibility = evaluateCancelRefundEligibility(user);
           return res.status(200).json({
             authenticated: true,
             email: user.email,
             isAdmin: isAdminEmail(user.email),
             user,
             license,
+            cancellationEligibility,
           });
         }
 
@@ -4902,6 +5168,7 @@ export default async function handler(req: any, res: any) {
           setSessionCookie(res, user.email);
           const license = computeServerLicenseStatus(user);
           const pricing = getPricingPublicPayload();
+          const cancellationEligibility = evaluateCancelRefundEligibility(user);
 
           return res.status(200).json({
             success: true,
@@ -4910,6 +5177,7 @@ export default async function handler(req: any, res: any) {
             isAdmin: isAdminEmail(user.email),
             user,
             license,
+            cancellationEligibility,
             features:
               findPlanPricing(pricing, license.planKey)?.features ||
               PLAN_DEFINITIONS[license.planKey].features,
@@ -5396,6 +5664,270 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'report-issue': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody;
+        const sessionEmail = getSessionEmailFromReq(req);
+        const email = String(sessionEmail || body.login_email || body.email || '')
+          .trim()
+          .toLowerCase();
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const description = String(body.description || body.issueDescription || body.message || '').trim().slice(0, 2000);
+        if (description.length < 4) {
+          return res.status(400).json({
+            success: false,
+            error: 'Please describe the tool issue (minimum 4 characters).',
+          });
+        }
+
+        const existing =
+          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+        const now = Date.now();
+        const iso = new Date(now).toISOString();
+        const timelineEntry: ForensicTimelineEntry = {
+          id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: iso,
+          type: 'issue_reported',
+          message: `Tool issue reported by ${email}: "${description.slice(0, 180)}"`,
+          actor: email,
+        };
+
+        const updatedUser = updateServerUser(email, {
+          has_reported_issue: true,
+          issue_reported_at: now,
+          issue_resolved_at: null,
+          issue_description: description,
+          issue_status: 'open',
+          timeline: [timelineEntry, ...existing.timeline].slice(0, 200),
+        });
+        await saveUserToDb(updatedUser).catch(() => {});
+
+        const planName = PLAN_DEFINITIONS[normalizePlanKey(updatedUser.plan)].displayName;
+        await dispatchEmailAlert({
+          to: getAdminEmail(),
+          subject: `AQARI Tool Issue Reported (${planName}) - ${email}`,
+          text: `User: ${email}\nPlan: ${planName}\nSuccessful Analyses: ${updatedUser.successful_analyses}\nReported At: ${iso}\n\nDescription:\n${description}`,
+          eventType: 'tool_issue_reported',
+        }).catch(() => {});
+
+        const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser, now);
+        return res.status(200).json({
+          success: true,
+          message: 'Tool issue reported. Our engineering team has been notified.',
+          issue_reported_at: updatedUser.issue_reported_at,
+          issue_status: updatedUser.issue_status,
+          issue_description: updatedUser.issue_description,
+          cancellationEligibility,
+        });
+      }
+
+      case 'cancel-subscription': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody;
+        const sessionEmail = getSessionEmailFromReq(req);
+        const email = String(sessionEmail || body.login_email || body.email || '')
+          .trim()
+          .toLowerCase();
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const user =
+          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+        const now = Date.now();
+        const planKey = normalizePlanKey(user.plan);
+        if (planKey === 'free') {
+          return res.status(200).json({
+            success: false,
+            error: 'No active paid subscription found on your account.',
+          });
+        }
+
+        const eligibility = evaluateCancelRefundEligibility(user, now);
+        if (!eligibility.canCancel) {
+          return res.status(403).json({
+            success: false,
+            error: eligibility.reason,
+            eligibility,
+          });
+        }
+
+        const store = loadStore();
+        let orderId = normalizeOrderId(body.order_id || user.last_order_id || user.payments?.[0]?.order_id || '');
+        if (!orderId) {
+          const matchingUsed = Object.values(store.used_orders || {})
+            .filter((o: any) => normalizeEmail(o?.login_email) === email && o?.order_id)
+            .sort((a: any, b: any) => Number(b.used_at || 0) - Number(a.used_at || 0));
+          if (matchingUsed[0]?.order_id) {
+            orderId = normalizeOrderId(matchingUsed[0].order_id);
+          }
+        }
+        if (!orderId) {
+          const logs = await getWebhookLogsFromDb(50);
+          const matchingLog = logs.find(
+            (l) => normalizeEmail(l?.email) === email && l?.order_id && !String(l.order_id).startsWith('ord_')
+          );
+          if (matchingLog?.order_id) {
+            orderId = normalizeOrderId(matchingLog.order_id);
+          }
+        }
+
+        if (!orderId || orderId.startsWith('ord_') || orderId.startsWith('test_')) {
+          return res.status(200).json({
+            success: false,
+            error: 'No valid Lemon Squeezy Order ID found for automatic refund. Subscription was NOT deactivated.',
+          });
+        }
+
+        const candidateKeys = Array.from(
+          new Set(
+            [
+              cleanEnvValue(getEnv('LEMONSQUEEZY_API_KEY')),
+              cleanEnvValue(getEnv('LEMON_API_KEY')),
+              cleanEnvValue(getEnv('LEMON_TEST_API_KEY')),
+            ].filter(Boolean)
+          )
+        );
+        if (candidateKeys.length === 0) {
+          return res.status(200).json({
+            success: false,
+            error: 'LEMONSQUEEZY_API_KEY missing on server. Cannot process Lemon Squeezy refund; subscription remains active.',
+          });
+        }
+
+        let refundSucceeded = false;
+        let refundedAlready = false;
+        let refundedAmountUSD = Number(
+          user.payments?.[0]?.amount || PLAN_DEFINITIONS[planKey].launchPrice || 0
+        );
+        let lemonErrorDetail = 'Lemon Squeezy refund API rejected request.';
+
+        for (const apiKey of candidateKeys) {
+          try {
+            const getRes = await fetch(`https://api.lemonsqueezy.com/v1/orders/${encodeURIComponent(orderId)}`, {
+              method: 'GET',
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+                Accept: 'application/vnd.api+json',
+              },
+            });
+            if (!getRes.ok) {
+              const errTxt = await getRes.text().catch(() => '');
+              lemonErrorDetail = `Lemon Order Lookup HTTP ${getRes.status}: ${errTxt.slice(0, 180)}`;
+              continue;
+            }
+            const orderJson: any = await getRes.json().catch(() => ({}));
+            const attrs = orderJson?.data?.attributes || {};
+            const totalCents = Number(attrs.total || 0);
+            if (totalCents > 0) {
+              refundedAmountUSD = Number((totalCents / 100).toFixed(2));
+            }
+            if (String(attrs.status || '').toLowerCase() === 'refunded') {
+              refundSucceeded = true;
+              refundedAlready = true;
+              break;
+            }
+
+            const refundRes = await fetch(
+              `https://api.lemonsqueezy.com/v1/orders/${encodeURIComponent(orderId)}/refund`,
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                  Accept: 'application/vnd.api+json',
+                  'Content-Type': 'application/vnd.api+json',
+                },
+                body: JSON.stringify(totalCents > 0 ? { amount: totalCents } : {}),
+              }
+            );
+            if (refundRes.ok) {
+              refundSucceeded = true;
+              break;
+            } else {
+              const refRaw = await refundRes.text().catch(() => '');
+              let refParsed: any = {};
+              try {
+                refParsed = refRaw ? JSON.parse(refRaw) : {};
+              } catch {}
+              lemonErrorDetail =
+                refParsed?.errors?.[0]?.detail ||
+                refParsed?.message ||
+                `Lemon Refund HTTP ${refundRes.status}: ${refRaw.slice(0, 180)}`;
+            }
+          } catch (err: any) {
+            lemonErrorDetail = err?.message || 'Network error calling Lemon Squeezy refund API';
+          }
+        }
+
+        if (!refundSucceeded) {
+          return res.status(200).json({
+            success: false,
+            error: `Lemon Squeezy refund failed (${lemonErrorDetail}). Your subscription was NOT cancelled or deactivated.`,
+          });
+        }
+
+        const prevPlanDisplay = PLAN_DEFINITIONS[planKey].displayName;
+        const iso = new Date(now).toISOString();
+        const timelineEntry: ForensicTimelineEntry = {
+          id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: iso,
+          type: 'cancellation',
+          message: `Self-serve cancellation & Lemon refund ($${refundedAmountUSD}) Order #${orderId} -> Downgraded ${prevPlanDisplay} to FREE (${eligibility.eligibleRule})`,
+          actor: email,
+        };
+
+        const updatedUser = updateServerUser(email, {
+          plan: 'free',
+          analyses_used: 0,
+          successful_analyses: 0,
+          license_start: now,
+          license_end: now + THIRTY_DAYS_MS,
+          cancel_status: 'refunded',
+          refund_requested: true,
+          refund_status: 'approved',
+          refund_notes: `Cancelled + Lemon refund Order #${orderId} ($${refundedAmountUSD}) via ${eligibility.eligibleRule}`,
+          timeline: [timelineEntry, ...user.timeline].slice(0, 200),
+        });
+        await saveUserToDb(updatedUser).catch(() => {});
+
+        await appendCancellationLogToDb({
+          email,
+          previous_plan: prevPlanDisplay,
+          order_id: orderId,
+          refunded_amount_usd: refundedAmountUSD,
+          rule: eligibility.eligibleRule,
+          reason: eligibility.statusLabel,
+          successful_analyses: user.successful_analyses || 0,
+          has_reported_issue: Boolean(user.has_reported_issue),
+          issue_status: user.issue_status || 'none',
+          lemon_status: refundedAlready ? 'already_refunded' : 'refunded',
+        });
+
+        await dispatchEmailAlert({
+          to: getAdminEmail(),
+          subject: `AQARI Subscription Cancelled & Refunded ($${refundedAmountUSD}) - ${email}`,
+          text: `Customer: ${email}\nPrevious Plan: ${prevPlanDisplay}\nOrder ID: #${orderId}\nRefunded Amount: $${refundedAmountUSD} USD\nRule Applied: ${eligibility.eligibleRule} (${eligibility.statusLabel})\nTimestamp: ${iso}`,
+          eventType: 'subscription_cancelled',
+        }).catch(() => {});
+
+        const nextEligibility = evaluateCancelRefundEligibility(updatedUser, now);
+        return res.status(200).json({
+          success: true,
+          message: `${prevPlanDisplay} cancelled. Refund of $${refundedAmountUSD} issued via Lemon Squeezy (5-10 business days).`,
+          refundedAmount: refundedAmountUSD,
+          order_id: orderId,
+          plan: 'FREE',
+          cancel_status: 'refunded',
+          cancellationEligibility: nextEligibility,
+        });
+      }
+
       default:
         return res.status(400).json({
           success: false,
@@ -5423,6 +5955,8 @@ export default async function handler(req: any, res: any) {
             'news',
             'demo',
             'webhook-logs',
+            'report-issue',
+            'cancel-subscription',
             'google-callback',
           ],
         });

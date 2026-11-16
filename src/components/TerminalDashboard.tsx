@@ -12,7 +12,6 @@ import {
   WhiteGloveDeliverable,
 } from '../types';
 import {
-  CURRENCY_SYMBOLS,
   PLAN_LIMITS,
   PROPERTY_LISTINGS,
   CROSS_BORDER_DATA,
@@ -26,7 +25,12 @@ import {
   canUseFeature,
 } from '../../lib/plans';
 import { CITIES, findCityEntry, searchCities, CityEntry } from '../../data/cities';
-import { formatPrice } from '../utils/formatters';
+import {
+  formatPrice,
+  formatUsdInputDisplay,
+  parseEnglishNumber,
+  sanitizeEnglishDecimal,
+} from '../utils/formatters';
 import { formatTimeLeft } from '../utils/emailService';
 import { downloadMemorandumPdf, downloadWhiteGlovePdf } from '../utils/pdfExport';
 import type { LiveMarketResponse } from '../utils/marketDataService';
@@ -189,10 +193,15 @@ interface TerminalDashboardProps {
   initialToast?: string | null;
 }
 
+const EN_INPUT_STYLE: React.CSSProperties = {
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  unicodeBidi: 'embed',
+  direction: 'ltr',
+};
+
 export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   user,
   currentCurrency,
-  onCurrencyChange,
   config,
   pricingData,
   marketLive,
@@ -213,8 +222,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   // Mobile sidebar drawer state
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  // Currency dropdown open state
-  const [currencyOpen, setCurrencyOpen] = useState(false);
+  // Tool Issue & Subscription Cancellation modal states
+  const [isIssueModalOpen, setIsIssueModalOpen] = useState(false);
+  const [issueDescInput, setIssueDescInput] = useState('');
+  const [isSubmittingIssue, setIsSubmittingIssue] = useState(false);
+  const [issueModalError, setIssueModalError] = useState<string | null>(null);
+  const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
+  const [isCancellingSub, setIsCancellingSub] = useState(false);
+  const [cancelModalError, setCancelModalError] = useState<string | null>(null);
 
   // Success / notification toast
   const [toastMessage, setToastMessage] = useState<string | null>(initialToast || null);
@@ -474,8 +489,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [priceUSD, setPriceUSD] = useState<number>(PROPERTY_LISTINGS[0].basePriceUSD);
   const [rentUSD, setRentUSD] = useState<number>(PROPERTY_LISTINGS[0].baseRentMonthlyUSD);
   const [downPaymentPct, setDownPaymentPct] = useState<number>(30);
+  const [downDraft, setDownDraft] = useState<string>('30');
   const [interestRatePct, setInterestRatePct] = useState<number>(5.5);
+  const [rateDraft, setRateDraft] = useState<string>('5.5');
   const [operatingExpensePct, setOperatingExpensePct] = useState<number>(15);
+  const [opexDraft, setOpexDraft] = useState<string>('15');
   const initialCityEntry = resolveCityFromInput(PROPERTY_LISTINGS[0].city);
   const [city, setCity] = useState<string>(initialCityEntry?.city || PROPERTY_LISTINGS[0].city);
   const [cityComboInput, setCityComboInput] = useState<string>(
@@ -568,7 +586,6 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [wgDealLink, setWgDealLink] = useState<string>('');
   const [wgTargetCity, setWgTargetCity] = useState<string>('Muscat (Oman OM)');
   const [wgCityOpen, setWgCityOpen] = useState<boolean>(false);
-  const [wgCurrency, setWgCurrency] = useState<CurrencyCode>('USD');
   const [wgValuation, setWgValuation] = useState<string>('');
   const [wgExpectedRent, setWgExpectedRent] = useState<string>('');
   const [wgGoalNotes, setWgGoalNotes] = useState<string>('');
@@ -619,14 +636,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       .filter((c): c is CityEntry => Boolean(c));
   }, [wgTargetCity]);
 
-  const selectTargetCity = (entryOrRaw: CityEntry | string, syncCurrency = true) => {
+  const selectTargetCity = (entryOrRaw: CityEntry | string, _syncCurrency = true) => {
     const entry = typeof entryOrRaw === 'string' ? resolveCityFromInput(entryOrRaw) : entryOrRaw;
     if (entry) {
       setCity(entry.city);
       setCityComboInput(formatCityOptionLabel(entry));
-      if (syncCurrency && (entry.currency === 'USD' || entry.currency === 'OMR' || entry.currency === 'AED' || entry.currency === 'GBP')) {
-        onCurrencyChange(entry.currency);
-      }
     } else if (typeof entryOrRaw === 'string') {
       setCity(entryOrRaw);
       setCityComboInput(entryOrRaw);
@@ -769,9 +783,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           propertyTitle: title,
           dealLink: wgDealLink.trim() || undefined,
           targetCity: resolvedCity,
-          currency: wgCurrency,
-          valuation: Number(wgValuation) || 0,
-          expectedMonthlyRent: Number(wgExpectedRent) || 0,
+          currency: 'USD',
+          valuation: parseEnglishNumber(wgValuation, 0),
+          expectedMonthlyRent: parseEnglishNumber(wgExpectedRent, 0),
           goalNotes: wgGoalNotes.trim(),
         }),
       });
@@ -1029,10 +1043,16 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         const nextLeft = data.license.isUnlimitedAnalyses
           ? 999999
           : data.license.analysesLeft ?? Math.max(0, analysesRemaining - 1);
+        const nextSucc =
+          typeof data.successful_analyses === 'number'
+            ? data.successful_analyses
+            : (user.successfulAnalyses ?? 0) + 1;
         onUpdateUser({
           ...user,
           plan: data.license.planKey || user.plan,
           analysesUsed: data.license.analysesUsed ?? (user.analysesUsed || 0) + 1,
+          successfulAnalyses: nextSucc,
+          cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
           freeAnalyses: nextLeft,
           freeAnalysesLeft: nextLeft,
           analysesLeft: nextLeft,
@@ -1415,8 +1435,219 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     });
   }, [savedAnalyses, savedCityFilter, savedSearch]);
 
-  const activeCurrencyInfo = CURRENCY_SYMBOLS[currentCurrency];
-  const currencies: CurrencyCode[] = ['USD', 'OMR', 'AED', 'GBP'];
+  // Computed Rules A-E cancellation & refund eligibility (mirrored with backend /api/app)
+  const localCancelEligibility = useMemo(() => {
+    const serverElig = user.cancellationEligibility;
+    const succ = Math.max(
+      Number(user.successfulAnalyses ?? 0),
+      Number(serverElig?.successfulAnalyses ?? 0)
+    );
+    const hasIssue = Boolean(user.hasReportedIssue || serverElig?.hasReportedIssue);
+    const issueReportedAt = user.issueReportedAt ?? serverElig?.issueReportedAt ?? null;
+    const issueResolvedAt = user.issueResolvedAt ?? serverElig?.issueResolvedAt ?? null;
+    const issueStatus = String(user.issueStatus || serverElig?.issueStatus || (hasIssue ? (issueResolvedAt ? 'resolved' : 'reported') : 'none'));
+    const activatedAt = user.subscriptionStartAt || Date.now();
+    const daysSinceActivation = Math.max(0, Math.floor((Date.now() - activatedAt) / (24 * 60 * 60 * 1000)));
+    const refundableAmountUSD = Number(serverElig?.refundableAmountUSD ?? planPriceUSD ?? 0);
+
+    if (license.planKey === 'free') {
+      return {
+        canCancel: false,
+        rule: 'FREE',
+        reason: 'Free plan does not have an active paid subscription.',
+        buttonText: 'No Active Paid Subscription',
+        daysSinceActivation: 0,
+        successfulAnalyses: succ,
+        hasReportedIssue: hasIssue,
+        issueStatus,
+        refundableAmountUSD: 0,
+      };
+    }
+
+    if (succ >= 1) {
+      return {
+        canCancel: false,
+        rule: 'A',
+        reason: 'Cancellation unavailable - You completed 1 successful analysis. Refund not eligible.',
+        buttonText: 'Cancellation Locked (Analysis Used)',
+        daysSinceActivation,
+        successfulAnalyses: succ,
+        hasReportedIssue: hasIssue,
+        issueStatus,
+        refundableAmountUSD,
+      };
+    }
+
+    if (hasIssue && issueReportedAt && !issueResolvedAt) {
+      const daysSinceReport = (Date.now() - issueReportedAt) / (24 * 60 * 60 * 1000);
+      if (daysSinceReport >= 7) {
+        return {
+          canCancel: true,
+          rule: 'D',
+          reason: 'Cancel - Tool issue not resolved in 7 days. Eligible for full refund.',
+          buttonText: 'Cancel - Tool issue not resolved in 7 days',
+          daysSinceActivation,
+          successfulAnalyses: succ,
+          hasReportedIssue: hasIssue,
+          issueStatus,
+          refundableAmountUSD,
+        };
+      }
+      if (daysSinceActivation > 7) {
+        return {
+          canCancel: false,
+          rule: 'PENDING_REVIEW',
+          reason: 'Issue reported - Under 7-day review.',
+          buttonText: 'Issue Reported - Under 7-Day Review',
+          daysSinceActivation,
+          successfulAnalyses: succ,
+          hasReportedIssue: hasIssue,
+          issueStatus,
+          refundableAmountUSD,
+        };
+      }
+    }
+
+    if (
+      hasIssue &&
+      issueReportedAt &&
+      issueResolvedAt &&
+      issueResolvedAt - issueReportedAt <= 7 * 24 * 60 * 60 * 1000 &&
+      daysSinceActivation > 7
+    ) {
+      return {
+        canCancel: false,
+        rule: 'E',
+        reason: 'Cancellation unavailable - Tool issue resolved within 7 days and 7-day window passed.',
+        buttonText: 'Cancellation Locked (Issue Resolved)',
+        daysSinceActivation,
+        successfulAnalyses: succ,
+        hasReportedIssue: hasIssue,
+        issueStatus,
+        refundableAmountUSD,
+      };
+    }
+
+    if (daysSinceActivation <= 7) {
+      return {
+        canCancel: true,
+        rule: 'C',
+        reason: 'Cancel within 7 days - No successful analysis yet',
+        buttonText: 'Cancel within 7 days - No successful analysis yet',
+        daysSinceActivation,
+        successfulAnalyses: succ,
+        hasReportedIssue: hasIssue,
+        issueStatus,
+        refundableAmountUSD,
+      };
+    }
+
+    return {
+      canCancel: false,
+      rule: 'B',
+      reason: 'Cancellation unavailable - 7-day window passed and no tool issue reported.',
+      buttonText: 'Cancellation Locked (7-Day Window Passed)',
+      daysSinceActivation,
+      successfulAnalyses: succ,
+      hasReportedIssue: hasIssue,
+      issueStatus,
+      refundableAmountUSD,
+    };
+  }, [user, license.planKey, planPriceUSD]);
+
+  const handleReportToolIssue = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const desc = issueDescInput.trim();
+    if (desc.length < 5) {
+      setIssueModalError('Please describe the technical issue (at least 5 characters).');
+      return;
+    }
+    setIsSubmittingIssue(true);
+    setIssueModalError(null);
+    try {
+      const res = await fetch('/api/app?action=report-issue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          description: desc,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        setIssueModalError(data?.error || 'Unable to submit issue report.');
+        return;
+      }
+      onUpdateUser({
+        ...user,
+        hasReportedIssue: true,
+        issueReportedAt: data.issue_reported_at ?? Date.now(),
+        issueResolvedAt: null,
+        issueDescription: desc,
+        issueStatus: 'reported',
+        cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
+      });
+      setIsIssueModalOpen(false);
+      setIssueDescInput('');
+      showToast('Tool issue reported. Our team has been notified.');
+    } catch {
+      setIssueModalError('Network error submitting issue report.');
+    } finally {
+      setIsSubmittingIssue(false);
+    }
+  };
+
+  const handleCancelSubscription = async () => {
+    setIsCancellingSub(true);
+    setCancelModalError(null);
+    try {
+      const res = await fetch('/api/app?action=cancel-subscription', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        setCancelModalError(
+          data?.error || 'Refund API failed. Your subscription remains active.'
+        );
+        return;
+      }
+
+      const freeCfg = PLANS.free;
+      onUpdateUser({
+        ...user,
+        plan: 'free',
+        planName: freeCfg.displayName,
+        planPrice: 0,
+        features: [...freeCfg.features],
+        maxSaved: freeCfg.savedLimit,
+        subscriptionPlan: 'free',
+        subscriptionStatus: 'free',
+        subscriptionEndsAt: null,
+        subscriptionExpiry: null,
+        analysesUsed: 0,
+        successfulAnalyses: 0,
+        freeAnalyses: freeCfg.analysesLimit,
+        freeAnalysesLeft: freeCfg.analysesLimit,
+        analysesLeft: freeCfg.analysesLimit,
+        cancelStatus: 'refunded',
+        cancellationEligibility: data.cancellationEligibility ?? null,
+      });
+      setIsCancelModalOpen(false);
+      showToast(data?.message || 'Subscription cancelled & refund issued via Lemon Squeezy');
+    } catch {
+      setCancelModalError('Network error processing cancellation. Plan not deactivated.');
+    } finally {
+      setIsCancellingSub(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-black text-slate-100 flex flex-col font-sans select-none relative">
@@ -1551,36 +1782,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             <strong className="text-white">{analysesLeftStr}</strong>
           </div>
 
-          {/* Currency Switcher */}
-          <div className="relative">
-            <button
-              onClick={() => setCurrencyOpen(!currencyOpen)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-xs font-mono text-zinc-200 transition cursor-pointer"
-            >
-              <span>{activeCurrencyInfo.flag}</span>
-              <span className="font-semibold">{currentCurrency}</span>
-              <ChevronDown className={`w-3 h-3 text-zinc-400 transition-transform ${currencyOpen ? 'rotate-180' : ''}`} />
-            </button>
-
-            {currencyOpen && (
-              <div className="absolute right-0 mt-2 w-40 rounded-xl glass-dropdown p-1 z-50 animate-in fade-in zoom-in-95 duration-150">
-                {currencies.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => {
-                      onCurrencyChange(c);
-                      setCurrencyOpen(false);
-                    }}
-                    className={`w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs font-mono transition cursor-pointer ${
-                      currentCurrency === c ? 'bg-[#D4AF37]/20 text-[#D4AF37] font-bold' : 'text-zinc-300 hover:bg-white/5'
-                    }`}
-                  >
-                    <span>{CURRENCY_SYMBOLS[c].flag} {c}</span>
-                    {currentCurrency === c && <Check className="w-3 h-3 text-[#D4AF37]" />}
-                  </button>
-                ))}
-              </div>
-            )}
+          <div className="hidden xs:flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white/[0.04] border border-white/10 text-xs font-mono text-zinc-200">
+            <span>🇺🇸</span>
+            <span className="font-semibold">USD</span>
           </div>
         </div>
 
@@ -1829,6 +2033,17 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIssueModalError(null);
+                      setIsIssueModalOpen(true);
+                    }}
+                    className="text-xs font-mono font-bold px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 transition cursor-pointer flex items-center gap-1.5"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span>Report Tool Issue</span>
+                  </button>
                   <span className="text-xs font-mono font-bold px-3 py-1.5 rounded-xl bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37]">
                     {license.displayName}
                   </span>
@@ -2109,7 +2324,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                       {selectedCityEntry ? (
                         <div className="text-[10px] font-mono text-emerald-400 mt-1 truncate">
-                          Market: {selectedCityEntry.city}, {selectedCityEntry.country} - Avg Cap Rate {selectedCityEntry.avgCapRate}% - Tax {selectedCityEntry.taxRate}% ({selectedCityEntry.currency})
+                          Market: {selectedCityEntry.city}, {selectedCityEntry.country} - Avg Cap Rate {selectedCityEntry.avgCapRate}% - Display in USD
                         </div>
                       ) : cityComboInput.trim() ? (
                         <div className="text-[10px] font-mono text-rose-400 mt-1">
@@ -2119,7 +2334,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </div>
                   </div>
 
-                  {/* Typed Number Inputs: Acquisition Valuation ($) & Gross Monthly Rent ($/mo) */}
+                  {/* Typed English Number Inputs: Acquisition Valuation ($) & Gross Monthly Rent ($/mo) */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                       <label htmlFor="td-price-usd" className="text-xs font-mono text-zinc-300 block">
@@ -2129,16 +2344,24 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <span className="text-xs font-mono text-[#D4AF37] mr-2">$</span>
                         <input
                           id="td-price-usd"
-                          type="number"
+                          type="text"
+                          data-numeric="true"
                           lang="en"
                           dir="ltr"
                           inputMode="decimal"
-                          style={{ fontFamily: 'ui-monospace, monospace' }}
-                          min={1}
-                          step="1000"
-                          value={priceUSD || ''}
+                          autoComplete="off"
+                          style={EN_INPUT_STYLE}
+                          value={formatUsdInputDisplay(priceUSD)}
                           onChange={(e) => {
-                            setPriceUSD(Math.max(0, Number(e.target.value) || 0));
+                            const num = Math.max(0, Math.round(parseEnglishNumber(e.target.value, 0)));
+                            setPriceUSD(num);
+                            clearPendingRun();
+                          }}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            const text = e.clipboardData?.getData('text') || '';
+                            const num = Math.max(0, Math.round(parseEnglishNumber(text, 0)));
+                            setPriceUSD(num);
                             clearPendingRun();
                           }}
                           className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none"
@@ -2146,7 +2369,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <span className="text-[11px] font-mono text-zinc-400 ml-2">USD</span>
                       </div>
                       <div className="text-[10px] font-mono text-zinc-500">
-                        Converted display: {formatPrice(priceUSD, currentCurrency)}
+                        USD Valuation: {formatPrice(priceUSD, 'USD')}
                       </div>
                     </div>
 
@@ -2158,16 +2381,24 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <span className="text-xs font-mono text-emerald-400 mr-2">$</span>
                         <input
                           id="td-rent-usd"
-                          type="number"
+                          type="text"
+                          data-numeric="true"
                           lang="en"
                           dir="ltr"
                           inputMode="decimal"
-                          style={{ fontFamily: 'ui-monospace, monospace' }}
-                          min={1}
-                          step="50"
-                          value={rentUSD || ''}
+                          autoComplete="off"
+                          style={EN_INPUT_STYLE}
+                          value={formatUsdInputDisplay(rentUSD)}
                           onChange={(e) => {
-                            setRentUSD(Math.max(0, Number(e.target.value) || 0));
+                            const num = Math.max(0, Math.round(parseEnglishNumber(e.target.value, 0)));
+                            setRentUSD(num);
+                            clearPendingRun();
+                          }}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            const text = e.clipboardData?.getData('text') || '';
+                            const num = Math.max(0, Math.round(parseEnglishNumber(text, 0)));
+                            setRentUSD(num);
                             clearPendingRun();
                           }}
                           className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none"
@@ -2175,12 +2406,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <span className="text-[11px] font-mono text-zinc-400 ml-2">$/mo</span>
                       </div>
                       <div className="text-[10px] font-mono text-zinc-500">
-                        Converted display: {formatPrice(rentUSD, currentCurrency)} / mo
+                        Monthly Rent: {formatPrice(rentUSD, 'USD')} / mo
                       </div>
                     </div>
                   </div>
 
-                  {/* Typed Number Inputs: Equity Down (%), Mortgage Rate (%), OPEX & HOA (%) */}
+                  {/* Typed English Number Inputs: Equity Down (%), Mortgage Rate (%), OPEX & HOA (%) */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
                     <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-1.5">
                       <label htmlFor="td-down-pct" className="text-xs font-mono text-zinc-300 block">
@@ -2189,17 +2420,26 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-2.5">
                         <input
                           id="td-down-pct"
-                          type="number"
+                          type="text"
+                          data-numeric="true"
                           lang="en"
                           dir="ltr"
                           inputMode="decimal"
-                          style={{ fontFamily: 'ui-monospace, monospace' }}
-                          min={1}
-                          max={100}
-                          step="0.5"
-                          value={downPaymentPct || ''}
+                          autoComplete="off"
+                          style={EN_INPUT_STYLE}
+                          value={downDraft}
                           onChange={(e) => {
-                            setDownPaymentPct(Math.max(0, Math.min(100, Number(e.target.value) || 0)));
+                            const clean = sanitizeEnglishDecimal(e.target.value, true);
+                            setDownDraft(clean);
+                            setDownPaymentPct(Math.max(0, Math.min(100, parseEnglishNumber(clean, 0))));
+                            clearPendingRun();
+                          }}
+                          onBlur={() => setDownDraft(String(downPaymentPct))}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            const clean = sanitizeEnglishDecimal(e.clipboardData?.getData('text') || '', true);
+                            setDownDraft(clean);
+                            setDownPaymentPct(Math.max(0, Math.min(100, parseEnglishNumber(clean, 0))));
                             clearPendingRun();
                           }}
                           className="w-full py-2 bg-transparent text-white font-mono text-sm outline-none"
@@ -2215,17 +2455,26 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-purple-400 px-2.5">
                         <input
                           id="td-rate-pct"
-                          type="number"
+                          type="text"
+                          data-numeric="true"
                           lang="en"
                           dir="ltr"
                           inputMode="decimal"
-                          style={{ fontFamily: 'ui-monospace, monospace' }}
-                          min={0.1}
-                          max={30}
-                          step="0.1"
-                          value={interestRatePct || ''}
+                          autoComplete="off"
+                          style={EN_INPUT_STYLE}
+                          value={rateDraft}
                           onChange={(e) => {
-                            setInterestRatePct(Math.max(0, Number(e.target.value) || 0));
+                            const clean = sanitizeEnglishDecimal(e.target.value, true);
+                            setRateDraft(clean);
+                            setInterestRatePct(Math.max(0, Math.min(30, parseEnglishNumber(clean, 0))));
+                            clearPendingRun();
+                          }}
+                          onBlur={() => setRateDraft(String(interestRatePct))}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            const clean = sanitizeEnglishDecimal(e.clipboardData?.getData('text') || '', true);
+                            setRateDraft(clean);
+                            setInterestRatePct(Math.max(0, Math.min(30, parseEnglishNumber(clean, 0))));
                             clearPendingRun();
                           }}
                           className="w-full py-2 bg-transparent text-white font-mono text-sm outline-none"
@@ -2241,17 +2490,26 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-cyan-400 px-2.5">
                         <input
                           id="td-opex-pct"
-                          type="number"
+                          type="text"
+                          data-numeric="true"
                           lang="en"
                           dir="ltr"
                           inputMode="decimal"
-                          style={{ fontFamily: 'ui-monospace, monospace' }}
-                          min={1}
-                          max={99}
-                          step="0.5"
-                          value={operatingExpensePct || ''}
+                          autoComplete="off"
+                          style={EN_INPUT_STYLE}
+                          value={opexDraft}
                           onChange={(e) => {
-                            setOperatingExpensePct(Math.max(0, Math.min(99, Number(e.target.value) || 0)));
+                            const clean = sanitizeEnglishDecimal(e.target.value, true);
+                            setOpexDraft(clean);
+                            setOperatingExpensePct(Math.max(0, Math.min(99, parseEnglishNumber(clean, 0))));
+                            clearPendingRun();
+                          }}
+                          onBlur={() => setOpexDraft(String(operatingExpensePct))}
+                          onPaste={(e) => {
+                            e.preventDefault();
+                            const clean = sanitizeEnglishDecimal(e.clipboardData?.getData('text') || '', true);
+                            setOpexDraft(clean);
+                            setOperatingExpensePct(Math.max(0, Math.min(99, parseEnglishNumber(clean, 0))));
                             clearPendingRun();
                           }}
                           className="w-full py-2 bg-transparent text-white font-mono text-sm outline-none"
@@ -3024,39 +3282,41 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             </div>
                           )}
                         </div>
-                        <div className="grid grid-cols-3 gap-2">
-                          <select
-                            value={wgCurrency}
-                            onChange={(e) => setWgCurrency(e.target.value as CurrencyCode)}
-                            className="px-2 py-2 rounded-lg bg-zinc-900 border border-white/10 text-white outline-none"
-                          >
-                            <option value="USD">USD</option>
-                            <option value="OMR">OMR</option>
-                            <option value="AED">AED</option>
-                            <option value="GBP">GBP</option>
-                          </select>
+                        <div className="grid grid-cols-2 gap-2">
                           <input
                             id="td-wg-val"
-                            type="number"
+                            type="text"
+                            data-numeric="true"
                             lang="en"
                             dir="ltr"
                             inputMode="decimal"
-                            style={{ fontFamily: 'ui-monospace, monospace' }}
+                            autoComplete="off"
+                            style={EN_INPUT_STYLE}
                             value={wgValuation}
-                            onChange={(e) => setWgValuation(e.target.value)}
-                            placeholder="Valuation"
+                            onChange={(e) => setWgValuation(sanitizeEnglishDecimal(e.target.value, true))}
+                            onPaste={(e) => {
+                              e.preventDefault();
+                              setWgValuation(sanitizeEnglishDecimal(e.clipboardData?.getData('text') || '', true));
+                            }}
+                            placeholder="Valuation (USD $)"
                             className="px-2.5 py-2 rounded-lg bg-black/50 border border-white/10 text-white outline-none"
                           />
                           <input
                             id="td-wg-rent"
-                            type="number"
+                            type="text"
+                            data-numeric="true"
                             lang="en"
                             dir="ltr"
                             inputMode="decimal"
-                            style={{ fontFamily: 'ui-monospace, monospace' }}
+                            autoComplete="off"
+                            style={EN_INPUT_STYLE}
                             value={wgExpectedRent}
-                            onChange={(e) => setWgExpectedRent(e.target.value)}
-                            placeholder="Rent/mo"
+                            onChange={(e) => setWgExpectedRent(sanitizeEnglishDecimal(e.target.value, true))}
+                            onPaste={(e) => {
+                              e.preventDefault();
+                              setWgExpectedRent(sanitizeEnglishDecimal(e.clipboardData?.getData('text') || '', true));
+                            }}
+                            placeholder="Rent/mo (USD $)"
                             className="px-2.5 py-2 rounded-lg bg-black/50 border border-white/10 text-white outline-none"
                           />
                         </div>
@@ -4016,6 +4276,124 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
+              {/* SUBSCRIPTION & CANCELLATION (Rules A–E + Report Tool Issue + Auto-Locked Cancel) */}
+              <div className="glass-panel p-6 space-y-5 border border-white/15">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3">
+                  <div className="flex items-center gap-2 text-base font-mono font-bold uppercase text-white">
+                    <ShieldCheck className="w-5 h-5 text-[#D4AF37]" />
+                    <span>SUBSCRIPTION &amp; CANCELLATION</span>
+                  </div>
+                  <span
+                    className={`text-xs font-mono font-bold uppercase px-3 py-1 rounded-full border ${
+                      localCancelEligibility.canCancel
+                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                        : 'bg-zinc-900 border-white/15 text-zinc-400'
+                    }`}
+                  >
+                    {localCancelEligibility.canCancel ? 'ELIGIBLE FOR REFUND' : 'REFUND LOCKED'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 font-mono text-xs">
+                  <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] text-zinc-400 uppercase block">Plan</span>
+                    <strong className="text-sm font-bold text-[#D4AF37]">{license.displayName}</strong>
+                  </div>
+                  <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] text-zinc-400 uppercase block">Activated</span>
+                    <strong className="text-sm font-bold text-white">
+                      {user.subscriptionStartAt
+                        ? new Date(user.subscriptionStartAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                        : '-'}
+                    </strong>
+                  </div>
+                  <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] text-zinc-400 uppercase block">Days Active</span>
+                    <strong className="text-sm font-bold text-white">
+                      {localCancelEligibility.daysSinceActivation}d
+                    </strong>
+                  </div>
+                  <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] text-zinc-400 uppercase block">Analyses Used</span>
+                    <strong className="text-sm font-bold text-white">
+                      {user.analysesUsed ?? 0} / {license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLimit}
+                    </strong>
+                  </div>
+                  <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] text-zinc-400 uppercase block">Successful Runs</span>
+                    <strong className={`text-sm font-bold ${localCancelEligibility.successfulAnalyses > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {localCancelEligibility.successfulAnalyses}
+                    </strong>
+                  </div>
+                  <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
+                    <span className="text-[10px] text-zinc-400 uppercase block">Tool Status</span>
+                    <strong
+                      className={`text-sm font-bold uppercase ${
+                        localCancelEligibility.issueStatus === 'reported'
+                          ? 'text-amber-300'
+                          : localCancelEligibility.issueStatus === 'resolved'
+                          ? 'text-cyan-300'
+                          : 'text-emerald-400'
+                      }`}
+                    >
+                      {localCancelEligibility.issueStatus === 'reported'
+                        ? 'Reported Issue'
+                        : localCancelEligibility.issueStatus === 'resolved'
+                        ? 'Resolved'
+                        : 'Working'}
+                    </strong>
+                  </div>
+                </div>
+
+                <div
+                  className={`p-3.5 rounded-xl border text-xs font-mono flex items-start gap-2.5 ${
+                    localCancelEligibility.canCancel
+                      ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-200'
+                      : 'bg-zinc-900/70 border-white/10 text-zinc-300'
+                  }`}
+                >
+                  <AlertTriangle
+                    className={`w-4 h-4 shrink-0 mt-0.5 ${
+                      localCancelEligibility.canCancel ? 'text-emerald-400' : 'text-amber-400'
+                    }`}
+                  />
+                  <span>{localCancelEligibility.reason}</span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIssueModalError(null);
+                      setIsIssueModalOpen(true);
+                    }}
+                    className="px-4 py-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 font-bold text-xs font-mono transition cursor-pointer flex items-center gap-2 min-h-[44px]"
+                  >
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Report Tool Issue</span>
+                  </button>
+
+                  {license.planKey !== 'free' && (
+                    <button
+                      type="button"
+                      disabled={!localCancelEligibility.canCancel}
+                      onClick={() => {
+                        setCancelModalError(null);
+                        setIsCancelModalOpen(true);
+                      }}
+                      className={`px-4 py-2.5 rounded-xl font-bold text-xs font-mono transition min-h-[44px] flex items-center gap-2 ${
+                        localCancelEligibility.canCancel
+                          ? 'bg-rose-600 hover:bg-rose-500 text-white cursor-pointer shadow-lg'
+                          : 'bg-zinc-800/80 text-zinc-500 border border-white/10 cursor-not-allowed'
+                      }`}
+                    >
+                      {!localCancelEligibility.canCancel && <Lock className="w-3.5 h-3.5" />}
+                      <span>{localCancelEligibility.buttonText}</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Account Card */}
               <div className="glass-panel p-6 space-y-4">
                 <h3 className="text-sm font-mono font-bold uppercase text-white">Profile Credentials</h3>
@@ -4462,6 +4840,111 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         </main>
 
       </div>
+
+      {/* Report Tool Issue Modal */}
+      {isIssueModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+          <div className="w-full max-w-md glass-panel p-6 rounded-3xl border border-amber-500/40 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-amber-300 font-mono font-bold text-sm uppercase">
+                <AlertTriangle className="w-4 h-4" />
+                <span>Report Tool Issue</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsIssueModalOpen(false)}
+                className="p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs font-mono text-zinc-300 leading-relaxed">
+              Experiencing a bug or calculation failure? Describe the issue below. Reported issues are logged with a timestamp and reviewed by engineering.
+            </p>
+            <form onSubmit={handleReportToolIssue} className="space-y-3">
+              <textarea
+                rows={4}
+                value={issueDescInput}
+                onChange={(e) => setIssueDescInput(e.target.value)}
+                placeholder="Describe what happened, e.g., error message, city input, or failed output..."
+                className="w-full p-3 rounded-xl bg-black/60 border border-white/15 focus:border-amber-400 text-xs font-mono text-white outline-none"
+              />
+              {issueModalError && (
+                <div className="p-2.5 rounded-xl bg-rose-950/50 border border-rose-500/40 text-xs font-mono text-rose-200">
+                  {issueModalError}
+                </div>
+              )}
+              <div className="flex items-center justify-end gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsIssueModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-mono text-zinc-300 cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingIssue}
+                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
+                >
+                  {isSubmittingIssue ? 'Submitting...' : 'Submit Issue Report'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Cancel Subscription + Refund Modal */}
+      {isCancelModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+          <div className="w-full max-w-md glass-panel p-6 rounded-3xl border border-rose-500/40 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-rose-400 font-mono font-bold text-sm uppercase">
+                <AlertTriangle className="w-4 h-4" />
+                <span>Confirm Subscription Cancellation</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCancelModalOpen(false)}
+                className="p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs font-mono text-zinc-200 leading-relaxed">
+              Cancel <strong className="text-[#D4AF37]">{license.displayName}</strong>? Your analyses will be lost,{' '}
+              <strong className="text-[#D4AF37]">{license.displayName}</strong> will be deactivated, refund of{' '}
+              <strong className="text-emerald-400">
+                ${localCancelEligibility.refundableAmountUSD || planPriceUSD}
+              </strong>{' '}
+              will be issued to original payment method in 5-10 business days. This cannot be undone.
+            </p>
+            {cancelModalError && (
+              <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/50 text-xs font-mono text-rose-200">
+                {cancelModalError}
+              </div>
+            )}
+            <div className="flex flex-col sm:flex-row items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsCancelModalOpen(false)}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-mono font-bold text-white cursor-pointer"
+              >
+                Keep Subscription
+              </button>
+              <button
+                type="button"
+                disabled={isCancellingSub}
+                onClick={handleCancelSubscription}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-mono font-bold text-white cursor-pointer disabled:opacity-60"
+              >
+                {isCancellingSub ? 'Processing Refund...' : 'Confirm Cancel + Refund'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

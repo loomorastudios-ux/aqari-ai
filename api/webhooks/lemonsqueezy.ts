@@ -153,6 +153,7 @@ interface ServerUserRecord {
   license_start: number | null;
   license_end: number | null;
   analyses_used: number;
+  successful_analyses: number;
   saved_analyses: any[];
   custom_cities: any[];
   timezone: string;
@@ -171,6 +172,13 @@ interface ServerUserRecord {
   refund_policy_accepted_at: string | null;
   locked_launch_price: number | null;
   lemon_customer_email: string | null;
+  has_reported_issue: boolean;
+  issue_reported_at: number | null;
+  issue_resolved_at: number | null;
+  issue_description: string;
+  issue_status: 'none' | 'open' | 'resolved';
+  cancel_status: 'none' | 'refunded';
+  last_order_id?: string | null;
 }
 
 interface StoreShape {
@@ -243,6 +251,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     license_start: raw?.license_start ?? now,
     license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
     analyses_used: Math.max(0, Number(raw?.analyses_used ?? 0)),
+    successful_analyses: Math.max(0, Number(raw?.successful_analyses ?? 0)),
     saved_analyses: Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [],
     custom_cities: Array.isArray(raw?.custom_cities) ? raw.custom_cities : [],
     timezone: raw?.timezone || 'Asia/Muscat',
@@ -263,6 +272,25 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     lemon_customer_email: raw?.lemon_customer_email
       ? String(raw.lemon_customer_email).toLowerCase()
       : null,
+    has_reported_issue: Boolean(raw?.has_reported_issue),
+    issue_reported_at: typeof raw?.issue_reported_at === 'number' ? raw.issue_reported_at : null,
+    issue_resolved_at: typeof raw?.issue_resolved_at === 'number' ? raw.issue_resolved_at : null,
+    issue_description: typeof raw?.issue_description === 'string' ? raw.issue_description : '',
+    issue_status:
+      raw?.issue_status === 'open' || raw?.issue_status === 'resolved'
+        ? raw.issue_status
+        : raw?.has_reported_issue
+        ? raw?.issue_resolved_at
+          ? 'resolved'
+          : 'open'
+        : 'none',
+    cancel_status: raw?.cancel_status === 'refunded' ? 'refunded' : 'none',
+    last_order_id:
+      typeof raw?.last_order_id === 'string' && raw.last_order_id.trim()
+        ? raw.last_order_id.trim()
+        : Array.isArray(raw?.payments) && raw.payments[0]?.order_id
+        ? String(raw.payments[0].order_id)
+        : null,
   };
 }
 
@@ -469,6 +497,14 @@ function activatePaidPlanOnServer(params: {
     license_start: licenseStart,
     license_end: licenseEnd,
     analyses_used: 0,
+    successful_analyses: 0,
+    has_reported_issue: false,
+    issue_reported_at: null,
+    issue_resolved_at: null,
+    issue_description: '',
+    issue_status: 'none',
+    cancel_status: 'none',
+    last_order_id: orderId,
     day29_email_sent: false,
     expired_email_sent: false,
     total_paid_usd: alreadyRecorded ? existing.total_paid_usd : existing.total_paid_usd + amount,
@@ -528,7 +564,9 @@ function recordOrderRefunded(params: {
   return updateServerUser(user.email, {
     plan: 'free',
     analyses_used: 0,
+    successful_analyses: 0,
     license_end: now,
+    cancel_status: 'refunded',
     refund_requested: true,
     refund_status: 'approved',
     refund_notes: `Refunded via Lemon Squeezy webhook (Order #${params.orderId})`,

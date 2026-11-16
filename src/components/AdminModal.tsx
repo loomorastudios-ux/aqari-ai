@@ -216,35 +216,53 @@ export const AdminModal: React.FC<AdminModalProps> = ({
             <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06] space-y-3">
               <div className="text-xs font-mono font-bold text-white flex items-center gap-1.5 uppercase tracking-wider">
                 <DollarSign className="w-4 h-4 text-[#D4AF37]" />
-                <span>Base USD Prices (Automatically converted to OMR, AED, GBP)</span>
+                <span>Base USD Prices ($)</span>
               </div>
 
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="text-[10px] font-mono text-zinc-400 block mb-1">Starter Tier ($)</label>
                   <input
-                    type="number"
-                    value={starterPrice}
-                    onChange={(e) => setStarterPrice(Number(e.target.value))}
+                    type="text"
+                    data-numeric="true"
+                    lang="en"
+                    dir="ltr"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    value={String(starterPrice)}
+                    onChange={(e) => setStarterPrice(Number(e.target.value.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d))).replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).replace(/[^0-9.]/g, '')) || 0)}
                     className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/10 text-white text-xs font-mono"
+                    style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', unicodeBidi: 'embed', direction: 'ltr' }}
                   />
                 </div>
                 <div>
                   <label className="text-[10px] font-mono text-zinc-400 block mb-1">Pro Tier ($)</label>
                   <input
-                    type="number"
-                    value={proPrice}
-                    onChange={(e) => setProPrice(Number(e.target.value))}
+                    type="text"
+                    data-numeric="true"
+                    lang="en"
+                    dir="ltr"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    value={String(proPrice)}
+                    onChange={(e) => setProPrice(Number(e.target.value.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d))).replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).replace(/[^0-9.]/g, '')) || 0)}
                     className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/10 text-white text-xs font-mono"
+                    style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', unicodeBidi: 'embed', direction: 'ltr' }}
                   />
                 </div>
                 <div>
                   <label className="text-[10px] font-mono text-zinc-400 block mb-1">Enterprise ($)</label>
                   <input
-                    type="number"
-                    value={enterprisePrice}
-                    onChange={(e) => setEnterprisePrice(Number(e.target.value))}
+                    type="text"
+                    data-numeric="true"
+                    lang="en"
+                    dir="ltr"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    value={String(enterprisePrice)}
+                    onChange={(e) => setEnterprisePrice(Number(e.target.value.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d))).replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).replace(/[^0-9.]/g, '')) || 0)}
                     className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/10 text-white text-xs font-mono"
+                    style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', unicodeBidi: 'embed', direction: 'ltr' }}
                   />
                 </div>
               </div>
@@ -272,10 +290,16 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                 <div>
                   <label className="text-[10px] font-mono text-zinc-400 block mb-1">Discount Percent (%)</label>
                   <input
-                    type="number"
-                    value={discountPercent}
-                    onChange={(e) => setDiscountPercent(Number(e.target.value))}
+                    type="text"
+                    data-numeric="true"
+                    lang="en"
+                    dir="ltr"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    value={String(discountPercent)}
+                    onChange={(e) => setDiscountPercent(Number(e.target.value.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d))).replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).replace(/[^0-9.]/g, '')) || 0)}
                     className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/10 text-white text-xs font-mono"
+                    style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', unicodeBidi: 'embed', direction: 'ltr' }}
                   />
                 </div>
                 <div>

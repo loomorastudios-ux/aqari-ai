@@ -1,14 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { CurrencyCode, User, RemoteConfig } from '../types';
-import { CURRENCY_SYMBOLS } from '../constants';
 import { computeLicenseStatus } from '../../lib/plans';
 import { 
-  Globe2, 
   ChevronDown, 
   Sparkles, 
   LogOut, 
   Settings, 
-  Check, 
   ShieldCheck, 
   Flame,
   AlertTriangle,
@@ -33,8 +30,6 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
-  currentCurrency,
-  onCurrencyChange,
   user,
   config,
   onOpenAuth,
@@ -44,18 +39,13 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenPricing,
   onGoToHome,
 }) => {
-  const [currencyOpen, setCurrencyOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const currencyRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   // Close dropdowns on outside click
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (currencyRef.current && !currencyRef.current.contains(e.target as Node)) {
-        setCurrencyOpen(false);
-      }
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
         setUserMenuOpen(false);
       }
@@ -63,9 +53,6 @@ export const Navbar: React.FC<NavbarProps> = ({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  const currencies: CurrencyCode[] = ['USD', 'OMR', 'AED', 'GBP'];
-  const activeCurrencyInfo = CURRENCY_SYMBOLS[currentCurrency];
 
   const isTestMode =
     import.meta.env.VITE_LEMON_TEST_MODE === 'true' ||
@@ -217,60 +204,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </div>
 
-          {/* Controls: Currency Switcher & User Auth */}
+          {/* Controls: User Auth & Subscription Badge (USD Display Only) */}
           <div className="flex items-center gap-3">
-            
-            {/* Custom Glass Currency Switcher */}
-            <div className="relative" ref={currencyRef}>
-              <button
-                type="button"
-                onClick={() => setCurrencyOpen(!currencyOpen)}
-                className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#D4AF37]/50 text-xs font-medium text-white transition-all duration-200 cursor-pointer shadow-sm group min-h-[40px] sm:min-h-[44px]"
-                aria-label="Select currency"
-              >
-                <Globe2 className="w-3.5 h-3.5 text-[#D4AF37] hidden xs:inline-block" />
-                <span className="text-sm">{activeCurrencyInfo.flag}</span>
-                <span className="font-mono font-semibold tracking-wide text-xs">{currentCurrency}</span>
-                <span className="text-zinc-400 text-[10px] font-mono hidden md:inline">({activeCurrencyInfo.symbol})</span>
-                <ChevronDown className={`w-3 h-3 sm:w-3.5 sm:h-3.5 text-zinc-400 transition-transform duration-200 ${currencyOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              {/* Glass Dropdown Menu */}
-              {currencyOpen && (
-                <div className="absolute right-0 mt-2 w-48 rounded-2xl glass-dropdown p-1.5 z-50 animate-in fade-in zoom-in-95 duration-150">
-                  <div className="px-2.5 py-1.5 text-[10px] font-mono uppercase text-zinc-400 tracking-wider border-b border-white/[0.06] mb-1">
-                    Select Base Currency
-                  </div>
-                  {currencies.map((c) => {
-                    const info = CURRENCY_SYMBOLS[c];
-                    const isSelected = currentCurrency === c;
-                    return (
-                      <button
-                        key={c}
-                        onClick={() => {
-                          onCurrencyChange(c);
-                          setCurrencyOpen(false);
-                        }}
-                        className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs transition cursor-pointer ${
-                          isSelected
-                            ? 'bg-[#D4AF37]/15 text-[#D4AF37] font-semibold'
-                            : 'text-zinc-300 hover:bg-white/[0.06] hover:text-white'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-base">{info.flag}</span>
-                          <span className="font-mono">{info.label}</span>
-                        </div>
-                        {isSelected && <Check className="w-3.5 h-3.5 text-[#D4AF37]" />}
-                      </button>
-                    );
-                  })}
-                  <div className="px-2.5 py-1 text-[10px] text-zinc-400 border-t border-white/[0.06] mt-1 font-mono">
-                    Live peg: 1 USD = 0.385 OMR
-                  </div>
-                </div>
-              )}
-            </div>
 
             {/* Trial Status or Plan Badge */}
             {user && license ? (

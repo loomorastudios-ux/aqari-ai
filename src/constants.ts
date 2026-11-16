@@ -4,12 +4,12 @@ export const CONFIG_URL = "https://raw.githubusercontent.com/azzam-shmale/aqari-
 export const MARKET_DATA_URL = "https://raw.githubusercontent.com/azzam-shmale/aqari-config/main/market.json";
 export const EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD";
 
-// Fallback rates if external API is unreachable
+// USD Only display across AQARI Terminal
 export const FALLBACK_CURRENCY_RATES: Record<CurrencyCode, number> = {
   USD: 1,
-  OMR: 0.385,
-  AED: 3.67,
-  GBP: 0.79,
+  OMR: 1,
+  AED: 1,
+  GBP: 1,
 };
 
 export const CURRENCY_RATES: Record<CurrencyCode, number> = {
@@ -18,9 +18,9 @@ export const CURRENCY_RATES: Record<CurrencyCode, number> = {
 
 export const CURRENCY_SYMBOLS: Record<CurrencyCode, { symbol: string; position: 'prefix' | 'suffix'; label: string; flag: string }> = {
   USD: { symbol: '$', position: 'prefix', label: 'USD ($)', flag: '🇺🇸' },
-  OMR: { symbol: '﷼', position: 'suffix', label: 'OMR (﷼)', flag: '🇴🇲' },
-  AED: { symbol: 'د.إ', position: 'suffix', label: 'AED (د.إ)', flag: '🇦🇪' },
-  GBP: { symbol: '£', position: 'prefix', label: 'GBP (£)', flag: '🇬🇧' },
+  OMR: { symbol: '$', position: 'prefix', label: 'USD ($)', flag: '🇺🇸' },
+  AED: { symbol: '$', position: 'prefix', label: 'USD ($)', flag: '🇺🇸' },
+  GBP: { symbol: '$', position: 'prefix', label: 'USD ($)', flag: '🇺🇸' },
 };
 
 export const LEMON_LINKS: Record<'starter' | 'pro' | 'enterprise', string> = {

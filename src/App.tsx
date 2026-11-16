@@ -85,10 +85,9 @@ const isOwnerAdminEmail = (email?: string | null) =>
 
 export default function App() {
   const [currency, setCurrency] = useState<CurrencyCode>(() => {
-    const saved = localStorage.getItem('aqari_currency');
-    if (saved && ['USD', 'OMR', 'AED', 'GBP'].includes(saved)) {
-      return saved as CurrencyCode;
-    }
+    try {
+      localStorage.removeItem('aqari_currency');
+    } catch {}
     return 'USD';
   });
 
@@ -294,9 +293,8 @@ export default function App() {
     }
   }, [route, user?.email]);
 
-  const handleCurrencyChange = (newCurrency: CurrencyCode) => {
-    setCurrency(newCurrency);
-    localStorage.setItem('aqari_currency', newCurrency);
+  const handleCurrencyChange = (_newCurrency: CurrencyCode) => {
+    setCurrency('USD');
   };
 
   // Fetch Dynamic Pricing from /api/pricing (single source) immediately on mount, focus, or admin update
@@ -545,6 +543,7 @@ export default function App() {
           subscriptionEndsAt: licenseEndVal,
           subscriptionExpiry: licenseEndVal,
           analysesUsed: serverUsed,
+          successfulAnalyses: Number(meData?.successful_analyses ?? data.user?.successful_analyses ?? 0),
           freeAnalyses: numericLeft,
           freeAnalysesLeft: numericLeft,
           analysesLeft: numericLeft,
@@ -558,6 +557,14 @@ export default function App() {
           analystUnread: typeof meData?.analyst_unread === 'number' ? meData.analyst_unread : existing?.analystUnread || 0,
           whiteGloveRequests: Array.isArray(meData?.whiteglove_requests) ? meData.whiteglove_requests : existing?.whiteGloveRequests || [],
           whiteGloveDeliverables: Array.isArray(meData?.whiteglove_deliverables) ? meData.whiteglove_deliverables : existing?.whiteGloveDeliverables || [],
+          hasReportedIssue: Boolean(meData?.has_reported_issue ?? data.user?.has_reported_issue),
+          issueReportedAt: meData?.issue_reported_at ?? data.user?.issue_reported_at ?? null,
+          issueResolvedAt: meData?.issue_resolved_at ?? data.user?.issue_resolved_at ?? null,
+          issueDescription: meData?.issue_description ?? data.user?.issue_description ?? '',
+          issueStatus: meData?.issue_status ?? data.user?.issue_status ?? 'none',
+          cancelStatus: meData?.cancel_status ?? data.user?.cancel_status ?? 'none',
+          lastOrderId: meData?.last_order_id ?? data.user?.last_order_id ?? null,
+          cancellationEligibility: meData?.cancellationEligibility ?? data.cancellationEligibility ?? null,
           expiryEmailSent: false,
         };
 
@@ -728,10 +735,19 @@ export default function App() {
             subscriptionEndsAt: data.user.license_end ?? null,
             subscriptionExpiry: data.user.license_end ?? null,
             analysesUsed: serverUsed,
+            successfulAnalyses: Number(data.user.successful_analyses ?? 0),
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
             lockedLaunchPrice: data.user.locked_launch_price ?? null,
+            hasReportedIssue: Boolean(data.user.has_reported_issue),
+            issueReportedAt: data.user.issue_reported_at ?? null,
+            issueResolvedAt: data.user.issue_resolved_at ?? null,
+            issueDescription: data.user.issue_description ?? '',
+            issueStatus: data.user.issue_status ?? 'none',
+            cancelStatus: data.user.cancel_status ?? 'none',
+            lastOrderId: data.user.last_order_id ?? null,
+            cancellationEligibility: data.cancellationEligibility ?? null,
           };
           handleSaveUser(syncedUser);
           resolvedUser = syncedUser;
@@ -859,6 +875,13 @@ export default function App() {
         const serverWgReqs = Array.isArray(data.whiteglove_requests) ? data.whiteglove_requests : [];
         const serverWgDelivs = Array.isArray(data.whiteglove_deliverables) ? data.whiteglove_deliverables : [];
 
+        const serverSuccessfulAnalyses = Number(data.successful_analyses ?? data.user?.successful_analyses ?? 0);
+        const serverHasReportedIssue = Boolean(data.has_reported_issue ?? data.user?.has_reported_issue);
+        const serverIssueStatus = String(data.issue_status ?? data.user?.issue_status ?? 'none');
+        const serverIssueResolvedAt = data.issue_resolved_at ?? data.user?.issue_resolved_at ?? null;
+        const serverCancelStatus = String(data.cancel_status ?? data.user?.cancel_status ?? 'none');
+        const serverEligibility = data.cancellationEligibility ?? null;
+
         const changed =
           !user ||
           normalizePlanKey(user.plan) !== serverPlan ||
@@ -868,6 +891,12 @@ export default function App() {
           (user.maxSaved ?? -1) !== serverMaxSaved ||
           (user.apiKey ?? null) !== serverApiKey ||
           (user.analysesUsed ?? 0) !== serverUsed ||
+          (user.successfulAnalyses ?? 0) !== serverSuccessfulAnalyses ||
+          Boolean(user.hasReportedIssue) !== serverHasReportedIssue ||
+          (user.issueStatus ?? 'none') !== serverIssueStatus ||
+          (user.issueResolvedAt ?? null) !== serverIssueResolvedAt ||
+          (user.cancelStatus ?? 'none') !== serverCancelStatus ||
+          JSON.stringify(user.cancellationEligibility || null) !== JSON.stringify(serverEligibility) ||
           (user.subscriptionEndsAt ?? null) !== serverEnd ||
           (user.lockedLaunchPrice ?? null) !== serverLockedLaunch ||
           (user.analystUnread ?? 0) !== serverAnalystUnread ||
@@ -901,6 +930,7 @@ export default function App() {
             subscriptionEndsAt: serverEnd,
             subscriptionExpiry: serverEnd,
             analysesUsed: serverUsed,
+            successfulAnalyses: serverSuccessfulAnalyses,
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
@@ -909,6 +939,14 @@ export default function App() {
             analystUnread: serverAnalystUnread,
             whiteGloveRequests: serverWgReqs,
             whiteGloveDeliverables: serverWgDelivs,
+            hasReportedIssue: serverHasReportedIssue,
+            issueReportedAt: data.issue_reported_at ?? data.user?.issue_reported_at ?? null,
+            issueResolvedAt: serverIssueResolvedAt,
+            issueDescription: data.issue_description ?? data.user?.issue_description ?? '',
+            issueStatus: serverIssueStatus,
+            cancelStatus: serverCancelStatus,
+            lastOrderId: data.last_order_id ?? data.user?.last_order_id ?? null,
+            cancellationEligibility: serverEligibility,
           };
           saveUser(syncedUser);
           setUser(syncedUser);

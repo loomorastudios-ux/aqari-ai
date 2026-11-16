@@ -171,6 +171,17 @@ button, a, input, select {
   touch-action: manipulation;
 }
 
+/* Force Latin/English numerals and LTR direction inside all numeric inputs */
+input[type="number"],
+input[data-numeric="true"] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  direction: ltr;
+  unicode-bidi: embed;
+  text-align: left;
+}
+
 /* Support iOS safe area insets (notched iPhones) */
 @supports (padding: max(0px)) {
   .safe-area-bottom {

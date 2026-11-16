@@ -190,7 +190,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
               <div className="text-[10px] font-mono text-zinc-400 text-center">
-                5-7 Day Refund - If technical issue, max 3 analyses
+                7-Day Refund - 0 successful analyses or unresolved tool issue
               </div>
             </div>
           </div>
@@ -212,7 +212,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
               className="mt-0.5 w-4 h-4 accent-[#D4AF37] cursor-pointer shrink-0"
             />
             <span>
-              I agree to the <strong className="text-[#D4AF37]">5-7 Day Refund Policy - Max 3 analyses</strong>
+              I agree to the <strong className="text-[#D4AF37]">7-Day No-Usage Refund Policy (0 successful analyses)</strong>
               {policyError && <span className="block text-rose-300 mt-0.5 font-bold">Please agree to the refund policy first.</span>}
             </span>
           </label>
