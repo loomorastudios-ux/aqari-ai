@@ -104,13 +104,12 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
     });
   };
 
-  const analysesRemaining = user
-    ? user.plan === 'free'
-      ? user.freeAnalysesLeft ?? user.freeAnalyses ?? 3
-      : user.analysesLeft ?? user.freeAnalysesLeft ?? user.freeAnalyses ?? 30
-    : 3;
-
-  const isLockedForFree = user && user.plan === 'free' && analysesRemaining <= 0;
+  const rawRemaining = user
+    ? user.analysesLeft ?? user.freeAnalysesLeft ?? user.freeAnalyses
+    : undefined;
+  const isLockedForFree = Boolean(
+    user && user.plan === 'free' && typeof rawRemaining === 'number' && rawRemaining <= 0
+  );
 
   return (
     <section id="yield-simulator" className="py-16 px-4 lg:px-8 max-w-7xl mx-auto relative z-10">

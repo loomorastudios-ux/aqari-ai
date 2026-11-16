@@ -52,15 +52,13 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
     ? properties
     : properties.filter((p) => p.city.toLowerCase() === selectedCity.toLowerCase());
 
-  const analysesRemaining = user
-    ? user.plan === 'enterprise'
-      ? 9999
-      : user.plan === 'free'
-      ? user.freeAnalysesLeft ?? user.freeAnalyses ?? 3
-      : user.analysesLeft ?? user.freeAnalysesLeft ?? user.freeAnalyses ?? 50
-    : 3;
+  const rawServerLeft = user
+    ? user.analysesLeft ?? user.freeAnalysesLeft ?? user.freeAnalyses
+    : undefined;
+  const isCreditsLoaded = typeof rawServerLeft === 'number';
+  const analysesRemaining = isCreditsLoaded ? rawServerLeft : 0;
 
-  const isLockedForFree = user && user.plan === 'free' && analysesRemaining <= 0;
+  const isLockedForFree = Boolean(user && user.plan === 'free' && isCreditsLoaded && analysesRemaining <= 0);
 
   return (
     <section id="properties" className="py-16 px-4 lg:px-8 max-w-7xl mx-auto relative z-10">
@@ -84,10 +82,10 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
         {user && user.plan === 'free' && (
           <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] text-xs">
             <span className="text-zinc-400">Analysis credits:</span>
-            <span className={`font-mono font-bold ${analysesRemaining > 0 ? 'text-[#D4AF37]' : 'text-rose-400'}`}>
-              {analysesRemaining}/3 left
+            <span className={`font-mono font-bold ${!isCreditsLoaded || analysesRemaining > 0 ? 'text-[#D4AF37]' : 'text-rose-400'}`}>
+              {isCreditsLoaded ? `${analysesRemaining}/3 left` : 'Loading...'}
             </span>
-            {analysesRemaining <= 0 && (
+            {isCreditsLoaded && analysesRemaining <= 0 && (
               <button
                 onClick={onOpenPricing}
                 className="text-xs text-amber-400 underline font-semibold hover:text-amber-300 ml-1 cursor-pointer"

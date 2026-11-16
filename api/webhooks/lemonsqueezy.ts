@@ -152,9 +152,13 @@ interface ServerUserRecord {
   plan: PlanKey;
   license_start: number | null;
   license_end: number | null;
+  analyses_left: number;
+  analyses_total: number;
   analyses_used: number;
   successful_analyses: number;
   saved_analyses: any[];
+  saved_count: number;
+  max_saved: number;
   custom_cities: any[];
   timezone: string;
   day29_email_sent: boolean;
@@ -244,15 +248,31 @@ function normalizeOrderId(raw: string): string {
 
 function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
   const now = Date.now();
+  const plan = normalizePlanKey(raw?.plan);
+  const planCfg = PLAN_DEFINITIONS[plan];
+  const analysesTotal = Math.max(
+    1,
+    Number(raw?.analyses_total ?? planCfg.analysesLimit)
+  );
+  const savedAnalyses = Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [];
+  const analysesUsed = Math.max(0, Number(raw?.analyses_used ?? 0));
+  const rawLeft =
+    typeof raw?.analyses_left === 'number' && Number.isFinite(raw.analyses_left)
+      ? Math.max(0, Number(raw.analyses_left))
+      : Math.max(0, analysesTotal - analysesUsed);
   return {
     email,
     name: raw?.name || email.split('@')[0],
-    plan: normalizePlanKey(raw?.plan),
+    plan,
     license_start: raw?.license_start ?? now,
     license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
-    analyses_used: Math.max(0, Number(raw?.analyses_used ?? 0)),
+    analyses_left: rawLeft,
+    analyses_total: analysesTotal,
+    analyses_used: analysesUsed,
     successful_analyses: Math.max(0, Number(raw?.successful_analyses ?? 0)),
-    saved_analyses: Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [],
+    saved_analyses: savedAnalyses,
+    saved_count: Math.max(0, Number(raw?.saved_count ?? savedAnalyses.length)),
+    max_saved: Math.max(0, Number(raw?.max_saved ?? planCfg.savedLimit)),
     custom_cities: Array.isArray(raw?.custom_cities) ? raw.custom_cities : [],
     timezone: raw?.timezone || 'Asia/Muscat',
     day29_email_sent: Boolean(raw?.day29_email_sent),
@@ -349,7 +369,7 @@ async function kvCommand(args: Array<string | number>): Promise<any> {
   const cfg = getKvConfig();
   if (!cfg) return null;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
+  const timer = setTimeout(() => controller.abort(), 4500);
   try {
     const res = await fetch(cfg.url, {
       method: 'POST',
@@ -459,6 +479,14 @@ function activatePaidPlanOnServer(params: {
       : existing.locked_launch_price;
 
   const alreadyRecorded = existing.payments.some((p: any) => p.order_id === orderId);
+  if (alreadyRecorded && existing.cancel_status !== 'refunded') {
+    return updateServerUser(params.email, {
+      name: params.name || existing.name,
+      lemon_customer_email: params.lemonCustomerEmail
+        ? normalizeEmail(params.lemonCustomerEmail)
+        : existing.lemon_customer_email || null,
+    });
+  }
 
   const payments = alreadyRecorded
     ? existing.payments
@@ -496,8 +524,11 @@ function activatePaidPlanOnServer(params: {
     plan: params.plan,
     license_start: licenseStart,
     license_end: licenseEnd,
+    analyses_left: planCfg.analysesLimit,
+    analyses_total: planCfg.analysesLimit,
     analyses_used: 0,
     successful_analyses: 0,
+    max_saved: planCfg.savedLimit,
     has_reported_issue: false,
     issue_reported_at: null,
     issue_resolved_at: null,
@@ -563,8 +594,11 @@ function recordOrderRefunded(params: {
   };
   return updateServerUser(user.email, {
     plan: 'free',
+    analyses_left: PLAN_DEFINITIONS.free.analysesLimit,
+    analyses_total: PLAN_DEFINITIONS.free.analysesLimit,
     analyses_used: 0,
     successful_analyses: 0,
+    max_saved: PLAN_DEFINITIONS.free.savedLimit,
     license_end: now,
     cancel_status: 'refunded',
     refund_requested: true,
@@ -574,11 +608,52 @@ function recordOrderRefunded(params: {
   });
 }
 
-async function saveUserToDb(user: ServerUserRecord): Promise<void> {
+async function getUserFromDb(rawEmail: string): Promise<ServerUserRecord | null> {
+  const email = normalizeEmail(rawEmail);
+  if (!email) return null;
   try {
     const kv = getKvConfig();
-    if (kv && user?.email) {
-      await kvCommand(['SET', `aqari:user:${normalizeEmail(user.email)}`, JSON.stringify(user)]);
+    if (kv) {
+      const raw = await kvCommand(['GET', `aqari:user:${email}`]);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const hydrated = hydrateUserRecord(parsed, email);
+        const store = loadStore();
+        store.users[email] = hydrated;
+        persistStore(store);
+        return hydrated;
+      }
+    }
+  } catch (kvErr) {
+    console.error('[DB] Failed reading user from KV store:', kvErr);
+  }
+  return loadStore().users[email] || null;
+}
+
+async function saveUserToDb(user: ServerUserRecord): Promise<void> {
+  try {
+    const norm = normalizeEmail(user?.email);
+    if (!norm) return;
+    const store = loadStore();
+    store.users[norm] = user;
+    persistStore(store);
+
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['SET', `aqari:user:${norm}`, JSON.stringify(user)]);
+      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
+      let idx: string[] = [];
+      if (Array.isArray(rawIdx)) idx = rawIdx.map(String);
+      else if (typeof rawIdx === 'string') {
+        try {
+          const parsed = JSON.parse(rawIdx);
+          if (Array.isArray(parsed)) idx = parsed.map(String);
+        } catch {}
+      }
+      if (!idx.includes(norm)) {
+        idx.unshift(norm);
+        await kvCommand(['SET', 'aqari:users_index:v1', JSON.stringify(idx.slice(0, 5000))]);
+      }
     }
   } catch (kvErr) {
     console.error('[DB] Failed saving user to KV store:', kvErr);
@@ -1139,6 +1214,7 @@ export default async function handler(req: any, res: any) {
           });
         }
         if (targetEmail) {
+          await getUserFromDb(targetEmail).catch(() => null);
           persistedUser = activatePaidPlanOnServer({
             email: targetEmail,
             name: customerName,
@@ -1177,6 +1253,7 @@ export default async function handler(req: any, res: any) {
       case 'subscription_resumed':
         subscriptionStatus = 'active';
         if (targetEmail) {
+          await getUserFromDb(targetEmail).catch(() => null);
           persistedUser = activatePaidPlanOnServer({
             email: targetEmail,
             name: customerName,
@@ -1213,6 +1290,7 @@ export default async function handler(req: any, res: any) {
         const renewsOrEndsStr = attributes?.renews_at || attributes?.ends_at;
         const licenseEndMs = renewsOrEndsStr ? new Date(renewsOrEndsStr).getTime() : null;
         if (targetEmail) {
+          await getUserFromDb(targetEmail).catch(() => null);
           persistedUser = recordSubscriptionUpdated({
             email: targetEmail,
             plan: planCode,
@@ -1231,6 +1309,7 @@ export default async function handler(req: any, res: any) {
           new Set([targetEmail, paymentEmail, ...affectedEmails].filter(Boolean))
         );
         for (const revEmail of revokeEmails) {
+          await getUserFromDb(revEmail).catch(() => null);
           persistedUser = recordOrderRefunded({
             email: revEmail,
             orderId,
@@ -1244,6 +1323,7 @@ export default async function handler(req: any, res: any) {
       case 'subscription_cancelled':
         subscriptionStatus = 'cancelled';
         if (targetEmail) {
+          await getUserFromDb(targetEmail).catch(() => null);
           const endsAtStr = attributes?.ends_at;
           persistedUser = updateServerUser(targetEmail, {
             license_end: endsAtStr ? new Date(endsAtStr).getTime() : undefined,
@@ -1255,9 +1335,13 @@ export default async function handler(req: any, res: any) {
       case 'subscription_expired':
         subscriptionStatus = 'expired';
         if (targetEmail) {
+          await getUserFromDb(targetEmail).catch(() => null);
           persistedUser = updateServerUser(targetEmail, {
             plan: 'free',
+            analyses_left: PLAN_DEFINITIONS.free.analysesLimit,
+            analyses_total: PLAN_DEFINITIONS.free.analysesLimit,
             analyses_used: 0,
+            max_saved: PLAN_DEFINITIONS.free.savedLimit,
           });
           await saveUserToDb(persistedUser);
         }

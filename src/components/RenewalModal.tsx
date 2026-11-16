@@ -22,6 +22,7 @@ interface RenewalModalProps {
   config: RemoteConfig;
   pricingData?: PricingPublicPayload | null;
   currentCurrency: CurrencyCode;
+  onOpenLegal?: (slug: 'terms' | 'privacy' | 'refund' | 'disclaimer') => void;
 }
 
 export const RenewalModal: React.FC<RenewalModalProps> = ({
@@ -31,6 +32,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   config,
   pricingData,
   currentCurrency,
+  onOpenLegal,
 }) => {
   const [refundAccepted, setRefundAccepted] = useState(false);
   const [policyError, setPolicyError] = useState(false);
@@ -283,8 +285,28 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
               className="mt-0.5 w-4 h-4 accent-[#D4AF37] cursor-pointer shrink-0"
             />
             <span>
-              I agree to the <strong className="text-[#D4AF37]">7-Day No-Usage Refund Policy (0 successful analyses)</strong>
-              {policyError && <span className="block text-rose-300 mt-0.5 font-bold">Please check this box before continuing to checkout.</span>}
+              By purchasing, you agree to{' '}
+              <a
+                href="/refund-policy"
+                onClick={(e) => {
+                  e.preventDefault();
+                  onClose();
+                  if (onOpenLegal) {
+                    onOpenLegal('refund');
+                  } else {
+                    window.history.pushState({}, '', '/refund-policy');
+                    window.dispatchEvent(new PopStateEvent('popstate'));
+                  }
+                }}
+                className="text-[#D4AF37] underline font-bold hover:text-amber-300 cursor-pointer"
+              >
+                Refund Policy
+              </a>
+              {policyError && (
+                <span className="block text-rose-300 mt-0.5 font-bold">
+                  Please check this box before continuing to checkout.
+                </span>
+              )}
             </span>
           </label>
         </div>

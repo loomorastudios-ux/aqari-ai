@@ -617,17 +617,22 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
             className="mt-0.5 w-4 h-4 accent-[#D4AF37] rounded cursor-pointer shrink-0"
           />
           <span className="text-xs font-mono text-zinc-200 leading-relaxed">
-            I agree to the{' '}
-            <button
-              type="button"
-              onClick={() => {
-                if (onOpenLegal) onOpenLegal('refund');
-                else window.location.hash = '#/refund';
+            By purchasing, you agree to{' '}
+            <a
+              href="/refund-policy"
+              onClick={(e) => {
+                e.preventDefault();
+                if (onOpenLegal) {
+                  onOpenLegal('refund');
+                } else {
+                  window.history.pushState({}, '', '/refund-policy');
+                  window.dispatchEvent(new PopStateEvent('popstate'));
+                }
               }}
               className="text-[#D4AF37] underline font-bold hover:text-amber-300 cursor-pointer"
             >
-              7-Day No-Usage Refund Policy (0 successful analyses)
-            </button>{' '}
+              Refund Policy
+            </a>{' '}
             and{' '}
             <button
               type="button"

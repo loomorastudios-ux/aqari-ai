@@ -833,8 +833,12 @@ interface ServerUserRecord {
   license_start: number | null;
   license_end: number | null;
   analyses_used: number;
+  analyses_left: number;
+  analyses_total: number;
   successful_analyses: number;
   saved_analyses: any[];
+  saved_count: number;
+  max_saved: number;
   custom_cities: CustomCityRecord[];
   timezone: string;
   day29_email_sent: boolean;
@@ -1022,15 +1026,38 @@ function normalizeOrderId(raw: string): string {
 
 function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
   const now = Date.now();
+  const plan = normalizePlanKey(raw?.plan);
+  const planCfg = PLAN_DEFINITIONS[plan];
+  const analysesTotal = Math.max(1, Number(raw?.analyses_total ?? planCfg.analysesLimit));
+  const rawUsedNum = raw?.analyses_used !== undefined && raw?.analyses_used !== null ? Number(raw.analyses_used) : NaN;
+  const rawLeftNum = raw?.analyses_left !== undefined && raw?.analyses_left !== null ? Number(raw.analyses_left) : NaN;
+  let analysesUsed = Number.isFinite(rawUsedNum) ? Math.max(0, rawUsedNum) : 0;
+  let analysesLeft = Number.isFinite(rawLeftNum)
+    ? Math.max(0, Math.min(analysesTotal, rawLeftNum))
+    : Math.max(0, analysesTotal - analysesUsed);
+  if (!Number.isFinite(rawUsedNum) && Number.isFinite(rawLeftNum)) {
+    analysesUsed = Math.max(0, analysesTotal - analysesLeft);
+  }
+  const savedList = Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [];
+  const maxSaved =
+    Number.isFinite(Number(raw?.max_saved)) && Number(raw?.max_saved) > 0
+      ? Number(raw.max_saved)
+      : planCfg.savedLimit;
+  const savedCount = savedList.length > 0 ? savedList.length : Math.max(0, Number(raw?.saved_count ?? 0));
+
   return {
     email,
     name: raw?.name || email.split('@')[0],
-    plan: normalizePlanKey(raw?.plan),
+    plan,
     license_start: raw?.license_start ?? now,
     license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
-    analyses_used: Math.max(0, Number(raw?.analyses_used ?? 0)),
+    analyses_used: analysesUsed,
+    analyses_left: analysesLeft,
+    analyses_total: analysesTotal,
     successful_analyses: Math.max(0, Number(raw?.successful_analyses ?? 0)),
-    saved_analyses: Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [],
+    saved_analyses: savedList,
+    saved_count: savedCount,
+    max_saved: maxSaved,
     custom_cities: Array.isArray(raw?.custom_cities) ? raw.custom_cities : [],
     timezone: raw?.timezone || 'Asia/Muscat',
     day29_email_sent: Boolean(raw?.day29_email_sent),
@@ -1202,7 +1229,7 @@ async function kvCommand(args: Array<string | number>): Promise<any> {
   const cfg = getKvConfig();
   if (!cfg) return null;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
+  const timer = setTimeout(() => controller.abort(), 4500);
   try {
     const res = await fetch(cfg.url, {
       method: 'POST',
@@ -1276,6 +1303,9 @@ function enforceServerUserExpiry(rawEmail: string): ServerUserRecord {
     const prevPlan = PLAN_DEFINITIONS[user.plan].displayName;
     user.plan = 'free';
     user.analyses_used = 0;
+    user.analyses_total = PLAN_DEFINITIONS.free.analysesLimit;
+    user.analyses_left = PLAN_DEFINITIONS.free.analysesLimit;
+    user.max_saved = PLAN_DEFINITIONS.free.savedLimit;
     user.license_start = now;
     user.license_end = now + THIRTY_DAYS_MS;
     user.day29_email_sent = false;
@@ -1350,10 +1380,46 @@ function updateServerUser(email: string, patch: Partial<ServerUserRecord>): Serv
   const store = loadStore();
   const norm = normalizeEmail(email);
   const existing = getOrCreateServerUser(norm);
-  const updated: ServerUserRecord = {
+  const merged = {
     ...existing,
     ...patch,
     email: norm,
+  };
+  const planKey = normalizePlanKey(merged.plan);
+  const planCfg = PLAN_DEFINITIONS[planKey];
+  const analyses_total =
+    typeof patch.analyses_total === 'number' && patch.analyses_total > 0
+      ? patch.analyses_total
+      : planKey === existing.plan && existing.analyses_total > 0
+      ? existing.analyses_total
+      : planCfg.analysesLimit;
+  const analyses_used =
+    typeof patch.analyses_used === 'number'
+      ? Math.max(0, patch.analyses_used)
+      : Math.max(0, merged.analyses_used ?? 0);
+  const analyses_left =
+    typeof patch.analyses_left === 'number'
+      ? Math.max(0, patch.analyses_left)
+      : Math.max(0, analyses_total - analyses_used);
+  const max_saved =
+    typeof patch.max_saved === 'number' && patch.max_saved > 0
+      ? patch.max_saved
+      : planCfg.savedLimit;
+  const saved_count =
+    typeof patch.saved_count === 'number'
+      ? Math.max(0, patch.saved_count)
+      : Array.isArray(merged.saved_analyses)
+      ? merged.saved_analyses.length
+      : Math.max(0, merged.saved_count ?? 0);
+
+  const updated: ServerUserRecord = {
+    ...merged,
+    plan: planKey,
+    analyses_total,
+    analyses_used,
+    analyses_left,
+    max_saved,
+    saved_count,
     updated_at: Date.now(),
   };
   store.users[norm] = updated;
@@ -1411,7 +1477,19 @@ function activatePaidPlanOnServer(params: {
       ? dynamicPlan?.launchPrice ?? amount
       : existing.locked_launch_price;
 
-  const alreadyRecorded = existing.payments.some((p) => p.order_id === orderId);
+  const alreadyRecorded = existing.payments.some(
+    (p) => normalizeOrderId(p.order_id) === normalizeOrderId(orderId)
+  );
+
+  // CRITICAL: Do NOT reset analyses_used / analyses_left / successful_analyses if the same order is replayed
+  if (alreadyRecorded && existing.cancel_status !== 'refunded') {
+    return updateServerUser(params.email, {
+      name: params.name || existing.name,
+      lemon_customer_email: params.lemonCustomerEmail
+        ? normalizeEmail(params.lemonCustomerEmail)
+        : existing.lemon_customer_email || null,
+    });
+  }
 
   const payments = alreadyRecorded
     ? existing.payments
@@ -1450,6 +1528,9 @@ function activatePaidPlanOnServer(params: {
     license_start: licenseStart,
     license_end: licenseEnd,
     analyses_used: 0,
+    analyses_left: planCfg.analysesLimit,
+    analyses_total: planCfg.analysesLimit,
+    max_saved: planCfg.savedLimit,
     successful_analyses: 0,
     has_reported_issue: false,
     issue_reported_at: null,
@@ -1635,7 +1716,15 @@ function recordUserAnalysis(
   const user = getOrCreateServerUser(email);
   const now = Date.now();
   const iso = new Date(now).toISOString();
-  const analysisNum = user.analyses_used + 1;
+  const planCfg = PLAN_DEFINITIONS[normalizePlanKey(user.plan)];
+  const analysesTotal = user.analyses_total > 0 ? user.analyses_total : planCfg.analysesLimit;
+  const currentUsed = Math.max(0, Number(user.analyses_used || 0));
+  const currentLeft =
+    typeof user.analyses_left === 'number' && Number.isFinite(user.analyses_left)
+      ? Math.max(0, user.analyses_left)
+      : Math.max(0, analysesTotal - currentUsed);
+  const analysisNum = currentUsed + 1;
+  const nextLeft = Math.max(0, currentLeft - 1);
   const successfulNum = (user.successful_analyses || 0) + 1;
   const logEntry: ForensicAnalysisEntry = {
     id: `ana_${now}_${Math.random().toString(36).slice(2, 6)}`,
@@ -1652,6 +1741,8 @@ function recordUserAnalysis(
 
   return updateServerUser(user.email, {
     analyses_used: analysisNum,
+    analyses_left: nextLeft,
+    analyses_total: analysesTotal,
     successful_analyses: successfulNum,
     analyses_log: [logEntry, ...user.analyses_log].slice(0, 500),
     timeline: [timelineEntry, ...user.timeline].slice(0, 200),
@@ -1688,12 +1779,17 @@ function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStat
   const pricing = getPricingPublicPayload();
   const planKey = normalizePlanKey(user.plan);
   const dynamicPlan = pricing.plansMap?.[planKey];
+  const explicitTotal =
+    typeof user.analyses_total === 'number' && user.analyses_total > 0
+      ? user.analyses_total
+      : dynamicPlan?.analysesLimit;
   return computeLicenseStatus({
     plan: user.plan,
     licenseStart: user.license_start,
     licenseEnd: user.license_end,
     analysesUsed: user.analyses_used,
-    analysesLimitOverride: dynamicPlan?.analysesLimit,
+    analysesLeft: user.analyses_left,
+    analysesLimitOverride: explicitTotal,
     savedLimitOverride: dynamicPlan?.savedLimit === null ? Infinity : dynamicPlan?.savedLimit,
   });
 }
@@ -3425,23 +3521,39 @@ export default async function handler(req: any, res: any) {
       case 'me': {
         res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
         const sessionEmail = getSessionEmailFromReq(req);
-        if (!sessionEmail) {
+        const queryEmail = normalizeEmail(
+          getQueryParam(req, url, 'login_email') || getQueryParam(req, url, 'email')
+        );
+        const lookupEmail = sessionEmail || (queryEmail && queryEmail.includes('@') ? queryEmail : '');
+        if (!lookupEmail) {
           return res.status(401).json({
             authenticated: false,
             error: 'Authentication required',
           });
         }
 
-        const hydratedDb = await getUserFromDb(sessionEmail);
-        const initialUser = hydratedDb || getOrCreateServerUser(sessionEmail);
+        const hydratedDb = await getUserFromDb(lookupEmail).catch(() => null);
+        const initialUser = hydratedDb || getOrCreateServerUser(lookupEmail);
         let dbUser = enforceServerUserExpiry(initialUser.email);
 
+        if (!hydratedDb) {
+          await saveUserToDb(dbUser).catch(() => {});
+        }
+
         const ent = getEntitlementFromReq(req);
+        const sameOrderAlreadyActive = Boolean(
+          ent &&
+            hydratedDb &&
+            dbUser.last_order_id &&
+            normalizeOrderId(dbUser.last_order_id) === normalizeOrderId(ent.orderId)
+        );
         const shouldApplyEntitlementCookie = Boolean(
           ent &&
             ent.email === dbUser.email &&
             ent.plan !== 'free' &&
             ent.licenseEnd > Date.now() &&
+            dbUser.cancel_status !== 'refunded' &&
+            !sameOrderAlreadyActive &&
             (dbUser.plan === 'free' ||
               (!hydratedDb && ent.licenseStart > (dbUser.license_start || 0)) ||
               ent.licenseStart > (dbUser.updated_at || 0))
@@ -3470,8 +3582,11 @@ export default async function handler(req: any, res: any) {
             ? 0
             : dynamicPlan?.activePrice ?? PLAN_DEFINITIONS[license.planKey].priceUSD;
         const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
+        const savedCount = Array.isArray(dbUser.saved_analyses)
+          ? dbUser.saved_analyses.length
+          : dbUser.saved_count || 0;
         const apiKey =
-          license.planKey === 'enterprise' && !license.isExpired
+          license.planKey === 'enterprise' && !license.isExpired && sessionEmail === dbUser.email
             ? buildApiKeyForEmail(dbUser.email)
             : null;
         if (apiKey) {
@@ -3501,7 +3616,7 @@ export default async function handler(req: any, res: any) {
           login_email: dbUser.email,
           lemon_customer_email: dbUser.lemon_customer_email || null,
           name: dbUser.name,
-          isAdmin: isAdminEmail(dbUser.email),
+          isAdmin: Boolean(sessionEmail && isAdminEmail(dbUser.email)),
           plan: license.displayName,
           plan_name: license.displayName,
           planKey: license.planKey,
@@ -3509,6 +3624,7 @@ export default async function handler(req: any, res: any) {
           license_start: dbUser.license_start,
           license_end: dbUser.license_end,
           days_left: license.daysLeft,
+          analyses_total: license.analysesLimit,
           analyses_limit: license.analysesLimit,
           analyses_used: license.analysesUsed,
           analyses_left: license.analysesLeft,
@@ -3522,8 +3638,9 @@ export default async function handler(req: any, res: any) {
           last_order_id: dbUser.last_order_id || dbUser.payments?.[0]?.order_id || null,
           cancellationEligibility,
           maxSaved,
+          max_saved: maxSaved,
           saved_limit: maxSaved,
-          saved_count: dbUser.saved_analyses.length,
+          saved_count: savedCount,
           saved_analyses: dbUser.saved_analyses,
           api_key: apiKey,
           locked_launch_price: dbUser.locked_launch_price ?? null,
@@ -3542,7 +3659,9 @@ export default async function handler(req: any, res: any) {
             plan: dbUser.plan,
             license_start: dbUser.license_start,
             license_end: dbUser.license_end,
-            analyses_used: dbUser.analyses_used,
+            analyses_used: license.analysesUsed,
+            analyses_left: license.analysesLeft,
+            analyses_total: license.analysesLimit,
             successful_analyses: dbUser.successful_analyses || 0,
             has_reported_issue: Boolean(dbUser.has_reported_issue),
             issue_reported_at: dbUser.issue_reported_at ?? null,
@@ -3552,7 +3671,8 @@ export default async function handler(req: any, res: any) {
             cancel_status: dbUser.cancel_status || 'none',
             last_order_id: dbUser.last_order_id || dbUser.payments?.[0]?.order_id || null,
             maxSaved,
-            saved_count: dbUser.saved_analyses.length,
+            max_saved: maxSaved,
+            saved_count: savedCount,
             api_key: apiKey,
             locked_launch_price: dbUser.locked_launch_price ?? null,
             custom_cities: dbUser.custom_cities || [],
@@ -3770,9 +3890,10 @@ export default async function handler(req: any, res: any) {
             let existingUser =
               (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
             if (
-              existingUser.plan === 'free' ||
-              (existingUser.plan !== existingUsedOrder.plan &&
-                (existingUsedOrder.used_at || 0) >= (existingUser.license_start || 0))
+              existingUser.cancel_status !== 'refunded' &&
+              (existingUser.plan === 'free' ||
+                (existingUser.plan !== existingUsedOrder.plan &&
+                  (existingUsedOrder.used_at || 0) >= (existingUser.license_start || 0)))
             ) {
               existingUser = activatePaidPlanOnServer({
                 email: loginEmail,
@@ -3787,32 +3908,35 @@ export default async function handler(req: any, res: any) {
               });
               await saveUserToDb(existingUser).catch(() => {});
             }
-            const usedPlanKey = normalizePlanKey(existingUsedOrder.plan);
+            const usedPlanKey = normalizePlanKey(existingUser.plan || existingUsedOrder.plan);
             const license = computeServerLicenseStatus(existingUser);
             const features =
               findPlanPricing(pricing, usedPlanKey)?.features || PLAN_DEFINITIONS[usedPlanKey].features;
             try {
               setSessionCookie(res, existingUser.email);
-              setEntitlementCookie(res, {
-                email: existingUser.email,
-                plan: existingUsedOrder.plan,
-                orderId: existingUsedOrder.order_id,
-                licenseStart: existingUser.license_start || Date.now(),
-                licenseEnd: existingUser.license_end || Date.now() + THIRTY_DAYS_MS,
-                amountUSD: existingUsedOrder.amount,
-                testMode: Boolean(existingUsedOrder.test_mode),
-                lemonCustomerEmail: existingUsedOrder.payment_email || null,
-              });
+              if (existingUser.cancel_status !== 'refunded') {
+                setEntitlementCookie(res, {
+                  email: existingUser.email,
+                  plan: existingUsedOrder.plan,
+                  orderId: existingUsedOrder.order_id,
+                  licenseStart: existingUser.license_start || Date.now(),
+                  licenseEnd: existingUser.license_end || Date.now() + THIRTY_DAYS_MS,
+                  amountUSD: existingUsedOrder.amount,
+                  testMode: Boolean(existingUsedOrder.test_mode),
+                  lemonCustomerEmail: existingUsedOrder.payment_email || null,
+                });
+              }
             } catch {}
 
             return res.status(200).json({
               success: true,
               verified: true,
-              plan: existingUsedOrder.plan_display,
-              plan_name: existingUsedOrder.plan_display,
-              planKey: existingUsedOrder.plan,
-              price: PLAN_DEFINITIONS[usedPlanKey].priceUSD,
-              analyses_left: existingUsedOrder.analyses,
+              plan: license.displayName,
+              plan_name: license.displayName,
+              planKey: license.planKey,
+              price: PLAN_DEFINITIONS[license.planKey].priceUSD,
+              analyses_left: license.analysesLeft,
+              analyses_total: license.analysesLimit,
               payment_email_for_log_only: existingUsedOrder.payment_email || null,
               order_id: existingUsedOrder.order_id,
               login_email: existingUser.email,
@@ -4461,6 +4585,22 @@ export default async function handler(req: any, res: any) {
         const nextLicense = computeServerLicenseStatus(updatedUser);
         const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
+        const analysisResultPayload = {
+          capRate,
+          cashOnCash,
+          irr5Yr: hasSensitivity ? irr5Yr : null,
+          dscr: hasSensitivity ? dscr : null,
+          monthlyCashflowUSD: hasSensitivity ? Math.round(monthlyCashflowUSD) : null,
+          monthlyMortgageUSD: hasSensitivity ? Math.round(monthlyMortgageUSD) : null,
+          netOperatingIncomeUSD: Math.round(netOperatingIncomeUSD),
+          annualGrossRentUSD: Math.round(annualGrossRentUSD),
+          annualOPEXUSD: Math.round(annualOPEXUSD),
+          annualDebtServiceUSD: Math.round(annualDebtServiceUSD),
+          downPaymentUSD: Math.round(downPaymentUSD),
+          sensitivity,
+          monteCarlo,
+        };
+
         return res.status(200).json({
           success: true,
           analyzedAt: new Date().toISOString(),
@@ -4477,24 +4617,14 @@ export default async function handler(req: any, res: any) {
             operatingExpensePct,
           },
           cityData: cityEntry,
-          result: {
-            capRate,
-            cashOnCash,
-            irr5Yr: hasSensitivity ? irr5Yr : null,
-            dscr: hasSensitivity ? dscr : null,
-            monthlyCashflowUSD: hasSensitivity ? Math.round(monthlyCashflowUSD) : null,
-            monthlyMortgageUSD: hasSensitivity ? Math.round(monthlyMortgageUSD) : null,
-            netOperatingIncomeUSD: Math.round(netOperatingIncomeUSD),
-            annualGrossRentUSD: Math.round(annualGrossRentUSD),
-            annualOPEXUSD: Math.round(annualOPEXUSD),
-            annualDebtServiceUSD: Math.round(annualDebtServiceUSD),
-            downPaymentUSD: Math.round(downPaymentUSD),
-            sensitivity,
-            monteCarlo,
-          },
+          result: analysisResultPayload,
+          results: analysisResultPayload,
           analyses_left: nextLicense.analysesLeft,
+          analyses_total: nextLicense.analysesLimit,
           analyses_used: nextLicense.analysesUsed,
           successful_analyses: updatedUser.successful_analyses || 0,
+          saved_count: updatedUser.saved_analyses.length,
+          maxSaved: PLAN_DEFINITIONS[nextLicense.planKey].savedLimit,
           cancellationEligibility,
           license: {
             ...nextLicense,
@@ -4502,6 +4632,239 @@ export default async function handler(req: any, res: any) {
             isUnlimitedSaved: false,
           },
           planCapabilities: PLAN_DEFINITIONS[nextLicense.planKey].capabilities,
+        });
+      }
+
+      case 'find-deals': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+
+        const body = parsedBody;
+        const authHeader = String(req?.headers?.authorization || '');
+        const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
+        let email = getSessionEmailFromReq(req) || '';
+
+        if (isApiKeyBearer) {
+          const apiOwner = await resolveApiKeyEmail(bearerRaw);
+          if (!apiOwner) {
+            return res.status(401).json({ success: false, error: 'Invalid API token' });
+          }
+          email = apiOwner;
+        } else if (!email) {
+          email = String(body.login_email || body.email || '')
+            .trim()
+            .toLowerCase();
+        }
+
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const userRecord =
+          (await getUserFromDb(email).catch(() => null)) ||
+          getOrCreateServerUser(email, { name: body.name });
+        const license = computeServerLicenseStatus(userRecord);
+
+        // Strictly gated to PROFESSIONAL + SOVEREIGN
+        if (
+          license.isExpired ||
+          (license.planKey !== 'pro' && license.planKey !== 'enterprise')
+        ) {
+          return res.status(403).json({
+            success: false,
+            error: 'AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade',
+            code: 'FEATURE_LOCKED',
+            requiredPlan: 'pro',
+          });
+        }
+
+        if (!license.isUnlimitedAnalyses && license.analysesLeft <= 0) {
+          return res.status(403).json({
+            success: false,
+            error: 'No analyses left. Renew / Upgrade.',
+            code: 'NO_ANALYSES_LEFT',
+            analyses_left: 0,
+          });
+        }
+
+        const rawCityInput = String(body.city || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput);
+        if (!cityEntry) {
+          return res.status(400).json({
+            success: false,
+            error: 'City not supported yet. Choose from list.',
+            code: 'INVALID_CITY',
+            city: rawCityInput,
+          });
+        }
+
+        const budget = parseEnglishNumberServer(body.budget ?? body.maxBudget ?? body.priceUSD);
+        const minCapRate = parseEnglishNumberServer(body.minCapRate ?? body.min_cap_rate ?? 0);
+        const rawType = String(body.propertyType || 'All').trim();
+        const propertyType = ['Apartment', 'Villa', 'Commercial', 'All'].includes(rawType)
+          ? rawType
+          : 'All';
+        const rawRisk = String(body.risk || body.riskTolerance || 'Medium').trim();
+        const riskLevel: 'Low' | 'Medium' | 'High' =
+          rawRisk === 'Low' || rawRisk === 'High' ? rawRisk : 'Medium';
+
+        if (!Number.isFinite(budget) || budget <= 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Budget ($) must be greater than 0.',
+            code: 'INVALID_INPUTS',
+          });
+        }
+        if (!Number.isFinite(minCapRate) || minCapRate <= 0 || minCapRate > 50) {
+          return res.status(400).json({
+            success: false,
+            error: 'Min Cap Rate (%) must be between 0.1 and 50.',
+            code: 'INVALID_INPUTS',
+          });
+        }
+
+        const typePool: Array<'Apartment' | 'Villa' | 'Commercial'> =
+          propertyType === 'All'
+            ? ['Apartment', 'Villa', 'Commercial', 'Apartment', 'Commercial']
+            : [
+                propertyType as 'Apartment' | 'Villa' | 'Commercial',
+                propertyType as 'Apartment' | 'Villa' | 'Commercial',
+                propertyType as 'Apartment' | 'Villa' | 'Commercial',
+                propertyType as 'Apartment' | 'Villa' | 'Commercial',
+                propertyType as 'Apartment' | 'Villa' | 'Commercial',
+              ];
+
+        const dealNamesByType: Record<'Apartment' | 'Villa' | 'Commercial', string[]> = {
+          Apartment: [
+            `${cityEntry.city} Prime Residence`,
+            `${cityEntry.city} Waterfront Suite`,
+            `${cityEntry.city} Central Tower Apt`,
+            `${cityEntry.city} Executive Flat`,
+            `${cityEntry.city} Marina Corner Unit`,
+          ],
+          Villa: [
+            `${cityEntry.city} Horizon Estate Villa`,
+            `${cityEntry.city} Golf Crest Residence`,
+            `${cityEntry.city} Waterfront Compound`,
+            `${cityEntry.city} Sovereign Courtyard Villa`,
+            `${cityEntry.city} Hillside Signature Villa`,
+          ],
+          Commercial: [
+            `${cityEntry.city} Class-A Retail Floor`,
+            `${cityEntry.city} Financial District Office`,
+            `${cityEntry.city} Logistics Mixed-Use`,
+            `${cityEntry.city} Boulevard Medical Plaza`,
+            `${cityEntry.city} Corporate Hub Suite`,
+          ],
+        };
+
+        const priceFactors = [0.82, 0.89, 0.96, 1.03, 1.09];
+        const capDeltas = [-1.1, -0.3, +0.4, +0.9, +1.4];
+        const riskNudge = riskLevel === 'High' ? 0.35 : riskLevel === 'Low' ? -0.25 : 0.05;
+        const downPct = riskLevel === 'Low' ? 35 : riskLevel === 'High' ? 25 : 30;
+        const mortgageRate = 5.5;
+        const opexPct = 15;
+        const r = mortgageRate / 100 / 12;
+        const nPay = 25 * 12;
+
+        const citySeed = cityEntry.city
+          .split('')
+          .reduce((acc, ch, i) => acc + ch.charCodeAt(0) * (i + 3), 0);
+
+        const deals = priceFactors
+          .map((factor, idx) => {
+            const dtype = typePool[idx];
+            const rawPrice = budget * factor;
+            const price = Math.max(25000, Math.round(rawPrice / 500) * 500);
+            const typeAdj = dtype === 'Commercial' ? 0.35 : dtype === 'Villa' ? -0.15 : 0.1;
+            const seedBias = ((citySeed + idx * 7) % 5) * 0.05 - 0.1;
+            const boundedDelta = Math.max(
+              -1.5,
+              Math.min(1.5, capDeltas[idx] + riskNudge + typeAdj + seedBias)
+            );
+            const capRate = Number(Math.max(1.5, cityEntry.avgCapRate + boundedDelta).toFixed(2));
+            const annualNOI = price * (capRate / 100);
+            const rent = Math.max(200, Math.round(annualNOI / (12 * 0.95 * (1 - opexPct / 100))));
+
+            const downUSD = price * (downPct / 100);
+            const loanUSD = Math.max(0, price - downUSD);
+            const monthlyMortgage =
+              loanUSD > 0 && r > 0
+                ? (loanUSD * r * Math.pow(1 + r, nPay)) / (Math.pow(1 + r, nPay) - 1)
+                : 0;
+            const annualDebt = monthlyMortgage * 12;
+            const annualCashflow = annualNOI - annualDebt;
+            const monthlyCashflow = Math.round(annualCashflow / 12);
+            const cashOnCash =
+              downUSD > 0 ? Number(((annualCashflow / downUSD) * 100).toFixed(2)) : 0;
+            const irr = Number((cashOnCash + 4.8).toFixed(1));
+            const dscr = annualDebt > 0 ? (annualNOI / annualDebt).toFixed(2) : '2.00';
+
+            const dealRisk: 'Low' | 'Medium' | 'High' =
+              boundedDelta >= 0.95 ? 'High' : boundedDelta <= -0.2 ? 'Low' : 'Medium';
+
+            // Weighted score (0-100): cap rate vs minCapRate + cash-on-cash + budget fit + risk match
+            const capFitPts =
+              capRate >= minCapRate
+                ? Math.min(46, 34 + (capRate - minCapRate) * 4.5)
+                : Math.max(8, 30 - (minCapRate - capRate) * 6);
+            const cocPts = Math.max(0, Math.min(26, 12 + cashOnCash * 1.4));
+            const budgetFitPts = price <= budget ? 16 : Math.max(6, 16 - (price / budget - 1) * 70);
+            const riskPts = dealRisk === riskLevel ? 12 : 7;
+            const score = Math.max(18, Math.min(98, Math.round(capFitPts + cocPts + budgetFitPts + riskPts)));
+
+            return {
+              id: `deal_${Date.now()}_${idx + 1}`,
+              name: dealNamesByType[dtype][idx % dealNamesByType[dtype].length],
+              city: cityEntry.city,
+              country: cityEntry.country,
+              propertyType: dtype,
+              price,
+              rent,
+              capRate,
+              cashOnCash,
+              irr,
+              dscr,
+              monthlyCashflow,
+              downPaymentPct: downPct,
+              interestRatePct: mortgageRate,
+              operatingExpensePct: opexPct,
+              risk: dealRisk,
+              score,
+            };
+          })
+          .sort((a, b) => b.score - a.score);
+
+        const updatedUser = recordUserAnalysis(email, {
+          property: `AI Deal Finder - ${cityEntry.city} (${propertyType})`,
+          city: cityEntry.city,
+          priceUSD: budget,
+          capRate: deals[0].capRate,
+          cashOnCash: deals[0].cashOnCash,
+          resultSummary: `AI Deal Finder: 5 deals (${cityEntry.city}, Top ${deals[0].score}/100)`,
+        });
+        await saveUserToDb(updatedUser);
+        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
+
+        return res.status(200).json({
+          success: true,
+          city: cityEntry.city,
+          country: cityEntry.country,
+          countryCode: cityEntry.countryCode,
+          avgCapRate: cityEntry.avgCapRate,
+          disclaimer: `AI Deal Finder - Simulated deals based on market avg for ${cityEntry.city} - For illustration, verify with local agent`,
+          deals,
+          analyses_left: nextLicense.analysesLeft,
+          analyses_total: nextLicense.analysesLimit,
+          analyses_used: nextLicense.analysesUsed,
+          successful_analyses: updatedUser.successful_analyses || 0,
+          saved_count: updatedUser.saved_analyses.length,
+          maxSaved: PLAN_DEFINITIONS[nextLicense.planKey].savedLimit,
+          cancellationEligibility,
+          license: nextLicense,
         });
       }
 
@@ -4613,8 +4976,12 @@ export default async function handler(req: any, res: any) {
         };
 
         const nextSaved = [newItem, ...userRecord.saved_analyses];
-        const updated = updateServerUser(email, { saved_analyses: nextSaved });
-        await saveUserToDb(updated).catch(() => {});
+        const updated = updateServerUser(email, {
+          saved_analyses: nextSaved,
+          saved_count: nextSaved.length,
+          max_saved: maxSaved,
+        });
+        await saveUserToDb(updated);
 
         return res.status(200).json({
           success: true,
@@ -4623,6 +4990,42 @@ export default async function handler(req: any, res: any) {
           saved_count: updated.saved_analyses.length,
           maxSaved,
           savedLimit: maxSaved,
+        });
+      }
+
+      case 'delete-saved': {
+        if (req.method !== 'POST' && req.method !== 'DELETE') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody;
+        const sessionEmail = getSessionEmailFromReq(req);
+        const email = String(sessionEmail || body.login_email || body.email || '')
+          .trim()
+          .toLowerCase();
+        if (!email) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const targetId = String(body.id || getQueryParam(req, url, 'id') || '').trim();
+        if (!targetId) {
+          return res.status(400).json({ success: false, error: 'Saved item id is required' });
+        }
+        const userRecord =
+          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+        const license = computeServerLicenseStatus(userRecord);
+        const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
+        const nextSaved = userRecord.saved_analyses.filter((item: any) => String(item?.id) !== targetId);
+        const updated = updateServerUser(email, {
+          saved_analyses: nextSaved,
+          saved_count: nextSaved.length,
+          max_saved: maxSaved,
+        });
+        await saveUserToDb(updated);
+        return res.status(200).json({
+          success: true,
+          savedCount: updated.saved_analyses.length,
+          saved_count: updated.saved_analyses.length,
+          maxSaved,
+          saved_analyses: updated.saved_analyses,
         });
       }
 
@@ -5150,7 +5553,7 @@ export default async function handler(req: any, res: any) {
 
         if (req.method === 'POST') {
           const ip = getClientIp(req);
-          const rl = checkRateLimit(`auth:${ip}`, 5, 60 * 1000);
+          const rl = checkRateLimit(`auth:${ip}`, 60, 60 * 1000);
           if (!rl.allowed) {
             return res.status(429).json({
               error: 'Too many authentication attempts. Please wait 1 minute.',
@@ -5164,17 +5567,28 @@ export default async function handler(req: any, res: any) {
             return res.status(400).json({ error: 'Valid email is required' });
           }
 
+          await getUserFromDb(email).catch(() => null);
           const user = recordUserLogin(email, body.name);
+          await saveUserToDb(user).catch(() => {});
           setSessionCookie(res, user.email);
           const license = computeServerLicenseStatus(user);
           const pricing = getPricingPublicPayload();
           const cancellationEligibility = evaluateCancelRefundEligibility(user);
+          const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
 
           return res.status(200).json({
             success: true,
             authenticated: true,
             email: user.email,
             isAdmin: isAdminEmail(user.email),
+            plan: license.displayName,
+            planKey: license.planKey,
+            analyses_left: license.analysesLeft,
+            analyses_total: license.analysesLimit,
+            analyses_used: license.analysesUsed,
+            successful_analyses: user.successful_analyses || 0,
+            saved_count: user.saved_analyses.length,
+            maxSaved,
             user,
             license,
             cancellationEligibility,
@@ -5371,7 +5785,9 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const userRecord = getOrCreateServerUser(email, { name: body.name });
+        const userRecord =
+          (await getUserFromDb(email).catch(() => null)) ||
+          getOrCreateServerUser(email, { name: body.name });
         const license = computeServerLicenseStatus(userRecord);
         if (license.isExpired || (!license.isUnlimitedAnalyses && license.analysesLeft <= 0)) {
           return res.status(403).json({
@@ -5512,6 +5928,7 @@ export default async function handler(req: any, res: any) {
         ].slice(0, 20);
 
         const savedUser = updateServerUser(email, { custom_cities: dedupedCities });
+        await saveUserToDb(savedUser).catch(() => {});
         const nextLicense = computeServerLicenseStatus(savedUser);
 
         return res.status(200).json({
@@ -5521,6 +5938,9 @@ export default async function handler(req: any, res: any) {
           isEstimated: true,
           source: cityCard.source,
           custom_cities: savedUser.custom_cities || [],
+          analyses_left: nextLicense.analysesLeft,
+          analyses_total: nextLicense.analysesLimit,
+          successful_analyses: savedUser.successful_analyses || 0,
           license: nextLicense,
         });
       }
@@ -5885,6 +6305,9 @@ export default async function handler(req: any, res: any) {
         const updatedUser = updateServerUser(email, {
           plan: 'free',
           analyses_used: 0,
+          analyses_left: PLAN_DEFINITIONS.free.analysesLimit,
+          analyses_total: PLAN_DEFINITIONS.free.analysesLimit,
+          max_saved: PLAN_DEFINITIONS.free.savedLimit,
           successful_analyses: 0,
           license_start: now,
           license_end: now + THIRTY_DAYS_MS,
@@ -5895,6 +6318,10 @@ export default async function handler(req: any, res: any) {
           timeline: [timelineEntry, ...user.timeline].slice(0, 200),
         });
         await saveUserToDb(updatedUser).catch(() => {});
+        appendSetCookieHeader(
+          res,
+          `${ENTITLEMENT_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
+        );
 
         await appendCancellationLogToDb({
           email,
@@ -5923,6 +6350,8 @@ export default async function handler(req: any, res: any) {
           refundedAmount: refundedAmountUSD,
           order_id: orderId,
           plan: 'FREE',
+          analyses_left: PLAN_DEFINITIONS.free.analysesLimit,
+          analyses_total: PLAN_DEFINITIONS.free.analysesLimit,
           cancel_status: 'refunded',
           cancellationEligibility: nextEligibility,
         });
@@ -5938,11 +6367,13 @@ export default async function handler(req: any, res: any) {
             'verify-checkout',
             'debug-plan',
             'run-analysis',
+            'find-deals',
             'underwrite',
             'analyze',
             'monte-carlo',
             'save-to-portfolio',
             'save-property',
+            'delete-saved',
             'export',
             'portfolio',
             'analyst-chat',

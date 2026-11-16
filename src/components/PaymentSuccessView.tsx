@@ -1,17 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import confetti from 'canvas-confetti';
-import { User, CurrencyCode } from '../types';
-import { PLAN_LIMITS } from '../constants';
-import { getUser, saveUser, getSessionUser, loginOrCreateUser } from '../utils/userStorage';
-import { 
-  CheckCircle2, 
-  Sparkles, 
-  ShieldCheck, 
-  Calendar, 
-  ArrowRight, 
-  Zap, 
-  Clock, 
-  FileText 
+import { User } from '../types';
+import { PLANS, normalizePlanKey } from '../../lib/plans';
+import { saveUser } from '../utils/userStorage';
+import {
+  CheckCircle2,
+  Sparkles,
+  ShieldCheck,
+  Calendar,
+  ArrowRight,
 } from 'lucide-react';
 
 interface PaymentSuccessViewProps {
@@ -26,10 +23,10 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
   onGoToHome,
 }) => {
   const [activatedUser, setActivatedUser] = useState<User | null>(currentUser);
-  const [planKey, setPlanKey] = useState<'starter' | 'pro' | 'enterprise'>('pro');
+  const [planDisplay, setPlanDisplay] = useState<string>('SUBSCRIPTION');
+  const [quotaLabel, setQuotaLabel] = useState<string>('Loading...');
 
   useEffect(() => {
-    // 1. Fire celebration confetti
     try {
       confetti({
         particleCount: 180,
@@ -39,58 +36,65 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
       });
     } catch {}
 
-    // 2. Parse query parameters
     const params = new URLSearchParams(window.location.search);
-    const planParam = (params.get('plan') as 'starter' | 'pro' | 'enterprise') || 'pro';
-    const emailParam = params.get('email') || currentUser?.email || 'investor@global-capital.io';
-    setPlanKey(planParam);
+    const emailParam = (params.get('email') || currentUser?.email || '').trim().toLowerCase();
 
-    // 3. Activate 30-day subscription
-    const now = Date.now();
-    const duration30Days = 30 * 24 * 60 * 60 * 1000;
-    const endsAt = now + duration30Days;
-    const planQuota = PLAN_LIMITS[planParam]?.analyses || 150;
-
-    let userToUpdate = currentUser || getUser(emailParam);
-    if (!userToUpdate) {
-      const { user: newUser } = loginOrCreateUser(emailParam, 'google');
-      userToUpdate = newUser;
+    if (!emailParam) {
+      setQuotaLabel('Sign in to sync');
+      return;
     }
 
-    const updatedUser: User = {
-      ...userToUpdate,
-      plan: planParam,
-      subscriptionPlan: planParam,
-      subscriptionStatus: 'active',
-      subscriptionStartAt: now,
-      subscriptionEndsAt: endsAt,
-      subscriptionExpiry: endsAt,
-      analysesUsed: 0,
-      freeAnalyses: planQuota,
-      freeAnalysesLeft: planQuota,
-      analysesLeft: planQuota,
-      expiryEmailSent: false,
-    };
+    fetch(`/api/app?action=me&login_email=${encodeURIComponent(emailParam)}&t=${Date.now()}`, {
+      credentials: 'include',
+      cache: 'no-store',
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((me) => {
+        if (!me?.authenticated || !me?.email) return;
+        const planKey = normalizePlanKey(me.planKey || me.user?.plan);
+        const cfg = PLANS[planKey];
+        const total = Number(me.analyses_total ?? cfg.analysesLimit);
+        const left = Number(me.analyses_left ?? Math.max(0, total - Number(me.analyses_used ?? 0)));
+        setPlanDisplay(me.plan_name || cfg.displayName);
+        setQuotaLabel(`${left} / ${total} Analyses`);
 
-    saveUser(updatedUser);
-    setActivatedUser(updatedUser);
-
-    fetch('/api/app?action=license', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: updatedUser.email,
-        name: updatedUser.name,
-        plan: planParam,
-        license_start: now,
-        license_end: endsAt,
-        analyses_used: 0,
-      }),
-    }).catch(() => {});
+        const synced: User = {
+          ...(currentUser || {
+            id: 'user_' + me.email,
+            email: me.email,
+            name: me.name || me.email.split('@')[0],
+            avatar: me.email.charAt(0).toUpperCase(),
+            provider: 'google',
+            createdAt: Date.now(),
+            savedAnalyses: [],
+          }),
+          email: me.email,
+          plan: planKey,
+          planName: me.plan_name || cfg.displayName,
+          subscriptionPlan: planKey,
+          subscriptionStatus: planKey === 'free' ? 'free' : 'active',
+          subscriptionStartAt: me.license_start ?? null,
+          subscriptionEndsAt: me.license_end ?? null,
+          subscriptionExpiry: me.license_end ?? null,
+          analysesUsed: Number(me.analyses_used ?? 0),
+          analysesTotal: total,
+          analysesLeft: left,
+          freeAnalyses: left,
+          freeAnalysesLeft: left,
+          successfulAnalyses: Number(me.successful_analyses ?? 0),
+          maxSaved: Number(me.maxSaved ?? cfg.savedLimit),
+          savedCount: Number(me.saved_count ?? 0),
+          savedAnalyses: Array.isArray(me.saved_analyses) ? me.saved_analyses : [],
+        };
+        saveUser(synced);
+        setActivatedUser(synced);
+      })
+      .catch(() => {
+        setQuotaLabel('Syncing...');
+      });
   }, []);
 
-  const planInfo = PLAN_LIMITS[planKey] || PLAN_LIMITS.pro;
-  const endsAtFormatted = activatedUser?.subscriptionEndsAt 
+  const endsAtFormatted = activatedUser?.subscriptionEndsAt
     ? new Date(activatedUser.subscriptionEndsAt).toLocaleDateString('en-US', {
         year: 'numeric',
         month: 'long',
@@ -100,47 +104,42 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
 
   return (
     <div className="min-h-screen bg-black text-white flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Background glow effects */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-[#D4AF37]/15 rounded-full blur-3xl pointer-events-none" />
 
       <div className="relative w-full max-w-xl rounded-[36px] glass-panel border border-[#D4AF37]/40 p-8 sm:p-12 shadow-[0_20px_90px_rgba(212,175,55,0.25)] text-center animate-in zoom-in-95 duration-300">
-        
-        {/* Success Icon */}
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#D4AF37] to-[#B8860B] p-0.5 mx-auto mb-6 shadow-[0_0_30px_rgba(212,175,55,0.5)]">
           <div className="w-full h-full bg-black rounded-[14px] flex items-center justify-center">
             <CheckCircle2 className="w-8 h-8 text-[#D4AF37]" />
           </div>
         </div>
 
-        {/* Title */}
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-mono text-xs mb-3">
           <Sparkles className="w-3.5 h-3.5" />
           <span>PAYMENT VERIFIED • 30 DAYS ACTIVE</span>
         </div>
-        
+
         <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-white mb-3">
           Subscription Activated!
         </h1>
-        
+
         <p className="text-sm text-zinc-400 max-w-md mx-auto mb-8 leading-relaxed">
           Your payment was processed successfully via Lemon Squeezy. Your institutional license is unlocked and ready for underwriting.
         </p>
 
-        {/* Subscription Details Box */}
         <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-3.5 text-left mb-8">
           <div className="flex items-center justify-between text-xs font-mono">
             <span className="text-zinc-400">Account:</span>
-            <span className="text-white font-semibold truncate max-w-[200px]">{activatedUser?.email}</span>
+            <span className="text-white font-semibold truncate max-w-[200px]">{activatedUser?.email || 'Investor'}</span>
           </div>
 
           <div className="flex items-center justify-between text-xs font-mono">
             <span className="text-zinc-400">Plan:</span>
-            <span className="text-[#D4AF37] font-bold uppercase">{planInfo.label}</span>
+            <span className="text-[#D4AF37] font-bold uppercase">{planDisplay}</span>
           </div>
 
           <div className="flex items-center justify-between text-xs font-mono">
             <span className="text-zinc-400">Analyses Quota:</span>
-            <span className="text-emerald-400 font-bold">{planInfo.analyses} Institutional Analyses</span>
+            <span className="text-emerald-400 font-bold">{quotaLabel}</span>
           </div>
 
           <div className="flex items-center justify-between text-xs font-mono">
@@ -159,7 +158,6 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
           </div>
         </div>
 
-        {/* Buttons */}
         <div className="space-y-3">
           <button
             type="button"
@@ -179,12 +177,10 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
           </button>
         </div>
 
-        {/* Footer Note */}
         <div className="mt-8 text-center text-[11px] font-mono text-zinc-400 flex items-center justify-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
           <span>Receipt and invoice sent to your email by Lemon Squeezy</span>
         </div>
-
       </div>
     </div>
   );

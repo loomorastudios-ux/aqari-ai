@@ -164,69 +164,43 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                 <RefreshCw className="w-6 h-6 text-[#D4AF37]" />
                 <div>
                   <div className="text-[10px] font-mono uppercase tracking-wider text-[#D4AF37]">
-                    OFFICIAL BINDING POLICY • AUTOMATED RULES A–E
+                    LAST UPDATED: APRIL 2026 • OFFICIAL BINDING POLICY
                   </div>
-                  <h1 className="text-2xl sm:text-3xl font-bold text-white">Subscription Cancellation &amp; Refund Policy</h1>
+                  <h1 className="text-2xl sm:text-3xl font-bold text-white">AQARI AI - Refund Policy</h1>
                 </div>
               </div>
-              <div className="p-4 rounded-xl bg-amber-500/10 border border-[#D4AF37]/40 text-xs font-mono text-amber-200">
-                IMPORTANT: Cancellation &amp; automatic Lemon Squeezy refund is strictly server-verified under
-                our 7-Day No-Usage &amp; Unresolved Technical Issue Policy. Self-serve cancellation is
-                available directly inside Settings &rarr; Subscription &amp; Cancellation.
+              <div className="p-4 rounded-xl bg-amber-500/10 border border-[#D4AF37]/40 text-xs font-mono text-amber-200 space-y-1">
+                <div className="font-bold text-white">AQARI AI - Refund &amp; Cancellation Policy</div>
+                <div>Contact: support via Settings &gt; Report Tool Issue</div>
               </div>
-              <div className="space-y-4 text-sm text-zinc-300">
+              <div className="space-y-3.5 text-sm text-zinc-200 leading-relaxed font-mono">
                 <p>
-                  <strong>1. Refund Eligibility Conditions (Rules C &amp; D):</strong> A full refund to the
-                  original payment method via Lemon Squeezy is issued automatically when:
-                </p>
-                <ul className="list-disc pl-6 space-y-1.5">
-                  <li>
-                    <strong>7-Day No-Usage Window (Rule C):</strong> You cancel within{' '}
-                    <strong>7 calendar days</strong> of subscription activation AND have{' '}
-                    <strong>0 successful underwriting analyses</strong> run; <strong>OR</strong>
-                  </li>
-                  <li>
-                    <strong>Unresolved Technical Issue (Rule D):</strong> You reported a tool issue via the
-                    in-app <em>Report Tool Issue</em> button, the issue remained{' '}
-                    <strong>unresolved for 7+ days</strong> from the report date, AND you still have{' '}
-                    <strong>0 successful analyses</strong>.
-                  </li>
-                </ul>
-                <p>
-                  <strong>2. Strict Non-Refundable / Locked Conditions (Rules A, B &amp; E):</strong>
-                </p>
-                <ul className="list-disc pl-6 space-y-1.5 text-rose-200">
-                  <li>
-                    <strong>Rule A — Any Successful Analysis Run:</strong> Once{' '}
-                    <strong>1 or more successful analyses</strong> are completed (Cap Rate / Cash-on-Cash / IRR
-                    output generated), cancellation with refund is permanently locked.
-                  </li>
-                  <li>
-                    <strong>Rule B — 7-Day Window Expired Without Issue Report:</strong> After{' '}
-                    <strong>7 calendar days</strong> from activation with no reported tool issue, refund is
-                    no longer eligible.
-                  </li>
-                  <li>
-                    <strong>Rule E — Issue Resolved Within 7 Days:</strong> If a reported technical issue is
-                    resolved by our engineering team within 7 days and the initial 7-day window has passed,
-                    refund eligibility ends.
-                  </li>
-                </ul>
-                <p>
-                  <strong>3. Checkout Consent Record:</strong> Every paid checkout requires explicit
-                  acceptance of:{' '}
-                  <em>&ldquo;I agree to the 7-Day No-Usage Refund Policy (0 successful analyses)&rdquo;</em>,
-                  whose timestamp is logged alongside server analysis and issue resolution audit records.
+                  <strong className="text-white">AQARI AI - Refund &amp; Cancellation Policy</strong>
                 </p>
                 <p>
-                  <strong>4. Processing &amp; Contact:</strong> Approved refunds are issued immediately via
-                  the Lemon Squeezy API and settle to your original payment method in{' '}
-                  <strong>5–10 business days</strong>. Contact:{' '}
-                  <a href="mailto:loomora.studios@gmail.com" className="text-[#D4AF37] underline">
-                    loomora.studios@gmail.com
-                  </a>
-                  .
+                  1. 7-Day Cancellation Window: You may cancel within 7 days of activation ONLY if you have completed ZERO (0) successful analyses.
                 </p>
+                <p>
+                  2. No Refund After 1 Successful Analysis: If you complete 1 or more successful analyses, your subscription is non-refundable and non-cancellable, even within 7 days.
+                </p>
+                <p>
+                  3. No Refund After 7 Days Without Tool Issue: If 7 days have passed since activation and you have not reported a tool issue, you cannot cancel or request a refund, even if you completed 0 analyses.
+                </p>
+                <p>
+                  4. Tool Issue Exception: If tool has verified issue and you reported it via Report Tool Issue, and we do NOT resolve it within 7 days of report, AND you completed 0 successful analyses, you may cancel and receive full refund in 5-10 business days. If we resolve within 7 days, standard 7-day window applies.
+                </p>
+                <p>
+                  5. How to Cancel: Settings &gt; SUBSCRIPTION &amp; CANCELLATION. If eligible, Cancel button enabled. If not eligible, automatically locked with reason.
+                </p>
+                <p>
+                  6. What Happens After Cancellation: Plan reverts to FREE (3 analyses), paid analyses deactivated, refund ($79 / $199 / $599) issued to original payment method via Lemon Squeezy.
+                </p>
+                <p>
+                  7. No Partial Refunds for unused days or unused analyses. By purchasing, you agree to this policy.
+                </p>
+              </div>
+              <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10 text-xs font-mono text-zinc-300">
+                Contact: support via <strong className="text-[#D4AF37]">Settings &gt; Report Tool Issue</strong>
               </div>
             </>
           )}

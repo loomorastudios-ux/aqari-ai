@@ -164,6 +164,7 @@ export interface User {
   freeAnalysesLeft?: number;
   freeAnalyses?: number; // fallback alias
   analysesLeft?: number;
+  analysesTotal?: number;
   analysesUsed: number;
   successfulAnalyses?: number;
   subscriptionExpiry: number | null;
@@ -278,5 +279,25 @@ export interface MarketMatrixRow {
   inflationPct?: number | null;
   benchmarkLabel?: string;
   source?: string;
+}
+
+export interface DealFinderDeal {
+  id: string;
+  name: string;
+  city: string;
+  country: string;
+  propertyType: 'Apartment' | 'Villa' | 'Commercial' | string;
+  price: number;
+  rent: number;
+  capRate: number;
+  cashOnCash: number;
+  irr: number;
+  dscr: string;
+  monthlyCashflow: number;
+  downPaymentPct: number;
+  interestRatePct: number;
+  operatingExpensePct: number;
+  risk: 'Low' | 'Medium' | 'High' | string;
+  score: number;
 }
 

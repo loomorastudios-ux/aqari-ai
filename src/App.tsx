@@ -115,7 +115,7 @@ export default function App() {
 
       if (path === '/terms' || hash === '#/terms') return 'terms';
       if (path === '/privacy' || hash === '#/privacy') return 'privacy';
-      if (path === '/refund' || hash === '#/refund') return 'refund';
+      if (path === '/refund' || path === '/refund-policy' || hash === '#/refund' || hash === '#/refund-policy') return 'refund';
       if (path === '/disclaimer' || hash === '#/disclaimer') return 'disclaimer';
       if (path === '/admin' || hash === '#/admin') return 'admin';
       if (path === '/payment-success' || hash.startsWith('#/payment-success')) return 'payment-success';
@@ -192,6 +192,8 @@ export default function App() {
     analysesLeft: number | string;
   } | null>(null);
   const [serverSynced, setServerSynced] = useState<boolean>(() => !getSessionUser());
+  const [meError, setMeError] = useState<string | null>(null);
+  const [syncTrigger, setSyncTrigger] = useState<number>(0);
 
   const showTempToast = (msg: string, duration = 3500) => {
     setTerminalToast(msg);
@@ -212,7 +214,7 @@ export default function App() {
 
   // Navigation helpers supporting both clean pathnames and hash fallbacks
   const navigateLegal = (slug: LegalDocSlug) => {
-    window.history.pushState({}, '', `/${slug}`);
+    window.history.pushState({}, '', slug === 'refund' ? '/refund-policy' : `/${slug}`);
     setRoute(slug);
     window.scrollTo(0, 0);
   };
@@ -248,7 +250,7 @@ export default function App() {
 
       if (path === '/terms' || hash === '#/terms') return setRoute('terms');
       if (path === '/privacy' || hash === '#/privacy') return setRoute('privacy');
-      if (path === '/refund' || hash === '#/refund') return setRoute('refund');
+      if (path === '/refund' || path === '/refund-policy' || hash === '#/refund' || hash === '#/refund-policy') return setRoute('refund');
       if (path === '/disclaimer' || hash === '#/disclaimer') return setRoute('disclaimer');
       if (path === '/admin' || hash === '#/admin') return setRoute('admin');
       if (path === '/payment-success' || hash.startsWith('#/payment-success')) return setRoute('payment-success');
@@ -368,7 +370,7 @@ export default function App() {
         if (user.lastReminderDate !== todayStr) {
           const updated: User = { ...user, lastReminderDate: todayStr };
           setUser(updated);
-          localStorage.setItem('aqari_user', JSON.stringify(updated));
+          saveUser(updated);
           setIsRenewalOpen(true);
         }
       }
@@ -682,13 +684,14 @@ export default function App() {
     }
   };
 
-  // Sign In Action -> create signed HttpOnly cookie + redirect to /app
+  // Sign In Action -> create signed HttpOnly cookie + load authoritative quota from backend
   const handleSignIn = async (newUser: User) => {
     handleSaveUser(newUser);
     setIsAuthOpen(false);
+    setMeError(null);
+    setServerSynced(false);
 
     let resolvedUser = newUser;
-    // Issue server HttpOnly signed session cookie & sync server-authoritative plan
     try {
       const res = await fetch('/api/app?action=session', {
         method: 'POST',
@@ -699,43 +702,58 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (data?.user) {
-          const serverPlan = normalizePlanKey(data.user.plan);
+          const serverPlan = normalizePlanKey(data.planKey || data.user.plan);
           const serverCfg = PLANS[serverPlan];
-          const serverLimit = data.license?.analysesLimit ?? serverCfg.analysesLimit;
-          const serverUsed = Number(data.user.analyses_used ?? 0);
-          const serverLeft = Number.isFinite(serverLimit)
-            ? Math.max(0, serverLimit - serverUsed)
-            : 999999;
+          const serverTotal = Number(
+            data.analyses_total ?? data.user.analyses_total ?? serverCfg.analysesLimit
+          );
+          const serverUsed = Number(data.analyses_used ?? data.user.analyses_used ?? 0);
+          const serverLeft = Number(
+            data.analyses_left ??
+              data.user.analyses_left ??
+              Math.max(0, serverTotal - serverUsed)
+          );
           const serverMaxSaved =
             typeof data.maxSaved === 'number'
               ? data.maxSaved
+              : typeof data.user.max_saved === 'number'
+              ? data.user.max_saved
               : typeof data.user.maxSaved === 'number'
               ? data.user.maxSaved
               : serverCfg.savedLimit;
-          const serverSaved =
-            Array.isArray(data.user.saved_analyses) && data.user.saved_analyses.length > 0
-              ? data.user.saved_analyses
-              : newUser.savedAnalyses || [];
+          const serverSaved = Array.isArray(data.saved_analyses)
+            ? data.saved_analyses
+            : Array.isArray(data.user.saved_analyses)
+            ? data.user.saved_analyses
+            : [];
           const syncedUser: User = {
             ...newUser,
             plan: serverPlan,
-            planName: data.license?.displayName || serverCfg.displayName,
+            planName: data.plan_name || data.license?.displayName || serverCfg.displayName,
             planPrice: serverPlan === 'free' ? 0 : serverCfg.priceUSD,
             features: Array.isArray(data.features) ? data.features : serverCfg.features,
             maxSaved: serverMaxSaved,
             savedCount:
-              typeof data.user.saved_count === 'number'
+              typeof data.saved_count === 'number'
+                ? data.saved_count
+                : typeof data.user.saved_count === 'number'
                 ? data.user.saved_count
                 : serverSaved.length,
             savedAnalyses: serverSaved,
+            customCities: Array.isArray(data.custom_cities)
+              ? data.custom_cities
+              : Array.isArray(data.user.custom_cities)
+              ? data.user.custom_cities
+              : [],
             apiKey: data.api_key ?? data.user?.api_key ?? null,
             subscriptionPlan: serverPlan,
-            subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : 'active',
-            subscriptionStartAt: data.user.license_start ?? undefined,
-            subscriptionEndsAt: data.user.license_end ?? null,
-            subscriptionExpiry: data.user.license_end ?? null,
+            subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : serverPlan === 'free' ? 'free' : 'active',
+            subscriptionStartAt: data.license_start ?? data.user.license_start ?? undefined,
+            subscriptionEndsAt: data.license_end ?? data.user.license_end ?? null,
+            subscriptionExpiry: data.license_end ?? data.user.license_end ?? null,
             analysesUsed: serverUsed,
-            successfulAnalyses: Number(data.user.successful_analyses ?? 0),
+            analysesTotal: serverTotal,
+            successfulAnalyses: Number(data.successful_analyses ?? data.user.successful_analyses ?? 0),
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
@@ -751,18 +769,24 @@ export default function App() {
           };
           handleSaveUser(syncedUser);
           resolvedUser = syncedUser;
+          setServerSynced(true);
         }
       }
-    } catch {}
+    } catch {
+      setMeError('Unable to synchronize credits from server. Please retry.');
+    } finally {
+      setServerSynced(true);
+    }
 
     window.history.pushState({}, '', '/app');
     setRoute('terminal');
     window.scrollTo(0, 0);
 
-    const left = resolvedUser.plan === 'free'
-      ? (resolvedUser.freeAnalysesLeft ?? resolvedUser.freeAnalyses ?? 3)
-      : (resolvedUser.analysesLeft ?? 30);
-    showTempToast(`Welcome back, ${resolvedUser.name || resolvedUser.email.split('@')[0]} - ${left} analyses left`, 3000);
+    const welcomeQuota =
+      typeof resolvedUser.analysesLeft === 'number'
+        ? `${resolvedUser.analysesLeft} analyses left`
+        : 'Syncing credits...';
+    showTempToast(`Welcome back, ${resolvedUser.name || resolvedUser.email.split('@')[0]} - ${welcomeQuota}`, 3000);
   };
 
   // Sign Out (clears session cookie & localStorage session, stays cleanly on '/')
@@ -781,11 +805,12 @@ export default function App() {
     window.scrollTo(0, 0);
   };
 
-  // Server-authoritative /api/me Sync: ALWAYS read plan & limits from server DB, NEVER localStorage
+  // Server-authoritative /api/app?action=me Sync: ALWAYS read plan & limits from server DB, NEVER localStorage
   useEffect(() => {
     const syncMeFromServer = async () => {
       try {
-        let res = await fetch(`/api/app?action=me&t=${Date.now()}`, {
+        const loginQuery = user?.email ? `&login_email=${encodeURIComponent(user.email)}` : '';
+        let res = await fetch(`/api/app?action=me${loginQuery}&t=${Date.now()}`, {
           credentials: 'include',
           cache: 'no-store',
         });
@@ -798,22 +823,29 @@ export default function App() {
             credentials: 'include',
             body: JSON.stringify({ email: user.email, name: user.name }),
           });
-          res = await fetch(`/api/app?action=me&t=${Date.now()}`, {
+          res = await fetch(`/api/app?action=me${loginQuery}&t=${Date.now()}`, {
             credentials: 'include',
             cache: 'no-store',
           });
         }
 
         if (!res.ok) {
+          if (user?.email && typeof user.analysesLeft !== 'number') {
+            setMeError(`Unable to load credits from server (HTTP ${res.status}).`);
+          }
           setServerSynced(true);
           return;
         }
         const data = await res.json();
         if (!data?.authenticated || !data?.email) {
+          if (user?.email && typeof user.analysesLeft !== 'number') {
+            setMeError('Unable to authenticate server session. Please retry.');
+          }
           setServerSynced(true);
           return;
         }
 
+        setMeError(null);
         const serverPlan = normalizePlanKey(data.planKey || data.user?.plan);
         const serverPlanName = data.plan_name || data.plan || PLANS[serverPlan].displayName;
         const serverPlanPrice =
@@ -825,10 +857,14 @@ export default function App() {
         const serverFeatures: string[] = Array.isArray(data.features)
           ? data.features
           : PLANS[serverPlan].features;
+        const serverTotal = Number(
+          data.analyses_total ?? data.license?.analysesLimit ?? PLANS[serverPlan].analysesLimit
+        );
         const serverUsed = Number(data.analyses_used ?? 0);
         const serverEnd = data.license_end ?? null;
-        const serverLimit = data.license?.analysesLimit ?? PLANS[serverPlan].analysesLimit;
-        const serverLeft = Number.isFinite(serverLimit) ? Math.max(0, serverLimit - serverUsed) : 999999;
+        const serverLeft = Number(
+          data.analyses_left ?? Math.max(0, serverTotal - serverUsed)
+        );
         const serverLockedLaunch = data.locked_launch_price ?? null;
         const serverCustomCities = Array.isArray(data.custom_cities)
           ? data.custom_cities
@@ -846,30 +882,28 @@ export default function App() {
         const serverApiKey = typeof data.api_key === 'string' ? data.api_key : null;
 
         const baseUser: User = user || {
-          id: 'user_' + Date.now(),
+          id: 'user_' + data.email,
           email: data.email,
           name: data.name || data.email.split('@')[0],
           avatar: data.email.charAt(0).toUpperCase(),
           provider: 'google',
           createdAt: Date.now(),
           savedAnalyses: [],
-          plan: 'free',
-          planName: 'FREE',
-          planPrice: 0,
-          features: PLANS.free.features,
-          maxSaved: PLANS.free.savedLimit,
-          savedCount: 0,
-          apiKey: null,
-          subscriptionExpiry: null,
-          analysesUsed: 0,
-          freeAnalyses: 3,
-          freeAnalysesLeft: 3,
-          analysesLeft: 3,
-          customCities: [],
+          plan: serverPlan,
+          planName: serverPlanName,
+          planPrice: serverPlanPrice,
+          features: serverFeatures,
+          maxSaved: serverMaxSaved,
+          savedCount: serverSavedList.length,
+          apiKey: serverApiKey,
+          subscriptionExpiry: serverEnd,
+          analysesUsed: serverUsed,
+          analysesTotal: serverTotal,
+          freeAnalyses: serverLeft,
+          freeAnalysesLeft: serverLeft,
+          analysesLeft: serverLeft,
+          customCities: serverCustomCities,
         };
-
-        const mergedSaved =
-          serverSavedList.length > 0 ? serverSavedList : baseUser.savedAnalyses || [];
 
         const serverAnalystUnread = typeof data.analyst_unread === 'number' ? data.analyst_unread : 0;
         const serverWgReqs = Array.isArray(data.whiteglove_requests) ? data.whiteglove_requests : [];
@@ -884,14 +918,17 @@ export default function App() {
 
         const changed =
           !user ||
+          typeof user.analysesLeft !== 'number' ||
           normalizePlanKey(user.plan) !== serverPlan ||
           user.planName !== serverPlanName ||
           user.planPrice !== serverPlanPrice ||
           JSON.stringify(user.features || []) !== JSON.stringify(serverFeatures) ||
           (user.maxSaved ?? -1) !== serverMaxSaved ||
+          (user.savedCount ?? -1) !== Number(data.saved_count ?? serverSavedList.length) ||
           (user.apiKey ?? null) !== serverApiKey ||
-          (user.analysesUsed ?? 0) !== serverUsed ||
-          (user.successfulAnalyses ?? 0) !== serverSuccessfulAnalyses ||
+          (user.analysesUsed ?? -1) !== serverUsed ||
+          (user.analysesTotal ?? -1) !== serverTotal ||
+          (user.successfulAnalyses ?? -1) !== serverSuccessfulAnalyses ||
           Boolean(user.hasReportedIssue) !== serverHasReportedIssue ||
           (user.issueStatus ?? 'none') !== serverIssueStatus ||
           (user.issueResolvedAt ?? null) !== serverIssueResolvedAt ||
@@ -903,12 +940,10 @@ export default function App() {
           (serverWgReqs.length !== (user.whiteGloveRequests?.length ?? 0)) ||
           (serverWgDelivs.length !== (user.whiteGloveDeliverables?.length ?? 0)) ||
           (serverCustomCities.length !== (user.customCities?.length ?? 0)) ||
-          (serverSavedList.length > (user.savedAnalyses?.length ?? 0)) ||
-          (Number.isFinite(serverLimit) && (user.analysesLeft ?? -1) !== serverLeft);
+          (serverSavedList.length !== (user.savedAnalyses?.length ?? 0)) ||
+          user.analysesLeft !== serverLeft;
 
         if (changed) {
-          const mergedCities =
-            serverCustomCities.length > 0 ? serverCustomCities : baseUser.customCities || [];
           const syncedUser: User = {
             ...baseUser,
             email: data.email,
@@ -920,9 +955,9 @@ export default function App() {
             maxSaved: serverMaxSaved,
             savedCount:
               typeof data.saved_count === 'number'
-                ? Math.max(data.saved_count, mergedSaved.length)
-                : mergedSaved.length,
-            savedAnalyses: mergedSaved,
+                ? data.saved_count
+                : serverSavedList.length,
+            savedAnalyses: serverSavedList,
             apiKey: serverApiKey,
             subscriptionPlan: serverPlan,
             subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : serverPlan === 'free' ? 'free' : 'active',
@@ -930,12 +965,13 @@ export default function App() {
             subscriptionEndsAt: serverEnd,
             subscriptionExpiry: serverEnd,
             analysesUsed: serverUsed,
+            analysesTotal: serverTotal,
             successfulAnalyses: serverSuccessfulAnalyses,
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
             lockedLaunchPrice: serverLockedLaunch,
-            customCities: mergedCities,
+            customCities: serverCustomCities,
             analystUnread: serverAnalystUnread,
             whiteGloveRequests: serverWgReqs,
             whiteGloveDeliverables: serverWgDelivs,
@@ -952,6 +988,9 @@ export default function App() {
           setUser(syncedUser);
         }
       } catch {
+        if (user?.email && typeof user.analysesLeft !== 'number') {
+          setMeError('Network error loading account credits from server. Please retry.');
+        }
       } finally {
         setServerSynced(true);
       }
@@ -961,7 +1000,7 @@ export default function App() {
     const onFocus = () => syncMeFromServer();
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [user?.email, route, pricingData?.updatedAt]);
+  }, [user?.email, route, pricingData?.updatedAt, syncTrigger]);
 
   // 24h expiry email check
   useEffect(() => {
@@ -1002,44 +1041,6 @@ export default function App() {
     showTempToast(`Admin Sandbox: ${planCfg.displayName} updated locally.`);
   };
 
-  // Authoritative analysis credit consumption (delegates to server DB when analyzing from TerminalDashboard)
-  const consumeAnalysis = (): boolean => {
-    if (!user) {
-      setIsAuthOpen(true);
-      return false;
-    }
-
-    const currentUser = getUser(user.email) || user;
-    const serverPlan = normalizePlanKey(currentUser.plan);
-    const cfg = PLANS[serverPlan];
-    const limit = cfg.analysesLimit;
-    const used = Number(currentUser.analysesUsed || 0);
-    const left = Number.isFinite(limit) ? Math.max(0, limit - used) : 999999;
-
-    if (serverPlan !== 'free' && currentUser.subscriptionEndsAt && Date.now() >= currentUser.subscriptionEndsAt) {
-      showTempToast('Licensing window expired - Renew');
-      setIsRenewalOpen(true);
-      return false;
-    }
-
-    if (Number.isFinite(limit) && left <= 0) {
-      setIsRenewalOpen(true);
-      return false;
-    }
-
-    const nextUsed = used + 1;
-    const nextLeft = Number.isFinite(limit) ? Math.max(0, limit - nextUsed) : 999999;
-
-    handleSaveUser({
-      ...currentUser,
-      analysesUsed: nextUsed,
-      freeAnalyses: nextLeft,
-      freeAnalysesLeft: nextLeft,
-      analysesLeft: nextLeft,
-    });
-    return true;
-  };
-
   const handleAnalyzeProperty = (property: PropertyListing) => {
     if (!user) {
       setIsAuthOpen(true);
@@ -1068,28 +1069,28 @@ export default function App() {
           showTempToast(data?.error || 'Rate limit exceeded. Please wait.');
           return;
         }
-        if (res.status === 403 || data?.success === false) {
+        if (res.status === 403 || !res.ok || data?.success === false) {
           showTempToast(data?.error || 'No analyses left. Renew / Upgrade.');
           setIsRenewalOpen(true);
           return;
         }
-        if (data?.license) {
-          const nextLeft = data.license.isUnlimitedAnalyses ? 999999 : data.license.analysesLeft;
-          handleSaveUser({
-            ...user,
-            plan: data.license.planKey || user.plan,
-            analysesUsed: data.license.analysesUsed,
-            freeAnalyses: nextLeft,
-            freeAnalysesLeft: nextLeft,
-            analysesLeft: nextLeft,
-          });
-        } else {
-          consumeAnalysis();
-        }
+        const nextLeft = Number(data?.analyses_left ?? data?.license?.analysesLeft ?? 0);
+        const nextTotal = Number(data?.analyses_total ?? data?.license?.analysesLimit ?? user.analysesTotal ?? 0);
+        handleSaveUser({
+          ...user,
+          plan: data?.license?.planKey || user.plan,
+          analysesUsed: Number(data?.license?.analysesUsed ?? user.analysesUsed + 1),
+          analysesTotal: nextTotal,
+          successfulAnalyses: Number(data?.successful_analyses ?? (user.successfulAnalyses ?? 0) + 1),
+          cancellationEligibility: data?.cancellationEligibility ?? user.cancellationEligibility,
+          freeAnalyses: nextLeft,
+          freeAnalysesLeft: nextLeft,
+          analysesLeft: nextLeft,
+        });
         setActivePropertyAnalysis(property);
       })
       .catch(() => {
-        if (consumeAnalysis()) setActivePropertyAnalysis(property);
+        showTempToast('Network error contacting underwriting server. Please retry.');
       });
   };
 
@@ -1137,7 +1138,7 @@ export default function App() {
             </button>
             <span className="text-zinc-700">|</span>
             <button onClick={() => navigateLegal('refund')} className="hover:text-[#D4AF37] underline cursor-pointer">
-              Refund
+              Refund Policy
             </button>
             <span className="text-zinc-700">|</span>
             <button onClick={() => navigateLegal('disclaimer')} className="hover:text-[#D4AF37] underline cursor-pointer">
@@ -1212,7 +1213,7 @@ export default function App() {
                 </div>
                 <div>
                   Analyses Left:{' '}
-                  <span className="text-white font-bold">{verifiedSummary?.analysesLeft ?? 150}</span>
+                  <span className="text-white font-bold">{verifiedSummary?.analysesLeft ?? 'Loading...'}</span>
                 </div>
               </div>
               <p className="text-xs font-mono text-zinc-400">Redirecting to terminal...</p>
@@ -1448,8 +1449,29 @@ export default function App() {
             <div className="text-center space-y-3">
               <Loader2 className="w-10 h-10 text-[#D4AF37] animate-spin mx-auto" />
               <div className="text-xs font-mono uppercase tracking-wider text-zinc-400">
-                Synchronizing Server License Entitlements...
+                Loading Server License &amp; Credits...
               </div>
+            </div>
+          </div>
+        ) : user && meError && typeof user.analysesLeft !== 'number' ? (
+          <div className="min-h-screen bg-black text-white flex items-center justify-center p-6">
+            <div className="max-w-md w-full glass-panel p-8 rounded-3xl border border-rose-500/40 text-center space-y-4">
+              <AlertOctagon className="w-10 h-10 text-rose-400 mx-auto" />
+              <div className="text-sm font-mono font-bold text-white">
+                Failed to Sync Credits from Server
+              </div>
+              <p className="text-xs font-mono text-zinc-300 leading-relaxed">{meError}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setServerSynced(false);
+                  setMeError(null);
+                  setSyncTrigger((c) => c + 1);
+                }}
+                className="px-5 py-2.5 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono uppercase tracking-wider cursor-pointer"
+              >
+                Retry Sync
+              </button>
             </div>
           </div>
         ) : user ? (
@@ -1468,8 +1490,8 @@ export default function App() {
               onGoToPricing={handleGoToPricing}
               onOpenRenewal={() => setIsRenewalOpen(true)}
               onUpdateUser={handleSaveUser}
-              onConsumeAnalysis={consumeAnalysis}
               onOpenAuth={() => setIsAuthOpen(true)}
+              onOpenLegal={navigateLegal}
               initialToast={terminalToast}
             />
           </>
@@ -1698,6 +1720,7 @@ export default function App() {
         config={config}
         pricingData={pricingData}
         currentCurrency={currency}
+        onOpenLegal={navigateLegal}
       />
 
       <AnalysisModal
@@ -1783,13 +1806,7 @@ export default function App() {
             });
             showTempToast(`Saved "${prop.title}" to portfolio (${nextList.length}/${effectiveSavedLimit}).`);
           } catch {
-            const nextList = [newAnalysis, ...currentSaved];
-            handleSaveUser({
-              ...user,
-              savedCount: nextList.length,
-              savedAnalyses: nextList,
-            });
-            showTempToast(`Saved "${prop.title}" to portfolio.`);
+            showTempToast('Unable to save to portfolio right now. Please try again.');
           }
         }}
       />

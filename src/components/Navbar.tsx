@@ -72,14 +72,23 @@ export const Navbar: React.FC<NavbarProps> = ({
       })
     : null;
 
+  const isCreditsLoaded = Boolean(
+    user &&
+      (typeof user.analysesLeft === 'number' ||
+        typeof user.freeAnalysesLeft === 'number' ||
+        typeof user.freeAnalyses === 'number')
+  );
+
   const daysLeft = license ? license.daysLeft : 0;
   const isExpired = Boolean(license?.isExpired || (user && user.subscriptionStatus === 'expired'));
   const isExpiringIn1Day = Boolean(user && license && license.planKey !== 'free' && endsAt && msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000);
-  const analysesLeftDisplay = license
-    ? license.isUnlimitedAnalyses
-      ? 'Unlimited left'
-      : `${license.analysesLeft} analyses left`
-    : '3 analyses left';
+  const analysesLeftDisplay = !user
+    ? '--'
+    : !isCreditsLoaded
+    ? 'Loading...'
+    : license?.isUnlimitedAnalyses
+    ? 'Unlimited left'
+    : `${license?.analysesLeft ?? 0} analyses left`;
 
   return (
     <header className="sticky top-0 z-50 w-full">
