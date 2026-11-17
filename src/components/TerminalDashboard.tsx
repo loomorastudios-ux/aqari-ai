@@ -12,6 +12,9 @@ import {
   WhiteGloveDeliverable,
   DealFinderDeal,
   MarketForecastResult,
+  DueDiligenceResult,
+  PortfolioOptimizerResult,
+  AdvisorResult,
   LastResultsData,
 } from '../types';
 import {
@@ -80,6 +83,9 @@ import {
   MessageSquare,
   Copy,
   Mail,
+  PieChart,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -151,24 +157,6 @@ const DEMO_SAVED_BENCHMARKS: SavedAnalysis[] = [
   },
 ];
 
-const COMING_SOON_AI_MODULES = [
-  {
-    title: 'AI Due Diligence',
-    arabicDesc: 'فحص شامل للمخاطر القانونية والمالية',
-    badge: 'PROFESSIONAL / SOVEREIGN',
-  },
-  {
-    title: 'Global Portfolio Optimizer',
-    arabicDesc: 'توزيع ذكي لرأس المال بين الأسواق العالمية',
-    badge: 'SOVEREIGN',
-  },
-  {
-    title: 'Institutional AI Advisor',
-    arabicDesc: 'مستشارك الاستثماري الشخصي بالذكاء الاصطناعي',
-    badge: 'SOVEREIGN',
-  },
-];
-
 interface TerminalDashboardProps {
   user: User;
   currentCurrency: CurrencyCode;
@@ -209,7 +197,17 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 }) => {
   // Navigation active tab
   const [activeTab, setActiveTab] = useState<
-    'dashboard' | 'analyze' | 'dealfinder' | 'forecast' | 'saved' | 'portfolio' | 'radar' | 'settings'
+    | 'dashboard'
+    | 'analyze'
+    | 'dealfinder'
+    | 'forecast'
+    | 'duediligence'
+    | 'optimizer'
+    | 'advisor'
+    | 'saved'
+    | 'portfolio'
+    | 'radar'
+    | 'settings'
   >(
     initialToast?.startsWith('Welcome to AQARI') ? 'dashboard' : 'analyze'
   );
@@ -255,7 +253,52 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [fcResult, setFcResult] = useState<MarketForecastResult | null>(null);
   const [fcCreatedAt, setFcCreatedAt] = useState<string | null>(null);
   const [isSavingForecast, setIsSavingForecast] = useState<boolean>(false);
-  const [isClearingTool, setIsClearingTool] = useState<'analysis' | 'deal_finder' | 'forecast' | null>(null);
+
+  // AI Due Diligence state (PRO / SOVEREIGN)
+  const [ddCityComboInput, setDdCityComboInput] = useState<string>('Muscat (Oman OM)');
+  const [ddCityOpen, setDdCityOpen] = useState<boolean>(false);
+  const [ddPropType, setDdPropType] = useState<'Apartment' | 'Villa' | 'Commercial'>('Apartment');
+  const [ddPriceDraft, setDdPriceDraft] = useState<string>('500000');
+  const [ddPriceUSD, setDdPriceUSD] = useState<number>(500000);
+  const [ddRentDraft, setDdRentDraft] = useState<string>('4000');
+  const [ddRentUSD, setDdRentUSD] = useState<number>(4000);
+  const [ddOwnershipType, setDdOwnershipType] = useState<'Freehold' | 'Leasehold'>('Freehold');
+  const [ddAgeDraft, setDdAgeDraft] = useState<string>('5');
+  const [ddBuildingAge, setDdBuildingAge] = useState<number>(5);
+  const [isRunningDd, setIsRunningDd] = useState<boolean>(false);
+  const [ddError, setDdError] = useState<string | null>(null);
+  const [ddResult, setDdResult] = useState<DueDiligenceResult | null>(null);
+  const [ddCreatedAt, setDdCreatedAt] = useState<string | null>(null);
+  const [isSavingDd, setIsSavingDd] = useState<boolean>(false);
+
+  // Global Portfolio Optimizer state (SOVEREIGN only)
+  const [optCapitalDraft, setOptCapitalDraft] = useState<string>('1000000');
+  const [optCapitalUSD, setOptCapitalUSD] = useState<number>(1000000);
+  const [optSelectedCities, setOptSelectedCities] = useState<string[]>(['Muscat', 'Dubai']);
+  const [optCityComboInput, setOptCityComboInput] = useState<string>('');
+  const [optCityOpen, setOptCityOpen] = useState<boolean>(false);
+  const [optRisk, setOptRisk] = useState<'Low' | 'Medium' | 'High'>('Medium');
+  const [isRunningOpt, setIsRunningOpt] = useState<boolean>(false);
+  const [optError, setOptError] = useState<string | null>(null);
+  const [optResult, setOptResult] = useState<PortfolioOptimizerResult | null>(null);
+  const [optCreatedAt, setOptCreatedAt] = useState<string | null>(null);
+  const [isSavingOpt, setIsSavingOpt] = useState<boolean>(false);
+
+  // Institutional AI Advisor state (SOVEREIGN only)
+  const [advQuestion, setAdvQuestion] = useState<string>('Should I invest $1M in Muscat or Dubai?');
+  const [advCityComboInput, setAdvCityComboInput] = useState<string>('Muscat (Oman OM)');
+  const [advCityOpen, setAdvCityOpen] = useState<boolean>(false);
+  const [advBudgetDraft, setAdvBudgetDraft] = useState<string>('1000000');
+  const [advBudgetUSD, setAdvBudgetUSD] = useState<number>(1000000);
+  const [isAskingAdvisor, setIsAskingAdvisor] = useState<boolean>(false);
+  const [advError, setAdvError] = useState<string | null>(null);
+  const [advResult, setAdvResult] = useState<AdvisorResult | null>(null);
+  const [advCreatedAt, setAdvCreatedAt] = useState<string | null>(null);
+  const [isSavingAdv, setIsSavingAdv] = useState<boolean>(false);
+
+  const [isClearingTool, setIsClearingTool] = useState<
+    'analysis' | 'deal_finder' | 'forecast' | 'due_diligence' | 'portfolio_optimizer' | 'advisor' | null
+  >(null);
 
   // Success / notification toast
   const [toastMessage, setToastMessage] = useState<string | null>(initialToast || null);
@@ -465,6 +508,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     !isAccountLocked && (license.planKey === 'pro' || license.planKey === 'enterprise');
   const canMarketForecast =
     !isAccountLocked && (license.planKey === 'pro' || license.planKey === 'enterprise');
+  const canDueDiligence =
+    !isAccountLocked && (license.planKey === 'pro' || license.planKey === 'enterprise');
+  const canPortfolioOptimizer = !isAccountLocked && license.planKey === 'enterprise';
+  const canInstitutionalAdvisor = !isAccountLocked && license.planKey === 'enterprise';
   const canSaveProperty = !isAccountLocked && maxSaved > 0;
 
   const loadWebhookLogs = async () => {
@@ -693,6 +740,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     analysis?: string;
     deal_finder?: string;
     forecast?: string;
+    due_diligence?: string;
+    portfolio_optimizer?: string;
+    advisor?: string;
   }>({});
 
   const applyPersistedLastResults = (lr?: LastResultsData | null) => {
@@ -800,6 +850,77 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         setFcCreatedAt(lr.forecast.created_at || (lr.forecast.forecast as any).generatedAt || null);
       }
     }
+
+    if (lr.due_diligence?.result) {
+      const ddSig = `${lr.due_diligence.created_at}|${lr.due_diligence.result.city}|${lr.due_diligence.result.riskScore}`;
+      if (lastHydratedSigRef.current.due_diligence !== ddSig) {
+        lastHydratedSigRef.current.due_diligence = ddSig;
+        const inp = lr.due_diligence.inputs;
+        if (inp?.city || lr.due_diligence.result.city) {
+          const cEntry = resolveCityFromInput(inp?.city || lr.due_diligence.result.city);
+          setDdCityComboInput(cEntry ? formatCityOptionLabel(cEntry) : (inp?.city || lr.due_diligence.result.city));
+        }
+        if (inp?.propertyType === 'Apartment' || inp?.propertyType === 'Villa' || inp?.propertyType === 'Commercial') {
+          setDdPropType(inp.propertyType);
+        }
+        if (typeof inp?.price === 'number' && inp.price > 0) {
+          setDdPriceUSD(inp.price);
+          setDdPriceDraft(String(inp.price));
+        }
+        if (typeof inp?.monthlyRent === 'number' && inp.monthlyRent > 0) {
+          setDdRentUSD(inp.monthlyRent);
+          setDdRentDraft(String(inp.monthlyRent));
+        }
+        if (inp?.ownershipType === 'Freehold' || inp?.ownershipType === 'Leasehold') {
+          setDdOwnershipType(inp.ownershipType);
+        }
+        if (typeof inp?.buildingAge === 'number' && inp.buildingAge >= 0) {
+          setDdBuildingAge(inp.buildingAge);
+          setDdAgeDraft(String(inp.buildingAge));
+        }
+        setDdResult(lr.due_diligence.result);
+        setDdCreatedAt(lr.due_diligence.created_at || lr.due_diligence.result.generatedAt || null);
+      }
+    }
+
+    if (lr.portfolio_optimizer?.result) {
+      const optSig = `${lr.portfolio_optimizer.created_at}|${(lr.portfolio_optimizer.result.cities || []).join(',')}|${lr.portfolio_optimizer.result.totalCapital}`;
+      if (lastHydratedSigRef.current.portfolio_optimizer !== optSig) {
+        lastHydratedSigRef.current.portfolio_optimizer = optSig;
+        const inp = lr.portfolio_optimizer.inputs;
+        if (typeof inp?.totalCapital === 'number' && inp.totalCapital > 0) {
+          setOptCapitalUSD(inp.totalCapital);
+          setOptCapitalDraft(String(inp.totalCapital));
+        }
+        if (Array.isArray(inp?.cities) && inp.cities.length >= 2) {
+          setOptSelectedCities(inp.cities.slice(0, 3));
+        }
+        if (inp?.risk === 'Low' || inp?.risk === 'Medium' || inp?.risk === 'High') {
+          setOptRisk(inp.risk);
+        }
+        setOptResult(lr.portfolio_optimizer.result);
+        setOptCreatedAt(lr.portfolio_optimizer.created_at || lr.portfolio_optimizer.result.generatedAt || null);
+      }
+    }
+
+    if (lr.advisor?.result) {
+      const advSig = `${lr.advisor.created_at}|${lr.advisor.result.city}|${lr.advisor.result.budget}`;
+      if (lastHydratedSigRef.current.advisor !== advSig) {
+        lastHydratedSigRef.current.advisor = advSig;
+        const inp = lr.advisor.inputs;
+        if (inp?.question) setAdvQuestion(String(inp.question));
+        if (inp?.city || lr.advisor.result.city) {
+          const cEntry = resolveCityFromInput(inp?.city || lr.advisor.result.city);
+          setAdvCityComboInput(cEntry ? formatCityOptionLabel(cEntry) : (inp?.city || lr.advisor.result.city));
+        }
+        if (typeof inp?.budget === 'number' && inp.budget > 0) {
+          setAdvBudgetUSD(inp.budget);
+          setAdvBudgetDraft(String(inp.budget));
+        }
+        setAdvResult(lr.advisor.result);
+        setAdvCreatedAt(lr.advisor.created_at || lr.advisor.result.generatedAt || null);
+      }
+    }
   };
 
   useEffect(() => {
@@ -827,7 +948,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     };
   }, [user?.email]);
 
-  const handleClearLastResult = async (tool: 'analysis' | 'deal_finder' | 'forecast') => {
+  const handleClearLastResult = async (
+    tool: 'analysis' | 'deal_finder' | 'forecast' | 'due_diligence' | 'portfolio_optimizer' | 'advisor'
+  ) => {
     if (!user?.email) return;
     setIsClearingTool(tool);
     try {
@@ -859,6 +982,18 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         lastHydratedSigRef.current.forecast = 'cleared';
         setFcResult(null);
         setFcCreatedAt(null);
+      } else if (tool === 'due_diligence') {
+        lastHydratedSigRef.current.due_diligence = 'cleared';
+        setDdResult(null);
+        setDdCreatedAt(null);
+      } else if (tool === 'portfolio_optimizer') {
+        lastHydratedSigRef.current.portfolio_optimizer = 'cleared';
+        setOptResult(null);
+        setOptCreatedAt(null);
+      } else if (tool === 'advisor') {
+        lastHydratedSigRef.current.advisor = 'cleared';
+        setAdvResult(null);
+        setAdvCreatedAt(null);
       }
       onUpdateUser({
         ...user,
@@ -1259,6 +1394,728 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         planDisplay: license.displayName,
         metricsLines,
         notes: fcResult.disclaimer,
+      });
+      showToast(`Exported PDF: ${filename}`);
+    }
+  };
+
+  // --- AI Due Diligence options & handlers (PRO / SOVEREIGN) ---
+  const ddCityOptions = useMemo(() => {
+    const q = ddCityComboInput.trim();
+    const matched = resolveCityFromInput(q);
+    if (matched && q === formatCityOptionLabel(matched)) {
+      return searchCities(matched.city, 25);
+    }
+    if (q.length >= 2) {
+      return searchCities(q, 25);
+    }
+    const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
+    return defaults.map((n) => findCityEntry(n)).filter((c): c is CityEntry => Boolean(c));
+  }, [ddCityComboInput]);
+
+  const handleRunDueDiligence = async () => {
+    if (isAccountLocked) {
+      setDdError(lockBannerMessage);
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    if (!canDueDiligence) {
+      const msg = 'AI Due Diligence available in PROFESSIONAL / SOVEREIGN - Upgrade';
+      setDdError(msg);
+      showToast(msg);
+      onOpenRenewal();
+      return;
+    }
+    if (!isCreditsLoaded || analysesRemaining <= 0) {
+      setDdError('No analyses left. Renew / Upgrade.');
+      showToast('No analyses left. Renew / Upgrade.');
+      onOpenRenewal();
+      return;
+    }
+    const cityEntry = resolveCityFromInput(ddCityComboInput);
+    if (!cityEntry) {
+      setDdError('City not supported yet. Choose from list.');
+      showToast('City not supported yet. Choose from list.');
+      return;
+    }
+    if (!Number.isFinite(ddPriceUSD) || ddPriceUSD <= 0 || !Number.isFinite(ddRentUSD) || ddRentUSD <= 0) {
+      setDdError('Enter valid Property Price ($) and Gross Monthly Rent ($/mo) greater than 0.');
+      return;
+    }
+
+    setDdError(null);
+    setIsRunningDd(true);
+    try {
+      const res = await fetch('/api/app?action=run-due-diligence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          city: cityEntry.city,
+          propertyType: ddPropType,
+          price: ddPriceUSD,
+          monthlyRent: ddRentUSD,
+          ownershipType: ddOwnershipType,
+          buildingAge: ddBuildingAge,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        applyServerLockFromResponse(data);
+        setDdError(data?.error || 'AI Due Diligence available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        showToast(data?.error || 'Upgrade required');
+        onOpenRenewal();
+        return;
+      }
+      if (!res.ok || data?.success === false || !data?.result) {
+        setDdError(data?.error || 'Unable to run Due Diligence.');
+        return;
+      }
+
+      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
+      const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
+      const ddCreated = String(data.created_at || data.result?.generatedAt || new Date().toISOString());
+      lastHydratedSigRef.current.due_diligence = `${ddCreated}|${data.result.city}|${data.result.riskScore}`;
+      onUpdateUser({
+        ...user,
+        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
+        analysesTotal: nextTotal,
+        analysesLeft: nextLeft,
+        freeAnalyses: nextLeft,
+        freeAnalysesLeft: nextLeft,
+        successfulAnalyses: Number(data.successful_analyses ?? (user.successfulAnalyses ?? 0) + 1),
+        cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
+        lastResults: data.last_results ?? user.lastResults,
+      });
+
+      setDdResult(data.result as DueDiligenceResult);
+      setDdCreatedAt(ddCreated);
+      showToast(`Due Diligence ready for ${data.result.city}: Score ${data.result.riskScore}/100 (-1 credit, ${nextLeft} left).`);
+    } catch {
+      setDdError('Network error connecting to AI Due Diligence.');
+    } finally {
+      setIsRunningDd(false);
+    }
+  };
+
+  const handleSaveDueDiligence = async () => {
+    if (!ddResult) return;
+    if (isAccountLocked || !canSaveProperty) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    const savedList = user.savedAnalyses || [];
+    if (savedList.length >= maxSaved) {
+      showToast(`Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}. Upgrade to save more.`);
+      onOpenRenewal();
+      return;
+    }
+    const estIrr = Number((ddResult.propertyCapRate + ddResult.estPriceGrowthPct).toFixed(1));
+    const estCashflow = Math.round((ddResult.price * (ddResult.propertyCapRate / 100)) / 12);
+    const newAnalysis: SavedAnalysis = {
+      id: `dd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      property: `${ddResult.city} ${ddResult.propertyType} - Due Diligence`,
+      city: ddResult.city,
+      price: ddResult.price,
+      rent: ddResult.monthlyRent,
+      capRate: ddResult.propertyCapRate,
+      cashOnCash: ddResult.propertyCapRate,
+      irr: estIrr,
+      dscr: ddResult.riskScore >= 75 ? '1.70' : ddResult.riskScore >= 50 ? '1.35' : '1.05',
+      monthlyCashflow: estCashflow,
+      riskScore: ddResult.riskScore >= 75 ? 'AAA' : ddResult.riskScore >= 50 ? 'AA' : 'BBB',
+      date: Date.now(),
+      imageUrl: PROPERTY_LISTINGS[0].imageUrl,
+      notes: `AI Due Diligence: Score ${ddResult.riskScore}/100 (${ddResult.verdict}) | ${ddResult.ownershipType}, Age ${ddResult.buildingAge} yrs`,
+    };
+    setIsSavingDd(true);
+    try {
+      const res = await fetch('/api/app?action=save-to-portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          currentSavedCount: savedList.length,
+          analysis: newAnalysis,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        if (data?.locked) applyServerLockFromResponse(data);
+        showToast(data?.error || `Save limit reached (${savedList.length}/${maxSaved}).`);
+        onOpenRenewal();
+        return;
+      }
+      const savedItem = data?.savedItem || newAnalysis;
+      const newSavedList = [savedItem, ...savedList];
+      onUpdateUser({
+        ...user,
+        savedCount: data?.saved_count ?? newSavedList.length,
+        savedAnalyses: newSavedList,
+        portfolio: {
+          totalValue: newSavedList.reduce((acc, curr) => acc + curr.price, 0),
+          monthlyCashflow: newSavedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0),
+        },
+      });
+      showToast(`Saved Due Diligence "${savedItem.property}" (${newSavedList.length}/${maxSaved}).`);
+    } catch {
+      showToast('Unable to save Due Diligence right now.');
+    } finally {
+      setIsSavingDd(false);
+    }
+  };
+
+  const handleExportDueDiligencePdf = async () => {
+    if (!ddResult) return;
+    if (isAccountLocked) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    if (!canPdfExport) {
+      showToast('Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    const title = `${ddResult.city} ${ddResult.propertyType} - AI Due Diligence`;
+    const metricsLines = [
+      `Target City: ${ddResult.city}, ${ddResult.country} | ${ddResult.propertyType}`,
+      `Ownership: ${ddResult.ownershipType} | Building Age: ${ddResult.buildingAge} years`,
+      `Property Price: ${formatPrice(ddResult.price, 'USD')} | Monthly Rent: ${formatPrice(ddResult.monthlyRent, 'USD')}/mo`,
+      `Property Cap Rate: ${ddResult.propertyCapRate}% vs City Avg: ${ddResult.cityAvgCapRate}%`,
+      `Risk Score: ${ddResult.riskScore}/100 | Overall Verdict: ${ddResult.verdict}`,
+      ...ddResult.checklist.map(
+        (row) => `[${row.status.toUpperCase()}] ${row.category} - ${row.item}: ${row.note}`
+      ),
+    ];
+    try {
+      const res = await fetch('/api/app?action=export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          format: 'pdf',
+          propertyTitle: title,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        if (data?.locked) applyServerLockFromResponse(data);
+        showToast(data?.error || 'Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        onOpenRenewal();
+        return;
+      }
+      const filename = downloadMemorandumPdf({
+        title,
+        city: ddResult.city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: ddResult.disclaimer,
+        watermarkText: data?.watermark,
+      });
+      showToast(`Exported PDF: ${filename}`);
+    } catch {
+      const filename = downloadMemorandumPdf({
+        title,
+        city: ddResult.city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: ddResult.disclaimer,
+      });
+      showToast(`Exported PDF: ${filename}`);
+    }
+  };
+
+  // --- Global Portfolio Optimizer options & handlers (SOVEREIGN ONLY) ---
+  const optCityOptions = useMemo(() => {
+    const q = optCityComboInput.trim();
+    if (q.length >= 2) {
+      return searchCities(q, 25);
+    }
+    const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
+    return defaults.map((n) => findCityEntry(n)).filter((c): c is CityEntry => Boolean(c));
+  }, [optCityComboInput]);
+
+  const handleAddOptimizerCity = (entry: CityEntry) => {
+    if (optSelectedCities.some((c) => c.toLowerCase() === entry.city.toLowerCase())) {
+      setOptCityComboInput('');
+      setOptCityOpen(false);
+      return;
+    }
+    if (optSelectedCities.length >= 3) {
+      showToast('Maximum 3 target cities allowed. Remove a city first.');
+      setOptCityOpen(false);
+      return;
+    }
+    setOptSelectedCities([...optSelectedCities, entry.city]);
+    setOptCityComboInput('');
+    setOptCityOpen(false);
+  };
+
+  const handleRemoveOptimizerCity = (cityName: string) => {
+    setOptSelectedCities((prev) => prev.filter((c) => c.toLowerCase() !== cityName.toLowerCase()));
+  };
+
+  const handleOptimizePortfolio = async () => {
+    if (isAccountLocked) {
+      setOptError(lockBannerMessage);
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    if (!canPortfolioOptimizer) {
+      const msg = 'Global Portfolio Optimizer available in SOVEREIGN only - Upgrade to SOVEREIGN';
+      setOptError(msg);
+      showToast(msg);
+      onOpenRenewal();
+      return;
+    }
+    if (!isCreditsLoaded || analysesRemaining <= 0) {
+      setOptError('No analyses left. Renew / Upgrade.');
+      showToast('No analyses left. Renew / Upgrade.');
+      onOpenRenewal();
+      return;
+    }
+    if (optSelectedCities.length < 2 || optSelectedCities.length > 3) {
+      setOptError('Select 2 to 3 target cities from the 750+ city list.');
+      return;
+    }
+    if (!Number.isFinite(optCapitalUSD) || optCapitalUSD <= 0) {
+      setOptError('Enter valid Total Capital ($) greater than 0.');
+      return;
+    }
+
+    setOptError(null);
+    setIsRunningOpt(true);
+    try {
+      const res = await fetch('/api/app?action=optimize-portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          totalCapital: optCapitalUSD,
+          cities: optSelectedCities,
+          risk: optRisk,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        applyServerLockFromResponse(data);
+        setOptError(data?.error || 'Global Portfolio Optimizer available in SOVEREIGN only - Upgrade to SOVEREIGN');
+        showToast(data?.error || 'Upgrade to SOVEREIGN required');
+        onOpenRenewal();
+        return;
+      }
+      if (!res.ok || data?.success === false || !data?.result) {
+        setOptError(data?.error || 'Unable to optimize portfolio.');
+        return;
+      }
+
+      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
+      const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
+      const optCreated = String(data.created_at || data.result?.generatedAt || new Date().toISOString());
+      lastHydratedSigRef.current.portfolio_optimizer = `${optCreated}|${(data.result.cities || []).join(',')}|${data.result.totalCapital}`;
+      onUpdateUser({
+        ...user,
+        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
+        analysesTotal: nextTotal,
+        analysesLeft: nextLeft,
+        freeAnalyses: nextLeft,
+        freeAnalysesLeft: nextLeft,
+        successfulAnalyses: Number(data.successful_analyses ?? (user.successfulAnalyses ?? 0) + 1),
+        cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
+        lastResults: data.last_results ?? user.lastResults,
+      });
+
+      setOptResult(data.result as PortfolioOptimizerResult);
+      setOptCreatedAt(optCreated);
+      showToast(`Portfolio optimized (${data.result.blendedCapRate}% blended cap) (-1 credit, ${nextLeft} left).`);
+    } catch {
+      setOptError('Network error connecting to Global Portfolio Optimizer.');
+    } finally {
+      setIsRunningOpt(false);
+    }
+  };
+
+  const handleSaveOptimizer = async () => {
+    if (!optResult) return;
+    if (isAccountLocked || !canSaveProperty) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    const savedList = user.savedAnalyses || [];
+    if (savedList.length >= maxSaved) {
+      showToast(`Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}.`);
+      onOpenRenewal();
+      return;
+    }
+    const monthlyCashflow = Math.round(optResult.totalEstAnnualIncomeUSD / 12);
+    const newAnalysis: SavedAnalysis = {
+      id: `opt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      property: `Global Portfolio (${optResult.cities.join(' + ')})`,
+      city: optResult.cities[0] || 'Multi-City',
+      price: optResult.totalCapital,
+      rent: monthlyCashflow,
+      capRate: optResult.blendedCapRate,
+      cashOnCash: optResult.blendedCapRate,
+      irr: Number((optResult.blendedCapRate + 4.5).toFixed(1)),
+      dscr: '1.85',
+      monthlyCashflow,
+      riskScore: optResult.diversificationScore >= 80 ? 'AAA' : 'AA',
+      date: Date.now(),
+      imageUrl: PROPERTY_LISTINGS[0].imageUrl,
+      notes: optResult.allocations.map((a) => `${a.city}: ${a.allocationPct}% (${formatPrice(a.amountUSD, 'USD')})`).join(' | '),
+    };
+    setIsSavingOpt(true);
+    try {
+      const res = await fetch('/api/app?action=save-to-portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          currentSavedCount: savedList.length,
+          analysis: newAnalysis,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        if (data?.locked) applyServerLockFromResponse(data);
+        showToast(data?.error || `Save limit reached (${savedList.length}/${maxSaved}).`);
+        return;
+      }
+      const savedItem = data?.savedItem || newAnalysis;
+      const newSavedList = [savedItem, ...savedList];
+      onUpdateUser({
+        ...user,
+        savedCount: data?.saved_count ?? newSavedList.length,
+        savedAnalyses: newSavedList,
+        portfolio: {
+          totalValue: newSavedList.reduce((acc, curr) => acc + curr.price, 0),
+          monthlyCashflow: newSavedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0),
+        },
+      });
+      showToast(`Saved optimized portfolio (${newSavedList.length}/${maxSaved}).`);
+    } catch {
+      showToast('Unable to save portfolio right now.');
+    } finally {
+      setIsSavingOpt(false);
+    }
+  };
+
+  const handleExportOptimizerPdf = async () => {
+    if (!optResult) return;
+    if (isAccountLocked) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    if (!canPdfExport) {
+      showToast('Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    const title = `Global Portfolio Optimizer - ${optResult.cities.join(' / ')}`;
+    const metricsLines = [
+      `Total Capital: ${formatPrice(optResult.totalCapital, 'USD')} | Risk Profile: ${optResult.risk}`,
+      `Total Est. Annual Income: ${formatPrice(optResult.totalEstAnnualIncomeUSD, 'USD')}/yr`,
+      `Blended Cap Rate: ${optResult.blendedCapRate}% | Diversification Score: ${optResult.diversificationScore}/100`,
+      ...optResult.allocations.map(
+        (a) =>
+          `${a.city} (${a.country}): ${a.allocationPct}% | ${formatPrice(a.amountUSD, 'USD')} | Cap ${a.estCapRate}% | Est Rent ${formatPrice(a.estAnnualRentUSD, 'USD')}/yr`
+      ),
+    ];
+    try {
+      const res = await fetch('/api/app?action=export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          format: 'pdf',
+          propertyTitle: title,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        if (data?.locked) applyServerLockFromResponse(data);
+        showToast(data?.error || 'Upgrade required');
+        onOpenRenewal();
+        return;
+      }
+      const filename = downloadMemorandumPdf({
+        title,
+        city: optResult.cities.join(', '),
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: optResult.disclaimer,
+        watermarkText: data?.watermark,
+      });
+      showToast(`Exported PDF: ${filename}`);
+    } catch {
+      const filename = downloadMemorandumPdf({
+        title,
+        city: optResult.cities.join(', '),
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: optResult.disclaimer,
+      });
+      showToast(`Exported PDF: ${filename}`);
+    }
+  };
+
+  // --- Institutional AI Advisor options & handlers (SOVEREIGN ONLY) ---
+  const advCityOptions = useMemo(() => {
+    const q = advCityComboInput.trim();
+    const matched = resolveCityFromInput(q);
+    if (matched && q === formatCityOptionLabel(matched)) {
+      return searchCities(matched.city, 25);
+    }
+    if (q.length >= 2) {
+      return searchCities(q, 25);
+    }
+    const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
+    return defaults.map((n) => findCityEntry(n)).filter((c): c is CityEntry => Boolean(c));
+  }, [advCityComboInput]);
+
+  const handleAskAdvisor = async () => {
+    if (isAccountLocked) {
+      setAdvError(lockBannerMessage);
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    if (!canInstitutionalAdvisor) {
+      const msg = 'Institutional AI Advisor available in SOVEREIGN only - Upgrade to SOVEREIGN';
+      setAdvError(msg);
+      showToast(msg);
+      onOpenRenewal();
+      return;
+    }
+    if (!isCreditsLoaded || analysesRemaining <= 0) {
+      setAdvError('No analyses left. Renew / Upgrade.');
+      showToast('No analyses left. Renew / Upgrade.');
+      onOpenRenewal();
+      return;
+    }
+    const cityEntry = resolveCityFromInput(advCityComboInput);
+    if (!cityEntry) {
+      setAdvError('City not supported yet. Choose from list.');
+      showToast('City not supported yet. Choose from list.');
+      return;
+    }
+    if (advQuestion.trim().length < 4) {
+      setAdvError('Enter your investment question (minimum 4 characters).');
+      return;
+    }
+    if (!Number.isFinite(advBudgetUSD) || advBudgetUSD <= 0) {
+      setAdvError('Enter valid Budget ($) greater than 0.');
+      return;
+    }
+
+    setAdvError(null);
+    setIsAskingAdvisor(true);
+    try {
+      const res = await fetch('/api/app?action=ask-advisor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          question: advQuestion.trim(),
+          city: cityEntry.city,
+          budget: advBudgetUSD,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        applyServerLockFromResponse(data);
+        setAdvError(data?.error || 'Institutional AI Advisor available in SOVEREIGN only - Upgrade to SOVEREIGN');
+        showToast(data?.error || 'Upgrade to SOVEREIGN required');
+        onOpenRenewal();
+        return;
+      }
+      if (!res.ok || data?.success === false || !data?.result) {
+        setAdvError(data?.error || 'Unable to generate Institutional Advisor memo.');
+        return;
+      }
+
+      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
+      const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
+      const advCreated = String(data.created_at || data.result?.generatedAt || new Date().toISOString());
+      lastHydratedSigRef.current.advisor = `${advCreated}|${data.result.city}|${data.result.budget}`;
+      onUpdateUser({
+        ...user,
+        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
+        analysesTotal: nextTotal,
+        analysesLeft: nextLeft,
+        freeAnalyses: nextLeft,
+        freeAnalysesLeft: nextLeft,
+        successfulAnalyses: Number(data.successful_analyses ?? (user.successfulAnalyses ?? 0) + 1),
+        cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
+        lastResults: data.last_results ?? user.lastResults,
+      });
+
+      setAdvResult(data.result as AdvisorResult);
+      setAdvCreatedAt(advCreated);
+      showToast(`Advisor memo ready for ${data.result.city} (-1 credit, ${nextLeft} left).`);
+    } catch {
+      setAdvError('Network error connecting to Institutional AI Advisor.');
+    } finally {
+      setIsAskingAdvisor(false);
+    }
+  };
+
+  const handleSaveAdvisor = async () => {
+    if (!advResult) return;
+    if (isAccountLocked || !canSaveProperty) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    const savedList = user.savedAnalyses || [];
+    if (savedList.length >= maxSaved) {
+      showToast(`Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}.`);
+      onOpenRenewal();
+      return;
+    }
+    const newAnalysis: SavedAnalysis = {
+      id: `adv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      property: `AI Advisor Memo - ${advResult.city} (${advResult.recommendation})`,
+      city: advResult.city,
+      price: advResult.budget,
+      rent: advResult.estMonthlyIncomeUSD,
+      capRate: advResult.cityAvgCapRate,
+      cashOnCash: advResult.cityAvgCapRate,
+      irr: Number((advResult.cityAvgCapRate + 4.8).toFixed(1)),
+      dscr: advResult.recommendation === 'Buy' ? '1.72' : '1.40',
+      monthlyCashflow: advResult.estMonthlyIncomeUSD,
+      riskScore: advResult.recommendation === 'Buy' ? 'AAA' : 'AA',
+      date: Date.now(),
+      imageUrl: PROPERTY_LISTINGS[0].imageUrl,
+      notes: `Q: ${advResult.question} | ${advResult.headline}`,
+    };
+    setIsSavingAdv(true);
+    try {
+      const res = await fetch('/api/app?action=save-to-portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          currentSavedCount: savedList.length,
+          analysis: newAnalysis,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        if (data?.locked) applyServerLockFromResponse(data);
+        showToast(data?.error || `Save limit reached (${savedList.length}/${maxSaved}).`);
+        return;
+      }
+      const savedItem = data?.savedItem || newAnalysis;
+      const newSavedList = [savedItem, ...savedList];
+      onUpdateUser({
+        ...user,
+        savedCount: data?.saved_count ?? newSavedList.length,
+        savedAnalyses: newSavedList,
+        portfolio: {
+          totalValue: newSavedList.reduce((acc, curr) => acc + curr.price, 0),
+          monthlyCashflow: newSavedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0),
+        },
+      });
+      showToast(`Saved Advisor memo (${newSavedList.length}/${maxSaved}).`);
+    } catch {
+      showToast('Unable to save Advisor memo right now.');
+    } finally {
+      setIsSavingAdv(false);
+    }
+  };
+
+  const handleExportAdvisorPdf = async () => {
+    if (!advResult) return;
+    if (isAccountLocked) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    if (!canPdfExport) {
+      showToast('Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    const title = `Institutional AI Advisor - ${advResult.city} (${advResult.recommendation})`;
+    const metricsLines = [
+      `Question: ${advResult.question}`,
+      `Target Market: ${advResult.city}, ${advResult.country} | Avg Cap Rate: ${advResult.cityAvgCapRate}%`,
+      `Budget: ${formatPrice(advResult.budget, 'USD')} | Est. Annual NOI: ${formatPrice(advResult.estAnnualIncomeUSD, 'USD')}/yr`,
+      `Recommendation: ${advResult.recommendation} - ${advResult.headline}`,
+      ...advResult.reasoning.map((r, i) => `Reasoning ${i + 1}: ${r}`),
+      ...advResult.riskFactors.map((r, i) => `Risk ${i + 1}: ${r}`),
+      ...advResult.nextSteps.map((s, i) => `Next Step ${i + 1}: ${s}`),
+    ];
+    try {
+      const res = await fetch('/api/app?action=export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          format: 'pdf',
+          propertyTitle: title,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        if (data?.locked) applyServerLockFromResponse(data);
+        showToast(data?.error || 'Upgrade required');
+        onOpenRenewal();
+        return;
+      }
+      const filename = downloadMemorandumPdf({
+        title,
+        city: advResult.city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: advResult.disclaimer,
+        watermarkText: data?.watermark,
+      });
+      showToast(`Exported PDF: ${filename}`);
+    } catch {
+      const filename = downloadMemorandumPdf({
+        title,
+        city: advResult.city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: advResult.disclaimer,
       });
       showToast(`Exported PDF: ${filename}`);
     }
@@ -2757,12 +3614,75 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               >
                 <span className="flex items-center gap-3">
                   <TrendingUp className="w-4 h-4" />
-                  <span>AI Market Forecast</span>
+                <span>AI Market Forecast</span>
                 </span>
                 {!canMarketForecast && (
                   <Lock
                     className={`w-3.5 h-3.5 shrink-0 ${
                       activeTab === 'forecast' ? 'text-black' : 'text-[#D4AF37]'
+                    }`}
+                  />
+                )}
+              </button>
+
+              <button
+                onClick={() => { setActiveTab('duediligence'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
+                  activeTab === 'duediligence'
+                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
+                }`}
+              >
+                <span className="flex items-center gap-3">
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>AI Due Diligence</span>
+                </span>
+                {!canDueDiligence && (
+                  <Lock
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      activeTab === 'duediligence' ? 'text-black' : 'text-[#D4AF37]'
+                    }`}
+                  />
+                )}
+              </button>
+
+              <button
+                onClick={() => { setActiveTab('optimizer'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
+                  activeTab === 'optimizer'
+                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
+                }`}
+              >
+                <span className="flex items-center gap-3">
+                  <PieChart className="w-4 h-4" />
+                  <span>Global Portfolio Optimizer</span>
+                </span>
+                {!canPortfolioOptimizer && (
+                  <Lock
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      activeTab === 'optimizer' ? 'text-black' : 'text-[#D4AF37]'
+                    }`}
+                  />
+                )}
+              </button>
+
+              <button
+                onClick={() => { setActiveTab('advisor'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
+                  activeTab === 'advisor'
+                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
+                }`}
+              >
+                <span className="flex items-center gap-3">
+                  <Bot className="w-4 h-4" />
+                  <span>Institutional AI Advisor</span>
+                </span>
+                {!canInstitutionalAdvisor && (
+                  <Lock
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      activeTab === 'advisor' ? 'text-black' : 'text-[#D4AF37]'
                     }`}
                   />
                 )}
@@ -5030,6 +5950,1146 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             </div>
           )}
 
+          {/* TAB 1D: AI DUE DILIGENCE (PROFESSIONAL / SOVEREIGN ONLY) */}
+          {activeTab === 'duediligence' && (
+            <div className="space-y-6 max-w-6xl mx-auto">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.08] pb-5">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-xs font-mono text-[#D4AF37] mb-2">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>AI DUE DILIGENCE • PROFESSIONAL / SOVEREIGN</span>
+                  </div>
+                  <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                    AI Due Diligence
+                  </h2>
+                </div>
+                <div className="text-xs font-mono text-zinc-400">
+                  Credits Remaining: <strong className="text-[#D4AF37]">{isAccountLocked ? '0 analyses left' : analysesLeftStr}</strong>
+                </div>
+              </div>
+
+              {!canDueDiligence && (
+                <div className="p-5 rounded-2xl bg-amber-950/35 border border-[#D4AF37]/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <Lock className="w-5 h-5 text-[#D4AF37] shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="text-sm font-mono font-bold text-[#D4AF37]">
+                        {isAccountLocked
+                          ? lockBannerMessage
+                          : 'AI Due Diligence available in PROFESSIONAL / SOVEREIGN - Upgrade'}
+                      </div>
+                      <div className="text-xs font-mono text-zinc-300">
+                        {isAccountLocked
+                          ? 'Upgrade or renew your subscription to unlock automated Legal, Financial, and Market risk audits.'
+                          : 'FREE and STARTER accounts cannot run Due Diligence. Upgrade to audit title, cap rate spreads, and building age risks.'}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenRenewal}
+                    className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono uppercase tracking-wider cursor-pointer shrink-0"
+                  >
+                    {isAccountLocked ? 'Upgrade / Renew' : 'Upgrade Plan'}
+                  </button>
+                </div>
+              )}
+
+              {/* Due Diligence Inputs */}
+              <div className={`glass-panel p-6 space-y-5 ${!canDueDiligence ? 'opacity-65' : ''}`}>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {/* Target City */}
+                  <div className="space-y-1.5 relative">
+                    <label htmlFor="dd-city" className="text-xs font-mono text-zinc-300 block">
+                      Target City ({CITIES.length}+ Markets)
+                    </label>
+                    <input
+                      id="dd-city"
+                      type="text"
+                      disabled={!canDueDiligence}
+                      lang="en"
+                      dir="ltr"
+                      autoComplete="off"
+                      value={ddCityComboInput}
+                      onFocus={() => canDueDiligence && setDdCityOpen(true)}
+                      onBlur={() => setTimeout(() => setDdCityOpen(false), 180)}
+                      onChange={(e) => {
+                        setDdCityComboInput(e.target.value);
+                        setDdCityOpen(true);
+                      }}
+                      placeholder="Type city... e.g. Muscat"
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    />
+                    {ddCityOpen && canDueDiligence && (
+                      <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
+                        {ddCityOptions.length === 0 ? (
+                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
+                            City not supported yet. Try another spelling.
+                          </div>
+                        ) : (
+                          ddCityOptions.map((c) => (
+                            <button
+                              key={`dd-${c.city}-${c.countryCode}`}
+                              type="button"
+                              onMouseDown={() => {
+                                setDdCityComboInput(formatCityOptionLabel(c));
+                                setDdCityOpen(false);
+                              }}
+                              className="w-full text-left px-3 py-2 text-xs font-mono text-zinc-200 hover:bg-[#D4AF37] hover:text-black transition cursor-pointer flex items-center justify-between"
+                            >
+                              <span>{formatCityOptionLabel(c)}</span>
+                              <span className="text-[10px] opacity-75">Avg {c.avgCapRate}%</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Property Type */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="dd-prop-type" className="text-xs font-mono text-zinc-300 block">
+                      Property Type
+                    </label>
+                    <select
+                      id="dd-prop-type"
+                      disabled={!canDueDiligence}
+                      value={ddPropType}
+                      onChange={(e) => setDdPropType(e.target.value as 'Apartment' | 'Villa' | 'Commercial')}
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/70 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    >
+                      <option value="Apartment">Apartment</option>
+                      <option value="Villa">Villa</option>
+                      <option value="Commercial">Commercial</option>
+                    </select>
+                  </div>
+
+                  {/* Ownership Type */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="dd-ownership" className="text-xs font-mono text-zinc-300 block">
+                      Ownership Type
+                    </label>
+                    <select
+                      id="dd-ownership"
+                      disabled={!canDueDiligence}
+                      value={ddOwnershipType}
+                      onChange={(e) => setDdOwnershipType(e.target.value as 'Freehold' | 'Leasehold')}
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/70 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    >
+                      <option value="Freehold">Freehold</option>
+                      <option value="Leasehold">Leasehold</option>
+                    </select>
+                  </div>
+
+                  {/* Property Price ($) */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="dd-price" className="text-xs font-mono text-zinc-300 block">
+                      Property Price ($)
+                    </label>
+                    <div className="flex items-center rounded-xl bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-3">
+                      <span className="text-xs font-mono text-zinc-400 mr-1.5">$</span>
+                      <input
+                        id="dd-price"
+                        type="text"
+                        disabled={!canDueDiligence}
+                        lang="en"
+                        dir="ltr"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        style={EN_INPUT_STYLE}
+                        value={ddPriceDraft}
+                        onChange={(e) => {
+                          const clean = sanitizeEnglishDecimal(e.target.value, false);
+                          setDdPriceDraft(clean);
+                          setDdPriceUSD(Math.max(0, parseEnglishNumber(clean, 0)));
+                        }}
+                        onBlur={() => setDdPriceDraft(String(ddPriceUSD || 0))}
+                        className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                      />
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-500">
+                      {formatUsdInputDisplay(ddPriceUSD)}
+                    </div>
+                  </div>
+
+                  {/* Gross Monthly Rent ($/mo) */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="dd-rent" className="text-xs font-mono text-zinc-300 block">
+                      Gross Monthly Rent ($/mo)
+                    </label>
+                    <div className="flex items-center rounded-xl bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-3">
+                      <span className="text-xs font-mono text-zinc-400 mr-1.5">$</span>
+                      <input
+                        id="dd-rent"
+                        type="text"
+                        disabled={!canDueDiligence}
+                        lang="en"
+                        dir="ltr"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        style={EN_INPUT_STYLE}
+                        value={ddRentDraft}
+                        onChange={(e) => {
+                          const clean = sanitizeEnglishDecimal(e.target.value, false);
+                          setDdRentDraft(clean);
+                          setDdRentUSD(Math.max(0, parseEnglishNumber(clean, 0)));
+                        }}
+                        onBlur={() => setDdRentDraft(String(ddRentUSD || 0))}
+                        className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                      />
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-500">
+                      {formatUsdInputDisplay(ddRentUSD)} / mo
+                    </div>
+                  </div>
+
+                  {/* Building Age (years) */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="dd-age" className="text-xs font-mono text-zinc-300 block">
+                      Building Age (years)
+                    </label>
+                    <div className="flex items-center rounded-xl bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-3">
+                      <input
+                        id="dd-age"
+                        type="text"
+                        disabled={!canDueDiligence}
+                        lang="en"
+                        dir="ltr"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        style={EN_INPUT_STYLE}
+                        value={ddAgeDraft}
+                        onChange={(e) => {
+                          const clean = sanitizeEnglishDecimal(e.target.value, false);
+                          setDdAgeDraft(clean);
+                          setDdBuildingAge(Math.max(0, Math.min(200, Math.round(parseEnglishNumber(clean, 0)))));
+                        }}
+                        onBlur={() => setDdAgeDraft(String(ddBuildingAge))}
+                        className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                      />
+                      <span className="text-xs font-mono text-zinc-400">yrs</span>
+                    </div>
+                  </div>
+                </div>
+
+                {ddError && (
+                  <div className="p-3 rounded-xl bg-rose-950/50 border border-rose-500/40 text-xs font-mono text-rose-200">
+                    {ddError}
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                  <button
+                    type="button"
+                    disabled={!canDueDiligence || isRunningDd || isAccountLocked || !isCreditsLoaded}
+                    onClick={handleRunDueDiligence}
+                    className={`px-6 py-3.5 rounded-xl font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition min-h-[46px] ${
+                      !canDueDiligence || isAccountLocked || !isCreditsLoaded
+                        ? 'bg-zinc-800 text-zinc-500 border border-white/10 cursor-not-allowed'
+                        : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.3)]'
+                    }`}
+                  >
+                    {isAccountLocked ? (
+                      <>
+                        <Lock className="w-4 h-4 text-rose-400" />
+                        <span>{lockReasonKind === 'expired' ? 'Plan Expired - Renew' : 'No analyses left'}</span>
+                      </>
+                    ) : !canDueDiligence ? (
+                      <>
+                        <Lock className="w-4 h-4" />
+                        <span>Run Due Diligence (-1 CREDIT)</span>
+                      </>
+                    ) : isRunningDd ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Auditing Risks...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-4 h-4" />
+                        <span>Run Due Diligence (-1 CREDIT)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <span className="text-[11px] font-mono text-zinc-400">
+                    Audits Legal Tenure, Transfer Tax, Cap Rate Spread, Rent Comp, Building Age &amp; Market Risk
+                  </span>
+                </div>
+              </div>
+
+              {/* Due Diligence Output */}
+              {ddResult && (
+                <div className="glass-panel p-6 space-y-6 border border-[#D4AF37]/30">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.08] pb-4">
+                    <div>
+                      <div className="text-[11px] font-mono text-emerald-400 mb-0.5">
+                        Last Result - {formatLastResultTimestamp(ddCreatedAt || ddResult.generatedAt)} - {ddResult.city}
+                      </div>
+                      <div className="text-[11px] font-mono text-[#D4AF37] uppercase tracking-wider">
+                        {ddResult.city}, {ddResult.country} • {ddResult.propertyType} • {ddResult.ownershipType} • {ddResult.buildingAge} yrs
+                      </div>
+                      <h3 className="text-xl font-bold text-white mt-0.5">
+                        Risk Score &amp; Institutional Checklist
+                      </h3>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+                      <span
+                        className={`px-3 py-1.5 rounded-lg font-black border ${
+                          ddResult.riskScore >= 75
+                            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                            : ddResult.riskScore >= 50
+                            ? 'bg-amber-500/20 border-amber-400 text-amber-300'
+                            : 'bg-rose-500/20 border-rose-400 text-rose-300'
+                        }`}
+                      >
+                        Risk Score: {ddResult.riskScore}/100
+                      </span>
+                      <span
+                        className={`px-3 py-1.5 rounded-lg font-bold border ${
+                          ddResult.verdict.startsWith('Low Risk')
+                            ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                            : ddResult.verdict.startsWith('Medium Risk')
+                            ? 'bg-[#D4AF37]/15 border-[#D4AF37]/40 text-[#D4AF37]'
+                            : 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                        }`}
+                      >
+                        {ddResult.verdict}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isClearingTool === 'due_diligence'}
+                        onClick={() => handleClearLastResult('due_diligence')}
+                        className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/[0.04] hover:bg-rose-500/20 hover:border-rose-500/40 text-xs font-mono text-zinc-300 hover:text-rose-200 cursor-pointer transition"
+                      >
+                        {isClearingTool === 'due_diligence' ? 'Clearing...' : 'Clear Last Result'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Summary Metrics */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono tabular-nums">
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Property Cap Rate</div>
+                      <div className="text-xl font-black text-white mt-1">{ddResult.propertyCapRate}%</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">{ddResult.city} Avg Cap Rate</div>
+                      <div className="text-xl font-black text-[#D4AF37] mt-1">{ddResult.cityAvgCapRate}%</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Rent vs Market Est.</div>
+                      <div className="text-base font-black text-emerald-300 mt-1">
+                        ${ddResult.monthlyRent.toLocaleString('en-US')} <span className="text-xs text-zinc-400">/ ${ddResult.marketAvgRent.toLocaleString('en-US')}</span>
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">OPEX / Vacancy / Growth</div>
+                      <div className="text-base font-black text-cyan-300 mt-1">
+                        {ddResult.estimatedOpexPct}% / {ddResult.estVacancyPct}% / +{ddResult.estPriceGrowthPct}%
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Checklist Table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse font-mono text-xs">
+                      <thead>
+                        <tr className="border-b border-white/10 text-zinc-400 uppercase text-[10px]">
+                          <th className="py-3 pr-3">Category</th>
+                          <th className="py-3 pr-3">Audit Item</th>
+                          <th className="py-3 pr-3">Status</th>
+                          <th className="py-3">Assessment Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/[0.06]">
+                        {ddResult.checklist.map((row) => (
+                          <tr key={row.id} className="hover:bg-white/[0.03] transition">
+                            <td className="py-3.5 pr-3 font-bold text-[#D4AF37] whitespace-nowrap">
+                              {row.category}
+                            </td>
+                            <td className="py-3.5 pr-3 text-white font-semibold whitespace-nowrap">
+                              {row.item}
+                            </td>
+                            <td className="py-3.5 pr-3 whitespace-nowrap">
+                              <span
+                                className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md font-bold text-[11px] ${
+                                  row.status === 'Pass'
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                    : row.status === 'Warning'
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                }`}
+                              >
+                                {row.status === 'Pass' ? (
+                                  <CheckCircle2 className="w-3 h-3" />
+                                ) : row.status === 'Warning' ? (
+                                  <AlertTriangle className="w-3 h-3" />
+                                ) : (
+                                  <XCircle className="w-3 h-3" />
+                                )}
+                                <span>{row.status}</span>
+                              </span>
+                            </td>
+                            <td className="py-3.5 text-zinc-300 leading-relaxed">{row.note}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Save + Export PDF */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={isSavingDd || isAccountLocked}
+                      onClick={handleSaveDueDiligence}
+                      className="px-4 py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-300 font-mono font-bold text-xs cursor-pointer transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <BookmarkCheck className="w-4 h-4" />
+                      <span>{isSavingDd ? 'Saving...' : `Save to Portfolio (${savedAnalyses.length}/${maxSaved})`}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isAccountLocked}
+                      onClick={handleExportDueDiligencePdf}
+                      className="px-4 py-2.5 rounded-xl bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-mono font-bold text-xs cursor-pointer transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {(!canPdfExport || isAccountLocked) ? <Lock className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
+                      <span>Export PDF</span>
+                    </button>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200">
+                    {ddResult.disclaimer}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 1E: GLOBAL PORTFOLIO OPTIMIZER (SOVEREIGN ONLY) */}
+          {activeTab === 'optimizer' && (
+            <div className="space-y-6 max-w-6xl mx-auto">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.08] pb-5">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/25 text-xs font-mono text-purple-300 mb-2">
+                    <PieChart className="w-3.5 h-3.5" />
+                    <span>GLOBAL PORTFOLIO OPTIMIZER • SOVEREIGN ONLY</span>
+                  </div>
+                  <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                    Global Portfolio Optimizer
+                  </h2>
+                </div>
+                <div className="text-xs font-mono text-zinc-400">
+                  Credits Remaining: <strong className="text-[#D4AF37]">{isAccountLocked ? '0 analyses left' : analysesLeftStr}</strong>
+                </div>
+              </div>
+
+              {!canPortfolioOptimizer && (
+                <div className="p-5 rounded-2xl bg-amber-950/35 border border-[#D4AF37]/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <Lock className="w-5 h-5 text-[#D4AF37] shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="text-sm font-mono font-bold text-[#D4AF37]">
+                        {isAccountLocked
+                          ? lockBannerMessage
+                          : 'Global Portfolio Optimizer available in SOVEREIGN only - Upgrade to SOVEREIGN'}
+                      </div>
+                      <div className="text-xs font-mono text-zinc-300">
+                        {isAccountLocked
+                          ? 'Renew or upgrade your SOVEREIGN plan to allocate capital across global markets.'
+                          : 'Multi-city capital allocation optimization is exclusively available on the SOVEREIGN institutional tier.'}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenRenewal}
+                    className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono uppercase tracking-wider cursor-pointer shrink-0"
+                  >
+                    {isAccountLocked ? 'Upgrade / Renew' : 'Upgrade to SOVEREIGN'}
+                  </button>
+                </div>
+              )}
+
+              {/* Optimizer Inputs */}
+              <div className={`glass-panel p-6 space-y-5 ${!canPortfolioOptimizer ? 'opacity-65' : ''}`}>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Total Capital ($) */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="opt-capital" className="text-xs font-mono text-zinc-300 block">
+                      Total Capital ($)
+                    </label>
+                    <div className="flex items-center rounded-xl bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-3">
+                      <span className="text-xs font-mono text-zinc-400 mr-1.5">$</span>
+                      <input
+                        id="opt-capital"
+                        type="text"
+                        disabled={!canPortfolioOptimizer}
+                        lang="en"
+                        dir="ltr"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        style={EN_INPUT_STYLE}
+                        value={optCapitalDraft}
+                        onChange={(e) => {
+                          const clean = sanitizeEnglishDecimal(e.target.value, false);
+                          setOptCapitalDraft(clean);
+                          setOptCapitalUSD(Math.max(0, parseEnglishNumber(clean, 0)));
+                        }}
+                        onBlur={() => setOptCapitalDraft(String(optCapitalUSD || 0))}
+                        className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                      />
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-500">
+                      {formatUsdInputDisplay(optCapitalUSD)}
+                    </div>
+                  </div>
+
+                  {/* Risk Profile */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="opt-risk" className="text-xs font-mono text-zinc-300 block">
+                      Risk Tolerance
+                    </label>
+                    <select
+                      id="opt-risk"
+                      disabled={!canPortfolioOptimizer}
+                      value={optRisk}
+                      onChange={(e) => setOptRisk(e.target.value as 'Low' | 'Medium' | 'High')}
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/70 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    >
+                      <option value="Low">Low (Core Preservation)</option>
+                      <option value="Medium">Medium (Balanced Yield &amp; Stability)</option>
+                      <option value="High">High (Maximum Yield Tilt)</option>
+                    </select>
+                  </div>
+
+                  {/* Target Cities (2-3 multi-select) */}
+                  <div className="space-y-1.5 relative">
+                    <label htmlFor="opt-city-search" className="text-xs font-mono text-zinc-300 block">
+                      Target Cities (2-3 from {CITIES.length}+ Markets)
+                    </label>
+                    <input
+                      id="opt-city-search"
+                      type="text"
+                      disabled={!canPortfolioOptimizer || optSelectedCities.length >= 3}
+                      lang="en"
+                      dir="ltr"
+                      autoComplete="off"
+                      value={optCityComboInput}
+                      onFocus={() => canPortfolioOptimizer && setOptCityOpen(true)}
+                      onBlur={() => setTimeout(() => setOptCityOpen(false), 180)}
+                      onChange={(e) => {
+                        setOptCityComboInput(e.target.value);
+                        setOptCityOpen(true);
+                      }}
+                      placeholder={
+                        optSelectedCities.length >= 3
+                          ? '3/3 cities selected'
+                          : 'Add city... e.g. London, Singapore'
+                      }
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    />
+                    {optCityOpen && canPortfolioOptimizer && optSelectedCities.length < 3 && (
+                      <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
+                        {optCityOptions.length === 0 ? (
+                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
+                            City not supported yet. Try another spelling.
+                          </div>
+                        ) : (
+                          optCityOptions.map((c) => {
+                            const already = optSelectedCities.some(
+                              (sc) => sc.toLowerCase() === c.city.toLowerCase()
+                            );
+                            return (
+                              <button
+                                key={`opt-${c.city}-${c.countryCode}`}
+                                type="button"
+                                disabled={already}
+                                onMouseDown={() => handleAddOptimizerCity(c)}
+                                className={`w-full text-left px-3 py-2 text-xs font-mono transition flex items-center justify-between ${
+                                  already
+                                    ? 'text-zinc-500 bg-white/[0.02] cursor-default'
+                                    : 'text-zinc-200 hover:bg-[#D4AF37] hover:text-black cursor-pointer'
+                                }`}
+                              >
+                                <span>{formatCityOptionLabel(c)}</span>
+                                <span className="text-[10px] opacity-75">
+                                  {already ? 'Selected' : `Avg ${c.avgCapRate}%`}
+                                </span>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      {optSelectedCities.map((cName) => (
+                        <span
+                          key={cName}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-xs font-mono text-[#D4AF37]"
+                        >
+                          <span>{cName}</span>
+                          {canPortfolioOptimizer && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveOptimizerCity(cName)}
+                              className="hover:text-white cursor-pointer"
+                              aria-label={`Remove ${cName}`}
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                      <span className="text-[10px] font-mono text-zinc-500">
+                        ({optSelectedCities.length}/3 cities selected • min 2)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {optError && (
+                  <div className="p-3 rounded-xl bg-rose-950/50 border border-rose-500/40 text-xs font-mono text-rose-200">
+                    {optError}
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                  <button
+                    type="button"
+                    disabled={!canPortfolioOptimizer || isRunningOpt || isAccountLocked || !isCreditsLoaded}
+                    onClick={handleOptimizePortfolio}
+                    className={`px-6 py-3.5 rounded-xl font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition min-h-[46px] ${
+                      !canPortfolioOptimizer || isAccountLocked || !isCreditsLoaded
+                        ? 'bg-zinc-800 text-zinc-500 border border-white/10 cursor-not-allowed'
+                        : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.3)]'
+                    }`}
+                  >
+                    {isAccountLocked ? (
+                      <>
+                        <Lock className="w-4 h-4 text-rose-400" />
+                        <span>{lockReasonKind === 'expired' ? 'Plan Expired - Renew' : 'No analyses left'}</span>
+                      </>
+                    ) : !canPortfolioOptimizer ? (
+                      <>
+                        <Lock className="w-4 h-4" />
+                        <span>Optimize Portfolio (-1 CREDIT)</span>
+                      </>
+                    ) : isRunningOpt ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Optimizing Allocation...</span>
+                      </>
+                    ) : (
+                      <>
+                        <PieChart className="w-4 h-4" />
+                        <span>Optimize Portfolio (-1 CREDIT)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <span className="text-[11px] font-mono text-zinc-400">
+                    Computes optimal 100% cross-border capital weights, blended yield &amp; diversification score
+                  </span>
+                </div>
+              </div>
+
+              {/* Optimizer Output */}
+              {optResult && (
+                <div className="glass-panel p-6 space-y-6 border border-[#D4AF37]/30">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.08] pb-4">
+                    <div>
+                      <div className="text-[11px] font-mono text-emerald-400 mb-0.5">
+                        Last Result - {formatLastResultTimestamp(optCreatedAt || optResult.generatedAt)} - {optResult.cities.join(' + ')}
+                      </div>
+                      <h3 className="text-xl font-bold text-white">
+                        Optimal Cross-Border Capital Allocation ({optResult.risk} Risk)
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isClearingTool === 'portfolio_optimizer'}
+                      onClick={() => handleClearLastResult('portfolio_optimizer')}
+                      className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/[0.04] hover:bg-rose-500/20 hover:border-rose-500/40 text-xs font-mono text-zinc-300 hover:text-rose-200 cursor-pointer transition self-start sm:self-auto"
+                    >
+                      {isClearingTool === 'portfolio_optimizer' ? 'Clearing...' : 'Clear Last Result'}
+                    </button>
+                  </div>
+
+                  {/* Summary KPIs */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 font-mono tabular-nums">
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Total Capital Allocated</div>
+                      <div className="text-xl font-black text-white mt-1">
+                        {formatPrice(optResult.totalCapital, 'USD')}
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Total Est. Annual Income</div>
+                      <div className="text-xl font-black text-emerald-400 mt-1">
+                        {formatPrice(optResult.totalEstAnnualIncomeUSD, 'USD')}/yr
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Blended Cap Rate</div>
+                      <div className="text-xl font-black text-[#D4AF37] mt-1">
+                        {optResult.blendedCapRate}%
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Diversification Score</div>
+                      <div className="text-xl font-black text-purple-300 mt-1">
+                        {optResult.diversificationScore}/100
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Pie Chart + Allocation Table */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+                    <div className="lg:col-span-4 flex flex-col items-center justify-center p-4 rounded-2xl bg-black/50 border border-white/10">
+                      {(() => {
+                        const colors = ['#D4AF37', '#34d399', '#a855f7'];
+                        let cumulativePct = 0;
+                        const R = 64;
+                        const C = 2 * Math.PI * R;
+                        return (
+                          <>
+                            <svg viewBox="0 0 180 180" className="w-44 h-44 -rotate-90">
+                              {optResult.allocations.map((row, idx) => {
+                                const segLen = (row.allocationPct / 100) * C;
+                                const offset = -((cumulativePct / 100) * C);
+                                cumulativePct += row.allocationPct;
+                                return (
+                                  <circle
+                                    key={row.city}
+                                    cx="90"
+                                    cy="90"
+                                    r={R}
+                                    fill="transparent"
+                                    stroke={colors[idx % colors.length]}
+                                    strokeWidth="28"
+                                    strokeDasharray={`${segLen} ${C}`}
+                                    strokeDashoffset={offset}
+                                  />
+                                );
+                              })}
+                            </svg>
+                            <div className="w-full space-y-1.5 mt-3 font-mono text-xs">
+                              {optResult.allocations.map((row, idx) => (
+                                <div key={row.city} className="flex items-center justify-between">
+                                  <span className="flex items-center gap-2 text-zinc-300">
+                                    <span
+                                      className="w-2.5 h-2.5 rounded-full inline-block"
+                                      style={{ backgroundColor: colors[idx % colors.length] }}
+                                    />
+                                    <span>{row.city}</span>
+                                  </span>
+                                  <span className="font-bold text-white">{row.allocationPct}%</span>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+
+                    <div className="lg:col-span-8 overflow-x-auto">
+                      <table className="w-full text-left border-collapse font-mono text-xs tabular-nums">
+                        <thead>
+                          <tr className="border-b border-white/10 text-zinc-400 uppercase text-[10px]">
+                            <th className="py-3 pr-3">City</th>
+                            <th className="py-3 pr-3">Allocation (%)</th>
+                            <th className="py-3 pr-3">Amount ($)</th>
+                            <th className="py-3 pr-3">Est. Cap Rate (%)</th>
+                            <th className="py-3 text-right">Est. Annual Rent ($)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/[0.06]">
+                          {optResult.allocations.map((row) => (
+                            <tr key={row.city} className="hover:bg-white/[0.03]">
+                              <td className="py-3.5 pr-3">
+                                <div className="font-bold text-white">{row.city}</div>
+                                <div className="text-[10px] text-zinc-500">{row.country}</div>
+                              </td>
+                              <td className="py-3.5 pr-3 text-[#D4AF37] font-bold">{row.allocationPct}%</td>
+                              <td className="py-3.5 pr-3 text-white font-semibold">
+                                {formatPrice(row.amountUSD, 'USD')}
+                              </td>
+                              <td className="py-3.5 pr-3 text-cyan-300">{row.estCapRate}%</td>
+                              <td className="py-3.5 text-right text-emerald-400 font-bold">
+                                {formatPrice(row.estAnnualRentUSD, 'USD')}/yr
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Save + Export PDF */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={isSavingOpt || isAccountLocked}
+                      onClick={handleSaveOptimizer}
+                      className="px-4 py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-300 font-mono font-bold text-xs cursor-pointer transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <BookmarkCheck className="w-4 h-4" />
+                      <span>{isSavingOpt ? 'Saving...' : `Save (${savedAnalyses.length}/${maxSaved})`}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isAccountLocked}
+                      onClick={handleExportOptimizerPdf}
+                      className="px-4 py-2.5 rounded-xl bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-mono font-bold text-xs cursor-pointer transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {(!canPdfExport || isAccountLocked) ? <Lock className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
+                      <span>Export PDF</span>
+                    </button>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200">
+                    {optResult.disclaimer}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 1F: INSTITUTIONAL AI ADVISOR (SOVEREIGN ONLY) */}
+          {activeTab === 'advisor' && (
+            <div className="space-y-6 max-w-6xl mx-auto">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.08] pb-5">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/25 text-xs font-mono text-purple-300 mb-2">
+                    <Bot className="w-3.5 h-3.5" />
+                    <span>INSTITUTIONAL AI ADVISOR • SOVEREIGN ONLY</span>
+                  </div>
+                  <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                    Institutional AI Advisor
+                  </h2>
+                </div>
+                <div className="text-xs font-mono text-zinc-400">
+                  Credits Remaining: <strong className="text-[#D4AF37]">{isAccountLocked ? '0 analyses left' : analysesLeftStr}</strong>
+                </div>
+              </div>
+
+              {!canInstitutionalAdvisor && (
+                <div className="p-5 rounded-2xl bg-amber-950/35 border border-[#D4AF37]/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <Lock className="w-5 h-5 text-[#D4AF37] shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="text-sm font-mono font-bold text-[#D4AF37]">
+                        {isAccountLocked
+                          ? lockBannerMessage
+                          : 'Institutional AI Advisor available in SOVEREIGN only - Upgrade to SOVEREIGN'}
+                      </div>
+                      <div className="text-xs font-mono text-zinc-300">
+                        {isAccountLocked
+                          ? 'Renew or upgrade your SOVEREIGN plan to consult the Institutional AI Advisor.'
+                          : 'Bespoke investment memos comparing global cap rates, tax regimes, and capital budgets are exclusive to SOVEREIGN.'}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenRenewal}
+                    className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono uppercase tracking-wider cursor-pointer shrink-0"
+                  >
+                    {isAccountLocked ? 'Upgrade / Renew' : 'Upgrade to SOVEREIGN'}
+                  </button>
+                </div>
+              )}
+
+              {/* Advisor Inputs */}
+              <div className={`glass-panel p-6 space-y-5 ${!canInstitutionalAdvisor ? 'opacity-65' : ''}`}>
+                <div className="space-y-1.5">
+                  <label htmlFor="adv-question" className="text-xs font-mono text-zinc-300 block">
+                    Investment Question
+                  </label>
+                  <textarea
+                    id="adv-question"
+                    rows={3}
+                    disabled={!canInstitutionalAdvisor}
+                    lang="en"
+                    dir="ltr"
+                    value={advQuestion}
+                    onChange={(e) => setAdvQuestion(e.target.value)}
+                    placeholder="e.g. Should I invest $1M in Muscat or Dubai?"
+                    className="w-full p-3.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Target City */}
+                  <div className="space-y-1.5 relative">
+                    <label htmlFor="adv-city" className="text-xs font-mono text-zinc-300 block">
+                      Primary Target City ({CITIES.length}+ Markets)
+                    </label>
+                    <input
+                      id="adv-city"
+                      type="text"
+                      disabled={!canInstitutionalAdvisor}
+                      lang="en"
+                      dir="ltr"
+                      autoComplete="off"
+                      value={advCityComboInput}
+                      onFocus={() => canInstitutionalAdvisor && setAdvCityOpen(true)}
+                      onBlur={() => setTimeout(() => setAdvCityOpen(false), 180)}
+                      onChange={(e) => {
+                        setAdvCityComboInput(e.target.value);
+                        setAdvCityOpen(true);
+                      }}
+                      placeholder="Type city... e.g. Muscat"
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    />
+                    {advCityOpen && canInstitutionalAdvisor && (
+                      <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
+                        {advCityOptions.length === 0 ? (
+                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
+                            City not supported yet. Try another spelling.
+                          </div>
+                        ) : (
+                          advCityOptions.map((c) => (
+                            <button
+                              key={`adv-${c.city}-${c.countryCode}`}
+                              type="button"
+                              onMouseDown={() => {
+                                setAdvCityComboInput(formatCityOptionLabel(c));
+                                setAdvCityOpen(false);
+                              }}
+                              className="w-full text-left px-3 py-2 text-xs font-mono text-zinc-200 hover:bg-[#D4AF37] hover:text-black transition cursor-pointer flex items-center justify-between"
+                            >
+                              <span>{formatCityOptionLabel(c)}</span>
+                              <span className="text-[10px] opacity-75">Avg {c.avgCapRate}%</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Budget ($) */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="adv-budget" className="text-xs font-mono text-zinc-300 block">
+                      Capital Budget ($)
+                    </label>
+                    <div className="flex items-center rounded-xl bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-3">
+                      <span className="text-xs font-mono text-zinc-400 mr-1.5">$</span>
+                      <input
+                        id="adv-budget"
+                        type="text"
+                        disabled={!canInstitutionalAdvisor}
+                        lang="en"
+                        dir="ltr"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        style={EN_INPUT_STYLE}
+                        value={advBudgetDraft}
+                        onChange={(e) => {
+                          const clean = sanitizeEnglishDecimal(e.target.value, false);
+                          setAdvBudgetDraft(clean);
+                          setAdvBudgetUSD(Math.max(0, parseEnglishNumber(clean, 0)));
+                        }}
+                        onBlur={() => setAdvBudgetDraft(String(advBudgetUSD || 0))}
+                        className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                      />
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-500">
+                      {formatUsdInputDisplay(advBudgetUSD)}
+                    </div>
+                  </div>
+                </div>
+
+                {advError && (
+                  <div className="p-3 rounded-xl bg-rose-950/50 border border-rose-500/40 text-xs font-mono text-rose-200">
+                    {advError}
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                  <button
+                    type="button"
+                    disabled={!canInstitutionalAdvisor || isAskingAdvisor || isAccountLocked || !isCreditsLoaded}
+                    onClick={handleAskAdvisor}
+                    className={`px-6 py-3.5 rounded-xl font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition min-h-[46px] ${
+                      !canInstitutionalAdvisor || isAccountLocked || !isCreditsLoaded
+                        ? 'bg-zinc-800 text-zinc-500 border border-white/10 cursor-not-allowed'
+                        : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.3)]'
+                    }`}
+                  >
+                    {isAccountLocked ? (
+                      <>
+                        <Lock className="w-4 h-4 text-rose-400" />
+                        <span>{lockReasonKind === 'expired' ? 'Plan Expired - Renew' : 'No analyses left'}</span>
+                      </>
+                    ) : !canInstitutionalAdvisor ? (
+                      <>
+                        <Lock className="w-4 h-4" />
+                        <span>Ask Advisor (-1 CREDIT)</span>
+                      </>
+                    ) : isAskingAdvisor ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Drafting Institutional Memo...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Bot className="w-4 h-4" />
+                        <span>Ask Advisor (-1 CREDIT)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <span className="text-[11px] font-mono text-zinc-400">
+                    Generates market-grounded Buy/Hold/Wait memo with cap rate spread, risk factors &amp; next steps
+                  </span>
+                </div>
+              </div>
+
+              {/* Advisor Output */}
+              {advResult && (
+                <div className="glass-panel p-6 space-y-6 border border-[#D4AF37]/30">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.08] pb-4">
+                    <div>
+                      <div className="text-[11px] font-mono text-emerald-400 mb-0.5">
+                        Last Result - {formatLastResultTimestamp(advCreatedAt || advResult.generatedAt)} - {advResult.city}
+                      </div>
+                      <h3 className="text-lg sm:text-xl font-bold text-white mt-0.5">
+                        {advResult.headline}
+                      </h3>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span
+                        className={`px-3 py-1.5 rounded-lg font-mono font-black text-xs uppercase border ${
+                          advResult.recommendation === 'Buy'
+                            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                            : advResult.recommendation === 'Hold'
+                            ? 'bg-[#D4AF37]/20 border-[#D4AF37] text-[#D4AF37]'
+                            : 'bg-rose-500/20 border-rose-400 text-rose-300'
+                        }`}
+                      >
+                        {advResult.recommendation}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isClearingTool === 'advisor'}
+                        onClick={() => handleClearLastResult('advisor')}
+                        className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/[0.04] hover:bg-rose-500/20 hover:border-rose-500/40 text-xs font-mono text-zinc-300 hover:text-rose-200 cursor-pointer transition"
+                      >
+                        {isClearingTool === 'advisor' ? 'Clearing...' : 'Clear Last Result'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Quick Metrics Strip */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 font-mono tabular-nums">
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Target City</div>
+                      <div className="text-base font-bold text-white mt-1">
+                        {advResult.city}, {advResult.country}
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Benchmark Cap Rate</div>
+                      <div className="text-xl font-black text-[#D4AF37] mt-1">
+                        {advResult.cityAvgCapRate}%
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Deployment Budget</div>
+                      <div className="text-xl font-black text-white mt-1">
+                        {formatPrice(advResult.budget, 'USD')}
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Est. Annual Net Income</div>
+                      <div className="text-xl font-black text-emerald-400 mt-1">
+                        {formatPrice(advResult.estAnnualIncomeUSD, 'USD')}/yr
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono">
+                    <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.08] space-y-2.5">
+                      <div className="text-xs font-bold uppercase text-[#D4AF37]">
+                        Reasoning
+                      </div>
+                      <ul className="space-y-2 text-xs text-zinc-300 leading-relaxed">
+                        {advResult.reasoning.map((item, i) => (
+                          <li key={i} className="flex items-start gap-2">
+                            <span className="text-emerald-400 font-bold mt-0.5">&bull;</span>
+                            <span>{item}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.08] space-y-2.5">
+                      <div className="text-xs font-bold uppercase text-amber-300">
+                        Risk Factors
+                      </div>
+                      <ul className="space-y-2 text-xs text-zinc-300 leading-relaxed">
+                        {advResult.riskFactors.map((item, i) => (
+                          <li key={i} className="flex items-start gap-2">
+                            <span className="text-amber-400 font-bold mt-0.5">&bull;</span>
+                            <span>{item}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.08] space-y-2.5">
+                      <div className="text-xs font-bold uppercase text-cyan-300">
+                        Recommended Next Steps
+                      </div>
+                      <ul className="space-y-2 text-xs text-zinc-300 leading-relaxed">
+                        {advResult.nextSteps.map((item, i) => (
+                          <li key={i} className="flex items-start gap-2">
+                            <span className="text-cyan-400 font-bold mt-0.5">{i + 1}.</span>
+                            <span>{item}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+
+                  {/* Save + Export PDF */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={isSavingAdv || isAccountLocked}
+                      onClick={handleSaveAdvisor}
+                      className="px-4 py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-300 font-mono font-bold text-xs cursor-pointer transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <BookmarkCheck className="w-4 h-4" />
+                      <span>{isSavingAdv ? 'Saving...' : `Save (${savedAnalyses.length}/${maxSaved})`}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isAccountLocked}
+                      onClick={handleExportAdvisorPdf}
+                      className="px-4 py-2.5 rounded-xl bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-mono font-bold text-xs cursor-pointer transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {(!canPdfExport || isAccountLocked) ? <Lock className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
+                      <span>Export PDF</span>
+                    </button>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200">
+                    {advResult.disclaimer}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TAB 2: MY SAVED ANALYSES */}
           {activeTab === 'saved' && (
             <div className="space-y-6 max-w-6xl mx-auto">
@@ -6495,44 +8555,6 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
             </div>
           )}
-
-          {/* Roadmap Section: Coming Soon - قريباً (5 Locked AI Modules Only) */}
-          <section className="max-w-6xl mx-auto pt-6 border-t border-white/[0.08] space-y-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <Bot className="w-5 h-5 text-[#D4AF37]" />
-                <h3 className="text-xl font-bold text-white tracking-tight">
-                  Coming Soon - قريباً
-                </h3>
-              </div>
-              <span className="text-xs font-mono text-zinc-400">
-                Institutional Intelligence Roadmap • Locked Preview
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {COMING_SOON_AI_MODULES.map((mod) => (
-                <button
-                  key={mod.title}
-                  type="button"
-                  onClick={() => showToast('Coming Soon - Available for PROFESSIONAL / SOVEREIGN soon')}
-                  className="text-left p-5 rounded-2xl bg-white/[0.02] hover:bg-white/[0.04] border border-white/[0.08] hover:border-[#D4AF37]/40 transition space-y-2.5 cursor-pointer"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-[#D4AF37] uppercase">
-                      <Lock className="w-3.5 h-3.5 text-[#D4AF37]" />
-                      <span>LOCKED • {mod.badge}</span>
-                    </span>
-                    <Radar className="w-4 h-4 text-zinc-500" />
-                  </div>
-                  <div className="text-base font-bold text-white">{mod.title}</div>
-                  <div className="text-sm font-arabic text-zinc-400 leading-relaxed">
-                    {mod.arabicDesc}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </section>
 
           {/* Bottom Dashboard Footer with Single Centered PWA Install Button */}
           <footer className="max-w-6xl mx-auto pt-8 pb-4 border-t border-white/[0.08] space-y-5 text-center">

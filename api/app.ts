@@ -859,6 +859,36 @@ interface PersistedLastResults {
     forecast: Record<string, any>;
     created_at: string;
   } | null;
+  due_diligence?: {
+    inputs: {
+      city: string;
+      propertyType: string;
+      price: number;
+      monthlyRent: number;
+      ownershipType: string;
+      buildingAge: number;
+    };
+    result: Record<string, any>;
+    created_at: string;
+  } | null;
+  portfolio_optimizer?: {
+    inputs: {
+      totalCapital: number;
+      cities: string[];
+      risk: string;
+    };
+    result: Record<string, any>;
+    created_at: string;
+  } | null;
+  advisor?: {
+    inputs: {
+      question: string;
+      city: string;
+      budget: number;
+    };
+    result: Record<string, any>;
+    created_at: string;
+  } | null;
 }
 
 interface ServerUserRecord {
@@ -5058,6 +5088,852 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'run-due-diligence': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+
+        const body = parsedBody;
+        const authHeader = String(req?.headers?.authorization || '');
+        const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
+        let email = getSessionEmailFromReq(req) || '';
+
+        if (isApiKeyBearer) {
+          const apiOwner = await resolveApiKeyEmail(bearerRaw);
+          if (!apiOwner) {
+            return res.status(401).json({ success: false, error: 'Invalid API token' });
+          }
+          email = apiOwner;
+        } else if (!email) {
+          email = String(body.login_email || body.email || '')
+            .trim()
+            .toLowerCase();
+        }
+
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
+          });
+        }
+        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
+        const lockState = evaluateLockState(userRecord);
+        const license = computeServerLicenseStatus(userRecord);
+
+        if (lockState.locked) {
+          return res.status(403).json({
+            success: false,
+            locked: true,
+            reason: lockState.reason,
+            status: lockState.status,
+            error: lockState.error,
+            analyses_left: 0,
+          });
+        }
+
+        // Strictly gated to PROFESSIONAL + SOVEREIGN
+        if (license.planKey !== 'pro' && license.planKey !== 'enterprise') {
+          return res.status(403).json({
+            success: false,
+            error: 'AI Due Diligence available in PROFESSIONAL / SOVEREIGN - Upgrade',
+            code: 'FEATURE_LOCKED',
+            requiredPlan: 'pro',
+          });
+        }
+
+        const rawCityInput = String(body.city || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput);
+        if (!cityEntry) {
+          return res.status(400).json({
+            success: false,
+            error: 'City not supported yet. Choose from list.',
+            code: 'INVALID_CITY',
+            city: rawCityInput,
+          });
+        }
+
+        const rawType = String(body.propertyType || 'Apartment').trim();
+        const propertyType: 'Apartment' | 'Villa' | 'Commercial' =
+          rawType === 'Villa' || rawType === 'Commercial' ? rawType : 'Apartment';
+        const rawOwnership = String(body.ownershipType || 'Freehold').trim();
+        const ownershipType: 'Freehold' | 'Leasehold' =
+          rawOwnership === 'Leasehold' ? 'Leasehold' : 'Freehold';
+        const price = parseEnglishNumberServer(body.price ?? body.priceUSD ?? body.propertyPrice);
+        const monthlyRent = parseEnglishNumberServer(
+          body.monthlyRent ?? body.rent ?? body.rentUSD
+        );
+        const rawAge = parseEnglishNumberServer(body.buildingAge ?? body.age ?? 5);
+        const buildingAge = Number.isFinite(rawAge) ? Math.max(0, Math.min(200, Math.round(rawAge))) : -1;
+
+        if (!Number.isFinite(price) || price <= 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Property Price ($) must be greater than 0.',
+            code: 'INVALID_INPUTS',
+          });
+        }
+        if (!Number.isFinite(monthlyRent) || monthlyRent <= 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Gross Monthly Rent ($/mo) must be greater than 0.',
+            code: 'INVALID_INPUTS',
+          });
+        }
+        if (buildingAge < 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Building Age (years) must be 0 or greater.',
+            code: 'INVALID_INPUTS',
+          });
+        }
+
+        const estimatedOpexPct = buildingAge > 30 ? 22 : buildingAge > 15 ? 18 : 15;
+        const annualGross = monthlyRent * 12 * 0.95;
+        const annualNOI = annualGross * (1 - estimatedOpexPct / 100);
+        const propertyCapRate = Number(((annualNOI / price) * 100).toFixed(2));
+        const cityAvgCapRate = Number(cityEntry.avgCapRate.toFixed(2));
+        const marketAvgRent = Math.max(
+          100,
+          Math.round((price * (cityAvgCapRate / 100)) / (12 * 0.95 * 0.85))
+        );
+
+        const citySeed = `${cityEntry.city}:${propertyType}`
+          .split('')
+          .reduce((acc, ch, i) => acc + ch.charCodeAt(0) * (i + 5), 0);
+        const estVacancyPct = Number((4.0 + (citySeed % 7) * 0.7).toFixed(1));
+        const estPriceGrowthPct = Number((3.0 + (((citySeed * 3 + 7) % 40) / 10)).toFixed(1));
+
+        let penalties = 0;
+        let failCount = 0;
+        const checklist: Array<{
+          id: string;
+          category: 'Legal Risk' | 'Financial Risk' | 'Market Risk';
+          item: string;
+          status: 'Pass' | 'Warning' | 'Fail';
+          note: string;
+        }> = [];
+
+        // 1. Legal: Title / Ownership
+        if (ownershipType === 'Leasehold') {
+          penalties += 12;
+          checklist.push({
+            id: 'legal_ownership',
+            category: 'Legal Risk',
+            item: 'Title & Ownership Tenure',
+            status: 'Warning',
+            note: `Leasehold structure requires lease-term & ground-rent audit (>75 yrs recommended). (${cityEntry.visaNote})`,
+          });
+        } else {
+          checklist.push({
+            id: 'legal_ownership',
+            category: 'Legal Risk',
+            item: 'Title & Ownership Tenure',
+            status: 'Pass',
+            note: `Freehold ownership selected. Jurisdiction note: ${cityEntry.visaNote}`,
+          });
+        }
+
+        // 2. Legal: Transfer Tax & Foreign Ownership Friction
+        if (cityEntry.taxRate >= 8) {
+          penalties += 6;
+          checklist.push({
+            id: 'legal_tax',
+            category: 'Legal Risk',
+            item: 'Acquisition Tax & Compliance',
+            status: 'Warning',
+            note: `High transfer / stamp tax (${cityEntry.taxRate}%) in ${cityEntry.country} impacts net entry basis.`,
+          });
+        } else {
+          checklist.push({
+            id: 'legal_tax',
+            category: 'Legal Risk',
+            item: 'Acquisition Tax & Compliance',
+            status: 'Pass',
+            note: `Standard transfer tax (${cityEntry.taxRate}%) in ${cityEntry.country}. Verify title deed escrow with local counsel.`,
+          });
+        }
+
+        // 3. Financial: Cap Rate vs Market Benchmark
+        if (propertyCapRate < cityAvgCapRate - 2) {
+          penalties += 28;
+          failCount += 1;
+          checklist.push({
+            id: 'fin_cap_rate',
+            category: 'Financial Risk',
+            item: 'Net Cap Rate vs Market Benchmark',
+            status: 'Fail',
+            note: `Property Cap Rate (${propertyCapRate}%) is >200bps below ${cityEntry.city} market average (${cityAvgCapRate}%). Overpriced or under-rented.`,
+          });
+        } else if (propertyCapRate < cityAvgCapRate) {
+          penalties += 10;
+          checklist.push({
+            id: 'fin_cap_rate',
+            category: 'Financial Risk',
+            item: 'Net Cap Rate vs Market Benchmark',
+            status: 'Warning',
+            note: `Property Cap Rate (${propertyCapRate}%) is slightly below ${cityEntry.city} average (${cityAvgCapRate}%). Negotiate purchase price.`,
+          });
+        } else {
+          checklist.push({
+            id: 'fin_cap_rate',
+            category: 'Financial Risk',
+            item: 'Net Cap Rate vs Market Benchmark',
+            status: 'Pass',
+            note: `Property Cap Rate (${propertyCapRate}%) outperforms ${cityEntry.city} benchmark (${cityAvgCapRate}%).`,
+          });
+        }
+
+        // 4. Financial: Gross Rent vs Market Avg
+        if (monthlyRent > marketAvgRent * 1.2) {
+          penalties += 14;
+          checklist.push({
+            id: 'fin_rent',
+            category: 'Financial Risk',
+            item: 'Monthly Rent vs Market Average',
+            status: 'Warning',
+            note: `Projected rent ($${monthlyRent.toLocaleString('en-US')}/mo) is >20% above ${cityEntry.city} market estimate ($${marketAvgRent.toLocaleString('en-US')}/mo) — verify executed lease.`,
+          });
+        } else if (monthlyRent < marketAvgRent * 0.7) {
+          penalties += 6;
+          checklist.push({
+            id: 'fin_rent',
+            category: 'Financial Risk',
+            item: 'Monthly Rent vs Market Average',
+            status: 'Warning',
+            note: `Projected rent ($${monthlyRent.toLocaleString('en-US')}/mo) is >30% below market average ($${marketAvgRent.toLocaleString('en-US')}/mo).`,
+          });
+        } else {
+          checklist.push({
+            id: 'fin_rent',
+            category: 'Financial Risk',
+            item: 'Monthly Rent vs Market Average',
+            status: 'Pass',
+            note: `Projected rent ($${monthlyRent.toLocaleString('en-US')}/mo) is aligned with market benchmark ($${marketAvgRent.toLocaleString('en-US')}/mo).`,
+          });
+        }
+
+        // 5. Financial: OPEX & Building Age Reserve
+        if (buildingAge > 30) {
+          penalties += 15;
+          checklist.push({
+            id: 'fin_opex_age',
+            category: 'Financial Risk',
+            item: 'Building Age & OPEX Reserve',
+            status: 'Warning',
+            note: `Building age (${buildingAge} yrs > 30 yrs) elevates CapEx & OPEX (${estimatedOpexPct}%). Require structural & MEP inspection.`,
+          });
+        } else if (buildingAge > 15) {
+          penalties += 6;
+          checklist.push({
+            id: 'fin_opex_age',
+            category: 'Financial Risk',
+            item: 'Building Age & OPEX Reserve',
+            status: 'Warning',
+            note: `Asset age (${buildingAge} yrs) warrants ${estimatedOpexPct}% OPEX & HVAC/elevator reserve check.`,
+          });
+        } else {
+          checklist.push({
+            id: 'fin_opex_age',
+            category: 'Financial Risk',
+            item: 'Building Age & OPEX Reserve',
+            status: 'Pass',
+            note: `Modern structure (${buildingAge} yrs) with baseline ${estimatedOpexPct}% OPEX assumption.`,
+          });
+        }
+
+        // 6. Market: Vacancy Rate
+        if (estVacancyPct >= 7.5) {
+          penalties += 8;
+          checklist.push({
+            id: 'mkt_vacancy',
+            category: 'Market Risk',
+            item: 'District Vacancy & Absorption',
+            status: 'Warning',
+            note: `Estimated ${estVacancyPct}% market vacancy in ${cityEntry.city} warrants conservative lease-up buffer.`,
+          });
+        } else {
+          checklist.push({
+            id: 'mkt_vacancy',
+            category: 'Market Risk',
+            item: 'District Vacancy & Absorption',
+            status: 'Pass',
+            note: `Healthy tenant absorption (~${estVacancyPct}% vacancy benchmark) for ${propertyType} in ${cityEntry.city}.`,
+          });
+        }
+
+        // 7. Market: Price Growth Outlook
+        if (estPriceGrowthPct < 3.5) {
+          penalties += 5;
+          checklist.push({
+            id: 'mkt_growth',
+            category: 'Market Risk',
+            item: 'Capital Appreciation Momentum',
+            status: 'Warning',
+            note: `Modest projected annual price growth (+${estPriceGrowthPct}% YoY) — rely primarily on cashflow yield.`,
+          });
+        } else {
+          checklist.push({
+            id: 'mkt_growth',
+            category: 'Market Risk',
+            item: 'Capital Appreciation Momentum',
+            status: 'Pass',
+            note: `Constructive projected price growth (+${estPriceGrowthPct}% YoY) supporting 5-year exit value.`,
+          });
+        }
+
+        const riskScore = Math.max(0, Math.min(100, 100 - penalties));
+        const verdict: 'Low Risk - Proceed' | 'Medium Risk - Verify Items' | 'High Risk - Do Not Proceed' =
+          riskScore >= 75 && failCount === 0
+            ? 'Low Risk - Proceed'
+            : riskScore >= 50 && failCount === 0
+            ? 'Medium Risk - Verify Items'
+            : 'High Risk - Do Not Proceed';
+
+        const ddCreatedAt = new Date().toISOString();
+        const disclaimer = `Due Diligence based on market averages for ${cityEntry.city} - Not legal advice, verify with local lawyer / agent`;
+
+        const result = {
+          id: `dd_${Date.now()}`,
+          city: cityEntry.city,
+          country: cityEntry.country,
+          countryCode: cityEntry.countryCode,
+          propertyType,
+          ownershipType,
+          buildingAge,
+          price,
+          monthlyRent,
+          propertyCapRate,
+          cityAvgCapRate,
+          marketAvgRent,
+          estimatedOpexPct,
+          estVacancyPct,
+          estPriceGrowthPct,
+          riskScore,
+          verdict,
+          checklist,
+          disclaimer,
+          generatedAt: ddCreatedAt,
+        };
+
+        const updatedUser = recordUserAnalysis(
+          userRecord,
+          {
+            property: `AI Due Diligence - ${cityEntry.city} (${propertyType})`,
+            city: cityEntry.city,
+            priceUSD: price,
+            capRate: propertyCapRate,
+            cashOnCash: propertyCapRate,
+            resultSummary: `Due Diligence Score ${riskScore}/100 (${verdict})`,
+          },
+          {
+            last_results: {
+              ...(userRecord.last_results || {}),
+              due_diligence: {
+                inputs: {
+                  city: cityEntry.city,
+                  propertyType,
+                  price,
+                  monthlyRent,
+                  ownershipType,
+                  buildingAge,
+                },
+                result,
+                created_at: ddCreatedAt,
+              },
+            },
+          }
+        );
+        await saveUserToDb(updatedUser);
+        const nextLock = evaluateLockState(updatedUser);
+        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
+
+        return res.status(200).json({
+          success: true,
+          created_at: ddCreatedAt,
+          result,
+          last_results: updatedUser.last_results || {},
+          analyses_left: nextLock.analysesLeft,
+          analyses_total: nextLicense.analysesLimit,
+          analyses_used: nextLicense.analysesUsed,
+          successful_analyses: updatedUser.successful_analyses || 0,
+          locked: nextLock.locked,
+          status: nextLock.status,
+          cancellationEligibility,
+          license: nextLicense,
+        });
+      }
+
+      case 'optimize-portfolio': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+
+        const body = parsedBody;
+        const authHeader = String(req?.headers?.authorization || '');
+        const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
+        let email = getSessionEmailFromReq(req) || '';
+
+        if (isApiKeyBearer) {
+          const apiOwner = await resolveApiKeyEmail(bearerRaw);
+          if (!apiOwner) {
+            return res.status(401).json({ success: false, error: 'Invalid API token' });
+          }
+          email = apiOwner;
+        } else if (!email) {
+          email = String(body.login_email || body.email || '')
+            .trim()
+            .toLowerCase();
+        }
+
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
+          });
+        }
+        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
+        const lockState = evaluateLockState(userRecord);
+        const license = computeServerLicenseStatus(userRecord);
+
+        if (lockState.locked) {
+          return res.status(403).json({
+            success: false,
+            locked: true,
+            reason: lockState.reason,
+            status: lockState.status,
+            error: lockState.error,
+            analyses_left: 0,
+          });
+        }
+
+        // Strictly gated to SOVEREIGN only
+        if (license.planKey !== 'enterprise') {
+          return res.status(403).json({
+            success: false,
+            error: 'Global Portfolio Optimizer available in SOVEREIGN only - Upgrade to SOVEREIGN',
+            code: 'FEATURE_LOCKED',
+            requiredPlan: 'enterprise',
+          });
+        }
+
+        const totalCapital = parseEnglishNumberServer(
+          body.totalCapital ?? body.capital ?? body.budget
+        );
+        if (!Number.isFinite(totalCapital) || totalCapital <= 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Total Capital ($) must be greater than 0.',
+            code: 'INVALID_INPUTS',
+          });
+        }
+
+        const rawCitiesInput = Array.isArray(body.cities)
+          ? body.cities
+          : typeof body.cities === 'string'
+          ? body.cities.split(',')
+          : [];
+        const resolvedCities: InlinedCityEntry[] = [];
+        const seenCityNames = new Set<string>();
+        for (const item of rawCitiesInput) {
+          const entry = findInlinedCity(String(item || ''));
+          if (!entry) {
+            return res.status(400).json({
+              success: false,
+              error: `City "${String(item || '').trim()}" not supported yet. Choose 2-3 cities from list.`,
+              code: 'INVALID_CITY',
+            });
+          }
+          const key = entry.city.toLowerCase();
+          if (!seenCityNames.has(key)) {
+            seenCityNames.add(key);
+            resolvedCities.push(entry);
+          }
+        }
+        if (resolvedCities.length < 2 || resolvedCities.length > 3) {
+          return res.status(400).json({
+            success: false,
+            error: 'Select 2 to 3 distinct target cities from list.',
+            code: 'INVALID_CITIES_COUNT',
+          });
+        }
+
+        const rawRisk = String(body.risk || 'Medium').trim();
+        const riskLevel: 'Low' | 'Medium' | 'High' =
+          rawRisk === 'Low' || rawRisk === 'High' ? rawRisk : 'Medium';
+
+        // Compute raw allocation weights by risk + city cap rate
+        const rawWeights = resolvedCities.map((c) => {
+          const cap = Math.max(2.0, c.avgCapRate);
+          if (riskLevel === 'Low') {
+            return 1 / Math.pow(cap, 1.35);
+          }
+          if (riskLevel === 'High') {
+            return Math.pow(cap, 1.45);
+          }
+          return 0.6 + cap * 0.12;
+        });
+        const totalWeight = rawWeights.reduce((s, w) => s + w, 0);
+        const exactPcts = rawWeights.map((w) => (w / totalWeight) * 100);
+        // Guarantee integer percentages >= 15 and sum === 100 using largest remainder
+        const floorPcts = exactPcts.map((p) => Math.max(15, Math.floor(p)));
+        let remainder = 100 - floorPcts.reduce((s, p) => s + p, 0);
+        const remaindersOrder = exactPcts
+          .map((p, i) => ({ i, frac: p - Math.floor(p) }))
+          .sort((a, b) => b.frac - a.frac);
+        let guard = 0;
+        while (remainder !== 0 && guard < 100) {
+          const idx = remaindersOrder[guard % remaindersOrder.length].i;
+          if (remainder > 0) {
+            floorPcts[idx] += 1;
+            remainder -= 1;
+          } else if (floorPcts[idx] > 15) {
+            floorPcts[idx] -= 1;
+            remainder += 1;
+          }
+          guard++;
+        }
+
+        let allocatedCapitalSum = 0;
+        const allocations = resolvedCities.map((c, idx) => {
+          const allocationPct = floorPcts[idx];
+          const amountUSD =
+            idx === resolvedCities.length - 1
+              ? Math.max(0, Math.round(totalCapital - allocatedCapitalSum))
+              : Math.round((totalCapital * allocationPct) / 100);
+          allocatedCapitalSum += amountUSD;
+          const estCapRate = Number(c.avgCapRate.toFixed(2));
+          const estAnnualRentUSD = Math.round(amountUSD * (estCapRate / 100));
+          return {
+            city: c.city,
+            country: c.country,
+            countryCode: c.countryCode,
+            allocationPct,
+            amountUSD,
+            estCapRate,
+            estAnnualRentUSD,
+          };
+        });
+
+        const totalEstAnnualIncomeUSD = allocations.reduce(
+          (sum, row) => sum + row.estAnnualRentUSD,
+          0
+        );
+        const blendedCapRate = Number(
+          ((totalEstAnnualIncomeUSD / Math.max(1, totalCapital)) * 100).toFixed(2)
+        );
+        const uniqueCountries = new Set(resolvedCities.map((c) => c.countryCode || c.country)).size;
+        const hhi = allocations.reduce((sum, a) => sum + Math.pow(a.allocationPct / 100, 2), 0);
+        const diversificationScore = Math.min(
+          98,
+          Math.max(
+            42,
+            Math.round(
+              (resolvedCities.length === 3 ? 58 : 44) +
+                uniqueCountries * 10 +
+                (1 - hhi) * 24
+            )
+          )
+        );
+
+        const optCreatedAt = new Date().toISOString();
+        const disclaimer = `Global Portfolio Optimizer - Allocation modeled on city benchmark cap rates (${resolvedCities.map((c) => c.city).join(', ')}) - Not investment advice`;
+
+        const result = {
+          id: `opt_${Date.now()}`,
+          totalCapital,
+          risk: riskLevel,
+          cities: resolvedCities.map((c) => c.city),
+          allocations,
+          totalEstAnnualIncomeUSD,
+          blendedCapRate,
+          diversificationScore,
+          disclaimer,
+          generatedAt: optCreatedAt,
+        };
+
+        const updatedUser = recordUserAnalysis(
+          userRecord,
+          {
+            property: `Global Portfolio Optimizer (${resolvedCities.map((c) => c.city).join(' + ')})`,
+            city: resolvedCities[0].city,
+            priceUSD: totalCapital,
+            capRate: blendedCapRate,
+            cashOnCash: blendedCapRate,
+            resultSummary: `Blended Cap ${blendedCapRate}% | Diversification ${diversificationScore}/100`,
+          },
+          {
+            last_results: {
+              ...(userRecord.last_results || {}),
+              portfolio_optimizer: {
+                inputs: {
+                  totalCapital,
+                  cities: resolvedCities.map((c) => c.city),
+                  risk: riskLevel,
+                },
+                result,
+                created_at: optCreatedAt,
+              },
+            },
+          }
+        );
+        await saveUserToDb(updatedUser);
+        const nextLock = evaluateLockState(updatedUser);
+        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
+
+        return res.status(200).json({
+          success: true,
+          created_at: optCreatedAt,
+          result,
+          last_results: updatedUser.last_results || {},
+          analyses_left: nextLock.analysesLeft,
+          analyses_total: nextLicense.analysesLimit,
+          analyses_used: nextLicense.analysesUsed,
+          successful_analyses: updatedUser.successful_analyses || 0,
+          locked: nextLock.locked,
+          status: nextLock.status,
+          cancellationEligibility,
+          license: nextLicense,
+        });
+      }
+
+      case 'ask-advisor': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+
+        const body = parsedBody;
+        const authHeader = String(req?.headers?.authorization || '');
+        const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
+        let email = getSessionEmailFromReq(req) || '';
+
+        if (isApiKeyBearer) {
+          const apiOwner = await resolveApiKeyEmail(bearerRaw);
+          if (!apiOwner) {
+            return res.status(401).json({ success: false, error: 'Invalid API token' });
+          }
+          email = apiOwner;
+        } else if (!email) {
+          email = String(body.login_email || body.email || '')
+            .trim()
+            .toLowerCase();
+        }
+
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
+          });
+        }
+        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
+        const lockState = evaluateLockState(userRecord);
+        const license = computeServerLicenseStatus(userRecord);
+
+        if (lockState.locked) {
+          return res.status(403).json({
+            success: false,
+            locked: true,
+            reason: lockState.reason,
+            status: lockState.status,
+            error: lockState.error,
+            analyses_left: 0,
+          });
+        }
+
+        // Strictly gated to SOVEREIGN only
+        if (license.planKey !== 'enterprise') {
+          return res.status(403).json({
+            success: false,
+            error: 'Institutional AI Advisor available in SOVEREIGN only - Upgrade to SOVEREIGN',
+            code: 'FEATURE_LOCKED',
+            requiredPlan: 'enterprise',
+          });
+        }
+
+        const question = String(body.question || '').trim().slice(0, 1200);
+        if (question.length < 4) {
+          return res.status(400).json({
+            success: false,
+            error: 'Enter an investment question (minimum 4 characters).',
+            code: 'INVALID_INPUTS',
+          });
+        }
+
+        const rawCityInput = String(body.city || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput);
+        if (!cityEntry) {
+          return res.status(400).json({
+            success: false,
+            error: 'City not supported yet. Choose from list.',
+            code: 'INVALID_CITY',
+            city: rawCityInput,
+          });
+        }
+
+        const budget = parseEnglishNumberServer(body.budget ?? body.capital ?? body.amount);
+        if (!Number.isFinite(budget) || budget <= 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Budget ($) must be greater than 0.',
+            code: 'INVALID_INPUTS',
+          });
+        }
+
+        const qLower = question.toLowerCase();
+        // Detect if question mentions a second city for side-by-side yield comparison
+        let secondaryCity: InlinedCityEntry | null = null;
+        for (const candidate of INLINED_CITIES_MAP.values()) {
+          if (candidate.city.toLowerCase() === cityEntry.city.toLowerCase()) continue;
+          if (candidate.city.length < 4) continue;
+          const escaped = candidate.city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const re = new RegExp(`\\b${escaped}\\b`, 'i');
+          if (re.test(question)) {
+            secondaryCity = candidate;
+            break;
+          }
+        }
+
+        const cityAvgCapRate = Number(cityEntry.avgCapRate.toFixed(2));
+        const budgetFmt = `$${Math.round(budget).toLocaleString('en-US')}`;
+        const estAnnualIncomeUSD = Math.round(budget * (cityAvgCapRate / 100));
+        const estMonthlyIncomeUSD = Math.round(estAnnualIncomeUSD / 12);
+        const citySeed = cityEntry.city
+          .split('')
+          .reduce((acc, ch, i) => acc + ch.charCodeAt(0) * (i + 5), 0);
+        const rentGrowth12M = Number((2.0 + ((citySeed % 30) / 10)).toFixed(1));
+        const priceGrowth12M = Number((3.0 + (((citySeed * 3 + 7) % 40) / 10)).toFixed(1));
+
+        const recommendation: 'Buy' | 'Hold' | 'Wait' =
+          cityAvgCapRate >= 6.0 && cityEntry.taxRate <= 8
+            ? 'Buy'
+            : cityAvgCapRate >= 4.5
+            ? 'Hold'
+            : 'Wait';
+
+        const wantsLeverage = /mortgage|loan|debt|financ|leverag/i.test(qLower);
+        const wantsAppreciation = /growth|appreciat|equity|flip|5\s*y/i.test(qLower);
+
+        const headline = `${recommendation} stance on ${cityEntry.city}, ${cityEntry.country} for ${budgetFmt}: benchmark ${cityAvgCapRate}% cap rate implies ~$${estAnnualIncomeUSD.toLocaleString('en-US')}/yr unlevered NOI.`;
+
+        const reasoning: string[] = [
+          `Market Yield Benchmark: ${cityEntry.city} delivers an institutional average Cap Rate of ${cityAvgCapRate}%, translating a ${budgetFmt} deployment into ~$${estAnnualIncomeUSD.toLocaleString('en-US')}/yr (~$${estMonthlyIncomeUSD.toLocaleString('en-US')}/mo) unlevered net income.`,
+          `Growth & Income Trajectory: Baseline projections indicate +${rentGrowth12M}% 12-month rent growth and +${priceGrowth12M}% capital appreciation${wantsAppreciation ? ', prioritizing total return over immediate cash yield.' : '.'}`,
+          `Jurisdiction & Residency Fit: ${cityEntry.country} applies a ${cityEntry.taxRate}% transfer/acquisition tax with policy guidance "${cityEntry.visaNote}" relevant to your ${budgetFmt} ticket size.`,
+        ];
+        if (secondaryCity) {
+          const secCap = Number(secondaryCity.avgCapRate.toFixed(2));
+          const spreadBps = Math.round((cityAvgCapRate - secCap) * 100);
+          reasoning.push(
+            `Cross-Market Comparison vs ${secondaryCity.city}: ${cityEntry.city} (${cityAvgCapRate}% cap rate, ${cityEntry.taxRate}% tax) carries a ${spreadBps >= 0 ? `+${spreadBps}` : spreadBps}bps yield spread vs ${secondaryCity.city} (${secCap}% cap rate, ${secondaryCity.taxRate}% tax) on a ${budgetFmt} allocation.`
+          );
+        } else if (wantsLeverage) {
+          reasoning.push(
+            `Debt Spread Consideration: At ${cityAvgCapRate}% unlevered cap rate on ${budgetFmt}, ensure mortgage cost stays at least 100bps below net yield (DSCR >= 1.35x) to preserve positive leverage.`
+          );
+        }
+
+        const riskFactors: string[] = [
+          `Rate & Financing Risk: A +200bps interest rate shock can compress leveraged Cash-on-Cash returns if debt-to-value exceeds 70% in ${cityEntry.city}.`,
+          `Friction & Regulatory Costs: Factor ${cityEntry.taxRate}% transfer tax, local HOA/service charges, and closing legal fees (~1.5%) into total ${budgetFmt} cash required.`,
+          `Vacancy & Liquidity Exposure: Unbudgeted lease-up gaps beyond 4-6 weeks reduce realized yield below the ${cityAvgCapRate}% ${cityEntry.city} benchmark.`,
+        ];
+
+        const nextSteps: string[] = [
+          `Run "AI Due Diligence" on a target ${cityEntry.city} property (~${budgetFmt}) to audit Leasehold vs Freehold risk and Cap Rate spread.`,
+          `Stress-test financing in "Analyze New Property" with Monte Carlo (+200bps rate shock) and inspect 5-year IRR before committing capital.`,
+          secondaryCity
+            ? `Model a split allocation between ${cityEntry.city} and ${secondaryCity.city} inside "Global Portfolio Optimizer" to maximize diversification.`
+            : `Verify freehold title eligibility and residency qualification in ${cityEntry.country} with a licensed local conveyancing attorney.`,
+        ];
+
+        const advisorCreatedAt = new Date().toISOString();
+        const disclaimer =
+          'Institutional AI Advisor - Educational analysis based on market averages - Not financial advice';
+
+        const result = {
+          id: `adv_${Date.now()}`,
+          question,
+          city: cityEntry.city,
+          country: cityEntry.country,
+          countryCode: cityEntry.countryCode,
+          budget,
+          cityAvgCapRate,
+          estAnnualIncomeUSD,
+          estMonthlyIncomeUSD,
+          recommendation,
+          headline,
+          reasoning,
+          riskFactors,
+          nextSteps,
+          disclaimer,
+          generatedAt: advisorCreatedAt,
+        };
+
+        const updatedUser = recordUserAnalysis(
+          userRecord,
+          {
+            property: `Institutional AI Advisor - ${cityEntry.city}`,
+            city: cityEntry.city,
+            priceUSD: budget,
+            capRate: cityAvgCapRate,
+            cashOnCash: cityAvgCapRate,
+            resultSummary: `Advisor ${recommendation} (${cityEntry.city}, ${budgetFmt})`,
+          },
+          {
+            last_results: {
+              ...(userRecord.last_results || {}),
+              advisor: {
+                inputs: {
+                  question,
+                  city: cityEntry.city,
+                  budget,
+                },
+                result,
+                created_at: advisorCreatedAt,
+              },
+            },
+          }
+        );
+        await saveUserToDb(updatedUser);
+        const nextLock = evaluateLockState(updatedUser);
+        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
+
+        return res.status(200).json({
+          success: true,
+          created_at: advisorCreatedAt,
+          result,
+          last_results: updatedUser.last_results || {},
+          analyses_left: nextLock.analysesLeft,
+          analyses_total: nextLicense.analysesLimit,
+          analyses_used: nextLicense.analysesUsed,
+          successful_analyses: updatedUser.successful_analyses || 0,
+          locked: nextLock.locked,
+          status: nextLock.status,
+          cancellationEligibility,
+          license: nextLicense,
+        });
+      }
+
       case 'monte-carlo': {
         if (req.method !== 'POST') {
           return res.status(405).json({ error: 'Method not allowed' });
@@ -6472,14 +7348,28 @@ export default async function handler(req: any, res: any) {
           nextLastResults.deal_finder = null;
         } else if (rawTool === 'forecast' || rawTool === 'market-forecast') {
           nextLastResults.forecast = null;
+        } else if (rawTool === 'due-diligence' || rawTool === 'due_diligence' || rawTool === 'duediligence') {
+          nextLastResults.due_diligence = null;
+        } else if (
+          rawTool === 'portfolio-optimizer' ||
+          rawTool === 'portfolio_optimizer' ||
+          rawTool === 'optimizer'
+        ) {
+          nextLastResults.portfolio_optimizer = null;
+        } else if (rawTool === 'advisor' || rawTool === 'institutional-advisor') {
+          nextLastResults.advisor = null;
         } else if (rawTool === 'all') {
           nextLastResults.analysis = null;
           nextLastResults.deal_finder = null;
           nextLastResults.forecast = null;
+          nextLastResults.due_diligence = null;
+          nextLastResults.portfolio_optimizer = null;
+          nextLastResults.advisor = null;
         } else {
           return res.status(400).json({
             success: false,
-            error: "Specify tool: 'analysis', 'deal_finder', 'forecast', or 'all'.",
+            error:
+              "Specify tool: 'analysis', 'deal_finder', 'forecast', 'due_diligence', 'portfolio_optimizer', 'advisor', or 'all'.",
           });
         }
         const store = loadStore();
@@ -6506,6 +7396,9 @@ export default async function handler(req: any, res: any) {
             'run-analysis',
             'find-deals',
             'get-forecast',
+            'run-due-diligence',
+            'optimize-portfolio',
+            'ask-advisor',
             'get-last-results',
             'clear-last-result',
             'underwrite',

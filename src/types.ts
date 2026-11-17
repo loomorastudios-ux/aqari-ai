@@ -261,6 +261,36 @@ export interface LastResultsData {
     forecast: MarketForecastResult;
     created_at: string;
   } | null;
+  due_diligence?: {
+    inputs: {
+      city: string;
+      propertyType: string;
+      price: number;
+      monthlyRent: number;
+      ownershipType: string;
+      buildingAge: number;
+    };
+    result: DueDiligenceResult;
+    created_at: string;
+  } | null;
+  portfolio_optimizer?: {
+    inputs: {
+      totalCapital: number;
+      cities: string[];
+      risk: string;
+    };
+    result: PortfolioOptimizerResult;
+    created_at: string;
+  } | null;
+  advisor?: {
+    inputs: {
+      question: string;
+      city: string;
+      budget: number;
+    };
+    result: AdvisorResult;
+    created_at: string;
+  } | null;
 }
 
 export interface PlanFeatureConfig {
@@ -393,4 +423,77 @@ export interface MarketForecastResult {
   recommendation: 'Buy' | 'Hold' | 'Wait' | string;
   series: MarketForecastSeriesPoint[];
   disclaimer: string;
+}
+
+export interface DueDiligenceCheckItem {
+  id: string;
+  category: 'Legal Risk' | 'Financial Risk' | 'Market Risk' | string;
+  item: string;
+  status: 'Pass' | 'Warning' | 'Fail';
+  note: string;
+}
+
+export interface DueDiligenceResult {
+  id: string;
+  city: string;
+  country: string;
+  countryCode?: string;
+  propertyType: 'Apartment' | 'Villa' | 'Commercial' | string;
+  ownershipType: 'Freehold' | 'Leasehold' | string;
+  buildingAge: number;
+  price: number;
+  monthlyRent: number;
+  propertyCapRate: number;
+  cityAvgCapRate: number;
+  marketAvgRent: number;
+  estimatedOpexPct: number;
+  estVacancyPct: number;
+  estPriceGrowthPct: number;
+  riskScore: number;
+  verdict: 'Low Risk - Proceed' | 'Medium Risk - Verify Items' | 'High Risk - Do Not Proceed' | string;
+  checklist: DueDiligenceCheckItem[];
+  disclaimer: string;
+  generatedAt: string;
+}
+
+export interface PortfolioAllocationRow {
+  city: string;
+  country: string;
+  countryCode?: string;
+  allocationPct: number;
+  amountUSD: number;
+  estCapRate: number;
+  estAnnualRentUSD: number;
+}
+
+export interface PortfolioOptimizerResult {
+  id: string;
+  totalCapital: number;
+  risk: 'Low' | 'Medium' | 'High' | string;
+  cities: string[];
+  allocations: PortfolioAllocationRow[];
+  totalEstAnnualIncomeUSD: number;
+  blendedCapRate: number;
+  diversificationScore: number;
+  disclaimer: string;
+  generatedAt: string;
+}
+
+export interface AdvisorResult {
+  id: string;
+  question: string;
+  city: string;
+  country: string;
+  countryCode?: string;
+  budget: number;
+  cityAvgCapRate: number;
+  estAnnualIncomeUSD: number;
+  estMonthlyIncomeUSD: number;
+  recommendation: 'Buy' | 'Hold' | 'Wait' | string;
+  headline: string;
+  reasoning: string[];
+  riskFactors: string[];
+  nextSteps: string[];
+  disclaimer: string;
+  generatedAt: string;
 }
