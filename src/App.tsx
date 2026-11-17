@@ -726,6 +726,10 @@ export default function App() {
             : Array.isArray(data.user.saved_analyses)
             ? data.user.saved_analyses
             : [];
+          const serverLocked = Boolean(data.locked || data.status === 'expired' || data.status === 'exhausted' || data.license?.isExpired);
+          const serverStatus = String(data.status || (serverLocked ? (data.license?.isExpired ? 'expired' : 'exhausted') : 'active'));
+          const serverLockReason = data.lockReason ?? data.reason ?? null;
+          const serverLockError = data.lockError ?? data.error ?? null;
           const syncedUser: User = {
             ...newUser,
             plan: serverPlan,
@@ -747,7 +751,7 @@ export default function App() {
               : [],
             apiKey: data.api_key ?? data.user?.api_key ?? null,
             subscriptionPlan: serverPlan,
-            subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : serverPlan === 'free' ? 'free' : 'active',
+            subscriptionStatus: serverStatus === 'expired' || serverStatus === 'exhausted' ? 'expired' : serverPlan === 'free' ? 'free' : 'active',
             subscriptionStartAt: data.license_start ?? data.user.license_start ?? undefined,
             subscriptionEndsAt: data.license_end ?? data.user.license_end ?? null,
             subscriptionExpiry: data.license_end ?? data.user.license_end ?? null,
@@ -766,6 +770,12 @@ export default function App() {
             cancelStatus: data.user.cancel_status ?? 'none',
             lastOrderId: data.user.last_order_id ?? null,
             cancellationEligibility: data.cancellationEligibility ?? null,
+            status: serverStatus,
+            locked: serverLocked,
+            lockReason: serverLockReason,
+            lockError: serverLockError,
+            paymentProvider: data.payment_provider ?? data.user?.payment_provider ?? 'stripe',
+            paymentIntentId: data.payment_intent_id ?? data.user?.payment_intent_id ?? null,
           };
           handleSaveUser(syncedUser);
           resolvedUser = syncedUser;
@@ -915,6 +925,16 @@ export default function App() {
         const serverIssueResolvedAt = data.issue_resolved_at ?? data.user?.issue_resolved_at ?? null;
         const serverCancelStatus = String(data.cancel_status ?? data.user?.cancel_status ?? 'none');
         const serverEligibility = data.cancellationEligibility ?? null;
+        const serverLocked = Boolean(
+          data.locked || data.status === 'expired' || data.status === 'exhausted' || data.license?.isExpired
+        );
+        const serverStatus = String(
+          data.status || (serverLocked ? (data.license?.isExpired ? 'expired' : 'exhausted') : 'active')
+        );
+        const serverLockReason = data.lockReason ?? data.reason ?? null;
+        const serverLockError = data.lockError ?? data.error ?? null;
+        const serverPaymentProvider = String(data.payment_provider ?? data.user?.payment_provider ?? 'stripe');
+        const serverPaymentIntentId = data.payment_intent_id ?? data.user?.payment_intent_id ?? null;
 
         const changed =
           !user ||
@@ -941,6 +961,12 @@ export default function App() {
           (serverWgDelivs.length !== (user.whiteGloveDeliverables?.length ?? 0)) ||
           (serverCustomCities.length !== (user.customCities?.length ?? 0)) ||
           (serverSavedList.length !== (user.savedAnalyses?.length ?? 0)) ||
+          Boolean(user.locked) !== serverLocked ||
+          (user.status ?? 'active') !== serverStatus ||
+          (user.lockReason ?? null) !== serverLockReason ||
+          (user.lockError ?? null) !== serverLockError ||
+          (user.paymentProvider ?? 'stripe') !== serverPaymentProvider ||
+          (user.paymentIntentId ?? null) !== serverPaymentIntentId ||
           user.analysesLeft !== serverLeft;
 
         if (changed) {
@@ -960,7 +986,12 @@ export default function App() {
             savedAnalyses: serverSavedList,
             apiKey: serverApiKey,
             subscriptionPlan: serverPlan,
-            subscriptionStatus: serverPlan === 'free' && data.license?.isExpired ? 'expired' : serverPlan === 'free' ? 'free' : 'active',
+            subscriptionStatus:
+              serverStatus === 'expired' || serverStatus === 'exhausted'
+                ? 'expired'
+                : serverPlan === 'free'
+                ? 'free'
+                : 'active',
             subscriptionStartAt: data.license_start ?? undefined,
             subscriptionEndsAt: serverEnd,
             subscriptionExpiry: serverEnd,
@@ -983,6 +1014,12 @@ export default function App() {
             cancelStatus: serverCancelStatus,
             lastOrderId: data.last_order_id ?? data.user?.last_order_id ?? null,
             cancellationEligibility: serverEligibility,
+            status: serverStatus,
+            locked: serverLocked,
+            lockReason: serverLockReason,
+            lockError: serverLockError,
+            paymentProvider: serverPaymentProvider,
+            paymentIntentId: serverPaymentIntentId,
           };
           saveUser(syncedUser);
           setUser(syncedUser);
@@ -1070,6 +1107,19 @@ export default function App() {
           return;
         }
         if (res.status === 403 || !res.ok || data?.success === false) {
+          if (data?.locked) {
+            handleSaveUser({
+              ...user,
+              status: data.status || data.reason || 'exhausted',
+              locked: true,
+              lockReason: data.reason || null,
+              lockError: data.error || null,
+              analysesLeft: typeof data.analyses_left === 'number' ? data.analyses_left : 0,
+              freeAnalyses: typeof data.analyses_left === 'number' ? data.analyses_left : 0,
+              freeAnalysesLeft: typeof data.analyses_left === 'number' ? data.analyses_left : 0,
+              subscriptionStatus: 'expired',
+            });
+          }
           showTempToast(data?.error || 'No analyses left. Renew / Upgrade.');
           setIsRenewalOpen(true);
           return;
@@ -1194,7 +1244,7 @@ export default function App() {
                 Activating Your Terminal... - جاري تفعيل حسابك
               </h1>
               <p className="text-sm font-mono text-zinc-200 leading-relaxed">
-                Please wait, verifying your payment with Lemon...
+                Please wait, verifying your payment with Stripe...
               </p>
             </>
           )}
@@ -1237,7 +1287,7 @@ export default function App() {
                   e.preventDefault();
                   const cleaned = cleanPlaceholderOrderId(manualOrderId);
                   if (!cleaned) {
-                    setVerifyError('Please enter your Order ID (e.g. 5165758) from your Lemon receipt.');
+                    setVerifyError('Please enter your Payment Intent / Order ID (e.g. pi_123456) from your payment receipt.');
                     return;
                   }
                   runAutoVerifyCheckout(cleaned);
@@ -1245,13 +1295,13 @@ export default function App() {
                 className="space-y-2.5 text-left p-4 rounded-2xl bg-zinc-900/80 border border-white/15"
               >
                 <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-300 font-bold">
-                  Enter Order ID (from Lemon receipt, e.g. 5165758)
+                  Enter Order / Payment Intent ID (from receipt)
                 </label>
                 <input
                   type="text"
                   value={manualOrderId}
                   onChange={(e) => setManualOrderId(e.target.value)}
-                  placeholder="Enter Order ID (from Lemon receipt, e.g. 5165758)"
+                  placeholder="Enter Order / Payment Intent ID (e.g. pi_123456)"
                   className="w-full px-3.5 py-3 rounded-xl bg-black/70 border border-white/20 text-white font-mono text-sm placeholder:text-zinc-500 focus:outline-none focus:border-[#D4AF37]"
                 />
                 <button

@@ -198,9 +198,9 @@ export const AdminModal: React.FC<AdminModalProps> = ({
               </p>
             </div>
 
-            {(import.meta.env.VITE_LEMON_TEST_MODE === 'true' || import.meta.env.VITE_LEMON_TEST_MODE === true) && (
+            {(import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' || import.meta.env.VITE_PAYMENT_TEST_MODE === true) && (
               <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs font-mono flex items-center justify-between gap-2">
-                <span>⚠️ LEMON SQUEEZY TEST MODE ACTIVE</span>
+                <span>TEST MODE ACTIVE</span>
                 <span className="font-bold underline">Use test card: 4242 4242 4242 4242</span>
               </div>
             )}
@@ -303,7 +303,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-mono text-zinc-400 block mb-1">Promo Code (LemonSqueezy)</label>
+                  <label className="text-[10px] font-mono text-zinc-400 block mb-1">Promo Code (Stripe)</label>
                   <input
                     type="text"
                     value={discountCode}

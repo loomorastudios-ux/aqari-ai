@@ -23,15 +23,15 @@ export const CURRENCY_SYMBOLS: Record<CurrencyCode, { symbol: string; position: 
   GBP: { symbol: '$', position: 'prefix', label: 'USD ($)', flag: '🇺🇸' },
 };
 
-export const LEMON_LINKS: Record<'starter' | 'pro' | 'enterprise', string> = {
-  starter: "https://aqari-ai.lemonsqueezy.com/checkout/buy/da826632-dcb4-4885-966e-aac1fab84cb3",
-  pro: "https://aqari-ai.lemonsqueezy.com/checkout/buy/404c54cb-29c5-477a-b8c2-772092f5459a",
-  enterprise: "https://aqari-ai.lemonsqueezy.com/checkout/buy/ce8dfbdb-cedd-4445-a947-e821522472bb",
-};
-
 import { PLANS, PRODUCTION_URL } from '../lib/plans';
 
-export const LEMON_REDIRECT_URLS: Record<'starter' | 'pro' | 'enterprise', string> = {
+export const CHECKOUT_LINKS: Record<'starter' | 'pro' | 'enterprise', string> = {
+  starter: '/#pricing',
+  pro: '/#pricing',
+  enterprise: '/#pricing',
+};
+
+export const CHECKOUT_REDIRECT_URLS: Record<'starter' | 'pro' | 'enterprise', string> = {
   starter: `${PRODUCTION_URL}/app?checkout=success`,
   pro: `${PRODUCTION_URL}/app?checkout=success`,
   enterprise: `${PRODUCTION_URL}/app?checkout=success`,
@@ -44,7 +44,7 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
     maxSaved: PLANS.free.savedLimit, // 3 saved allowed on FREE
     label: 'FREE - 3 Analyses / 30 Days',
     priceUSD: PLANS.free.priceUSD,
-    lemon: '',
+    checkoutUrl: '',
     allowedInputs: ['price', 'rent', 'downPayment'],
     allowedOutputs: ['capRate', 'cashOnCash'],
     hasMonteCarlo: PLANS.free.capabilities.monteCarlo,
@@ -59,7 +59,7 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
     maxSaved: PLANS.starter.savedLimit,
     label: `STARTER - ${PLANS.starter.analysesLimit} Analyses / 30 Days`,
     priceUSD: PLANS.starter.priceUSD,
-    lemon: LEMON_LINKS.starter,
+    checkoutUrl: CHECKOUT_LINKS.starter,
     allowedInputs: ['price', 'rent', 'downPayment', 'transferTax', 'opex', 'insurance', 'vacancy'],
     allowedOutputs: ['capRate', 'cashOnCash', 'irr', 'monthlyCashflow', 'dscr', 'noi', 'taxMatrix', 'sensitivityTable'],
     hasMonteCarlo: PLANS.starter.capabilities.monteCarlo,
@@ -74,7 +74,7 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
     maxSaved: PLANS.pro.savedLimit,
     label: `PROFESSIONAL - ${PLANS.pro.analysesLimit} Analyses / 30 Days`,
     priceUSD: PLANS.pro.priceUSD,
-    lemon: LEMON_LINKS.pro,
+    checkoutUrl: CHECKOUT_LINKS.pro,
     allowedInputs: ['price', 'rent', 'downPayment', 'transferTax', 'opex', 'insurance', 'vacancy', 'monteCarlo', 'tenantRisk', 'interestStress'],
     allowedOutputs: ['capRate', 'cashOnCash', 'irr', 'monthlyCashflow', 'dscr', 'noi', 'taxMatrix', 'sensitivityTable', 'monteCarloChart', 'pdfExport', 'multiPortfolio', 'cashflowWaterfall'],
     hasMonteCarlo: PLANS.pro.capabilities.monteCarlo,
@@ -89,7 +89,7 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
     maxSaved: PLANS.enterprise.savedLimit,
     label: `SOVEREIGN - ${PLANS.enterprise.analysesLimit} Analyses / 30 Days`,
     priceUSD: PLANS.enterprise.priceUSD,
-    lemon: LEMON_LINKS.enterprise,
+    checkoutUrl: CHECKOUT_LINKS.enterprise,
     allowedInputs: ['all'],
     allowedOutputs: ['all'],
     hasMonteCarlo: PLANS.enterprise.capabilities.monteCarlo,

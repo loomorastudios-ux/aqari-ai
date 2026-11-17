@@ -278,7 +278,7 @@ function hydrateUserRecord(raw: any, email: string) {
     refund_notes: raw?.refund_notes || '',
     refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
     locked_launch_price: typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
-    lemon_customer_email: raw?.lemon_customer_email ? String(raw.lemon_customer_email).toLowerCase() : null,
+    payment_customer_email: raw?.payment_customer_email ? String(raw.payment_customer_email).toLowerCase() : null,
     has_reported_issue: Boolean(raw?.has_reported_issue),
     issue_reported_at: typeof raw?.issue_reported_at === 'number' ? raw.issue_reported_at : null,
     issue_resolved_at: typeof raw?.issue_resolved_at === 'number' ? raw.issue_resolved_at : null,

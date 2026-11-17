@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
-import { LEMON_LINKS, LEMON_REDIRECT_URLS } from '../constants';
+import { CHECKOUT_LINKS } from '../constants';
 import { PLANS, PricingPublicPayload, findPlanPricing } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
 import { 
@@ -50,12 +50,15 @@ export const LimitModal: React.FC<LimitModalProps> = ({
   const starterAnalyses = starterPlan?.analysesLimit ?? PLANS.starter.analysesLimit;
   const proAnalyses = proPlan?.analysesLimit ?? PLANS.pro.analysesLimit;
 
+  const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
+
   const handleCheckout = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
       setPolicyError(true);
       return;
     }
     setPolicyError(false);
+    setCheckoutNotice(null);
 
     if (user?.email) {
       try {
@@ -71,25 +74,23 @@ export const LimitModal: React.FC<LimitModalProps> = ({
         });
         if (res.ok) {
           const data = await res.json();
-          if (data.url) {
+          if (data.url && data.url !== '/#pricing' && !data.pendingStripeIntegration) {
             window.location.href = data.url;
             return;
           }
+          setCheckoutNotice(data?.message || 'Stripe Checkout integration coming next.');
+          return;
         }
       } catch {}
     }
 
-    const baseLink = LEMON_LINKS[plan];
-    const redirectUrl = LEMON_REDIRECT_URLS[plan];
-    const params = new URLSearchParams();
-    if (user) {
-      params.set('checkout[custom][user_id]', user.id);
-      params.set('checkout[custom][plan]', plan);
-      params.set('checkout[email]', user.email);
+    const fallbackUrl = CHECKOUT_LINKS[plan];
+    if (fallbackUrl && fallbackUrl !== '/#pricing') {
+      window.location.href = fallbackUrl;
+    } else {
+      onClose();
+      onOpenPricing();
     }
-    params.set('checkout[redirect_url]', redirectUrl);
-    params.set('checkout[cancel_url]', 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled');
-    window.location.href = `${baseLink}?${params.toString()}`;
   };
 
   return (
@@ -218,7 +219,13 @@ export const LimitModal: React.FC<LimitModalProps> = ({
           </label>
         </div>
 
-        <div className="text-center mt-2">
+          {checkoutNotice && (
+            <div className="mb-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/40 text-xs font-mono text-amber-200 text-center">
+              {checkoutNotice}
+            </div>
+          )}
+
+          <div className="text-center mt-2">
           <button
             onClick={() => {
               onClose();

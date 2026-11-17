@@ -285,11 +285,10 @@ export function computeLicenseStatus(params: {
 }): ComputedLicenseStatus {
   const now = params.now ?? Date.now();
   const rawPlanKey = normalizePlanKey(params.plan);
-  const hasPaidEnd = Boolean(rawPlanKey !== 'free' && params.licenseEnd);
-  const isExpired = Boolean(hasPaidEnd && params.licenseEnd! <= now);
+  const hasEnd = Boolean(params.licenseEnd);
+  const isExpired = Boolean(hasEnd && params.licenseEnd! <= now);
 
-  // If expired, treat effective plan as FREE
-  const effectivePlanKey: PlanKey = isExpired ? 'free' : rawPlanKey;
+  const effectivePlanKey: PlanKey = rawPlanKey;
   const planCfg = PLANS[effectivePlanKey];
   const effectiveAnalysesLimit =
     typeof params.analysesLimitOverride === 'number' && params.analysesLimitOverride > 0
@@ -304,19 +303,21 @@ export function computeLicenseStatus(params: {
   const isUnlimitedSaved = !Number.isFinite(effectiveSavedLimit);
 
   let daysLeft = 30;
-  if (effectivePlanKey !== 'free' && params.licenseEnd) {
-    daysLeft = Math.max(0, Math.ceil((params.licenseEnd - now) / (1000 * 60 * 60 * 24)));
-  } else if (isExpired) {
+  if (isExpired) {
     daysLeft = 0;
+  } else if (params.licenseEnd) {
+    daysLeft = Math.max(0, Math.ceil((params.licenseEnd - now) / (1000 * 60 * 60 * 24)));
   }
 
   let analysesUsed = Math.max(0, params.analysesUsed ?? 0);
-  let analysesLeft = isUnlimitedAnalyses
+  let analysesLeft = isExpired
+    ? 0
+    : isUnlimitedAnalyses
     ? Infinity
     : Math.max(0, effectiveAnalysesLimit - analysesUsed);
 
   // Reconcile if explicit remaining credits were passed and analysesUsed was 0
-  if (!isUnlimitedAnalyses) {
+  if (!isExpired && !isUnlimitedAnalyses) {
     const explicitLeft =
       effectivePlanKey === 'free'
         ? params.freeAnalysesLeft
@@ -327,15 +328,18 @@ export function computeLicenseStatus(params: {
     }
   }
 
-  const timeProgress =
-    effectivePlanKey !== 'free' && params.licenseEnd
-      ? Math.min(100, Math.max(0, Math.round((daysLeft / 30) * 100)))
-      : isUnlimitedAnalyses
-      ? 100
-      : Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)));
+  const timeProgress = isExpired
+    ? 0
+    : params.licenseEnd
+    ? Math.min(100, Math.max(0, Math.round((daysLeft / 30) * 100)))
+    : isUnlimitedAnalyses
+    ? 100
+    : Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)));
 
   const leftStr = isUnlimitedAnalyses ? 'Unlimited analyses left' : `${analysesLeft} analyses left`;
-  const sidebarText = `LICENSING COUNTDOWN - ${planCfg.displayName} - ${daysLeft} days left - ${leftStr}`;
+  const sidebarText = isExpired
+    ? `LICENSING COUNTDOWN - ${planCfg.displayName} - EXPIRED - 0 analyses left`
+    : `LICENSING COUNTDOWN - ${planCfg.displayName} - ${daysLeft} days left - ${leftStr}`;
 
   return {
     planKey: effectivePlanKey,

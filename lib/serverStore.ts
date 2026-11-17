@@ -96,7 +96,7 @@ export interface ServerUserRecord {
   refund_notes: string;
   refund_policy_accepted_at: string | null;
   locked_launch_price: number | null;
-  lemon_customer_email: string | null;
+  payment_customer_email: string | null;
 }
 
 export interface WebhookLogEntry {
@@ -338,7 +338,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
     locked_launch_price:
       typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
-    lemon_customer_email: raw?.lemon_customer_email ? String(raw.lemon_customer_email).toLowerCase() : null,
+    payment_customer_email: raw?.payment_customer_email ? String(raw.payment_customer_email).toLowerCase() : null,
   };
 }
 
@@ -445,7 +445,7 @@ export function normalizeEmail(email: string): string {
 /**
  * SECURITY CRITICAL:
  * Client hints MUST NEVER elevate `plan` or `license_end`.
- * New users always start as FREE (3 analyses / 30 days) until verified Lemon Squeezy payment.
+ * New users always start as FREE (3 analyses / 30 days) until verified Stripe payment.
  */
 export function getOrCreateServerUser(
   rawEmail: string,
@@ -506,29 +506,9 @@ export function enforceServerUserExpiry(rawEmail: string): ServerUserRecord {
   const store = loadStore();
   const email = normalizeEmail(rawEmail) || 'guest@aqari-ai-rho.vercel.app';
   const user = store.users[email];
-  const now = Date.now();
 
   if (!user) {
     return getOrCreateServerUser(email);
-  }
-
-  if (user.plan !== 'free' && user.license_end && now >= user.license_end) {
-    const prevPlan = PLANS[user.plan].displayName;
-    user.plan = 'free';
-    user.analyses_used = 0;
-    user.license_start = now;
-    user.license_end = now + THIRTY_DAYS_MS;
-    user.day29_email_sent = false;
-    user.updated_at = now;
-    user.timeline.unshift({
-      id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-      timestamp: new Date(now).toISOString(),
-      type: 'expired',
-      message: `30-day ${prevPlan} license expired -> auto-downgraded to FREE`,
-      actor: 'system',
-    });
-    store.users[email] = user;
-    persistStore(store);
   }
 
   return user;
@@ -579,7 +559,7 @@ export function activatePaidPlanOnServer(params: {
   testMode?: boolean;
   refundPolicyAcceptedAt?: string | null;
   lockedLaunchPrice?: number | null;
-  lemonCustomerEmail?: string | null;
+  paymentCustomerEmail?: string | null;
 }): ServerUserRecord {
   const now = params.paymentTimestamp || Date.now();
   const licenseStart = now;
@@ -643,9 +623,9 @@ export function activatePaidPlanOnServer(params: {
     refund_policy_accepted_at:
       params.refundPolicyAcceptedAt || existing.refund_policy_accepted_at || iso,
     locked_launch_price: resolvedLockedLaunch ?? null,
-    lemon_customer_email: params.lemonCustomerEmail
-      ? normalizeEmail(params.lemonCustomerEmail)
-      : existing.lemon_customer_email || null,
+    payment_customer_email: params.paymentCustomerEmail
+      ? normalizeEmail(params.paymentCustomerEmail)
+      : existing.payment_customer_email || null,
     payments,
     timeline: timeline.slice(0, 200),
   });
@@ -1178,7 +1158,7 @@ export function recordOrderRefunded(params: {
     timestamp: iso,
     type: 'refund_request',
     message: `Order #${params.orderId} refunded ($${params.amountUSD ?? 0}) -> License revoked to FREE`,
-    actor: 'lemonsqueezy',
+    actor: 'stripe',
   };
   return updateServerUser(user.email, {
     plan: 'free',
@@ -1186,7 +1166,7 @@ export function recordOrderRefunded(params: {
     license_end: now,
     refund_requested: true,
     refund_status: 'approved',
-    refund_notes: `Refunded via Lemon Squeezy webhook (Order #${params.orderId})`,
+    refund_notes: `Refunded via Stripe webhook (Order #${params.orderId})`,
     timeline: [timelineEntry, ...user.timeline].slice(0, 200),
   });
 }

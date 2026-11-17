@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
-import { LEMON_LINKS } from '../constants';
+import { CHECKOUT_LINKS } from '../constants';
 import { PLANS, PricingPublicPayload, findPlanPricing } from '../../lib/plans';
 import { formatPrice, getDaysRemaining } from '../utils/formatters';
 import { 
@@ -44,16 +44,15 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   const proPricing = findPlanPricing(pricingData, 'pro');
   const enterprisePricing = findPlanPricing(pricingData, 'enterprise');
 
+  const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
+
   const handleRenew = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
       setPolicyError(true);
       return;
     }
     setPolicyError(false);
-
-    const baseLink = LEMON_LINKS[plan];
-    const successUrl = 'https://aqari-ai-rho.vercel.app/app?checkout=success';
-    const cancelUrl = 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled';
+    setCheckoutNotice(null);
 
     if (user?.email) {
       try {
@@ -69,23 +68,22 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
         });
         if (res.ok) {
           const data = await res.json();
-          if (data.url) {
+          if (data.url && data.url !== '/#pricing' && !data.pendingStripeIntegration) {
             window.location.href = data.url;
             return;
           }
+          setCheckoutNotice(data?.message || 'Stripe Checkout integration coming next.');
+          return;
         }
       } catch {}
     }
 
-    const params = new URLSearchParams();
-    if (user) {
-      params.set('checkout[custom][user_id]', user.id || user.googleId || '');
-      params.set('checkout[custom][plan]', plan);
-      params.set('checkout[email]', user.email);
+    const baseLink = CHECKOUT_LINKS[plan];
+    if (baseLink && baseLink !== '/#pricing') {
+      window.location.href = baseLink;
+    } else {
+      setCheckoutNotice('Stripe Checkout integration coming next.');
     }
-    params.set('checkout[redirect_url]', successUrl);
-    params.set('checkout[cancel_url]', cancelUrl);
-    window.location.href = `${baseLink}?${params.toString()}`;
   };
 
   const plans: Array<{
@@ -153,7 +151,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
             Extend Your 30-Day Terminal Access
           </h3>
           <p className="text-xs sm:text-sm text-zinc-400 mt-2 max-w-lg mx-auto">
-            Choose your institutional tier. Payments process through LemonSqueezy 256-bit SSL encryption and immediately extend your licensing +30 days from today.
+            Choose your institutional tier. Payments process through Stripe 256-bit SSL encryption and immediately extend your licensing +30 days from today.
           </p>
 
           {launchActive && (
@@ -315,7 +313,10 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
         <div className="pt-4 border-t border-white/[0.08] flex items-center justify-between text-xs text-zinc-400 font-mono">
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>Encrypted LemonSqueezy Checkout • Automated Webhook +30d Extension</span>
+            {checkoutNotice && (
+              <span className="text-amber-300 font-bold mr-2">{checkoutNotice}</span>
+            )}
+            <span>Encrypted Stripe Checkout • Automated Webhook +30d Extension</span>
           </div>
           <button onClick={onClose} className="hover:text-white underline cursor-pointer">
             Dismiss

@@ -445,10 +445,10 @@ function computeLicenseStatus(params: {
 }): ComputedLicenseStatus {
   const now = params.now ?? Date.now();
   const rawPlanKey = normalizePlanKey(params.plan);
-  const hasPaidEnd = Boolean(rawPlanKey !== 'free' && params.licenseEnd);
-  const isExpired = Boolean(hasPaidEnd && params.licenseEnd! <= now);
+  const hasEnd = Boolean(params.licenseEnd);
+  const isExpired = Boolean(hasEnd && params.licenseEnd! <= now);
 
-  const effectivePlanKey: PlanKey = isExpired ? 'free' : rawPlanKey;
+  const effectivePlanKey: PlanKey = rawPlanKey;
   const planCfg = PLAN_DEFINITIONS[effectivePlanKey];
   const effectiveAnalysesLimit =
     typeof params.analysesLimitOverride === 'number' && params.analysesLimitOverride > 0
@@ -461,18 +461,20 @@ function computeLicenseStatus(params: {
   const isUnlimitedSaved = !Number.isFinite(effectiveSavedLimit);
 
   let daysLeft = 30;
-  if (effectivePlanKey !== 'free' && params.licenseEnd) {
-    daysLeft = Math.max(0, Math.ceil((params.licenseEnd - now) / (1000 * 60 * 60 * 24)));
-  } else if (isExpired) {
+  if (isExpired) {
     daysLeft = 0;
+  } else if (params.licenseEnd) {
+    daysLeft = Math.max(0, Math.ceil((params.licenseEnd - now) / (1000 * 60 * 60 * 24)));
   }
 
   let analysesUsed = Math.max(0, params.analysesUsed ?? 0);
-  let analysesLeft = isUnlimitedAnalyses
+  let analysesLeft = isExpired
+    ? 0
+    : isUnlimitedAnalyses
     ? Infinity
     : Math.max(0, effectiveAnalysesLimit - analysesUsed);
 
-  if (!isUnlimitedAnalyses) {
+  if (!isExpired && !isUnlimitedAnalyses) {
     const explicitLeft =
       effectivePlanKey === 'free'
         ? params.freeAnalysesLeft
@@ -483,15 +485,18 @@ function computeLicenseStatus(params: {
     }
   }
 
-  const timeProgress =
-    effectivePlanKey !== 'free' && params.licenseEnd
-      ? Math.min(100, Math.max(0, Math.round((daysLeft / 30) * 100)))
-      : isUnlimitedAnalyses
-      ? 100
-      : Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)));
+  const timeProgress = isExpired
+    ? 0
+    : params.licenseEnd
+    ? Math.min(100, Math.max(0, Math.round((daysLeft / 30) * 100)))
+    : isUnlimitedAnalyses
+    ? 100
+    : Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)));
 
   const leftStr = isUnlimitedAnalyses ? 'Unlimited analyses left' : `${analysesLeft} analyses left`;
-  const sidebarText = `LICENSING COUNTDOWN - ${planCfg.displayName} - ${daysLeft} days left - ${leftStr}`;
+  const sidebarText = isExpired
+    ? `LICENSING COUNTDOWN - ${planCfg.displayName} - EXPIRED - 0 analyses left`
+    : `LICENSING COUNTDOWN - ${planCfg.displayName} - ${daysLeft} days left - ${leftStr}`;
 
   return {
     planKey: effectivePlanKey,
@@ -550,7 +555,7 @@ interface SignedEntitlementPayload {
   licenseEnd: number;
   amountUSD: number;
   testMode: boolean;
-  lemonCustomerEmail?: string | null;
+  paymentCustomerEmail?: string | null;
   exp: number;
 }
 
@@ -855,7 +860,10 @@ interface ServerUserRecord {
   refund_notes: string;
   refund_policy_accepted_at: string | null;
   locked_launch_price: number | null;
-  lemon_customer_email: string | null;
+  payment_provider: string;
+  payment_intent_id: string | null;
+  payment_customer_email: string | null;
+  status: 'active' | 'expired' | 'exhausted';
   has_reported_issue: boolean;
   issue_reported_at: number | null;
   issue_resolved_at: number | null;
@@ -1045,14 +1053,30 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
       : planCfg.savedLimit;
   const savedCount = savedList.length > 0 ? savedList.length : Math.max(0, Number(raw?.saved_count ?? 0));
 
+  const licenseStartVal =
+    typeof raw?.license_start === 'number' && Number.isFinite(raw.license_start)
+      ? raw.license_start
+      : now;
+  const licenseEndVal =
+    typeof raw?.license_end === 'number' && Number.isFinite(raw.license_end)
+      ? raw.license_end
+      : licenseStartVal + THIRTY_DAYS_MS;
+
+  const hydratedStatus: 'active' | 'expired' | 'exhausted' =
+    licenseEndVal && now > licenseEndVal
+      ? 'expired'
+      : analysesLeft <= 0
+      ? 'exhausted'
+      : 'active';
+
   return {
     email,
     name: raw?.name || email.split('@')[0],
     plan,
-    license_start: raw?.license_start ?? now,
-    license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
+    license_start: licenseStartVal,
+    license_end: licenseEndVal,
     analyses_used: analysesUsed,
-    analyses_left: analysesLeft,
+    analyses_left: hydratedStatus === 'active' ? analysesLeft : 0,
     analyses_total: analysesTotal,
     successful_analyses: Math.max(0, Number(raw?.successful_analyses ?? 0)),
     saved_analyses: savedList,
@@ -1074,9 +1098,12 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     refund_notes: raw?.refund_notes || '',
     refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
     locked_launch_price: typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
-    lemon_customer_email: raw?.lemon_customer_email
-      ? String(raw.lemon_customer_email).toLowerCase()
+    payment_provider: String(raw?.payment_provider || 'stripe'),
+    payment_intent_id: raw?.payment_intent_id ? String(raw.payment_intent_id) : null,
+    payment_customer_email: raw?.payment_customer_email
+      ? String(raw.payment_customer_email).toLowerCase()
       : null,
+    status: hydratedStatus,
     has_reported_issue: Boolean(raw?.has_reported_issue),
     issue_reported_at: typeof raw?.issue_reported_at === 'number' ? raw.issue_reported_at : null,
     issue_resolved_at: typeof raw?.issue_resolved_at === 'number' ? raw.issue_resolved_at : null,
@@ -1289,34 +1316,73 @@ function getPricingPublicPayload(): PricingPublicPayload {
   };
 }
 
+function evaluateLockState(
+  user: Pick<ServerUserRecord, 'plan' | 'analyses_left' | 'analyses_total' | 'analyses_used' | 'license_end'>,
+  now = Date.now()
+): {
+  locked: boolean;
+  reason: 'exhausted' | 'expired' | null;
+  status: 'active' | 'expired' | 'exhausted';
+  error: string | null;
+  analysesLeft: number;
+} {
+  const planKey = normalizePlanKey(user.plan);
+  const planDisplay = PLAN_DEFINITIONS[planKey].displayName;
+  const total = Math.max(1, Number(user.analyses_total || PLAN_DEFINITIONS[planKey].analysesLimit));
+  const rawLeft =
+    typeof user.analyses_left === 'number' && Number.isFinite(user.analyses_left)
+      ? Math.max(0, user.analyses_left)
+      : Math.max(0, total - Math.max(0, Number(user.analyses_used || 0)));
+
+  if (user.license_end && now > user.license_end) {
+    const formattedDate = new Date(user.license_end).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+    return {
+      locked: true,
+      reason: 'expired',
+      status: 'expired',
+      error: `Your ${planDisplay} expired on ${formattedDate}. Renew to continue.`,
+      analysesLeft: 0,
+    };
+  }
+
+  if (rawLeft <= 0) {
+    return {
+      locked: true,
+      reason: 'exhausted',
+      status: 'exhausted',
+      error: `No analyses left for ${planDisplay}. Upgrade to continue.`,
+      analysesLeft: 0,
+    };
+  }
+
+  return {
+    locked: false,
+    reason: null,
+    status: 'active',
+    error: null,
+    analysesLeft: rawLeft,
+  };
+}
+
 function enforceServerUserExpiry(rawEmail: string): ServerUserRecord {
   const store = loadStore();
   const email = normalizeEmail(rawEmail) || 'guest@aqari-ai-rho.vercel.app';
   const user = store.users[email];
-  const now = Date.now();
 
   if (!user) {
     return getOrCreateServerUser(email);
   }
 
-  if (user.plan !== 'free' && user.license_end && now >= user.license_end) {
-    const prevPlan = PLAN_DEFINITIONS[user.plan].displayName;
-    user.plan = 'free';
-    user.analyses_used = 0;
-    user.analyses_total = PLAN_DEFINITIONS.free.analysesLimit;
-    user.analyses_left = PLAN_DEFINITIONS.free.analysesLimit;
-    user.max_saved = PLAN_DEFINITIONS.free.savedLimit;
-    user.license_start = now;
-    user.license_end = now + THIRTY_DAYS_MS;
-    user.day29_email_sent = false;
-    user.updated_at = now;
-    user.timeline.unshift({
-      id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-      timestamp: new Date(now).toISOString(),
-      type: 'expired',
-      message: `30-day ${prevPlan} license expired -> auto-downgraded to FREE`,
-      actor: 'system',
-    });
+  const lock = evaluateLockState(user);
+  if (user.status !== lock.status) {
+    user.status = lock.status;
+    if (lock.locked && lock.reason === 'expired') {
+      user.analyses_left = 0;
+    }
     store.users[email] = user;
     persistStore(store);
   }
@@ -1412,7 +1478,7 @@ function updateServerUser(email: string, patch: Partial<ServerUserRecord>): Serv
       ? merged.saved_analyses.length
       : Math.max(0, merged.saved_count ?? 0);
 
-  const updated: ServerUserRecord = {
+  const nextDraft: ServerUserRecord = {
     ...merged,
     plan: planKey,
     analyses_total,
@@ -1421,6 +1487,12 @@ function updateServerUser(email: string, patch: Partial<ServerUserRecord>): Serv
     max_saved,
     saved_count,
     updated_at: Date.now(),
+  };
+  const lock = evaluateLockState(nextDraft);
+  const updated: ServerUserRecord = {
+    ...nextDraft,
+    status: lock.status,
+    analyses_left: lock.locked && lock.reason === 'expired' ? 0 : analyses_left,
   };
   store.users[norm] = updated;
   persistStore(store);
@@ -1457,7 +1529,9 @@ function activatePaidPlanOnServer(params: {
   testMode?: boolean;
   refundPolicyAcceptedAt?: string | null;
   lockedLaunchPrice?: number | null;
-  lemonCustomerEmail?: string | null;
+  paymentCustomerEmail?: string | null;
+  paymentProvider?: string;
+  paymentIntentId?: string | null;
 }): ServerUserRecord {
   const now = params.paymentTimestamp || Date.now();
   const licenseStart = now;
@@ -1466,8 +1540,8 @@ function activatePaidPlanOnServer(params: {
   const pricing = getPricingPublicPayload();
   const dynamicPlan = pricing.plansMap?.[params.plan];
   const planCfg = PLAN_DEFINITIONS[params.plan];
-  const amount = params.amountUSD ?? dynamicPlan?.activePrice ?? planCfg.launchPrice;
-  const orderId = params.orderId || `ord_${now}`;
+  const amount = params.amountUSD ?? (params.plan === 'free' ? 0 : dynamicPlan?.activePrice ?? planCfg.launchPrice);
+  const orderId = params.paymentIntentId || params.orderId || `pi_${now}`;
   const iso = new Date(now).toISOString();
 
   const resolvedLockedLaunch =
@@ -1485,9 +1559,9 @@ function activatePaidPlanOnServer(params: {
   if (alreadyRecorded && existing.cancel_status !== 'refunded') {
     return updateServerUser(params.email, {
       name: params.name || existing.name,
-      lemon_customer_email: params.lemonCustomerEmail
-        ? normalizeEmail(params.lemonCustomerEmail)
-        : existing.lemon_customer_email || null,
+      payment_customer_email: params.paymentCustomerEmail
+        ? normalizeEmail(params.paymentCustomerEmail)
+        : existing.payment_customer_email || null,
     });
   }
 
@@ -1514,7 +1588,7 @@ function activatePaidPlanOnServer(params: {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: iso,
           type: 'purchase' as const,
-          message: `Purchased ${planCfg.displayName} $${amount} - Order #${orderId} (${
+          message: `Activated ${planCfg.displayName} $${amount} - Payment #${orderId} (${
             params.testMode ? 'TEST' : 'LIVE'
           })${resolvedLockedLaunch ? ` - Locked Launch Price $${resolvedLockedLaunch}` : ''}`,
           actor: existing.email,
@@ -1525,6 +1599,7 @@ function activatePaidPlanOnServer(params: {
   return updateServerUser(params.email, {
     name: params.name || existing.name,
     plan: params.plan,
+    status: 'active',
     license_start: licenseStart,
     license_end: licenseEnd,
     analyses_used: 0,
@@ -1539,18 +1614,41 @@ function activatePaidPlanOnServer(params: {
     issue_status: 'none',
     cancel_status: 'none',
     last_order_id: orderId,
+    payment_provider: params.paymentProvider || 'stripe',
+    payment_intent_id: params.paymentIntentId || orderId,
     day29_email_sent: false,
     expired_email_sent: false,
     total_paid_usd: alreadyRecorded ? existing.total_paid_usd : existing.total_paid_usd + amount,
     refund_policy_accepted_at:
       params.refundPolicyAcceptedAt || existing.refund_policy_accepted_at || iso,
     locked_launch_price: resolvedLockedLaunch ?? null,
-    lemon_customer_email: params.lemonCustomerEmail
-      ? normalizeEmail(params.lemonCustomerEmail)
-      : existing.lemon_customer_email || null,
+    payment_customer_email: params.paymentCustomerEmail
+      ? normalizeEmail(params.paymentCustomerEmail)
+      : existing.payment_customer_email || null,
     payments,
     timeline: timeline.slice(0, 200),
   });
+}
+
+export async function activateLicense(
+  email: string,
+  plan: string,
+  payment_intent_id?: string | null
+): Promise<ServerUserRecord> {
+  const normEmail = normalizeEmail(email);
+  const planKey = normalizePlanKey(plan);
+  await getUserFromDb(normEmail).catch(() => null);
+  const activated = activatePaidPlanOnServer({
+    email: normEmail,
+    plan: planKey,
+    paymentTimestamp: Date.now(),
+    orderId: payment_intent_id || `pi_${Date.now()}`,
+    paymentIntentId: payment_intent_id || `pi_${Date.now()}`,
+    paymentProvider: 'stripe',
+    paymentCustomerEmail: normEmail,
+  });
+  await saveUserToDb(activated).catch(() => {});
+  return activated;
 }
 
 function evaluateCancelRefundEligibility(user: ServerUserRecord, now = Date.now()) {
@@ -2274,15 +2372,14 @@ function mapAmountOrPlanToOrderTier(
   const variantId = String(meta?.variantId || '').trim();
   const productId = String(meta?.productId || '').trim();
   if (variantId) {
-    if (getEnv('LEMON_STARTER_VARIANT_ID') && variantId === getEnv('LEMON_STARTER_VARIANT_ID')) plan = 'starter';
-    else if (getEnv('LEMON_PRO_VARIANT_ID') && variantId === getEnv('LEMON_PRO_VARIANT_ID')) plan = 'pro';
-    else if (getEnv('LEMON_SOVEREIGN_VARIANT_ID') && variantId === getEnv('LEMON_SOVEREIGN_VARIANT_ID')) plan = 'enterprise';
-    else if (VARIANT_ID_TO_PLAN[variantId]) plan = VARIANT_ID_TO_PLAN[variantId];
+    if (getEnv('PAYMENT_STARTER_VARIANT_ID') && variantId === getEnv('PAYMENT_STARTER_VARIANT_ID')) plan = 'starter';
+    else if (getEnv('PAYMENT_PRO_VARIANT_ID') && variantId === getEnv('PAYMENT_PRO_VARIANT_ID')) plan = 'pro';
+    else if (getEnv('PAYMENT_SOVEREIGN_VARIANT_ID') && variantId === getEnv('PAYMENT_SOVEREIGN_VARIANT_ID')) plan = 'enterprise';
   }
   if (!plan && productId) {
-    if (getEnv('LEMON_STARTER_PRODUCT_ID') && productId === getEnv('LEMON_STARTER_PRODUCT_ID')) plan = 'starter';
-    else if (getEnv('LEMON_PRO_PRODUCT_ID') && productId === getEnv('LEMON_PRO_PRODUCT_ID')) plan = 'pro';
-    else if (getEnv('LEMON_SOVEREIGN_PRODUCT_ID') && productId === getEnv('LEMON_SOVEREIGN_PRODUCT_ID')) plan = 'enterprise';
+    if (getEnv('PAYMENT_STARTER_PRODUCT_ID') && productId === getEnv('PAYMENT_STARTER_PRODUCT_ID')) plan = 'starter';
+    else if (getEnv('PAYMENT_PRO_PRODUCT_ID') && productId === getEnv('PAYMENT_PRO_PRODUCT_ID')) plan = 'pro';
+    else if (getEnv('PAYMENT_SOVEREIGN_PRODUCT_ID') && productId === getEnv('PAYMENT_SOVEREIGN_PRODUCT_ID')) plan = 'enterprise';
   }
 
   if (!plan && meta?.productName) {
@@ -3369,45 +3466,14 @@ const DEMO_ANALYSES: Record<string, any> = {
 };
 
 // =========================================================================
-// 5. LEMON SQUEEZY CHECKOUT HELPERS
+// 5. ABSTRACT PAYMENT CHECKOUT & TIER RESOLUTION HELPERS (STRIPE READY)
 // =========================================================================
-
-function getVariantIds(): Record<'starter' | 'pro' | 'enterprise', string> {
-  return {
-    starter: getEnv('LEMON_STARTER_VARIANT_ID') || 'da826632-dcb4-4885-966e-aac1fab84cb3',
-    pro: getEnv('LEMON_PRO_VARIANT_ID') || '404c54cb-29c5-477a-b8c2-772092f5459a',
-    enterprise: getEnv('LEMON_SOVEREIGN_VARIANT_ID') || 'ce8dfbdb-cedd-4445-a947-e821522472bb',
-  };
-}
-
-const BUY_URLS: Record<'starter' | 'pro' | 'enterprise', string> = {
-  starter: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/da826632-dcb4-4885-966e-aac1fab84cb3',
-  pro: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/404c54cb-29c5-477a-b8c2-772092f5459a',
-  enterprise: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/ce8dfbdb-cedd-4445-a947-e821522472bb',
-};
-
-const VARIANT_ID_TO_PLAN: Record<string, PlanKey> = {
-  'da826632-dcb4-4885-966e-aac1fab84cb3': 'starter',
-  '404c54cb-29c5-477a-b8c2-772092f5459a': 'pro',
-  'ce8dfbdb-cedd-4445-a947-e821522472bb': 'enterprise',
-};
 
 const SUCCESS_REDIRECT = 'https://aqari-ai-rho.vercel.app/app?checkout=success';
 const CANCEL_REDIRECT = 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled';
 
-function resolvePlanFromLemonAttributes(attrs: any, fallbackPlan?: PlanKey): PlanKey {
-  const variantId = String(attrs?.first_order_item?.variant_id || attrs?.variant_id || '').trim();
-  const productId = String(attrs?.first_order_item?.product_id || attrs?.product_id || '').trim();
-
-  if (variantId && getEnv('LEMON_STARTER_VARIANT_ID') && variantId === getEnv('LEMON_STARTER_VARIANT_ID')) return 'starter';
-  if (variantId && getEnv('LEMON_PRO_VARIANT_ID') && variantId === getEnv('LEMON_PRO_VARIANT_ID')) return 'pro';
-  if (variantId && getEnv('LEMON_SOVEREIGN_VARIANT_ID') && variantId === getEnv('LEMON_SOVEREIGN_VARIANT_ID')) return 'enterprise';
-  if (productId && getEnv('LEMON_STARTER_PRODUCT_ID') && productId === getEnv('LEMON_STARTER_PRODUCT_ID')) return 'starter';
-  if (productId && getEnv('LEMON_PRO_PRODUCT_ID') && productId === getEnv('LEMON_PRO_PRODUCT_ID')) return 'pro';
-  if (productId && getEnv('LEMON_SOVEREIGN_PRODUCT_ID') && productId === getEnv('LEMON_SOVEREIGN_PRODUCT_ID')) return 'enterprise';
-  if (variantId && VARIANT_ID_TO_PLAN[variantId]) return VARIANT_ID_TO_PLAN[variantId];
-
-  const s = `${attrs?.first_order_item?.product_name || ''} ${attrs?.first_order_item?.variant_name || ''} ${attrs?.product_name || ''} ${attrs?.variant_name || ''}`.toLowerCase();
+function resolvePlanFromOrderAttributes(attrs: any, fallbackPlan?: PlanKey): PlanKey {
+  const s = `${attrs?.first_order_item?.product_name || ''} ${attrs?.first_order_item?.variant_name || ''} ${attrs?.product_name || ''} ${attrs?.variant_name || ''} ${attrs?.metadata?.plan || ''}`.toLowerCase();
   if (s.includes('sovereign') || s.includes('enterprise') || s.includes('agency')) {
     return 'enterprise';
   }
@@ -3418,7 +3484,7 @@ function resolvePlanFromLemonAttributes(attrs: any, fallbackPlan?: PlanKey): Pla
     return 'starter';
   }
 
-  const rawCents = Number(attrs?.total ?? attrs?.subtotal ?? attrs?.first_order_item?.price ?? 0);
+  const rawCents = Number(attrs?.total ?? attrs?.subtotal ?? attrs?.amount ?? attrs?.first_order_item?.price ?? 0);
   const byCents = planFromAmount(rawCents);
   if (byCents?.name === 'SOVEREIGN') return 'enterprise';
   if (byCents?.name === 'STARTER') return 'starter';
@@ -3490,6 +3556,8 @@ export default async function handler(req: any, res: any) {
             'verify-checkout',
             'debug-plan',
             'run-analysis',
+            'find-deals',
+            'get-forecast',
             'underwrite',
             'analyze',
             'monte-carlo',
@@ -3568,11 +3636,13 @@ export default async function handler(req: any, res: any) {
             orderId: ent.orderId,
             amountUSD: ent.amountUSD,
             testMode: ent.testMode,
-            lemonCustomerEmail: ent.lemonCustomerEmail || null,
+            paymentCustomerEmail: ent.paymentCustomerEmail || null,
+            paymentIntentId: ent.orderId,
           });
           await saveUserToDb(dbUser);
         }
 
+        const lockState = evaluateLockState(dbUser);
         const license = computeServerLicenseStatus(dbUser);
         const pricing = getPricingPublicPayload();
         const dynamicPlan = findPlanPricing(pricing, license.planKey);
@@ -3586,7 +3656,7 @@ export default async function handler(req: any, res: any) {
           ? dbUser.saved_analyses.length
           : dbUser.saved_count || 0;
         const apiKey =
-          license.planKey === 'enterprise' && !license.isExpired && sessionEmail === dbUser.email
+          license.planKey === 'enterprise' && !lockState.locked && sessionEmail === dbUser.email
             ? buildApiKeyForEmail(dbUser.email)
             : null;
         if (apiKey) {
@@ -3614,20 +3684,28 @@ export default async function handler(req: any, res: any) {
           authenticated: true,
           email: dbUser.email,
           login_email: dbUser.email,
-          lemon_customer_email: dbUser.lemon_customer_email || null,
+          payment_provider: dbUser.payment_provider || 'stripe',
+          payment_intent_id: dbUser.payment_intent_id || null,
+          payment_customer_email: dbUser.payment_customer_email || null,
           name: dbUser.name,
           isAdmin: Boolean(sessionEmail && isAdminEmail(dbUser.email)),
           plan: license.displayName,
           plan_name: license.displayName,
           planKey: license.planKey,
+          status: lockState.status,
+          locked: lockState.locked,
+          lockReason: lockState.reason,
+          reason: lockState.reason,
+          lockError: lockState.error,
+          ...(lockState.error ? { error: lockState.error } : {}),
           price: planPrice,
           license_start: dbUser.license_start,
           license_end: dbUser.license_end,
-          days_left: license.daysLeft,
+          days_left: lockState.locked ? 0 : license.daysLeft,
           analyses_total: license.analysesLimit,
           analyses_limit: license.analysesLimit,
           analyses_used: license.analysesUsed,
-          analyses_left: license.analysesLeft,
+          analyses_left: lockState.analysesLeft,
           successful_analyses: dbUser.successful_analyses || 0,
           has_reported_issue: Boolean(dbUser.has_reported_issue),
           issue_reported_at: dbUser.issue_reported_at ?? null,
@@ -3654,13 +3732,19 @@ export default async function handler(req: any, res: any) {
           user: {
             email: dbUser.email,
             login_email: dbUser.email,
-            lemon_customer_email: dbUser.lemon_customer_email || null,
+            payment_provider: dbUser.payment_provider || 'stripe',
+            payment_intent_id: dbUser.payment_intent_id || null,
+            payment_customer_email: dbUser.payment_customer_email || null,
             name: dbUser.name,
             plan: dbUser.plan,
+            status: lockState.status,
+            locked: lockState.locked,
+            lockReason: lockState.reason,
+            lockError: lockState.error,
             license_start: dbUser.license_start,
             license_end: dbUser.license_end,
             analyses_used: license.analysesUsed,
-            analyses_left: license.analysesLeft,
+            analyses_left: lockState.analysesLeft,
             analyses_total: license.analysesLimit,
             successful_analyses: dbUser.successful_analyses || 0,
             has_reported_issue: Boolean(dbUser.has_reported_issue),
@@ -3682,6 +3766,8 @@ export default async function handler(req: any, res: any) {
           },
           license: {
             ...license,
+            analysesLeft: lockState.analysesLeft,
+            isExpired: lockState.reason === 'expired' || license.isExpired,
             savedLimit: maxSaved,
             isUnlimitedSaved: false,
           },
@@ -3704,16 +3790,8 @@ export default async function handler(req: any, res: any) {
         } catch {}
 
         let orderId = '';
-        const candidateKeys = Array.from(
-          new Set(
-            [
-              cleanEnvValue(getEnv('LEMONSQUEEZY_API_KEY')),
-              cleanEnvValue(getEnv('LEMON_API_KEY')),
-              cleanEnvValue(getEnv('LEMON_TEST_API_KEY')),
-            ].filter(Boolean)
-          )
-        );
-        const hasLemonKey = candidateKeys.length > 0;
+        const stripeSecretKey = cleanEnvValue(getEnv('STRIPE_SECRET_KEY') || getEnv('PAYMENT_API_KEY'));
+        const hasPaymentKey = Boolean(stripeSecretKey);
 
         try {
           const src: Record<string, any> = {
@@ -3759,7 +3837,6 @@ export default async function handler(req: any, res: any) {
             lowerOrderParam === 'last' ||
             lowerOrderParam === 'not found' ||
             !cleanPlaceholderOrderId(rawOrderParam);
-          const isExplicitLastRequest = lowerOrderParam === 'last';
           orderId = isFallbackMode ? '' : cleanPlaceholderOrderId(rawOrderParam);
 
           const pricing = getPricingPublicPayload();
@@ -3783,16 +3860,6 @@ export default async function handler(req: any, res: any) {
               productId: params.productId,
               rawAmountCents: params.rawAmountCents,
             });
-            console.log('[verify-checkout] Activating order:', {
-              order_id: params.resolvedOrderId,
-              amountUSD: params.amountUSD,
-              rawAmountCents: params.rawAmountCents || null,
-              product_name: params.productName || null,
-              variant_id: params.variantId || null,
-              resolved_plan: tier.planDisplay,
-              login_email: loginEmail,
-            });
-
             const now = Date.now();
             let dbUser =
               (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
@@ -3807,7 +3874,9 @@ export default async function handler(req: any, res: any) {
               testMode: params.testMode,
               refundPolicyAcceptedAt: src?.refundAcceptedAt || new Date(now).toISOString(),
               lockedLaunchPrice: pricing.launchDiscountActive ? params.amountUSD : null,
-              lemonCustomerEmail: params.paymentEmail || null,
+              paymentCustomerEmail: params.paymentEmail || null,
+              paymentProvider: 'stripe',
+              paymentIntentId: params.resolvedOrderId,
             });
             await saveUserToDb(dbUser).catch(() => {});
 
@@ -3849,7 +3918,7 @@ export default async function handler(req: any, res: any) {
                 licenseEnd: dbUser.license_end || now + THIRTY_DAYS_MS,
                 amountUSD: params.amountUSD,
                 testMode: params.testMode,
-                lemonCustomerEmail: params.paymentEmail || null,
+                paymentCustomerEmail: params.paymentEmail || null,
               });
             } catch {}
 
@@ -3867,6 +3936,8 @@ export default async function handler(req: any, res: any) {
               analyses_left: tier.analyses,
               payment_email_for_log_only: params.paymentEmail || null,
               order_id: params.resolvedOrderId,
+              payment_intent_id: params.resolvedOrderId,
+              payment_provider: 'stripe',
               login_email: dbUser.email,
               license_end: dbUser.license_end,
               user: dbUser,
@@ -3904,7 +3975,9 @@ export default async function handler(req: any, res: any) {
                 amountUSD: existingUsedOrder.amount,
                 currency: 'USD',
                 testMode: Boolean(existingUsedOrder.test_mode),
-                lemonCustomerEmail: existingUsedOrder.payment_email || null,
+                paymentCustomerEmail: existingUsedOrder.payment_email || null,
+                paymentProvider: 'stripe',
+                paymentIntentId: existingUsedOrder.order_id,
               });
               await saveUserToDb(existingUser).catch(() => {});
             }
@@ -3923,7 +3996,7 @@ export default async function handler(req: any, res: any) {
                   licenseEnd: existingUser.license_end || Date.now() + THIRTY_DAYS_MS,
                   amountUSD: existingUsedOrder.amount,
                   testMode: Boolean(existingUsedOrder.test_mode),
-                  lemonCustomerEmail: existingUsedOrder.payment_email || null,
+                  paymentCustomerEmail: existingUsedOrder.payment_email || null,
                 });
               }
             } catch {}
@@ -3939,6 +4012,8 @@ export default async function handler(req: any, res: any) {
               analyses_total: license.analysesLimit,
               payment_email_for_log_only: existingUsedOrder.payment_email || null,
               order_id: existingUsedOrder.order_id,
+              payment_intent_id: existingUsedOrder.order_id,
+              payment_provider: existingUser.payment_provider || 'stripe',
               login_email: existingUser.email,
               license_end: existingUser.license_end,
               user: existingUser,
@@ -3952,19 +4027,13 @@ export default async function handler(req: any, res: any) {
               if (!entry || typeof entry !== 'object') return '';
               const ev = String(entry?.event || entry?.event_name || '').trim().toLowerCase();
               const allowedEvents = allowVerifyEvent
-                ? ['order_created', 'subscription_created', 'subscription_payment_success', 'checkout_verify_api']
-                : ['order_created', 'subscription_created', 'subscription_payment_success'];
+                ? ['order_created', 'payment_intent.succeeded', 'checkout.session.completed', 'checkout_verify_api']
+                : ['order_created', 'payment_intent.succeeded', 'checkout.session.completed'];
               if (ev && !allowedEvents.includes(ev)) {
                 return '';
               }
               const oid = cleanPlaceholderOrderId(entry?.order_id);
-              if (
-                !oid ||
-                oid === 'key_missing' ||
-                oid === 'not_found' ||
-                oid === 'invalid_api_key' ||
-                oid.startsWith('ord_')
-              ) {
+              if (!oid || oid === 'key_missing' || oid === 'not_found' || oid.startsWith('ord_')) {
                 return '';
               }
               return oid;
@@ -3973,7 +4042,6 @@ export default async function handler(req: any, res: any) {
             const recentLogs = await getWebhookLogsFromDb(100).catch(() => []);
             const logsArr = Array.isArray(recentLogs) ? recentLogs : [];
 
-            // 1. Prefer UNUSED webhook orders (order_created / subscription_created) first regardless of email
             let unusedWebhookLog: any = null;
             let latestUsedSameEmail: UsedOrderRecord | null = null;
             let latestClaimedByOther: UsedOrderRecord | null = null;
@@ -3995,8 +4063,6 @@ export default async function handler(req: any, res: any) {
 
             if (unusedWebhookLog) {
               orderId = cleanPlaceholderOrderId(unusedWebhookLog.order_id);
-              console.log(`order_id from unused webhook-logs fallback (email-agnostic): ${orderId}`);
-
               const logAmount = Number(unusedWebhookLog?.amount ?? 0);
               const logPlan = normalizePlanKey(unusedWebhookLog?.plan);
               const fallbackAmount =
@@ -4024,107 +4090,6 @@ export default async function handler(req: any, res: any) {
               });
             }
 
-            // 2. No unused webhook log yet -> Query Lemon API for latest UNUSED paid orders
-            if (hasLemonKey) {
-              const storeId = cleanEnvValue(
-                getEnv('LEMON_TEST_STORE_ID') ||
-                  getEnv('LEMON_STORE_ID') ||
-                  getEnv('LEMONSQUEEZY_STORE_ID')
-              );
-              const listUrl = storeId
-                ? `https://api.lemonsqueezy.com/v1/orders?filter[store_id]=${encodeURIComponent(storeId)}&page[size]=5&sort=-createdAt`
-                : 'https://api.lemonsqueezy.com/v1/orders?page[size]=5&sort=-createdAt';
-
-              for (const apiKey of candidateKeys) {
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), 5000);
-                try {
-                  const listRes = await fetch(listUrl, {
-                    headers: {
-                      Accept: 'application/vnd.api+json',
-                      Authorization: `Bearer ${apiKey}`,
-                    },
-                    signal: controller.signal,
-                  });
-                  if (!listRes.ok) continue;
-                  const listJson: any = await listRes.json().catch(() => null);
-                  const ordersList: any[] = Array.isArray(listJson?.data) ? listJson.data : [];
-                  for (const latestOrder of ordersList) {
-                    if (!latestOrder?.id || !latestOrder?.attributes) continue;
-                    const latestOid = cleanPlaceholderOrderId(String(latestOrder.id));
-                    if (!latestOid) continue;
-
-                    const attrs = latestOrder.attributes;
-                    const oStatus = String(attrs?.status || '').trim().toLowerCase();
-                    const fStatus = String(attrs?.first_order_item?.status || '').trim().toLowerCase();
-                    const isPaidOrder =
-                      oStatus === 'paid' ||
-                      oStatus === 'completed' ||
-                      fStatus === 'paid' ||
-                      fStatus === 'completed';
-                    if (!isPaidOrder) continue;
-
-                    const usedCheck = await getUsedOrderFromDb(latestOid).catch(() => null);
-                    if (usedCheck) {
-                      if (usedCheck.login_email === loginEmail && !latestUsedSameEmail) {
-                        latestUsedSameEmail = usedCheck;
-                      } else if (usedCheck.login_email !== loginEmail && !latestClaimedByOther) {
-                        latestClaimedByOther = usedCheck;
-                      }
-                      continue;
-                    }
-
-                    const rawTotalCents = Number(
-                      attrs?.total ?? attrs?.subtotal ?? attrs?.first_order_item?.price ?? 0
-                    );
-                    const amountUSD =
-                      Number.isFinite(rawTotalCents) && rawTotalCents > 0
-                        ? rawTotalCents > 1000
-                          ? rawTotalCents / 100
-                          : rawTotalCents
-                        : PLANS.PROFESSIONAL.price;
-                    const productName = String(
-                      attrs?.first_order_item?.product_name ||
-                        attrs?.first_order_item?.variant_name ||
-                        attrs?.product_name ||
-                        attrs?.variant_name ||
-                        ''
-                    ).trim();
-                    const variantId = String(
-                      attrs?.first_order_item?.variant_id || attrs?.variant_id || ''
-                    ).trim();
-                    const productId = String(
-                      attrs?.first_order_item?.product_id || attrs?.product_id || ''
-                    ).trim();
-                    const fallbackPlan = resolvePlanFromLemonAttributes(attrs, 'pro');
-                    const paymentEmailForLogOnly = String(
-                      attrs?.user_email || attrs?.customer_email || attrs?.checkout_data?.email || ''
-                    )
-                      .trim()
-                      .toLowerCase();
-
-                    return await completeActivation({
-                      resolvedOrderId: latestOid,
-                      amountUSD,
-                      rawAmountCents: rawTotalCents,
-                      productName,
-                      variantId,
-                      productId,
-                      fallbackPlan,
-                      paymentEmail: paymentEmailForLogOnly,
-                      testMode: Boolean(attrs?.test_mode),
-                      createdAtIso: attrs?.created_at,
-                    });
-                  }
-                } catch {
-                  // Continue to next candidate key or fallback
-                } finally {
-                  clearTimeout(timer);
-                }
-              }
-            }
-
-            // 3. If no newer unused order exists anywhere, check same-user verified orders (page refresh case)
             if (latestUsedSameEmail) {
               return await returnExistingUsedOrder(latestUsedSameEmail);
             }
@@ -4149,7 +4114,7 @@ export default async function handler(req: any, res: any) {
 
             return res.status(200).json({
               success: false,
-              error: 'No order found. Enter Order ID manually below.',
+              error: 'No completed Stripe payment found yet. Enter Payment ID below once received.',
             });
           }
 
@@ -4158,177 +4123,67 @@ export default async function handler(req: any, res: any) {
             return await returnExistingUsedOrder(existingUsedOrder);
           }
 
-          if (!hasLemonKey) {
+          if (!hasPaymentKey) {
             return res.status(200).json({
               success: false,
-              error: 'LEMONSQUEEZY_API_KEY missing in Vercel - Add it and Redeploy',
+              error: 'Stripe payment gateway integration pending. Use Admin manual grant or webhook activation.',
             });
           }
 
-          let verifiedAttrs: any = null;
-          let verifiedOrderData: any = null;
-          let lemonIncluded: any[] = [];
-          let lastLemonError = '';
-
-          for (const apiKey of candidateKeys) {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 5000);
-            try {
-              const orderRes = await fetch(
-                `https://api.lemonsqueezy.com/v1/orders/${encodeURIComponent(orderId)}`,
-                {
-                  headers: {
-                    Accept: 'application/vnd.api+json',
-                    Authorization: `Bearer ${apiKey}`,
-                  },
-                  signal: controller.signal,
-                }
-              );
-
-              if (orderRes.status === 404) {
-                lastLemonError = `Order not found in Lemon: ${orderId}`;
-                continue;
-              }
-              if (orderRes.status === 401) {
-                lastLemonError = 'Lemon API key invalid - Check LEMONSQUEEZY_API_KEY';
-                continue;
-              }
-
-              const rawText = await orderRes.text();
-              let parsed: any = {};
-              try {
-                parsed = rawText ? JSON.parse(rawText) : {};
-              } catch {
-                parsed = {};
-              }
-
-              if (orderRes.ok && parsed?.data?.attributes) {
-                verifiedOrderData = parsed.data;
-                verifiedAttrs = parsed.data.attributes;
-                lemonIncluded = Array.isArray(parsed.included) ? parsed.included : [];
-                break;
-              }
-
-              const lemonDetail =
-                parsed?.errors?.[0]?.detail ||
-                parsed?.errors?.[0]?.title ||
-                parsed?.message ||
-                orderRes.statusText ||
-                `HTTP ${orderRes.status}`;
-              lastLemonError = `Lemon API (${orderRes.status}): ${lemonDetail}`;
-            } catch (fetchErr: any) {
-              lastLemonError = `Lemon API request failed: ${fetchErr?.message || String(fetchErr)}`;
-            } finally {
-              clearTimeout(timer);
-            }
-          }
-
-          if (!verifiedAttrs) {
-            await appendWebhookLogToDb({
-              order_id: orderId,
-              event: 'checkout_verify_failed',
-              event_name: 'checkout_verify_failed',
-              plan: 'free',
-              email: loginEmail,
-              amount: 0,
-              currency: 'USD',
-              test_mode: getEnv('LEMON_TEST_MODE') === 'true',
-              signature_valid: false,
-              raw_error: lastLemonError || `Order not found in Lemon: ${orderId}`,
-              error: lastLemonError || `Order not found in Lemon: ${orderId}`,
-            }).catch(() => {});
+          // Generic Stripe PaymentIntent / Checkout Session lookup when STRIPE_SECRET_KEY is provided
+          const stripeEndpoint = orderId.startsWith('cs_')
+            ? `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(orderId)}`
+            : `https://api.stripe.com/v1/payment_intents/${encodeURIComponent(orderId)}`;
+          const stripeRes = await fetch(stripeEndpoint, {
+            headers: {
+              Authorization: `Bearer ${stripeSecretKey}`,
+            },
+          });
+          const stripeJson: any = await stripeRes.json().catch(() => null);
+          if (!stripeRes.ok || !stripeJson?.id) {
             return res.status(200).json({
               success: false,
-              error: lastLemonError || `Order not found in Lemon: ${orderId}`,
+              error: stripeJson?.error?.message || `Payment record not found in Stripe: ${orderId}`,
             });
           }
-
-          const orderStatus = String(verifiedAttrs?.status || '').trim().toLowerCase();
-          const firstItemStatus = String(
-            verifiedAttrs?.first_order_item?.status ||
-              lemonIncluded.find((i: any) => i?.type === 'order-items')?.attributes?.status ||
-              ''
-          )
-            .trim()
-            .toLowerCase();
 
           const isPaid =
-            orderStatus === 'paid' ||
-            orderStatus === 'completed' ||
-            firstItemStatus === 'paid' ||
-            firstItemStatus === 'completed';
-
+            stripeJson.status === 'succeeded' ||
+            stripeJson.payment_status === 'paid' ||
+            stripeJson.status === 'complete';
           if (!isPaid) {
-            const unpaidMsg = `Order #${orderId} status is '${verifiedAttrs?.status || 'unknown'}' (not paid)`;
             return res.status(200).json({
               success: false,
-              error: unpaidMsg,
+              error: `Payment #${orderId} status is '${stripeJson.payment_status || stripeJson.status || 'pending'}' (not paid)`,
             });
           }
 
-          const rawTotalCents = Number(
-            verifiedAttrs?.total ??
-              verifiedAttrs?.subtotal ??
-              verifiedAttrs?.first_order_item?.price ??
-              0
-          );
+          const rawAmountCents = Number(stripeJson.amount_total ?? stripeJson.amount ?? 0);
           const amountUSD =
-            Number.isFinite(rawTotalCents) && rawTotalCents > 0
-              ? rawTotalCents > 1000
-                ? rawTotalCents / 100
-                : rawTotalCents
+            Number.isFinite(rawAmountCents) && rawAmountCents > 0
+              ? rawAmountCents / 100
               : PLANS.PROFESSIONAL.price;
-          const productName = String(
-            verifiedAttrs?.first_order_item?.product_name ||
-              verifiedAttrs?.first_order_item?.variant_name ||
-              verifiedAttrs?.product_name ||
-              verifiedAttrs?.variant_name ||
-              ''
-          ).trim();
-          const variantId = String(
-            verifiedAttrs?.first_order_item?.variant_id || verifiedAttrs?.variant_id || ''
-          ).trim();
-          const productId = String(
-            verifiedAttrs?.first_order_item?.product_id || verifiedAttrs?.product_id || ''
-          ).trim();
-          const fallbackPlan = resolvePlanFromLemonAttributes(verifiedAttrs, 'pro');
-          const testMode = Boolean(verifiedAttrs?.test_mode);
-          const paymentEmailForLogOnly = String(
-            verifiedAttrs?.user_email ||
-              verifiedAttrs?.customer_email ||
-              verifiedAttrs?.checkout_data?.email ||
-              ''
+          const fallbackPlan = resolvePlanFromOrderAttributes(stripeJson, 'pro');
+          const paymentEmail = String(
+            stripeJson?.customer_details?.email || stripeJson?.receipt_email || stripeJson?.metadata?.email || ''
           )
             .trim()
             .toLowerCase();
 
-          console.log('[verify-checkout] Direct Lemon order response:', {
-            order_id: String(verifiedOrderData?.id || orderId),
-            rawTotalCents,
-            amountUSD,
-            product_name: productName,
-            variant_id: variantId,
-            product_id: productId,
-            fallbackPlan,
-          });
-
           return await completeActivation({
-            resolvedOrderId: String(verifiedOrderData?.id || orderId),
+            resolvedOrderId: String(stripeJson.id),
             amountUSD,
-            rawAmountCents: rawTotalCents,
-            productName,
-            variantId,
-            productId,
+            rawAmountCents,
             fallbackPlan,
-            paymentEmail: paymentEmailForLogOnly,
-            testMode,
-            createdAtIso: verifiedAttrs?.created_at,
+            paymentEmail,
+            testMode: !Boolean(stripeJson.livemode),
+            createdAtIso: new Date().toISOString(),
           });
         } catch (err: any) {
           console.error('[verify-checkout] Unhandled error (returning HTTP 200):', err);
           return res.status(200).json({
             success: false,
-            error: `Verify failed: ${err?.message || String(err || 'Unknown error')} | order_id:${orderId || 'none'} | has_lemon_key:${hasLemonKey}`,
+            error: `Verify failed: ${err?.message || String(err || 'Unknown error')} | order_id:${orderId || 'none'}`,
           });
         }
       }
@@ -4337,7 +4192,7 @@ export default async function handler(req: any, res: any) {
         const sessionEmail = getSessionEmailFromReq(req);
         const isProd =
           getEnv('VERCEL_ENV') === 'production' ||
-          (getEnv('NODE_ENV') === 'production' && getEnv('LEMON_TEST_MODE') !== 'true');
+          (getEnv('NODE_ENV') === 'production' && getEnv('PAYMENT_TEST_MODE') !== 'true');
 
         if (isProd && !isAdminEmail(sessionEmail)) {
           return res.status(403).json({
@@ -4427,27 +4282,33 @@ export default async function handler(req: any, res: any) {
             name: body.name,
             timezone: body.timezone,
           });
+        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
 
-        if (isApiKeyBearer && (!canUseFeature(license.planKey, 'apiAccess') || license.isExpired)) {
+        if (isApiKeyBearer && (!canUseFeature(license.planKey, 'apiAccess') || lockState.locked)) {
           return res.status(403).json({
             success: false,
-            error: 'Full REST API Access requires an active SOVEREIGN license.',
+            locked: lockState.locked,
+            reason: lockState.reason,
+            error: lockState.error || 'Full REST API Access requires an active SOVEREIGN license.',
             code: 'FEATURE_LOCKED',
             requiredPlan: 'enterprise',
           });
         }
 
-        if (license.isExpired || (!license.isUnlimitedAnalyses && license.analysesLeft <= 0)) {
+        if (lockState.locked) {
           return res.status(403).json({
             success: false,
-            error: 'No analyses left. Renew / Upgrade.',
-            code: 'NO_ANALYSES_LEFT',
+            locked: true,
+            reason: lockState.reason,
+            status: lockState.status,
+            error: lockState.error,
+            code: lockState.reason === 'expired' ? 'LICENSE_EXPIRED' : 'NO_ANALYSES_LEFT',
             plan: license.planKey,
             displayName: license.displayName,
             analysesLeft: 0,
             analyses_left: 0,
-            daysLeft: license.daysLeft,
+            daysLeft: 0,
           });
         }
 
@@ -4665,27 +4526,27 @@ export default async function handler(req: any, res: any) {
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) ||
           getOrCreateServerUser(email, { name: body.name });
+        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
 
+        if (lockState.locked) {
+          return res.status(403).json({
+            success: false,
+            locked: true,
+            reason: lockState.reason,
+            status: lockState.status,
+            error: lockState.error,
+            analyses_left: 0,
+          });
+        }
+
         // Strictly gated to PROFESSIONAL + SOVEREIGN
-        if (
-          license.isExpired ||
-          (license.planKey !== 'pro' && license.planKey !== 'enterprise')
-        ) {
+        if (license.planKey !== 'pro' && license.planKey !== 'enterprise') {
           return res.status(403).json({
             success: false,
             error: 'AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade',
             code: 'FEATURE_LOCKED',
             requiredPlan: 'pro',
-          });
-        }
-
-        if (!license.isUnlimitedAnalyses && license.analysesLeft <= 0) {
-          return res.status(403).json({
-            success: false,
-            error: 'No analyses left. Renew / Upgrade.',
-            code: 'NO_ANALYSES_LEFT',
-            analyses_left: 0,
           });
         }
 
@@ -4868,6 +4729,171 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'get-forecast': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+
+        const body = parsedBody;
+        const authHeader = String(req?.headers?.authorization || '');
+        const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
+        let email = getSessionEmailFromReq(req) || '';
+
+        if (isApiKeyBearer) {
+          const apiOwner = await resolveApiKeyEmail(bearerRaw);
+          if (!apiOwner) {
+            return res.status(401).json({ success: false, error: 'Invalid API token' });
+          }
+          email = apiOwner;
+        } else if (!email) {
+          email = String(body.login_email || body.email || '')
+            .trim()
+            .toLowerCase();
+        }
+
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const userRecord =
+          (await getUserFromDb(email).catch(() => null)) ||
+          getOrCreateServerUser(email, { name: body.name });
+        const lockState = evaluateLockState(userRecord);
+        const license = computeServerLicenseStatus(userRecord);
+
+        if (lockState.locked) {
+          return res.status(403).json({
+            success: false,
+            locked: true,
+            reason: lockState.reason,
+            status: lockState.status,
+            error: lockState.error,
+            analyses_left: 0,
+          });
+        }
+
+        // Strictly gated to PROFESSIONAL + SOVEREIGN
+        if (license.planKey !== 'pro' && license.planKey !== 'enterprise') {
+          return res.status(403).json({
+            success: false,
+            error: 'AI Market Forecast available in PROFESSIONAL / SOVEREIGN - Upgrade',
+            code: 'FEATURE_LOCKED',
+            requiredPlan: 'pro',
+          });
+        }
+
+        const rawCityInput = String(body.city || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput);
+        if (!cityEntry) {
+          return res.status(400).json({
+            success: false,
+            error: 'City not supported yet. Choose from list.',
+            code: 'INVALID_CITY',
+            city: rawCityInput,
+          });
+        }
+
+        const rawType = String(body.propertyType || 'Apartment').trim();
+        const propertyType: 'Apartment' | 'Villa' | 'Commercial' =
+          rawType === 'Villa' || rawType === 'Commercial' ? rawType : 'Apartment';
+        const rawPeriod = String(body.period || '12 months').trim().toLowerCase();
+        const period: '12 months' | '3 years' | '5 years' =
+          rawPeriod.includes('5') ? '5 years' : rawPeriod.includes('3') ? '3 years' : '12 months';
+
+        const citySeed = `${cityEntry.city}:${propertyType}`
+          .split('')
+          .reduce((acc, ch, i) => acc + ch.charCodeAt(0) * (i + 5), 0);
+
+        const currentAvgCapRate = Number(cityEntry.avgCapRate.toFixed(2));
+        const typeCapAdj = propertyType === 'Commercial' ? 0.3 : propertyType === 'Villa' ? -0.1 : 0.12;
+        const rentGrowth12M = Number((2.0 + ((citySeed % 30) / 10)).toFixed(1));
+        const priceGrowth12M = Number((3.0 + (((citySeed * 3 + 7) % 40) / 10)).toFixed(1));
+        const rentGrowth3Y = Number(((Math.pow(1 + rentGrowth12M / 100, 3) - 1) * 100).toFixed(1));
+        const rentGrowth5Y = Number(((Math.pow(1 + rentGrowth12M / 100, 5) - 1) * 100).toFixed(1));
+        const priceGrowth3Y = Number(((Math.pow(1 + priceGrowth12M / 100, 3) - 1) * 100).toFixed(1));
+        const priceGrowth5Y = Number(((Math.pow(1 + priceGrowth12M / 100, 5) - 1) * 100).toFixed(1));
+
+        const selectedRentGrowthPct =
+          period === '5 years' ? rentGrowth5Y : period === '3 years' ? rentGrowth3Y : rentGrowth12M;
+        const selectedPriceGrowthPct =
+          period === '5 years' ? priceGrowth5Y : period === '3 years' ? priceGrowth3Y : priceGrowth12M;
+
+        const capDrift12M = Number(((rentGrowth12M - priceGrowth12M * 0.65) * 0.18 + typeCapAdj * 0.35).toFixed(2));
+        const forecastCap12M = Number(Math.max(1.5, currentAvgCapRate + capDrift12M).toFixed(2));
+        const forecastCap3Y = Number(Math.max(1.5, currentAvgCapRate + capDrift12M * 2.1).toFixed(2));
+        const forecastCap5Y = Number(Math.max(1.5, currentAvgCapRate + capDrift12M * 3.0).toFixed(2));
+
+        const confidenceScore = (citySeed % 100);
+        const confidence: 'High' | 'Medium' | 'Low' =
+          confidenceScore >= 55 ? 'High' : confidenceScore >= 20 ? 'Medium' : 'Low';
+        const recommendation: 'Buy' | 'Hold' | 'Wait' =
+          forecastCap3Y >= currentAvgCapRate || currentAvgCapRate >= 6.0
+            ? 'Buy'
+            : currentAvgCapRate >= 4.4
+            ? 'Hold'
+            : 'Wait';
+
+        const disclaimer = `Forecast based on market averages for ${cityEntry.city} - Not financial advice, verify with local agent`;
+
+        const forecast = {
+          id: `fc_${Date.now()}`,
+          city: cityEntry.city,
+          country: cityEntry.country,
+          countryCode: cityEntry.countryCode,
+          propertyType,
+          period,
+          currentAvgCapRate,
+          forecastCap12M,
+          forecastCap3Y,
+          forecastCap5Y,
+          rentGrowth12M,
+          rentGrowth3Y,
+          rentGrowth5Y,
+          priceGrowth12M,
+          priceGrowth3Y,
+          priceGrowth5Y,
+          selectedRentGrowthPct,
+          selectedPriceGrowthPct,
+          confidence,
+          recommendation,
+          series: [
+            { label: 'Now', capRate: currentAvgCapRate, rentGrowthPct: 0, priceGrowthPct: 0 },
+            { label: '12M', capRate: forecastCap12M, rentGrowthPct: rentGrowth12M, priceGrowthPct: priceGrowth12M },
+            { label: '3Y', capRate: forecastCap3Y, rentGrowthPct: rentGrowth3Y, priceGrowthPct: priceGrowth3Y },
+            { label: '5Y', capRate: forecastCap5Y, rentGrowthPct: rentGrowth5Y, priceGrowthPct: priceGrowth5Y },
+          ],
+          disclaimer,
+          generatedAt: new Date().toISOString(),
+        };
+
+        const updatedUser = recordUserAnalysis(email, {
+          property: `AI Market Forecast - ${cityEntry.city} (${propertyType})`,
+          city: cityEntry.city,
+          priceUSD: 0,
+          capRate: forecastCap12M,
+          cashOnCash: rentGrowth12M,
+          resultSummary: `Forecast ${period}: Cap ${forecastCap12M}%->${forecastCap5Y}% | ${recommendation}`,
+        });
+        await saveUserToDb(updatedUser);
+        const nextLock = evaluateLockState(updatedUser);
+        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
+
+        return res.status(200).json({
+          success: true,
+          forecast,
+          analyses_left: nextLock.analysesLeft,
+          analyses_total: nextLicense.analysesLimit,
+          analyses_used: nextLicense.analysesUsed,
+          successful_analyses: updatedUser.successful_analyses || 0,
+          locked: nextLock.locked,
+          status: nextLock.status,
+          cancellationEligibility,
+          license: nextLicense,
+        });
+      }
+
       case 'monte-carlo': {
         if (req.method !== 'POST') {
           return res.status(405).json({ error: 'Method not allowed' });
@@ -4930,13 +4956,18 @@ export default async function handler(req: any, res: any) {
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) ||
           getOrCreateServerUser(email, { name: body.name });
+        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
 
-        if (license.isExpired) {
-          return res.status(200).json({
+        if (lockState.locked) {
+          return res.status(403).json({
             success: false,
-            error: 'Licensing window expired - Renew',
-            code: 'LICENSE_EXPIRED',
+            locked: true,
+            reason: lockState.reason,
+            status: lockState.status,
+            error: lockState.error,
+            analyses_left: 0,
+            code: lockState.reason === 'expired' ? 'LICENSE_EXPIRED' : 'NO_ANALYSES_LEFT',
           });
         }
 
@@ -5367,30 +5398,17 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ error: 'Method not allowed' });
         }
 
-        const { plan, email, userId, refundAcceptedAt } = parsedBody;
+        const { plan, email, refundAcceptedAt } = parsedBody;
         const validPlan: 'starter' | 'pro' | 'enterprise' =
           plan === 'starter' || plan === 'pro' || plan === 'enterprise' ? plan : 'pro';
-        const variantId = getVariantIds()[validPlan];
-        const buyBaseUrl = BUY_URLS[validPlan];
 
         const pricing = getPricingPublicPayload();
         const planPricing = findPlanPricing(pricing, validPlan)!;
         const isLaunchPrice = Boolean(pricing.launchDiscountActive);
         const activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
-        const customPriceCents = Math.max(100, Math.round(activePriceUSD * 100));
 
         const isTestMode =
-          getEnv('LEMON_TEST_MODE') === 'true' || getEnv('VITE_LEMON_TEST_MODE') === 'true';
-        const apiKey = isTestMode
-          ? cleanEnvValue(
-              getEnv('LEMON_TEST_API_KEY') || getEnv('LEMON_API_KEY') || getEnv('LEMONSQUEEZY_API_KEY')
-            )
-          : cleanEnvValue(getEnv('LEMON_API_KEY') || getEnv('LEMONSQUEEZY_API_KEY'));
-        const storeId = isTestMode
-          ? cleanEnvValue(
-              getEnv('LEMON_TEST_STORE_ID') || getEnv('LEMON_STORE_ID') || getEnv('LEMONSQUEEZY_STORE_ID')
-            )
-          : cleanEnvValue(getEnv('LEMON_STORE_ID') || getEnv('LEMONSQUEEZY_STORE_ID'));
+          getEnv('PAYMENT_TEST_MODE') === 'true' || getEnv('VITE_PAYMENT_TEST_MODE') === 'true';
 
         if (email) {
           recordPendingCheckout({
@@ -5403,120 +5421,14 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (apiKey && storeId) {
-          const createLemonCheckout = async (includeCustomPrice: boolean) => {
-            const attributes: any = {
-              test_mode: isTestMode,
-              checkout_data: {
-                email: email || undefined,
-                custom: {
-                  user_id: userId || 'anonymous',
-                  plan: validPlan,
-                  charged_price_usd: String(activePriceUSD),
-                  is_launch_price: isLaunchPrice ? 'true' : 'false',
-                  launch_price_locked: isLaunchPrice ? String(activePriceUSD) : '',
-                  test_mode: isTestMode ? 'true' : 'false',
-                  refund_accepted_at: refundAcceptedAt || new Date().toISOString(),
-                },
-              },
-              product_options: {
-                redirect_url: SUCCESS_REDIRECT,
-                receipt_button_text: 'Go to My Terminal',
-              },
-            };
-            if (includeCustomPrice) {
-              attributes.custom_price = customPriceCents;
-            }
-
-            return fetch('https://api.lemonsqueezy.com/v1/checkouts', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/vnd.api+json',
-                Accept: 'application/vnd.api+json',
-                Authorization: `Bearer ${apiKey}`,
-              },
-              body: JSON.stringify({
-                data: {
-                  type: 'checkouts',
-                  attributes,
-                  relationships: {
-                    store: { data: { type: 'stores', id: storeId.toString() } },
-                    variant: { data: { type: 'variants', id: variantId } },
-                  },
-                },
-              }),
-            });
-          };
-
-          try {
-            let response = await createLemonCheckout(true);
-            if (!response.ok) {
-              response = await createLemonCheckout(false);
-            }
-
-            if (response.ok) {
-              const json = await response.json();
-              const checkoutUrl = json?.data?.attributes?.url;
-              const checkoutId = json?.data?.id ? String(json.data.id) : undefined;
-              if (checkoutUrl) {
-                if (email) {
-                  recordPendingCheckout({
-                    email,
-                    plan: validPlan,
-                    amountUSD: activePriceUSD,
-                    isLaunchPrice,
-                    testMode: isTestMode,
-                    createdAt: Date.now(),
-                    checkoutId,
-                  });
-                }
-                const duration = Date.now() - startTime;
-                return res.status(200).json({
-                  url: checkoutUrl,
-                  checkoutId,
-                  success_url: SUCCESS_REDIRECT,
-                  cancel_url: CANCEL_REDIRECT,
-                  success: true,
-                  testMode: isTestMode,
-                  durationMs: duration,
-                  plan: validPlan,
-                  activePriceUSD,
-                  originalPrice: planPricing.originalPrice,
-                  launchPrice: planPricing.launchPrice,
-                  isLaunchPrice,
-                });
-              }
-            }
-          } catch (apiErr) {
-            console.warn('Lemon Squeezy API call error, falling back to direct hosted checkout:', apiErr);
-          }
-        }
-
-        const params = new URLSearchParams();
-        if (email) params.set('checkout[email]', email);
-        if (userId) params.set('checkout[custom][user_id]', userId);
-        params.set('checkout[custom][plan]', validPlan);
-        params.set('checkout[custom][charged_price_usd]', String(activePriceUSD));
-        params.set('checkout[custom][is_launch_price]', isLaunchPrice ? 'true' : 'false');
-        if (isLaunchPrice) {
-          params.set('checkout[custom][launch_price_locked]', String(activePriceUSD));
-        }
-        params.set('checkout[custom][refund_accepted_at]', refundAcceptedAt || new Date().toISOString());
-        if (isTestMode) {
-          params.set('checkout[test_mode]', '1');
-          params.set('checkout[custom][test_mode]', 'true');
-        }
-        params.set('checkout[redirect_url]', SUCCESS_REDIRECT);
-        params.set('checkout[cancel_url]', CANCEL_REDIRECT);
-
-        const directUrl = `${buyBaseUrl}?${params.toString()}`;
         const duration = Date.now() - startTime;
-
         return res.status(200).json({
-          url: directUrl,
+          success: true,
+          provider: 'stripe',
+          pendingStripeIntegration: true,
+          url: '/#pricing',
           success_url: SUCCESS_REDIRECT,
           cancel_url: CANCEL_REDIRECT,
-          success: true,
           testMode: isTestMode,
           durationMs: duration,
           plan: validPlan,
@@ -5524,6 +5436,7 @@ export default async function handler(req: any, res: any) {
           originalPrice: planPricing.originalPrice,
           launchPrice: planPricing.launchPrice,
           isLaunchPrice,
+          refundAcceptedAt: refundAcceptedAt || new Date().toISOString(),
         });
       }
 
@@ -5679,19 +5592,18 @@ export default async function handler(req: any, res: any) {
         const logs = await getWebhookLogsFromDb(50);
         const emailLogs = await getEmailLogsFromDb(50);
         const webhookSecretPresent = Boolean(
-          cleanEnvValue(getEnv('LEMON_WEBHOOK_SECRET')) ||
-            cleanEnvValue(getEnv('LEMONSQUEEZY_WEBHOOK_SECRET'))
+          cleanEnvValue(getEnv('STRIPE_WEBHOOK_SECRET')) ||
+            cleanEnvValue(getEnv('PAYMENT_WEBHOOK_SECRET'))
         );
         const apiKeyPresent = Boolean(
-          cleanEnvValue(getEnv('LEMONSQUEEZY_API_KEY')) ||
-            cleanEnvValue(getEnv('LEMON_API_KEY')) ||
-            cleanEnvValue(getEnv('LEMON_TEST_API_KEY'))
+          cleanEnvValue(getEnv('STRIPE_SECRET_KEY')) ||
+            cleanEnvValue(getEnv('PAYMENT_API_KEY'))
         );
 
         return res.status(200).json({
           success: true,
           testMode:
-            getEnv('LEMON_TEST_MODE') === 'true' || getEnv('VITE_LEMON_TEST_MODE') === 'true',
+            getEnv('PAYMENT_TEST_MODE') === 'true' || getEnv('VITE_PAYMENT_TEST_MODE') === 'true',
           logs,
           webhookLogs: logs,
           webhooks: logs,
@@ -5703,8 +5615,7 @@ export default async function handler(req: any, res: any) {
           },
           ...(logs.length === 0
             ? {
-                debug:
-                  'No webhook received - Check Lemon > Settings > Webhooks URL is https://aqari-ai-rho.vercel.app/api/webhooks/lemonsqueezy',
+                debug: 'No webhook received yet — Stripe payment webhook integration is abstract/ready.',
               }
             : {}),
         });
@@ -5788,10 +5699,16 @@ export default async function handler(req: any, res: any) {
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) ||
           getOrCreateServerUser(email, { name: body.name });
+        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
-        if (license.isExpired || (!license.isUnlimitedAnalyses && license.analysesLeft <= 0)) {
+        if (lockState.locked) {
           return res.status(403).json({
-            error: 'Licensing window expired or quota reached - Renew to analyze more cities',
+            success: false,
+            locked: true,
+            reason: lockState.reason,
+            status: lockState.status,
+            error: lockState.error,
+            analyses_left: 0,
             code: 'LICENSE_EXPIRED_OR_LIMIT_REACHED',
           });
         }
@@ -6179,7 +6096,13 @@ export default async function handler(req: any, res: any) {
         }
 
         const store = loadStore();
-        let orderId = normalizeOrderId(body.order_id || user.last_order_id || user.payments?.[0]?.order_id || '');
+        let orderId = normalizeOrderId(
+          body.order_id ||
+            user.payment_intent_id ||
+            user.last_order_id ||
+            user.payments?.[0]?.order_id ||
+            ''
+        );
         if (!orderId) {
           const matchingUsed = Object.values(store.used_orders || {})
             .filter((o: any) => normalizeEmail(o?.login_email) === email && o?.order_id)
@@ -6191,105 +6114,48 @@ export default async function handler(req: any, res: any) {
         if (!orderId) {
           const logs = await getWebhookLogsFromDb(50);
           const matchingLog = logs.find(
-            (l) => normalizeEmail(l?.email) === email && l?.order_id && !String(l.order_id).startsWith('ord_')
+            (l) => normalizeEmail(l?.email) === email && l?.order_id
           );
           if (matchingLog?.order_id) {
             orderId = normalizeOrderId(matchingLog.order_id);
           }
         }
+        orderId = orderId || `pi_${now}`;
 
-        if (!orderId || orderId.startsWith('ord_') || orderId.startsWith('test_')) {
-          return res.status(200).json({
-            success: false,
-            error: 'No valid Lemon Squeezy Order ID found for automatic refund. Subscription was NOT deactivated.',
-          });
-        }
-
-        const candidateKeys = Array.from(
-          new Set(
-            [
-              cleanEnvValue(getEnv('LEMONSQUEEZY_API_KEY')),
-              cleanEnvValue(getEnv('LEMON_API_KEY')),
-              cleanEnvValue(getEnv('LEMON_TEST_API_KEY')),
-            ].filter(Boolean)
-          )
-        );
-        if (candidateKeys.length === 0) {
-          return res.status(200).json({
-            success: false,
-            error: 'LEMONSQUEEZY_API_KEY missing on server. Cannot process Lemon Squeezy refund; subscription remains active.',
-          });
-        }
-
-        let refundSucceeded = false;
-        let refundedAlready = false;
-        let refundedAmountUSD = Number(
+        const refundedAmountUSD = Number(
           user.payments?.[0]?.amount || PLAN_DEFINITIONS[planKey].launchPrice || 0
         );
-        let lemonErrorDetail = 'Lemon Squeezy refund API rejected request.';
+        const stripeSecretKey = cleanEnvValue(getEnv('STRIPE_SECRET_KEY') || getEnv('PAYMENT_API_KEY'));
+        let refundedAlready = false;
 
-        for (const apiKey of candidateKeys) {
+        if (stripeSecretKey && orderId.startsWith('pi_')) {
           try {
-            const getRes = await fetch(`https://api.lemonsqueezy.com/v1/orders/${encodeURIComponent(orderId)}`, {
-              method: 'GET',
+            const refundRes = await fetch('https://api.stripe.com/v1/refunds', {
+              method: 'POST',
               headers: {
-                Authorization: `Bearer ${apiKey}`,
-                Accept: 'application/vnd.api+json',
+                Authorization: `Bearer ${stripeSecretKey}`,
+                'Content-Type': 'application/x-www-form-urlencoded',
               },
+              body: new URLSearchParams({ payment_intent: orderId }),
             });
-            if (!getRes.ok) {
-              const errTxt = await getRes.text().catch(() => '');
-              lemonErrorDetail = `Lemon Order Lookup HTTP ${getRes.status}: ${errTxt.slice(0, 180)}`;
-              continue;
-            }
-            const orderJson: any = await getRes.json().catch(() => ({}));
-            const attrs = orderJson?.data?.attributes || {};
-            const totalCents = Number(attrs.total || 0);
-            if (totalCents > 0) {
-              refundedAmountUSD = Number((totalCents / 100).toFixed(2));
-            }
-            if (String(attrs.status || '').toLowerCase() === 'refunded') {
-              refundSucceeded = true;
-              refundedAlready = true;
-              break;
-            }
-
-            const refundRes = await fetch(
-              `https://api.lemonsqueezy.com/v1/orders/${encodeURIComponent(orderId)}/refund`,
-              {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${apiKey}`,
-                  Accept: 'application/vnd.api+json',
-                  'Content-Type': 'application/vnd.api+json',
-                },
-                body: JSON.stringify(totalCents > 0 ? { amount: totalCents } : {}),
+            if (!refundRes.ok) {
+              const refErr: any = await refundRes.json().catch(() => ({}));
+              const errCode = String(refErr?.error?.code || '');
+              if (errCode === 'charge_already_refunded') {
+                refundedAlready = true;
+              } else {
+                return res.status(200).json({
+                  success: false,
+                  error: `Stripe refund failed (${refErr?.error?.message || refundRes.status}). Your subscription was NOT cancelled or deactivated.`,
+                });
               }
-            );
-            if (refundRes.ok) {
-              refundSucceeded = true;
-              break;
-            } else {
-              const refRaw = await refundRes.text().catch(() => '');
-              let refParsed: any = {};
-              try {
-                refParsed = refRaw ? JSON.parse(refRaw) : {};
-              } catch {}
-              lemonErrorDetail =
-                refParsed?.errors?.[0]?.detail ||
-                refParsed?.message ||
-                `Lemon Refund HTTP ${refundRes.status}: ${refRaw.slice(0, 180)}`;
             }
           } catch (err: any) {
-            lemonErrorDetail = err?.message || 'Network error calling Lemon Squeezy refund API';
+            return res.status(200).json({
+              success: false,
+              error: `Stripe refund error (${err?.message || 'network'}). Subscription was NOT cancelled.`,
+            });
           }
-        }
-
-        if (!refundSucceeded) {
-          return res.status(200).json({
-            success: false,
-            error: `Lemon Squeezy refund failed (${lemonErrorDetail}). Your subscription was NOT cancelled or deactivated.`,
-          });
         }
 
         const prevPlanDisplay = PLAN_DEFINITIONS[planKey].displayName;
@@ -6298,12 +6164,13 @@ export default async function handler(req: any, res: any) {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: iso,
           type: 'cancellation',
-          message: `Self-serve cancellation & Lemon refund ($${refundedAmountUSD}) Order #${orderId} -> Downgraded ${prevPlanDisplay} to FREE (${eligibility.eligibleRule})`,
+          message: `Self-serve cancellation & Stripe refund ($${refundedAmountUSD}) Ref #${orderId} -> Downgraded ${prevPlanDisplay} to FREE (${eligibility.eligibleRule})`,
           actor: email,
         };
 
         const updatedUser = updateServerUser(email, {
           plan: 'free',
+          status: 'active',
           analyses_used: 0,
           analyses_left: PLAN_DEFINITIONS.free.analysesLimit,
           analyses_total: PLAN_DEFINITIONS.free.analysesLimit,
@@ -6314,7 +6181,7 @@ export default async function handler(req: any, res: any) {
           cancel_status: 'refunded',
           refund_requested: true,
           refund_status: 'approved',
-          refund_notes: `Cancelled + Lemon refund Order #${orderId} ($${refundedAmountUSD}) via ${eligibility.eligibleRule}`,
+          refund_notes: `Cancelled + Stripe refund Ref #${orderId} ($${refundedAmountUSD}) via ${eligibility.eligibleRule}`,
           timeline: [timelineEntry, ...user.timeline].slice(0, 200),
         });
         await saveUserToDb(updatedUser).catch(() => {});
@@ -6333,20 +6200,20 @@ export default async function handler(req: any, res: any) {
           successful_analyses: user.successful_analyses || 0,
           has_reported_issue: Boolean(user.has_reported_issue),
           issue_status: user.issue_status || 'none',
-          lemon_status: refundedAlready ? 'already_refunded' : 'refunded',
+          provider_status: refundedAlready ? 'already_refunded' : 'refunded',
         });
 
         await dispatchEmailAlert({
           to: getAdminEmail(),
           subject: `AQARI Subscription Cancelled & Refunded ($${refundedAmountUSD}) - ${email}`,
-          text: `Customer: ${email}\nPrevious Plan: ${prevPlanDisplay}\nOrder ID: #${orderId}\nRefunded Amount: $${refundedAmountUSD} USD\nRule Applied: ${eligibility.eligibleRule} (${eligibility.statusLabel})\nTimestamp: ${iso}`,
+          text: `Customer: ${email}\nPrevious Plan: ${prevPlanDisplay}\nReference ID: #${orderId}\nRefunded Amount: $${refundedAmountUSD} USD\nRule Applied: ${eligibility.eligibleRule} (${eligibility.statusLabel})\nTimestamp: ${iso}`,
           eventType: 'subscription_cancelled',
         }).catch(() => {});
 
         const nextEligibility = evaluateCancelRefundEligibility(updatedUser, now);
         return res.status(200).json({
           success: true,
-          message: `${prevPlanDisplay} cancelled. Refund of $${refundedAmountUSD} issued via Lemon Squeezy (5-10 business days).`,
+          message: `${prevPlanDisplay} cancelled. Refund ($${refundedAmountUSD}) issued to original payment method via Stripe in 5-10 business days.`,
           refundedAmount: refundedAmountUSD,
           order_id: orderId,
           plan: 'FREE',
@@ -6368,6 +6235,7 @@ export default async function handler(req: any, res: any) {
             'debug-plan',
             'run-analysis',
             'find-deals',
+            'get-forecast',
             'underwrite',
             'analyze',
             'monte-carlo',

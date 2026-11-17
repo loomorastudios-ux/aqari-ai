@@ -55,8 +55,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   }, []);
 
   const isTestMode =
-    import.meta.env.VITE_LEMON_TEST_MODE === 'true' ||
-    (import.meta.env.VITE_LEMON_TEST_MODE as unknown) === true;
+    import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' ||
+    (import.meta.env.VITE_PAYMENT_TEST_MODE as unknown) === true;
 
   const endsAt = user?.subscriptionEndsAt || user?.subscriptionExpiry || null;
   const msLeft = endsAt ? endsAt - Date.now() : 0;
@@ -457,7 +457,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className="px-3.5 py-2.5 rounded-xl text-sm text-[#D4AF37] bg-[#D4AF37]/10 hover:bg-[#D4AF37]/20 transition flex items-center justify-between font-semibold"
             >
               <span>Pricing Tiers</span>
-              <span className="text-[10px] font-mono text-[#D4AF37]">LEMONSQUEEZY</span>
+              <span className="text-[10px] font-mono text-[#D4AF37]">STRIPE</span>
             </a>
 
             {/* Plan status indicator on mobile */}

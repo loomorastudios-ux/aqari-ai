@@ -11,6 +11,7 @@ import {
   WhiteGloveRequest,
   WhiteGloveDeliverable,
   DealFinderDeal,
+  MarketForecastResult,
 } from '../types';
 import {
   PLAN_LIMITS,
@@ -207,7 +208,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 }) => {
   // Navigation active tab
   const [activeTab, setActiveTab] = useState<
-    'dashboard' | 'analyze' | 'dealfinder' | 'saved' | 'portfolio' | 'radar' | 'settings'
+    'dashboard' | 'analyze' | 'dealfinder' | 'forecast' | 'saved' | 'portfolio' | 'radar' | 'settings'
   >(
     initialToast?.startsWith('Welcome to AQARI') ? 'dashboard' : 'analyze'
   );
@@ -241,6 +242,16 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [dfDisclaimer, setDfDisclaimer] = useState<string | null>(null);
   const [dfResultsCity, setDfResultsCity] = useState<string>('');
   const [savingDealId, setSavingDealId] = useState<string | null>(null);
+
+  // AI Market Forecast state
+  const [fcCityComboInput, setFcCityComboInput] = useState<string>('Muscat (Oman OM)');
+  const [fcCityOpen, setFcCityOpen] = useState<boolean>(false);
+  const [fcPropType, setFcPropType] = useState<'Apartment' | 'Villa' | 'Commercial'>('Apartment');
+  const [fcPeriod, setFcPeriod] = useState<'12 months' | '3 years' | '5 years'>('12 months');
+  const [isGettingForecast, setIsGettingForecast] = useState<boolean>(false);
+  const [fcError, setFcError] = useState<string | null>(null);
+  const [fcResult, setFcResult] = useState<MarketForecastResult | null>(null);
+  const [isSavingForecast, setIsSavingForecast] = useState<boolean>(false);
 
   // Success / notification toast
   const [toastMessage, setToastMessage] = useState<string | null>(initialToast || null);
@@ -307,8 +318,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   }, [user.customCities]);
 
   const isTestMode =
-    import.meta.env.VITE_LEMON_TEST_MODE === 'true' ||
-    (import.meta.env.VITE_LEMON_TEST_MODE as unknown) === true;
+    import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' ||
+    (import.meta.env.VITE_PAYMENT_TEST_MODE as unknown) === true;
 
   // Plan info & Live 1-minute countdown interval
   const [, setMinuteTick] = useState(0);
@@ -352,6 +363,18 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     : license.isUnlimitedAnalyses
     ? 9999
     : license.analysesLeft;
+  const isAccountLocked = Boolean(
+    user.locked ||
+      user.status === 'expired' ||
+      user.status === 'exhausted' ||
+      isExpired ||
+      (isCreditsLoaded && !license.isUnlimitedAnalyses && analysesRemaining <= 0)
+  );
+  const lockReasonKind: 'expired' | 'exhausted' | null = isAccountLocked
+    ? user.lockReason === 'expired' || user.status === 'expired' || isExpired
+      ? 'expired'
+      : 'exhausted'
+    : null;
   const analysesLeftStr = !isCreditsLoaded
     ? 'Loading...'
     : license.isUnlimitedAnalyses
@@ -388,33 +411,57 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       ? user.planPrice
       : dynamicPlanPricing?.activePrice ?? PLANS[license.planKey].priceUSD;
 
+  const lockBannerMessage =
+    user.lockError ||
+    (lockReasonKind === 'expired'
+      ? `Your ${planDisplayName} expired${endsAt ? ' on ' + new Date(endsAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : ''}. Renew to continue.`
+      : `No analyses left for ${planDisplayName}. Upgrade to continue.`);
+
+  const applyServerLockFromResponse = (data: any) => {
+    if (!data?.locked) return;
+    const nextLeft = typeof data.analyses_left === 'number' ? data.analyses_left : 0;
+    onUpdateUser({
+      ...user,
+      status: data.status || data.reason || 'exhausted',
+      locked: true,
+      lockReason: data.reason || null,
+      lockError: data.error || null,
+      analysesLeft: nextLeft,
+      freeAnalyses: nextLeft,
+      freeAnalysesLeft: nextLeft,
+      subscriptionStatus: 'expired',
+    });
+  };
+
   const canSensitivity =
-    !isPlanEnded &&
+    !isAccountLocked &&
     (meFeatures.includes('Yield & Sensitivity Calculator') || canUseFeature(license.planKey, 'yieldSensitivity'));
   const canMonteCarlo =
-    !isPlanEnded &&
+    !isAccountLocked &&
     (meFeatures.includes('Monte Carlo Stress Tests +200bps') || canUseFeature(license.planKey, 'monteCarlo'));
   const canPdfExport =
-    !isPlanEnded &&
+    !isAccountLocked &&
     (meFeatures.includes('PDF Memorandum Export') || canUseFeature(license.planKey, 'pdfExport'));
   const canPortfolioAgg =
-    !isPlanEnded &&
+    !isAccountLocked &&
     (meFeatures.includes('Multi-asset Portfolio Aggregation') || canUseFeature(license.planKey, 'portfolioAggregation'));
   const canFullMatrix =
-    !isPlanEnded &&
+    !isAccountLocked &&
     (meFeatures.includes('Cross-border Tax & Visa Matrix') || canUseFeature(license.planKey, 'crossBorderMatrixFull'));
   const canApiAccess =
-    !isPlanEnded &&
+    !isAccountLocked &&
     (meFeatures.includes('Full REST API Credentials') || canUseFeature(license.planKey, 'apiAccess'));
   const canAnalystDesk =
-    !isPlanEnded &&
+    !isAccountLocked &&
     (meFeatures.includes('1-on-1 Dedicated Analyst Desk') || canUseFeature(license.planKey, 'analystDesk'));
   const canCustomUnderwriting =
-    !isPlanEnded &&
+    !isAccountLocked &&
     (meFeatures.includes('White-glove Custom Underwriting') || canUseFeature(license.planKey, 'customUnderwriting'));
   const canDealFinder =
-    !isPlanEnded && (license.planKey === 'pro' || license.planKey === 'enterprise');
-  const canSaveProperty = !isPlanEnded && maxSaved > 0;
+    !isAccountLocked && (license.planKey === 'pro' || license.planKey === 'enterprise');
+  const canMarketForecast =
+    !isAccountLocked && (license.planKey === 'pro' || license.planKey === 'enterprise');
+  const canSaveProperty = !isAccountLocked && maxSaved > 0;
 
   const loadWebhookLogs = async () => {
     setIsRefreshingWebhookLogs(true);
@@ -677,6 +724,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   }, [dfCityComboInput]);
 
   const handleFindDeals = async () => {
+    if (isAccountLocked) {
+      setDfError(lockBannerMessage);
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
     if (!canDealFinder) {
       setDfError('AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade');
       showToast('AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade');
@@ -720,6 +773,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 403) {
+        applyServerLockFromResponse(data);
         setDfError(data?.error || 'AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade');
         showToast(data?.error || 'Upgrade required');
         onOpenRenewal();
@@ -754,6 +808,243 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       setDfError('Network error connecting to AI Deal Finder.');
     } finally {
       setIsFindingDeals(false);
+    }
+  };
+
+  const fcCityOptions = useMemo(() => {
+    const q = fcCityComboInput.trim();
+    const matched = resolveCityFromInput(q);
+    if (matched && q === formatCityOptionLabel(matched)) {
+      return searchCities(matched.city, 25);
+    }
+    if (q.length >= 2) {
+      return searchCities(q, 25);
+    }
+    const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
+    return defaults.map((n) => findCityEntry(n)).filter((c): c is CityEntry => Boolean(c));
+  }, [fcCityComboInput]);
+
+  const handleGetForecast = async () => {
+    if (isAccountLocked) {
+      setFcError(lockBannerMessage);
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    if (!canMarketForecast) {
+      const msg = 'AI Market Forecast available in PROFESSIONAL / SOVEREIGN - Upgrade';
+      setFcError(msg);
+      showToast(msg);
+      onOpenRenewal();
+      return;
+    }
+    if (!isCreditsLoaded || analysesRemaining <= 0) {
+      setFcError('No analyses left. Renew / Upgrade.');
+      showToast('No analyses left. Renew / Upgrade.');
+      onOpenRenewal();
+      return;
+    }
+    const cityEntry = resolveCityFromInput(fcCityComboInput);
+    if (!cityEntry) {
+      setFcError('City not supported yet. Choose from list.');
+      showToast('City not supported yet. Choose from list.');
+      return;
+    }
+
+    setFcError(null);
+    setIsGettingForecast(true);
+    try {
+      const res = await fetch('/api/app?action=get-forecast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          city: cityEntry.city,
+          propertyType: fcPropType,
+          period: fcPeriod,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        applyServerLockFromResponse(data);
+        setFcError(data?.error || 'AI Market Forecast available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        showToast(data?.error || 'Upgrade required');
+        onOpenRenewal();
+        return;
+      }
+      if (!res.ok || data?.success === false || !data?.forecast) {
+        setFcError(data?.error || 'Unable to compute market forecast.');
+        return;
+      }
+
+      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
+      const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
+      onUpdateUser({
+        ...user,
+        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
+        analysesTotal: nextTotal,
+        analysesLeft: nextLeft,
+        freeAnalyses: nextLeft,
+        freeAnalysesLeft: nextLeft,
+        successfulAnalyses: Number(data.successful_analyses ?? (user.successfulAnalyses ?? 0) + 1),
+        cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
+      });
+
+      setFcResult(data.forecast as MarketForecastResult);
+      showToast(`Market forecast ready for ${data.forecast.city} (-1 credit, ${nextLeft} left).`);
+    } catch {
+      setFcError('Network error connecting to AI Market Forecast.');
+    } finally {
+      setIsGettingForecast(false);
+    }
+  };
+
+  const handleSaveForecast = async () => {
+    if (!fcResult) return;
+    if (isAccountLocked || !canSaveProperty) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    const savedList = user.savedAnalyses || [];
+    if (savedList.length >= maxSaved) {
+      showToast(`Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}. Upgrade to save more.`);
+      onOpenRenewal();
+      return;
+    }
+
+    const basePrice =
+      fcResult.propertyType === 'Commercial'
+        ? 950000
+        : fcResult.propertyType === 'Villa'
+        ? 680000
+        : 420000;
+    const estMonthlyRent = Math.round((basePrice * (fcResult.currentAvgCapRate / 100)) / 12);
+    const estIrr = Number((fcResult.forecastCap5Y + fcResult.priceGrowth12M * 1.4).toFixed(1));
+    const estCashflow = Math.round(estMonthlyRent * 0.42);
+    const newAnalysis: SavedAnalysis = {
+      id: `fc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      property: `${fcResult.city} ${fcResult.propertyType} Forecast (${fcResult.period})`,
+      city: fcResult.city,
+      price: basePrice,
+      rent: estMonthlyRent,
+      capRate: fcResult.forecastCap12M,
+      cashOnCash: Number((fcResult.forecastCap12M + fcResult.rentGrowth12M * 0.6).toFixed(2)),
+      irr: estIrr,
+      dscr: fcResult.recommendation === 'Buy' ? '1.65' : fcResult.recommendation === 'Hold' ? '1.42' : '1.25',
+      monthlyCashflow: estCashflow,
+      riskScore: fcResult.confidence === 'High' ? 'AAA' : fcResult.confidence === 'Medium' ? 'AA' : 'A',
+      date: Date.now(),
+      imageUrl: PROPERTY_LISTINGS[0].imageUrl,
+      notes: `AI Market Forecast (${fcResult.period}) | Rec: ${fcResult.recommendation} | Confidence: ${fcResult.confidence} | 12M Rent +${fcResult.rentGrowth12M}% | 12M Price +${fcResult.priceGrowth12M}%`,
+    };
+
+    setIsSavingForecast(true);
+    try {
+      const res = await fetch('/api/app?action=save-to-portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          currentSavedCount: savedList.length,
+          analysis: newAnalysis,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        if (data?.locked) applyServerLockFromResponse(data);
+        showToast(data?.error || `Save limit reached (${savedList.length}/${maxSaved}).`);
+        onOpenRenewal();
+        return;
+      }
+      const savedItem = data?.savedItem || newAnalysis;
+      const newSavedList = [savedItem, ...savedList];
+      onUpdateUser({
+        ...user,
+        savedCount: data?.saved_count ?? newSavedList.length,
+        savedAnalyses: newSavedList,
+        portfolio: {
+          totalValue: newSavedList.reduce((acc, curr) => acc + curr.price, 0),
+          monthlyCashflow: newSavedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0),
+        },
+      });
+      showToast(`Saved forecast "${savedItem.property}" (${newSavedList.length}/${maxSaved}).`);
+    } catch {
+      showToast('Unable to save forecast right now. Please try again.');
+    } finally {
+      setIsSavingForecast(false);
+    }
+  };
+
+  const handleExportForecastPdf = async () => {
+    if (!fcResult) return;
+    if (isAccountLocked) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    if (!canPdfExport) {
+      showToast('Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    const title = `${fcResult.city} ${fcResult.propertyType} - AI Market Forecast (${fcResult.period})`;
+    const metricsLines = [
+      `Target Market: ${fcResult.city}, ${fcResult.country}`,
+      `Property Type: ${fcResult.propertyType} | Forecast Horizon: ${fcResult.period}`,
+      `Current Avg Cap Rate: ${fcResult.currentAvgCapRate}%`,
+      `Forecast Cap Rate (12M / 3Y / 5Y): ${fcResult.forecastCap12M}% / ${fcResult.forecastCap3Y}% / ${fcResult.forecastCap5Y}%`,
+      `Forecast Rent Growth (12M): +${fcResult.rentGrowth12M}% | Horizon Total: +${fcResult.rentGrowthSelected}%`,
+      `Forecast Property Price Growth (12M): +${fcResult.priceGrowth12M}% | Horizon Total: +${fcResult.priceGrowthSelected}%`,
+      `Confidence: ${fcResult.confidence} | Recommendation: ${fcResult.recommendation}`,
+      `Disclaimer: ${fcResult.disclaimer}`,
+    ];
+    try {
+      const res = await fetch('/api/app?action=export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          format: 'pdf',
+          propertyTitle: title,
+        }),
+      });
+      if (res.status === 403) {
+        const err = await res.json().catch(() => ({}));
+        if (err?.locked) applyServerLockFromResponse(err);
+        showToast(err?.error || 'Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        onOpenRenewal();
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      const filename = downloadMemorandumPdf({
+        title,
+        city: fcResult.city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: fcResult.disclaimer,
+        watermarkText: data?.watermark,
+      });
+      showToast(`Exported PDF: ${filename}`);
+    } catch {
+      const filename = downloadMemorandumPdf({
+        title,
+        city: fcResult.city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: fcResult.disclaimer,
+      });
+      showToast(`Exported PDF: ${filename}`);
     }
   };
 
@@ -806,8 +1097,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   };
 
   const handleSaveDealFromFinder = async (deal: DealFinderDeal) => {
-    if (!canSaveProperty) {
-      showToast('Licensing window expired - Renew');
+    if (isAccountLocked || !canSaveProperty) {
+      showToast(lockBannerMessage);
       onOpenRenewal();
       return;
     }
@@ -850,6 +1141,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.success === false) {
+        if (data?.locked) applyServerLockFromResponse(data);
         showToast(data?.error || `Save limit reached (${savedList.length}/${maxSaved}).`);
         onOpenRenewal();
         return;
@@ -1151,8 +1443,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       return;
     }
 
-    if (isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)) {
-      showToast('Licensing window expired or quota reached - Renew');
+    if (isAccountLocked) {
+      showToast(lockBannerMessage);
       setIsAddCityOpen(false);
       onOpenRenewal();
       return;
@@ -1172,7 +1464,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.success || !data?.cityCard) {
+      if (res.status === 403 || !res.ok || !data?.success || !data?.cityCard) {
+        if (data?.locked) {
+          applyServerLockFromResponse(data);
+          setIsAddCityOpen(false);
+          onOpenRenewal();
+        }
         setCityError(
           data?.error || 'City not found, try another spelling - المدينة غير موجودة، جرب تهجئة ثانية'
         );
@@ -1244,14 +1541,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
   // Run Analysis Action (Backend enforced + Consumes 1 Credit — ONLY way metrics calculate)
   const handleRunAnalysis = async () => {
-    if (isExpired) {
-      showToast('No analyses left. Renew / Upgrade.');
-      onOpenRenewal();
-      return;
-    }
-
-    if (!license.isUnlimitedAnalyses && analysesRemaining <= 0) {
-      showToast('No analyses left. Renew / Upgrade.');
+    if (isAccountLocked) {
+      showToast(lockBannerMessage);
       onOpenRenewal();
       return;
     }
@@ -1316,6 +1607,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         return;
       }
       if (res.status === 403 || !res.ok || data?.success === false) {
+        applyServerLockFromResponse(data);
         showToast(data?.error || 'No analyses left. Renew / Upgrade.');
         onOpenRenewal();
         return;
@@ -1422,8 +1714,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
   // Save Analysis to Portfolio (Strict Save <= Analyses Limit Enforced by Server)
   const handleSaveAnalysis = async () => {
-    if (isExpired) {
-      showToast('Licensing window expired - Renew');
+    if (isAccountLocked) {
+      showToast(lockBannerMessage);
       onOpenRenewal();
       return;
     }
@@ -1474,6 +1766,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.success === false) {
+        if (data?.locked) applyServerLockFromResponse(data);
         showToast(
           data?.error ||
             `Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}.`
@@ -1639,6 +1932,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
   // Backend-enforced PDF Memorandum Export with real watermarked PDF download
   const handleExportPDF = async (title: string) => {
+    if (isAccountLocked) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
     if (!canPdfExport) {
       showToast('Available in PROFESSIONAL - Upgrade');
       onOpenRenewal();
@@ -1940,7 +2238,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         cancellationEligibility: data.cancellationEligibility ?? null,
       });
       setIsCancelModalOpen(false);
-      showToast(data?.message || 'Subscription cancelled & refund issued via Lemon Squeezy');
+      showToast(data?.message || 'Subscription cancelled & refund issued via Stripe in 5-10 business days');
     } catch {
       setCancelModalError('Network error processing cancellation. Plan not deactivated.');
     } finally {
@@ -1959,26 +2257,26 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         </div>
       )}
 
-      {/* Subscription Expired / Plan Ended Lock Banner */}
-      {isPlanEnded && (
+      {/* Unified Account Lock Banner (Expired OR Exhausted) */}
+      {isAccountLocked && (
         <div className="bg-rose-950/90 border-b border-rose-500/40 text-rose-200 text-xs py-2.5 px-4 flex items-center justify-between backdrop-blur-md z-50">
-          <div className="flex items-center gap-2 max-w-4xl mx-auto">
-            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+          <div className="flex items-center gap-2 max-w-4xl mx-auto font-mono">
+            <Lock className="w-4 h-4 text-rose-400 shrink-0" />
             <span>
-              <strong>Your plan has ended.</strong> Renew to continue your underwriting analyses and portfolio tracking.
+              <strong>Account Locked:</strong> {lockBannerMessage}
             </span>
           </div>
           <button
             onClick={onOpenRenewal}
             className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold transition cursor-pointer shrink-0 ml-3 shadow-sm"
           >
-            Renew Plan
+            Upgrade / Renew
           </button>
         </div>
       )}
 
       {/* Subscription Ending in 24 Hours Banner */}
-      {!isPlanEnded && isEndingIn24h && (
+      {!isAccountLocked && isEndingIn24h && (
         <div className="bg-amber-950/90 border-b border-amber-500/40 text-amber-200 text-xs py-2 px-4 flex items-center justify-between backdrop-blur-md z-50">
           <div className="flex items-center gap-2 max-w-4xl mx-auto">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
@@ -2015,7 +2313,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         </div>
       )}
 
-      {/* Lemon Test Mode Banner */}
+      {/* Payment Test Mode Banner */}
       {isTestMode && (
         <div className="bg-amber-950/95 border-b border-amber-500/40 text-amber-200 text-[11px] font-mono py-1.5 px-4 flex items-center justify-center gap-2 z-50">
           <span className="font-bold">⚠️ TEST MODE - No real money - Test card 4242 4242 4242 4242</span>
@@ -2229,6 +2527,27 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
 
               <button
+                onClick={() => { setActiveTab('forecast'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
+                  activeTab === 'forecast'
+                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
+                }`}
+              >
+                <span className="flex items-center gap-3">
+                  <TrendingUp className="w-4 h-4" />
+                  <span>AI Market Forecast</span>
+                </span>
+                {!canMarketForecast && (
+                  <Lock
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      activeTab === 'forecast' ? 'text-black' : 'text-[#D4AF37]'
+                    }`}
+                  />
+                )}
+              </button>
+
+              <button
                 onClick={() => { setActiveTab('saved'); setMobileSidebarOpen(false); }}
                 className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
                   activeTab === 'saved'
@@ -2317,7 +2636,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               <span>Upgrade / Renew Plan</span>
             </button>
             <div className="text-[11px] text-center text-zinc-500 font-mono">
-              30-day licensing • Real Lemon Checkout
+              30-day licensing • Secure Stripe Checkout
             </div>
           </div>
 
@@ -2847,21 +3166,17 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <button
                         type="button"
                         onClick={handleRunAnalysis}
-                        disabled={
-                          isAnalyzingApi ||
-                          isExpired ||
-                          (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
-                        }
+                        disabled={isAnalyzingApi || isAccountLocked}
                         className={`flex-1 py-3.5 px-4 rounded-xl text-xs font-bold font-mono tracking-wider uppercase transition flex items-center justify-center gap-2 shadow-lg ${
-                          isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                          isAccountLocked
                             ? 'bg-zinc-800 text-zinc-400 border border-zinc-700 cursor-not-allowed'
                             : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.35)]'
                         }`}
                       >
-                        {isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0) ? (
+                        {isAccountLocked ? (
                           <>
                             <Lock className="w-4 h-4 text-amber-400" />
-                            <span>No analyses left. Renew / Upgrade.</span>
+                            <span>{lockReasonKind === 'expired' ? 'Plan Expired - Renew' : 'No analyses left. Renew / Upgrade.'}</span>
                           </>
                         ) : (
                           <>
@@ -2873,12 +3188,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                       <div
                         className={`px-3.5 py-2.5 rounded-xl border text-xs font-mono font-bold text-center shrink-0 ${
-                          isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                          isAccountLocked
                             ? 'bg-rose-950/40 border-rose-500/40 text-rose-300'
                             : 'bg-[#D4AF37]/10 border-[#D4AF37]/30 text-[#D4AF37]'
                         }`}
                       >
-                        {isExpired || (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                        {isAccountLocked
                           ? '0 analyses left'
                           : analysesLeftStr}
                       </div>
@@ -2886,9 +3201,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <button
                         type="button"
                         onClick={handleSaveAnalysis}
-                        disabled={!hasRunAnalysis || !runResult}
+                        disabled={!hasRunAnalysis || !runResult || isAccountLocked}
                         className={`py-3.5 px-5 rounded-xl border font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-2 ${
-                          !hasRunAnalysis || !runResult
+                          !hasRunAnalysis || !runResult || isAccountLocked
                             ? 'bg-white/[0.02] border-white/5 text-zinc-600 cursor-not-allowed'
                             : !canSaveProperty || savedAnalyses.length >= maxSaved
                             ? 'bg-amber-500/10 border-amber-500/40 text-amber-300 cursor-pointer'
@@ -4040,18 +4355,19 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                                 </button>
                                 <button
                                   type="button"
-                                  disabled={savingDealId === deal.id}
+                                  disabled={savingDealId === deal.id || isAccountLocked}
                                   onClick={() => handleSaveDealFromFinder(deal)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-300 font-bold text-[11px] cursor-pointer transition disabled:opacity-50"
+                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-300 font-bold text-[11px] cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                   {savingDealId === deal.id ? 'Saving...' : 'Save to Portfolio'}
                                 </button>
                                 <button
                                   type="button"
+                                  disabled={isAccountLocked}
                                   onClick={() => handleExportDealPdf(deal)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-bold text-[11px] cursor-pointer transition flex items-center gap-1"
+                                  className="px-2.5 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-bold text-[11px] cursor-pointer transition flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
-                                  {!canPdfExport && <Lock className="w-3 h-3" />}
+                                  {(!canPdfExport || isAccountLocked) && <Lock className="w-3 h-3" />}
                                   <span>Export PDF</span>
                                 </button>
                               </div>
@@ -4065,6 +4381,385 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200">
                     {dfDisclaimer ||
                       `AI Deal Finder - Simulated deals based on market avg for ${dfResultsCity} - For illustration, verify with local agent`}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 1C: AI MARKET FORECAST (PROFESSIONAL / SOVEREIGN ONLY) */}
+          {activeTab === 'forecast' && (
+            <div className="space-y-6 max-w-6xl mx-auto">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.08] pb-5">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-xs font-mono text-[#D4AF37] mb-2">
+                    <TrendingUp className="w-3.5 h-3.5" />
+                    <span>AI MARKET FORECAST • PROFESSIONAL / SOVEREIGN</span>
+                  </div>
+                  <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                    AI Market Forecast
+                  </h2>
+                </div>
+                <div className="text-xs font-mono text-zinc-400">
+                  Credits Remaining: <strong className="text-[#D4AF37]">{isAccountLocked ? '0 analyses left' : analysesLeftStr}</strong>
+                </div>
+              </div>
+
+              {!canMarketForecast && (
+                <div className="p-5 rounded-2xl bg-amber-950/35 border border-[#D4AF37]/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <Lock className="w-5 h-5 text-[#D4AF37] shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="text-sm font-mono font-bold text-[#D4AF37]">
+                        {isAccountLocked
+                          ? lockBannerMessage
+                          : 'AI Market Forecast available in PROFESSIONAL / SOVEREIGN - Upgrade'}
+                      </div>
+                      <div className="text-xs font-mono text-zinc-300">
+                        {isAccountLocked
+                          ? 'Upgrade or renew your subscription to unlock city-level Cap Rate, Rent Growth, and Property Appreciation forecasts.'
+                          : 'FREE and STARTER accounts cannot run market forecasts. Upgrade to unlock 12M, 3Y, and 5Y projections.'}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenRenewal}
+                    className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono uppercase tracking-wider cursor-pointer shrink-0"
+                  >
+                    {isAccountLocked ? 'Upgrade / Renew' : 'Upgrade Plan'}
+                  </button>
+                </div>
+              )}
+
+              {/* Forecast Inputs */}
+              <div className={`glass-panel p-6 space-y-5 ${!canMarketForecast ? 'opacity-65' : ''}`}>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Target City (750+ Searchable Combobox) */}
+                  <div className="space-y-1.5 relative">
+                    <label htmlFor="fc-city" className="text-xs font-mono text-zinc-300 block">
+                      City ({CITIES.length}+ Markets)
+                    </label>
+                    <input
+                      id="fc-city"
+                      type="text"
+                      disabled={!canMarketForecast}
+                      lang="en"
+                      dir="ltr"
+                      autoComplete="off"
+                      value={fcCityComboInput}
+                      onFocus={() => canMarketForecast && setFcCityOpen(true)}
+                      onBlur={() => setTimeout(() => setFcCityOpen(false), 180)}
+                      onChange={(e) => {
+                        setFcCityComboInput(e.target.value);
+                        setFcCityOpen(true);
+                      }}
+                      placeholder="Type city... e.g. Muscat"
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    />
+                    {fcCityOpen && canMarketForecast && (
+                      <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
+                        {fcCityOptions.length === 0 ? (
+                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
+                            City not supported yet. Try another spelling.
+                          </div>
+                        ) : (
+                          fcCityOptions.map((c) => (
+                            <button
+                              key={`fc-${c.city}-${c.countryCode}`}
+                              type="button"
+                              onMouseDown={() => {
+                                setFcCityComboInput(formatCityOptionLabel(c));
+                                setFcCityOpen(false);
+                              }}
+                              className="w-full text-left px-3 py-2 text-xs font-mono text-zinc-200 hover:bg-[#D4AF37] hover:text-black transition cursor-pointer flex items-center justify-between"
+                            >
+                              <span>{formatCityOptionLabel(c)}</span>
+                              <span className="text-[10px] opacity-75">Avg {c.avgCapRate}%</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Property Type */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="fc-prop-type" className="text-xs font-mono text-zinc-300 block">
+                      Property Type
+                    </label>
+                    <select
+                      id="fc-prop-type"
+                      disabled={!canMarketForecast}
+                      value={fcPropType}
+                      onChange={(e) => setFcPropType(e.target.value as 'Apartment' | 'Villa' | 'Commercial')}
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/70 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    >
+                      <option value="Apartment">Apartment</option>
+                      <option value="Villa">Villa</option>
+                      <option value="Commercial">Commercial</option>
+                    </select>
+                  </div>
+
+                  {/* Period */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="fc-period" className="text-xs font-mono text-zinc-300 block">
+                      Forecast Period
+                    </label>
+                    <select
+                      id="fc-period"
+                      disabled={!canMarketForecast}
+                      value={fcPeriod}
+                      onChange={(e) => setFcPeriod(e.target.value as '12 months' | '3 years' | '5 years')}
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/70 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    >
+                      <option value="12 months">12 months</option>
+                      <option value="3 years">3 years</option>
+                      <option value="5 years">5 years</option>
+                    </select>
+                  </div>
+                </div>
+
+                {fcError && (
+                  <div className="p-3 rounded-xl bg-rose-950/50 border border-rose-500/40 text-xs font-mono text-rose-200">
+                    {fcError}
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                  <button
+                    type="button"
+                    disabled={
+                      !canMarketForecast ||
+                      isGettingForecast ||
+                      isAccountLocked ||
+                      !isCreditsLoaded
+                    }
+                    onClick={handleGetForecast}
+                    className={`px-6 py-3.5 rounded-xl font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition min-h-[46px] ${
+                      !canMarketForecast || isAccountLocked || !isCreditsLoaded
+                        ? 'bg-zinc-800 text-zinc-500 border border-white/10 cursor-not-allowed'
+                        : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.3)]'
+                    }`}
+                  >
+                    {isAccountLocked ? (
+                      <>
+                        <Lock className="w-4 h-4 text-rose-400" />
+                        <span>{lockReasonKind === 'expired' ? 'Plan Expired - Renew' : 'No analyses left'}</span>
+                      </>
+                    ) : !canMarketForecast ? (
+                      <>
+                        <Lock className="w-4 h-4" />
+                        <span>Get Forecast (-1 CREDIT)</span>
+                      </>
+                    ) : isGettingForecast ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Computing Forecast...</span>
+                      </>
+                    ) : !isCreditsLoaded ? (
+                      <span>Loading...</span>
+                    ) : (
+                      <>
+                        <TrendingUp className="w-4 h-4" />
+                        <span>Get Forecast (-1 CREDIT)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <span className="text-[11px] font-mono text-zinc-400">
+                    Projects 12M / 3Y / 5Y Cap Rate, Rent Growth (2-5% YoY) &amp; Appreciation (3-7% YoY)
+                  </span>
+                </div>
+              </div>
+
+              {/* Forecast Results & SVG Chart */}
+              {fcResult && (
+                <div className="glass-panel p-6 space-y-6 border border-[#D4AF37]/30">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.08] pb-4">
+                    <div>
+                      <div className="text-[11px] font-mono text-[#D4AF37] uppercase tracking-wider">
+                        {fcResult.city}, {fcResult.country} • {fcResult.propertyType} • Horizon: {fcResult.period}
+                      </div>
+                      <h3 className="text-xl font-bold text-white mt-0.5">
+                        Market Yield &amp; Capital Growth Projection
+                      </h3>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+                      <span
+                        className={`px-3 py-1 rounded-lg font-bold border ${
+                          fcResult.confidence === 'High'
+                            ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                            : fcResult.confidence === 'Medium'
+                            ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                            : 'bg-zinc-700/40 border-white/15 text-zinc-300'
+                        }`}
+                      >
+                        Confidence: {fcResult.confidence}
+                      </span>
+                      <span
+                        className={`px-3 py-1 rounded-lg font-black uppercase border ${
+                          fcResult.recommendation === 'Buy'
+                            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300'
+                            : fcResult.recommendation === 'Hold'
+                            ? 'bg-[#D4AF37]/20 border-[#D4AF37] text-[#D4AF37]'
+                            : 'bg-rose-500/20 border-rose-400 text-rose-300'
+                        }`}
+                      >
+                        Recommendation: {fcResult.recommendation}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Metrics Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 font-mono tabular-nums">
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Current Avg Cap Rate</div>
+                      <div className="text-xl font-black text-white mt-1">{fcResult.currentAvgCapRate}%</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Forecast Cap (12M)</div>
+                      <div className="text-xl font-black text-[#D4AF37] mt-1">{fcResult.forecastCap12M}%</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Forecast Cap (3Y)</div>
+                      <div className="text-xl font-black text-emerald-400 mt-1">{fcResult.forecastCap3Y}%</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Forecast Cap (5Y)</div>
+                      <div className="text-xl font-black text-cyan-400 mt-1">{fcResult.forecastCap5Y}%</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Rent Growth (12M / {fcResult.period})</div>
+                      <div className="text-lg font-black text-emerald-300 mt-1">
+                        +{fcResult.rentGrowth12M}% <span className="text-xs text-zinc-400">(+{fcResult.rentGrowthSelected}%)</span>
+                      </div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                      <div className="text-[10px] uppercase text-zinc-400">Price Growth (12M / {fcResult.period})</div>
+                      <div className="text-lg font-black text-purple-300 mt-1">
+                        +{fcResult.priceGrowth12M}% <span className="text-xs text-zinc-400">(+{fcResult.priceGrowthSelected}%)</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Forecast Curve Chart: Now -> 12M -> 3Y -> 5Y */}
+                  {Array.isArray(fcResult.series) && fcResult.series.length >= 2 && (() => {
+                    const pts = fcResult.series;
+                    const W = 680;
+                    const H = 220;
+                    const padL = 44;
+                    const padR = 24;
+                    const padT = 20;
+                    const padB = 34;
+                    const plotW = W - padL - padR;
+                    const plotH = H - padT - padB;
+                    const capVals = pts.map((p) => p.capRate);
+                    const minCap = Math.max(0, Math.floor((Math.min(...capVals) - 0.8) * 10) / 10);
+                    const maxCap = Math.ceil((Math.max(...capVals) + 0.8) * 10) / 10;
+                    const spanCap = Math.max(0.5, maxCap - minCap);
+                    const minIdx = 100;
+                    const maxIdx = Math.max(115, ...pts.map((p) => Math.max(p.priceIndex, p.rentIndex)) ) + 3;
+                    const spanIdx = Math.max(10, maxIdx - minIdx);
+
+                    const xAt = (i: number) => padL + (i / Math.max(1, pts.length - 1)) * plotW;
+                    const yCap = (v: number) => padT + plotH - ((v - minCap) / spanCap) * plotH;
+                    const yIdx = (v: number) => padT + plotH - ((v - minIdx) / spanIdx) * plotH;
+
+                    const capPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yCap(p.capRate).toFixed(1)}`).join(' ');
+                    const pricePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yIdx(p.priceIndex).toFixed(1)}`).join(' ');
+                    const rentPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yIdx(p.rentIndex).toFixed(1)}`).join(' ');
+
+                    return (
+                      <div className="p-4 rounded-2xl bg-black/50 border border-white/10 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+                          <span className="font-bold text-white uppercase">
+                            Projected Trajectory (Now &rarr; 12M &rarr; 3Y &rarr; 5Y)
+                          </span>
+                          <div className="flex flex-wrap items-center gap-4 text-[11px]">
+                            <span className="flex items-center gap-1.5 text-[#D4AF37]">
+                              <span className="w-3 h-0.5 bg-[#D4AF37] inline-block" /> Cap Rate (%)
+                            </span>
+                            <span className="flex items-center gap-1.5 text-purple-300">
+                              <span className="w-3 h-0.5 bg-purple-400 inline-block" /> Price Index (100=Now)
+                            </span>
+                            <span className="flex items-center gap-1.5 text-emerald-300">
+                              <span className="w-3 h-0.5 bg-emerald-400 inline-block" /> Rent Index (100=Now)
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="w-full overflow-x-auto">
+                          <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-[680px] h-auto mx-auto font-mono">
+                            {[0, 0.25, 0.5, 0.75, 1].map((t) => {
+                              const y = padT + plotH * t;
+                              return (
+                                <line
+                                  key={t}
+                                  x1={padL}
+                                  y1={y}
+                                  x2={W - padR}
+                                  y2={y}
+                                  stroke="rgba(255,255,255,0.08)"
+                                  strokeDasharray="3 3"
+                                />
+                              );
+                            })}
+                            <path d={pricePath} fill="none" stroke="#c084fc" strokeWidth="2.5" />
+                            <path d={rentPath} fill="none" stroke="#34d399" strokeWidth="2.5" />
+                            <path d={capPath} fill="none" stroke="#D4AF37" strokeWidth="3" />
+                            {pts.map((p, i) => {
+                              const x = xAt(i);
+                              const yc = yCap(p.capRate);
+                              const yp = yIdx(p.priceIndex);
+                              const yr = yIdx(p.rentIndex);
+                              return (
+                                <g key={p.label}>
+                                  <circle cx={x} cy={yp} r="3.5" fill="#c084fc" />
+                                  <circle cx={x} cy={yr} r="3.5" fill="#34d399" />
+                                  <circle cx={x} cy={yc} r="4.5" fill="#D4AF37" stroke="#000" strokeWidth="1.5" />
+                                  <text x={x} y={yc - 10} textAnchor="middle" fill="#D4AF37" fontSize="10" fontWeight="bold">
+                                    {p.capRate}%
+                                  </text>
+                                  <text x={x} y={H - 10} textAnchor="middle" fill="#a1a1aa" fontSize="11" fontWeight="bold">
+                                    {p.label}
+                                  </text>
+                                </g>
+                              );
+                            })}
+                          </svg>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Actions & Disclaimer */}
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={isSavingForecast || isAccountLocked}
+                      onClick={handleSaveForecast}
+                      className="px-4 py-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-300 font-mono font-bold text-xs cursor-pointer transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <BookmarkCheck className="w-4 h-4" />
+                      <span>{isSavingForecast ? 'Saving...' : `Save to Portfolio (${savedAnalyses.length}/${maxSaved})`}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isAccountLocked}
+                      onClick={handleExportForecastPdf}
+                      className="px-4 py-2.5 rounded-xl bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-mono font-bold text-xs cursor-pointer transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {(!canPdfExport || isAccountLocked) ? <Lock className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
+                      <span>Export PDF</span>
+                    </button>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200">
+                    {fcResult.disclaimer ||
+                      `Forecast based on market averages for ${fcResult.city} - Not financial advice, verify with local agent`}
                   </div>
                 </div>
               )}
@@ -4245,8 +4940,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                           <div className="flex items-center gap-2">
                             <button
+                              disabled={isAccountLocked}
                               onClick={() => handleExportPDF(item.property)}
-                              className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
+                              className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Export PDF Memo (PROFESSIONAL / SOVEREIGN)"
                             >
                               <Download className="w-4 h-4" />
@@ -5105,7 +5801,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         5. How to Cancel: Settings &gt; SUBSCRIPTION &amp; CANCELLATION. If eligible, Cancel button enabled. If not eligible, automatically locked with reason.
                       </p>
                       <p>
-                        6. What Happens After Cancellation: Plan reverts to FREE (3 analyses), paid analyses deactivated, refund ($79 / $199 / $599) issued to original payment method via Lemon Squeezy.
+                        6. What Happens After Cancellation: Plan reverts to FREE (3 analyses), paid analyses deactivated, refund ($79 / $199 / $599) issued to original payment method via Stripe in 5-10 business days.
                       </p>
                       <p>
                         7. No Partial Refunds for unused days or unused analyses. By purchasing, you agree to this policy.
@@ -5338,13 +6034,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         Webhook URL to copy:
                       </div>
                       <div className="text-white break-all select-all">
-                        https://aqari-ai-rho.vercel.app/api/webhooks/lemonsqueezy
+                        https://aqari-ai-rho.vercel.app/api/webhooks/stripe
                       </div>
                     </div>
                     <button
                       type="button"
                       onClick={() => {
-                        navigator.clipboard?.writeText('https://aqari-ai-rho.vercel.app/api/webhooks/lemonsqueezy');
+                        navigator.clipboard?.writeText('https://aqari-ai-rho.vercel.app/api/webhooks/stripe');
                         setCopiedWebhookUrl(true);
                         setTimeout(() => setCopiedWebhookUrl(false), 2000);
                       }}
@@ -5358,13 +6054,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <div className="flex flex-wrap items-center gap-4">
                       <span className="text-amber-200 font-bold">Status:</span>
                       <span className="text-zinc-200">
-                        LEMON_WEBHOOK_SECRET present?{' '}
+                        PAYMENT_WEBHOOK_SECRET present?{' '}
                         <strong className={webhookEnvStatus?.webhookSecretPresent ? 'text-emerald-400' : 'text-rose-400'}>
                           {webhookEnvStatus ? (webhookEnvStatus.webhookSecretPresent ? 'Yes' : 'No') : '...'}
                         </strong>
                       </span>
                       <span className="text-zinc-200">
-                        LEMON_API_KEY present?{' '}
+                        PAYMENT_API_KEY present?{' '}
                         <strong className={webhookEnvStatus?.apiKeyPresent ? 'text-emerald-400' : 'text-rose-400'}>
                           {webhookEnvStatus ? (webhookEnvStatus.apiKeyPresent ? 'Yes' : 'No') : '...'}
                         </strong>
@@ -5376,7 +6072,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 {webhookLogs.length === 0 ? (
                   <div className="text-sm font-mono text-zinc-300 p-4 rounded-xl bg-black/40 border border-white/10">
                     {webhookDebug ||
-                      'No webhook received - Check Lemon > Settings > Webhooks URL is https://aqari-ai-rho.vercel.app/api/webhooks/lemonsqueezy'}
+                      'No payment webhook events received yet.'}
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -5490,14 +6186,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     className="pt-4 border-t border-white/10 space-y-2.5 text-xs font-mono"
                   >
                     <div className="text-zinc-400 uppercase font-bold">
-                      Admin Backup: Manual Lemon Order Verification
+                      Admin Backup: Manual Payment Order Verification
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <input
                         type="text"
                         value={backupOrderId}
                         onChange={(e) => setBackupOrderId(e.target.value)}
-                        placeholder="Lemon Order ID (e.g. 5165758)"
+                        placeholder="Payment Intent / Order ID (e.g. pi_123456)"
                         className="px-3 py-2 rounded-lg bg-black/50 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
                       />
                       <input
@@ -5512,7 +6208,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         disabled={isRunningBackupVerify}
                         className="px-3 py-2 rounded-lg bg-[#D4AF37]/20 hover:bg-[#D4AF37]/30 border border-[#D4AF37]/40 text-[#D4AF37] font-bold transition cursor-pointer disabled:opacity-50"
                       >
-                        {isRunningBackupVerify ? 'Checking Lemon...' : 'Admin Verify Order'}
+                        {isRunningBackupVerify ? 'Checking Payment...' : 'Admin Verify Order'}
                       </button>
                     </div>
                     {backupVerifyMsg && (

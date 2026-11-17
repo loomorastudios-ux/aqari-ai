@@ -34,7 +34,7 @@ export interface SignedEntitlementPayload {
   licenseEnd: number;
   amountUSD: number;
   testMode: boolean;
-  lemonCustomerEmail?: string | null;
+  paymentCustomerEmail?: string | null;
   exp: number;
 }
 

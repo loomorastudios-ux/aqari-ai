@@ -293,10 +293,8 @@ export default async function handler(req: any, res: any) {
       if (now >= u.license_end) {
         const previousPlan = planKey;
         const shouldSendExpired = !u.expired_email_sent;
-        u.plan = 'free';
-        u.analyses_used = 0;
-        u.license_start = now;
-        u.license_end = now + THIRTY_DAYS_MS;
+        u.status = 'expired';
+        u.analyses_left = 0;
         u.expired_email_sent = true;
         u.updated_at = now;
         store.users[u.email] = u;
@@ -314,7 +312,7 @@ export default async function handler(req: any, res: any) {
           });
           expiredEmailsSent++;
         }
-        actions.push({ email: u.email, action: `expired_downgraded_from_${previousPlan}_to_free` });
+        actions.push({ email: u.email, action: `expired_locked_${previousPlan}` });
         continue;
       }
 

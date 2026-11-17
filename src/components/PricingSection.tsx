@@ -54,8 +54,8 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
 
   const isTestMode =
     typeof window !== 'undefined' &&
-    (import.meta.env.VITE_LEMON_TEST_MODE === 'true' ||
-      (import.meta.env.VITE_LEMON_TEST_MODE as unknown) === true);
+    (import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' ||
+      (import.meta.env.VITE_PAYMENT_TEST_MODE as unknown) === true);
 
   // Sync externalPricing prop whenever parent updates
   useEffect(() => {
@@ -203,7 +203,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     setLoadingPlan(planId);
     setErrorToast(null);
 
-    const callCheckoutApi = async (): Promise<string | null> => {
+    const callCheckoutApi = async (): Promise<{ url?: string; message?: string; pendingStripeIntegration?: boolean } | null> => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
       try {
@@ -221,14 +221,14 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         clearTimeout(timeoutId);
         if (res.ok) {
           const data = await res.json();
-          if (data.url) {
+          if (data.url && data.url !== '/#pricing') {
             checkoutPrefetchCache[cacheKey] = {
               url: data.url,
               timestamp: Date.now(),
               pricingVersion,
             };
-            return data.url;
           }
+          return data;
         }
       } catch (err) {
         clearTimeout(timeoutId);
@@ -238,34 +238,18 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     };
 
     try {
-      const url = await callCheckoutApi();
-      if (url) {
-        window.location.href = url;
+      const result = await callCheckoutApi();
+      if (result?.url && result.url !== '/#pricing' && !result?.pendingStripeIntegration) {
+        window.location.href = result.url;
         return;
       }
-    } catch {
-      try {
-        const retryUrl = await callCheckoutApi();
-        if (retryUrl) {
-          window.location.href = retryUrl;
-          return;
-        }
-      } catch {}
-    }
-
-    try {
-      const buyUrls: Record<'starter' | 'pro' | 'enterprise', string> = {
-        starter: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/da826632-dcb4-4885-966e-aac1fab84cb3',
-        pro: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/404c54cb-29c5-477a-b8c2-772092f5459a',
-        enterprise: 'https://aqari-ai.lemonsqueezy.com/checkout/buy/ce8dfbdb-cedd-4445-a947-e821522472bb',
-      };
-      const redirectUrl = `https://aqari-ai-rho.vercel.app/app?checkout=success`;
-      const cancelUrl = `https://aqari-ai-rho.vercel.app/pricing?checkout=cancelled`;
-      const direct = `${buyUrls[planId]}?checkout[email]=${encodeURIComponent(user.email)}&checkout[custom][user_id]=${encodeURIComponent(user.id || user.googleId || '')}&checkout[custom][plan]=${planId}&checkout[redirect_url]=${encodeURIComponent(redirectUrl)}&checkout[cancel_url]=${encodeURIComponent(cancelUrl)}${isTestMode ? '&checkout[test_mode]=1' : ''}`;
-      window.location.href = direct;
+      showError(
+        result?.message ||
+          'Stripe Checkout integration is ready for activation. Your account remains preserved.'
+      );
       return;
     } catch {
-      showError('Checkout is taking longer, please try again.');
+      showError('Checkout is temporarily unavailable. Please try again.');
     } finally {
       setLoadingPlan(null);
     }
@@ -412,7 +396,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
           Transparent Terminal Pricing
         </h2>
         <p className="text-zinc-400 text-sm mt-3 leading-relaxed">
-          Unlock institutional real estate underwriting. Real Lemon Squeezy payment with 30-day automated licensing.
+          Unlock institutional real estate underwriting. Secure Stripe payment with 30-day automated licensing.
         </p>
 
         {/* Live Launch Discount Banner + Countdown */}
@@ -472,7 +456,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     <div className="h-full bg-gradient-to-r from-[#D4AF37] to-amber-200 animate-pulse w-full" />
                   </div>
                   <div className="text-[10px] font-mono text-zinc-400">
-                    Encrypting session with Lemon Squeezy
+                    Encrypting session with Stripe
                   </div>
                 </div>
               )}
@@ -653,7 +637,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       <div className="mt-8 text-center text-xs text-zinc-400 font-mono flex flex-wrap items-center justify-center gap-6">
         <span className="flex items-center gap-1.5">
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          <span>Real Lemon Squeezy 256-Bit SSL Checkout</span>
+          <span>Secure Stripe 256-Bit SSL Checkout</span>
         </span>
         <span className="text-zinc-600">•</span>
         <span>Instant Automated Webhook Provisioning</span>

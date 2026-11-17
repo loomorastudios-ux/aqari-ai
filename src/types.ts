@@ -191,6 +191,12 @@ export interface User {
   cancelStatus?: 'none' | 'refunded' | string;
   lastOrderId?: string | null;
   cancellationEligibility?: CancellationEligibility | null;
+  status?: 'active' | 'expired' | 'exhausted' | string;
+  locked?: boolean;
+  lockReason?: 'expired' | 'exhausted' | string | null;
+  lockError?: string | null;
+  paymentProvider?: string;
+  paymentIntentId?: string | null;
   portfolio?: {
     totalValue: number;
     monthlyCashflow: number;
@@ -202,7 +208,7 @@ export interface PlanFeatureConfig {
   maxSaved: number;
   label: string;
   priceUSD: number;
-  lemon: string;
+  checkoutUrl: string;
   allowedInputs: string[];
   allowedOutputs: string[];
   hasMonteCarlo: boolean;
@@ -301,3 +307,30 @@ export interface DealFinderDeal {
   score: number;
 }
 
+export interface MarketForecastSeriesPoint {
+  label: string;
+  capRate: number;
+  rentGrowthPct: number;
+  priceGrowthPct: number;
+  rentIndex: number;
+  priceIndex: number;
+}
+
+export interface MarketForecastResult {
+  city: string;
+  country: string;
+  propertyType: 'Apartment' | 'Villa' | 'Commercial' | string;
+  period: '12 months' | '3 years' | '5 years' | string;
+  currentAvgCapRate: number;
+  forecastCap12M: number;
+  forecastCap3Y: number;
+  forecastCap5Y: number;
+  rentGrowth12M: number;
+  priceGrowth12M: number;
+  rentGrowthSelected: number;
+  priceGrowthSelected: number;
+  confidence: 'High' | 'Medium' | 'Low' | string;
+  recommendation: 'Buy' | 'Hold' | 'Wait' | string;
+  series: MarketForecastSeriesPoint[];
+  disclaimer: string;
+}
