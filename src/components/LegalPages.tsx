@@ -72,8 +72,8 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                   <strong>Operator &amp; Company:</strong> AQARI TERMINAL is operated by{' '}
                   <strong>Loomora Studios</strong>, owned by <strong>Hamed Al Shami</strong>, Oman.
                   Official support and legal correspondence:{' '}
-                  <a href="mailto:loomora.studios@gmail.com" className="text-[#D4AF37] underline">
-                    loomora.studios@gmail.com
+                  <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
+                    azzamalshmale@gmail.com
                   </a>
                   .
                 </p>
@@ -149,8 +149,8 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                 <p>
                   <strong>4. Data Deletion Requests:</strong> You may request permanent deletion of your
                   account and stored underwriting history at any time by emailing{' '}
-                  <a href="mailto:loomora.studios@gmail.com" className="text-[#D4AF37] underline">
-                    loomora.studios@gmail.com
+                  <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
+                    azzamalshmale@gmail.com
                   </a>
                   .
                 </p>
@@ -171,7 +171,13 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
               </div>
               <div className="p-4 rounded-xl bg-amber-500/10 border border-[#D4AF37]/40 text-xs font-mono text-amber-200 space-y-1">
                 <div className="font-bold text-white">AQARI AI - Refund &amp; Cancellation Policy</div>
-                <div>Contact: support via Settings &gt; Report Tool Issue</div>
+                <div>
+                  Support:{' '}
+                  <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline font-bold">
+                    azzamalshmale@gmail.com
+                  </a>{' '}
+                  • Or report a tool issue via Settings &gt; Report Tool Issue
+                </div>
               </div>
               <div className="space-y-3.5 text-sm text-zinc-200 leading-relaxed font-mono">
                 <p>
@@ -200,7 +206,11 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                 </p>
               </div>
               <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10 text-xs font-mono text-zinc-300">
-                Contact: support via <strong className="text-[#D4AF37]">Settings &gt; Report Tool Issue</strong>
+                Contact:{' '}
+                <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline font-bold">
+                  azzamalshmale@gmail.com
+                </a>{' '}
+                or via <strong className="text-[#D4AF37]">Settings &gt; Report Tool Issue</strong>
               </div>
             </>
           )}

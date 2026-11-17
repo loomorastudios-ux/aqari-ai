@@ -79,7 +79,7 @@ type AppRoute =
   | 'admin'
   | 'checkout-verifying';
 
-const OWNER_ADMIN_EMAILS = ['loomora.studios@gmail.com', 'loomorastudios@gmail.com'];
+const OWNER_ADMIN_EMAILS = ['azzamalshmale@gmail.com'];
 const isOwnerAdminEmail = (email?: string | null) =>
   Boolean(email && OWNER_ADMIN_EMAILS.includes(email.trim().toLowerCase()));
 
@@ -566,6 +566,7 @@ export default function App() {
           issueStatus: meData?.issue_status ?? data.user?.issue_status ?? 'none',
           cancelStatus: meData?.cancel_status ?? data.user?.cancel_status ?? 'none',
           lastOrderId: meData?.last_order_id ?? data.user?.last_order_id ?? null,
+          lastResults: meData?.last_results ?? data.user?.last_results ?? null,
           cancellationEligibility: meData?.cancellationEligibility ?? data.cancellationEligibility ?? null,
           expiryEmailSent: false,
         };
@@ -776,6 +777,7 @@ export default function App() {
             lockError: serverLockError,
             paymentProvider: data.payment_provider ?? data.user?.payment_provider ?? 'stripe',
             paymentIntentId: data.payment_intent_id ?? data.user?.payment_intent_id ?? null,
+            lastResults: data.last_results ?? data.user?.last_results ?? null,
           };
           handleSaveUser(syncedUser);
           resolvedUser = syncedUser;
@@ -935,6 +937,7 @@ export default function App() {
         const serverLockError = data.lockError ?? data.error ?? null;
         const serverPaymentProvider = String(data.payment_provider ?? data.user?.payment_provider ?? 'stripe');
         const serverPaymentIntentId = data.payment_intent_id ?? data.user?.payment_intent_id ?? null;
+        const serverLastResults = data.last_results ?? data.user?.last_results ?? null;
 
         const changed =
           !user ||
@@ -967,6 +970,7 @@ export default function App() {
           (user.lockError ?? null) !== serverLockError ||
           (user.paymentProvider ?? 'stripe') !== serverPaymentProvider ||
           (user.paymentIntentId ?? null) !== serverPaymentIntentId ||
+          JSON.stringify(user.lastResults || null) !== JSON.stringify(serverLastResults) ||
           user.analysesLeft !== serverLeft;
 
         if (changed) {
@@ -1020,6 +1024,7 @@ export default function App() {
             lockError: serverLockError,
             paymentProvider: serverPaymentProvider,
             paymentIntentId: serverPaymentIntentId,
+            lastResults: serverLastResults,
           };
           saveUser(syncedUser);
           setUser(syncedUser);
@@ -1136,6 +1141,7 @@ export default function App() {
           freeAnalyses: nextLeft,
           freeAnalysesLeft: nextLeft,
           analysesLeft: nextLeft,
+          lastResults: data?.last_results ?? user.lastResults,
         });
         setActivePropertyAnalysis(property);
       })
@@ -1201,8 +1207,8 @@ export default function App() {
           <span>
             Market data is indicative, synced daily from public sources. Not financial advice. Data as of {lastSyncDisplay}.
           </span>
-          <a href="mailto:loomora.studios@gmail.com" className="text-zinc-400 hover:text-[#D4AF37]">
-            loomora.studios@gmail.com
+          <a href="mailto:azzamalshmale@gmail.com" className="text-zinc-400 hover:text-[#D4AF37]">
+            azzamalshmale@gmail.com
           </a>
         </div>
       </div>

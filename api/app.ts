@@ -535,7 +535,7 @@ function cleanEnvValue(value?: string | null): string {
 }
 
 function getAdminEmail(): string {
-  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'loomora.studios@gmail.com').toLowerCase();
+  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'azzamalshmale@gmail.com').toLowerCase();
 }
 
 function getSessionSecret(): string {
@@ -594,11 +594,7 @@ function appendSetCookieHeader(res: any, cookieStr: string): void {
 function isAdminEmail(email?: string | null): boolean {
   const norm = (email || '').trim().toLowerCase();
   if (!norm) return false;
-  return (
-    norm === getAdminEmail() ||
-    norm === 'loomora.studios@gmail.com' ||
-    norm === 'loomorastudios@gmail.com'
-  );
+  return norm === getAdminEmail() || norm === 'azzamalshmale@gmail.com';
 }
 
 function signSessionToken(email: string): string {
@@ -831,6 +827,40 @@ interface CustomCityRecord {
   addedAt: number;
 }
 
+interface PersistedLastResults {
+  analysis?: {
+    inputs: Record<string, any>;
+    cityData?: any;
+    results: Record<string, any>;
+    created_at: string;
+  } | null;
+  deal_finder?: {
+    inputs: {
+      city: string;
+      budget: number;
+      minCapRate: number;
+      propertyType: string;
+      risk: string;
+    };
+    city: string;
+    country: string;
+    countryCode?: string;
+    avgCapRate?: number;
+    disclaimer?: string;
+    deals: any[];
+    created_at: string;
+  } | null;
+  forecast?: {
+    inputs: {
+      city: string;
+      propertyType: string;
+      period: string;
+    };
+    forecast: Record<string, any>;
+    created_at: string;
+  } | null;
+}
+
 interface ServerUserRecord {
   email: string;
   name: string;
@@ -871,6 +901,7 @@ interface ServerUserRecord {
   issue_status: 'none' | 'open' | 'resolved';
   cancel_status: 'none' | 'refunded';
   last_order_id?: string | null;
+  last_results?: PersistedLastResults;
 }
 
 interface WebhookLogEntry {
@@ -1123,6 +1154,8 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
         : Array.isArray(raw?.payments) && raw.payments[0]?.order_id
         ? String(raw.payments[0].order_id)
         : null,
+    last_results:
+      raw?.last_results && typeof raw.last_results === 'object' ? raw.last_results : {},
   };
 }
 
@@ -1255,26 +1288,35 @@ function getKvConfig(): { url: string; token: string } | null {
 async function kvCommand(args: Array<string | number>): Promise<any> {
   const cfg = getKvConfig();
   if (!cfg) return null;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4500);
-  try {
-    const res = await fetch(cfg.url, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${cfg.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(args),
-    });
-    if (!res.ok) {
-      throw new Error(`KV HTTP ${res.status}`);
+  let lastErr: any = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const res = await fetch(cfg.url, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${cfg.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(args),
+      });
+      if (!res.ok) {
+        throw new Error(`KV HTTP ${res.status}`);
+      }
+      const json = await res.json();
+      return json?.result ?? null;
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    const json = await res.json();
-    return json?.result ?? null;
-  } finally {
-    clearTimeout(timer);
   }
+  throw lastErr || new Error('KV command failed');
 }
 
 function getPricingPublicPayload(): PricingPublicPayload {
@@ -1647,7 +1689,7 @@ export async function activateLicense(
     paymentProvider: 'stripe',
     paymentCustomerEmail: normEmail,
   });
-  await saveUserToDb(activated).catch(() => {});
+  await saveUserToDb(activated);
   return activated;
 }
 
@@ -1808,10 +1850,20 @@ function evaluateCancelRefundEligibility(user: ServerUserRecord, now = Date.now(
 }
 
 function recordUserAnalysis(
-  email: string,
-  entry: Omit<ForensicAnalysisEntry, 'id' | 'timestamp'>
+  userOrEmail: string | ServerUserRecord,
+  entry: Omit<ForensicAnalysisEntry, 'id' | 'timestamp'>,
+  extraPatch?: Partial<ServerUserRecord>
 ): ServerUserRecord {
-  const user = getOrCreateServerUser(email);
+  const store = loadStore();
+  let user: ServerUserRecord;
+  if (typeof userOrEmail === 'string') {
+    user = getOrCreateServerUser(userOrEmail);
+  } else {
+    const norm = normalizeEmail(userOrEmail.email);
+    store.users[norm] = userOrEmail;
+    persistStore(store);
+    user = userOrEmail;
+  }
   const now = Date.now();
   const iso = new Date(now).toISOString();
   const planCfg = PLAN_DEFINITIONS[normalizePlanKey(user.plan)];
@@ -1838,6 +1890,7 @@ function recordUserAnalysis(
   };
 
   return updateServerUser(user.email, {
+    ...(extraPatch || {}),
     analyses_used: analysisNum,
     analyses_left: nextLeft,
     analyses_total: analysesTotal,
@@ -1893,16 +1946,21 @@ function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStat
 }
 
 async function saveUserToDb(user: ServerUserRecord): Promise<void> {
-  try {
-    const norm = normalizeEmail(user?.email);
-    if (!norm) return;
-    const store = loadStore();
-    store.users[norm] = user;
-    persistStore(store);
+  const norm = normalizeEmail(user?.email);
+  if (!norm) return;
+  const store = loadStore();
+  store.users[norm] = user;
+  persistStore(store);
 
-    const kv = getKvConfig();
-    if (kv) {
+  const kv = getKvConfig();
+  if (kv) {
+    try {
       await kvCommand(['SET', `aqari:user:${norm}`, JSON.stringify(user)]);
+    } catch (kvErr) {
+      console.error('[DB] CRITICAL failed saving user to KV store:', kvErr);
+      throw kvErr;
+    }
+    try {
       const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
       let idx: string[] = [];
       if (Array.isArray(rawIdx)) idx = rawIdx.map(String);
@@ -1916,15 +1974,16 @@ async function saveUserToDb(user: ServerUserRecord): Promise<void> {
         idx.unshift(norm);
         await kvCommand(['SET', 'aqari:users_index:v1', JSON.stringify(idx.slice(0, 5000))]);
       }
+    } catch (idxErr) {
+      console.error('[DB] Non-fatal failed updating users_index:', idxErr);
     }
-  } catch (kvErr) {
-    console.error('[DB] Failed saving user to KV store:', kvErr);
   }
 }
 
-async function getUserFromDb(rawEmail: string): Promise<ServerUserRecord | null> {
+async function readUserFromDbStatus(rawEmail: string): Promise<{ user: ServerUserRecord | null; kvError: boolean }> {
   const email = normalizeEmail(rawEmail);
-  if (!email) return null;
+  if (!email) return { user: null, kvError: false };
+  let kvError = false;
   try {
     const kv = getKvConfig();
     if (kv) {
@@ -1935,13 +1994,21 @@ async function getUserFromDb(rawEmail: string): Promise<ServerUserRecord | null>
         const store = loadStore();
         store.users[email] = hydrated;
         persistStore(store);
-        return enforceServerUserExpiry(email);
+        return { user: enforceServerUserExpiry(email), kvError: false };
       }
+      return { user: null, kvError: false };
     }
   } catch (kvErr) {
+    kvError = true;
     console.error('[DB] Failed reading user from KV store:', kvErr);
   }
-  return getServerUserByEmail(email);
+  const diskUser = getServerUserByEmail(email);
+  return { user: diskUser, kvError };
+}
+
+async function getUserFromDb(rawEmail: string): Promise<ServerUserRecord | null> {
+  const { user } = await readUserFromDbStatus(rawEmail);
+  return user;
 }
 
 function buildApiKeyForEmail(email: string): string {
@@ -3578,6 +3645,8 @@ export default async function handler(req: any, res: any) {
             'city-search',
             'city-analyze',
             'macro-sync',
+            'get-last-results',
+            'clear-last-result',
             'report-issue',
             'cancel-subscription',
             'google-callback',
@@ -3600,31 +3669,41 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const hydratedDb = await getUserFromDb(lookupEmail).catch(() => null);
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(lookupEmail);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            authenticated: false,
+            error: 'Database temporarily unavailable. Please retry.',
+          });
+        }
+
         const initialUser = hydratedDb || getOrCreateServerUser(lookupEmail);
         let dbUser = enforceServerUserExpiry(initialUser.email);
 
         if (!hydratedDb) {
-          await saveUserToDb(dbUser).catch(() => {});
+          await saveUserToDb(dbUser);
         }
 
+        // Only restore from signed entitlement cookie if DB has NO active/refunded paid record
+        // AND the DB user is still on FREE with 0 payments for this order. NEVER overwrite an
+        // existing paid plan or decremented credit balance from a cookie.
         const ent = getEntitlementFromReq(req);
-        const sameOrderAlreadyActive = Boolean(
+        const orderAlreadyInPayments = Boolean(
           ent &&
-            hydratedDb &&
-            dbUser.last_order_id &&
-            normalizeOrderId(dbUser.last_order_id) === normalizeOrderId(ent.orderId)
+            dbUser.payments.some(
+              (p) => normalizeOrderId(p.order_id) === normalizeOrderId(ent.orderId)
+            )
         );
         const shouldApplyEntitlementCookie = Boolean(
-          ent &&
+          !hydratedDb &&
+            ent &&
             ent.email === dbUser.email &&
             ent.plan !== 'free' &&
             ent.licenseEnd > Date.now() &&
+            dbUser.plan === 'free' &&
             dbUser.cancel_status !== 'refunded' &&
-            !sameOrderAlreadyActive &&
-            (dbUser.plan === 'free' ||
-              (!hydratedDb && ent.licenseStart > (dbUser.license_start || 0)) ||
-              ent.licenseStart > (dbUser.updated_at || 0))
+            !orderAlreadyInPayments
         );
 
         if (ent && shouldApplyEntitlementCookie) {
@@ -3678,6 +3757,7 @@ export default async function handler(req: any, res: any) {
           .map((r: any) => ({ ...r.deliverable, requestId: r.id, deliveredAt: r.deliveredAt }));
 
         const cancellationEligibility = evaluateCancelRefundEligibility(dbUser);
+        const lastResults = dbUser.last_results || {};
 
         return res.status(200).json({
           success: true,
@@ -3720,6 +3800,7 @@ export default async function handler(req: any, res: any) {
           saved_limit: maxSaved,
           saved_count: savedCount,
           saved_analyses: dbUser.saved_analyses,
+          last_results: lastResults,
           api_key: apiKey,
           locked_launch_price: dbUser.locked_launch_price ?? null,
           custom_cities: dbUser.custom_cities || [],
@@ -3757,6 +3838,7 @@ export default async function handler(req: any, res: any) {
             maxSaved,
             max_saved: maxSaved,
             saved_count: savedCount,
+            last_results: lastResults,
             api_key: apiKey,
             locked_launch_price: dbUser.locked_launch_price ?? null,
             custom_cities: dbUser.custom_cities || [],
@@ -4276,8 +4358,15 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
+          });
+        }
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) ||
+          hydratedDb ||
           getOrCreateServerUser(email, {
             name: body.name,
             timezone: body.timezone,
@@ -4434,18 +4523,19 @@ export default async function handler(req: any, res: any) {
             })
           : null;
 
-        const updatedUser = recordUserAnalysis(email, {
-          property: propertyTitle,
+        const analyzedAt = new Date().toISOString();
+        const inputsPayload = {
+          propertyTitle,
           city,
+          country: cityEntry.country,
+          countryCode: cityEntry.countryCode,
+          currency: 'USD',
           priceUSD,
-          capRate,
-          cashOnCash,
-          resultSummary: `Cap ${capRate}% | CoC ${cashOnCash}%`,
-        });
-        await saveUserToDb(updatedUser).catch(() => {});
-        const nextLicense = computeServerLicenseStatus(updatedUser);
-        const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
-
+          rentUSD,
+          downPaymentPct,
+          interestRatePct,
+          operatingExpensePct,
+        };
         const analysisResultPayload = {
           capRate,
           cashOnCash,
@@ -4462,24 +4552,40 @@ export default async function handler(req: any, res: any) {
           monteCarlo,
         };
 
+        const updatedUser = recordUserAnalysis(
+          userRecord,
+          {
+            property: propertyTitle,
+            city,
+            priceUSD,
+            capRate,
+            cashOnCash,
+            resultSummary: `Cap ${capRate}% | CoC ${cashOnCash}%`,
+          },
+          {
+            last_results: {
+              ...(userRecord.last_results || {}),
+              analysis: {
+                inputs: inputsPayload,
+                cityData: cityEntry,
+                results: analysisResultPayload,
+                created_at: analyzedAt,
+              },
+            },
+          }
+        );
+        await saveUserToDb(updatedUser);
+        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
+
         return res.status(200).json({
           success: true,
-          analyzedAt: new Date().toISOString(),
-          inputs: {
-            propertyTitle,
-            city,
-            country: cityEntry.country,
-            countryCode: cityEntry.countryCode,
-            currency: 'USD',
-            priceUSD,
-            rentUSD,
-            downPaymentPct,
-            interestRatePct,
-            operatingExpensePct,
-          },
+          analyzedAt,
+          inputs: inputsPayload,
           cityData: cityEntry,
           result: analysisResultPayload,
           results: analysisResultPayload,
+          last_results: updatedUser.last_results || {},
           analyses_left: nextLicense.analysesLeft,
           analyses_total: nextLicense.analysesLimit,
           analyses_used: nextLicense.analysesUsed,
@@ -4523,9 +4629,14 @@ export default async function handler(req: any, res: any) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
 
-        const userRecord =
-          (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email, { name: body.name });
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
+          });
+        }
+        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
         const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
 
@@ -4698,26 +4809,55 @@ export default async function handler(req: any, res: any) {
           })
           .sort((a, b) => b.score - a.score);
 
-        const updatedUser = recordUserAnalysis(email, {
-          property: `AI Deal Finder - ${cityEntry.city} (${propertyType})`,
-          city: cityEntry.city,
-          priceUSD: budget,
-          capRate: deals[0].capRate,
-          cashOnCash: deals[0].cashOnCash,
-          resultSummary: `AI Deal Finder: 5 deals (${cityEntry.city}, Top ${deals[0].score}/100)`,
-        });
+        const dealCreatedAt = new Date().toISOString();
+        const dealDisclaimer = `AI Deal Finder - Simulated deals based on market avg for ${cityEntry.city} - For illustration, verify with local agent`;
+
+        const updatedUser = recordUserAnalysis(
+          userRecord,
+          {
+            property: `AI Deal Finder - ${cityEntry.city} (${propertyType})`,
+            city: cityEntry.city,
+            priceUSD: budget,
+            capRate: deals[0].capRate,
+            cashOnCash: deals[0].cashOnCash,
+            resultSummary: `AI Deal Finder: 5 deals (${cityEntry.city}, Top ${deals[0].score}/100)`,
+          },
+          {
+            last_results: {
+              ...(userRecord.last_results || {}),
+              deal_finder: {
+                inputs: {
+                  city: cityEntry.city,
+                  budget,
+                  minCapRate,
+                  propertyType,
+                  risk: riskLevel,
+                },
+                city: cityEntry.city,
+                country: cityEntry.country,
+                countryCode: cityEntry.countryCode,
+                avgCapRate: cityEntry.avgCapRate,
+                disclaimer: dealDisclaimer,
+                deals,
+                created_at: dealCreatedAt,
+              },
+            },
+          }
+        );
         await saveUserToDb(updatedUser);
         const nextLicense = computeServerLicenseStatus(updatedUser);
         const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
         return res.status(200).json({
           success: true,
+          created_at: dealCreatedAt,
           city: cityEntry.city,
           country: cityEntry.country,
           countryCode: cityEntry.countryCode,
           avgCapRate: cityEntry.avgCapRate,
-          disclaimer: `AI Deal Finder - Simulated deals based on market avg for ${cityEntry.city} - For illustration, verify with local agent`,
+          disclaimer: dealDisclaimer,
           deals,
+          last_results: updatedUser.last_results || {},
           analyses_left: nextLicense.analysesLeft,
           analyses_total: nextLicense.analysesLimit,
           analyses_used: nextLicense.analysesUsed,
@@ -4756,9 +4896,14 @@ export default async function handler(req: any, res: any) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
 
-        const userRecord =
-          (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email, { name: body.name });
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
+          });
+        }
+        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
         const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
 
@@ -4867,14 +5012,31 @@ export default async function handler(req: any, res: any) {
           generatedAt: new Date().toISOString(),
         };
 
-        const updatedUser = recordUserAnalysis(email, {
-          property: `AI Market Forecast - ${cityEntry.city} (${propertyType})`,
-          city: cityEntry.city,
-          priceUSD: 0,
-          capRate: forecastCap12M,
-          cashOnCash: rentGrowth12M,
-          resultSummary: `Forecast ${period}: Cap ${forecastCap12M}%->${forecastCap5Y}% | ${recommendation}`,
-        });
+        const updatedUser = recordUserAnalysis(
+          userRecord,
+          {
+            property: `AI Market Forecast - ${cityEntry.city} (${propertyType})`,
+            city: cityEntry.city,
+            priceUSD: 0,
+            capRate: forecastCap12M,
+            cashOnCash: rentGrowth12M,
+            resultSummary: `Forecast ${period}: Cap ${forecastCap12M}%->${forecastCap5Y}% | ${recommendation}`,
+          },
+          {
+            last_results: {
+              ...(userRecord.last_results || {}),
+              forecast: {
+                inputs: {
+                  city: cityEntry.city,
+                  propertyType,
+                  period,
+                },
+                forecast,
+                created_at: forecast.generatedAt,
+              },
+            },
+          }
+        );
         await saveUserToDb(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
         const nextLicense = computeServerLicenseStatus(updatedUser);
@@ -4882,7 +5044,9 @@ export default async function handler(req: any, res: any) {
 
         return res.status(200).json({
           success: true,
+          created_at: forecast.generatedAt,
           forecast,
+          last_results: updatedUser.last_results || {},
           analyses_left: nextLock.analysesLeft,
           analyses_total: nextLicense.analysesLimit,
           analyses_used: nextLicense.analysesUsed,
@@ -4931,6 +5095,20 @@ export default async function handler(req: any, res: any) {
           operatingExpensePct,
           seedOffset: Number(body.seedOffset || Date.now() % 100000),
         });
+        if (userRecord.last_results?.analysis?.results) {
+          const nextLast = {
+            ...(userRecord.last_results || {}),
+            analysis: {
+              ...userRecord.last_results.analysis,
+              results: {
+                ...userRecord.last_results.analysis.results,
+                monteCarlo,
+              },
+            },
+          };
+          const updated = updateServerUser(userRecord.email, { last_results: nextLast });
+          await saveUserToDb(updated).catch(() => {});
+        }
         return res.status(200).json({
           success: true,
           monteCarlo,
@@ -5451,13 +5629,22 @@ export default async function handler(req: any, res: any) {
           if (!sessionEmail) {
             return res.status(200).json({ authenticated: false, email: null, isAdmin: false });
           }
-          const user = (await getUserFromDb(sessionEmail).catch(() => null)) || getOrCreateServerUser(sessionEmail);
+          const { user: hydratedDb, kvError } = await readUserFromDbStatus(sessionEmail);
+          if (kvError && !hydratedDb) {
+            return res.status(503).json({
+              success: false,
+              authenticated: false,
+              error: 'Database temporarily unavailable. Please retry.',
+            });
+          }
+          const user = hydratedDb || getOrCreateServerUser(sessionEmail);
           const license = computeServerLicenseStatus(user);
           const cancellationEligibility = evaluateCancelRefundEligibility(user);
           return res.status(200).json({
             authenticated: true,
             email: user.email,
             isAdmin: isAdminEmail(user.email),
+            last_results: user.last_results || {},
             user,
             license,
             cancellationEligibility,
@@ -5480,9 +5667,15 @@ export default async function handler(req: any, res: any) {
             return res.status(400).json({ error: 'Valid email is required' });
           }
 
-          await getUserFromDb(email).catch(() => null);
+          const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+          if (kvError && !hydratedDb) {
+            return res.status(503).json({
+              success: false,
+              error: 'Database temporarily unavailable. Please retry.',
+            });
+          }
           const user = recordUserLogin(email, body.name);
-          await saveUserToDb(user).catch(() => {});
+          await saveUserToDb(user);
           setSessionCookie(res, user.email);
           const license = computeServerLicenseStatus(user);
           const pricing = getPricingPublicPayload();
@@ -5502,6 +5695,7 @@ export default async function handler(req: any, res: any) {
             successful_analyses: user.successful_analyses || 0,
             saved_count: user.saved_analyses.length,
             maxSaved,
+            last_results: user.last_results || {},
             user,
             license,
             cancellationEligibility,
@@ -5634,7 +5828,7 @@ export default async function handler(req: any, res: any) {
             {
               signal: controller.signal,
               headers: {
-                'User-Agent': 'AqariTerminal/1.0 (https://aqari-ai-rho.vercel.app; contact@loomora.studios)',
+                'User-Agent': 'AqariTerminal/1.0 (https://aqari-ai-rho.vercel.app; azzamalshmale@gmail.com)',
                 'Accept-Language': 'en,ar',
               },
             }
@@ -5727,7 +5921,7 @@ export default async function handler(req: any, res: any) {
             {
               signal: controller.signal,
               headers: {
-                'User-Agent': 'AqariTerminal/1.0 (https://aqari-ai-rho.vercel.app; contact@loomora.studios)',
+                'User-Agent': 'AqariTerminal/1.0 (https://aqari-ai-rho.vercel.app; azzamalshmale@gmail.com)',
                 'Accept-Language': 'en,ar',
               },
             }
@@ -6224,6 +6418,82 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'get-last-results': {
+        res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const sessionEmail = getSessionEmailFromReq(req);
+        const queryEmail = normalizeEmail(
+          getQueryParam(req, url, 'login_email') ||
+            getQueryParam(req, url, 'email') ||
+            parsedBody?.login_email ||
+            parsedBody?.email
+        );
+        const email = sessionEmail || (queryEmail && queryEmail.includes('@') ? queryEmail : '');
+        if (!email) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            error: 'Database temporarily unavailable. Please retry.',
+          });
+        }
+        const userRecord = hydratedDb || getOrCreateServerUser(email);
+        return res.status(200).json({
+          success: true,
+          email: userRecord.email,
+          last_results: userRecord.last_results || {},
+        });
+      }
+
+      case 'clear-last-result': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody;
+        const sessionEmail = getSessionEmailFromReq(req);
+        const email = normalizeEmail(sessionEmail || body.login_email || body.email);
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rawTool = String(body.tool || '').trim().toLowerCase();
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            error: 'Database temporarily unavailable. Please retry.',
+          });
+        }
+        const userRecord = hydratedDb || getOrCreateServerUser(email);
+        const nextLastResults: PersistedLastResults = { ...(userRecord.last_results || {}) };
+        if (rawTool === 'analysis' || rawTool === 'analyze') {
+          nextLastResults.analysis = null;
+        } else if (rawTool === 'deal-finder' || rawTool === 'deal_finder' || rawTool === 'dealfinder') {
+          nextLastResults.deal_finder = null;
+        } else if (rawTool === 'forecast' || rawTool === 'market-forecast') {
+          nextLastResults.forecast = null;
+        } else if (rawTool === 'all') {
+          nextLastResults.analysis = null;
+          nextLastResults.deal_finder = null;
+          nextLastResults.forecast = null;
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: "Specify tool: 'analysis', 'deal_finder', 'forecast', or 'all'.",
+          });
+        }
+        const store = loadStore();
+        store.users[email] = userRecord;
+        persistStore(store);
+        const updatedUser = updateServerUser(email, { last_results: nextLastResults });
+        await saveUserToDb(updatedUser);
+        return res.status(200).json({
+          success: true,
+          tool: rawTool,
+          last_results: updatedUser.last_results || {},
+        });
+      }
+
       default:
         return res.status(400).json({
           success: false,
@@ -6236,6 +6506,8 @@ export default async function handler(req: any, res: any) {
             'run-analysis',
             'find-deals',
             'get-forecast',
+            'get-last-results',
+            'clear-last-result',
             'underwrite',
             'analyze',
             'monte-carlo',

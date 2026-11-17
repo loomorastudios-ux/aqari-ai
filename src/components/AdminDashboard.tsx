@@ -483,8 +483,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   useEffect(() => {
     const em = (currentUser?.email || '').toLowerCase();
-    if (!em || (em !== 'loomora.studios@gmail.com' && em !== 'loomorastudios@gmail.com')) {
-      onRedirectHome('403 Forbidden: Restricted to loomora.studios@gmail.com');
+    if (!em || em !== 'azzamalshmale@gmail.com') {
+      onRedirectHome('403 Forbidden: Restricted to azzamalshmale@gmail.com');
       return;
     }
     loadUsers();
@@ -657,7 +657,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               Admin Compliance &amp; Dispute Evidence Dashboard
             </h1>
             <p className="text-xs font-mono text-zinc-400 mt-1">
-              Authenticated Owner: {currentUser?.email} • Immutable usage &amp; refund policy logs
+              Authenticated Owner: {currentUser?.email} • Support Contact:{' '}
+              <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
+                azzamalshmale@gmail.com
+              </a>{' '}
+              • Immutable usage &amp; refund policy logs
             </p>
           </div>
 

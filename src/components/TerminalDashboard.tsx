@@ -12,6 +12,7 @@ import {
   WhiteGloveDeliverable,
   DealFinderDeal,
   MarketForecastResult,
+  LastResultsData,
 } from '../types';
 import {
   PLAN_LIMITS,
@@ -241,6 +242,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [dfDeals, setDfDeals] = useState<DealFinderDeal[]>([]);
   const [dfDisclaimer, setDfDisclaimer] = useState<string | null>(null);
   const [dfResultsCity, setDfResultsCity] = useState<string>('');
+  const [dfCreatedAt, setDfCreatedAt] = useState<string | null>(null);
   const [savingDealId, setSavingDealId] = useState<string | null>(null);
 
   // AI Market Forecast state
@@ -251,7 +253,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [isGettingForecast, setIsGettingForecast] = useState<boolean>(false);
   const [fcError, setFcError] = useState<string | null>(null);
   const [fcResult, setFcResult] = useState<MarketForecastResult | null>(null);
+  const [fcCreatedAt, setFcCreatedAt] = useState<string | null>(null);
   const [isSavingForecast, setIsSavingForecast] = useState<boolean>(false);
+  const [isClearingTool, setIsClearingTool] = useState<'analysis' | 'deal_finder' | 'forecast' | null>(null);
 
   // Success / notification toast
   const [toastMessage, setToastMessage] = useState<string | null>(initialToast || null);
@@ -293,7 +297,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [backupTargetEmail, setBackupTargetEmail] = useState('');
   const [backupVerifyMsg, setBackupVerifyMsg] = useState<string | null>(null);
   const [isRunningBackupVerify, setIsRunningBackupVerify] = useState(false);
-  const isOwnerAdmin = ['loomora.studios@gmail.com', 'loomorastudios@gmail.com'].includes(
+  const isOwnerAdmin = ['azzamalshmale@gmail.com'].includes(
     (user?.email || '').trim().toLowerCase()
   );
 
@@ -567,9 +571,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [propertyName, setPropertyName] = useState<string>(PROPERTY_LISTINGS[0].title);
   const [propertyImageUrl, setPropertyImageUrl] = useState<string>(PROPERTY_LISTINGS[0].imageUrl);
 
-  // Authoritative Run Analysis result state — null until RUN ANALYSIS (-1 CREDIT) succeeds
+  // Authoritative Run Analysis result state — null until RUN ANALYSIS (-1 CREDIT) succeeds (or hydrated from DB last_results)
   const [hasRunAnalysis, setHasRunAnalysis] = useState(false);
   const [stressTestActive, setStressTestActive] = useState(false);
+  const [analysisCreatedAt, setAnalysisCreatedAt] = useState<string | null>(null);
   const [runResult, setRunResult] = useState<{
     analyzedAt: string;
     inputs: {
@@ -664,6 +669,207 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     setRunResult(null);
     setMonteCarloResult(null);
     setStressTestActive(false);
+    setAnalysisCreatedAt(null);
+  };
+
+  const formatLastResultTimestamp = (iso?: string | null) => {
+    if (!iso) return 'Recent';
+    try {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return 'Recent';
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return 'Recent';
+    }
+  };
+
+  const lastHydratedSigRef = useRef<{
+    analysis?: string;
+    deal_finder?: string;
+    forecast?: string;
+  }>({});
+
+  const applyPersistedLastResults = (lr?: LastResultsData | null) => {
+    if (!lr || typeof lr !== 'object') return;
+
+    if (lr.analysis?.results) {
+      const sig = `${lr.analysis.created_at}|${lr.analysis.inputs?.city}|${lr.analysis.inputs?.priceUSD}|${lr.analysis.inputs?.rentUSD}`;
+      if (lastHydratedSigRef.current.analysis !== sig) {
+        lastHydratedSigRef.current.analysis = sig;
+        const inp = lr.analysis.inputs || ({} as any);
+        if (inp.propertyTitle) setPropertyName(String(inp.propertyTitle));
+        if (inp.city) {
+          const entry = resolveCityFromInput(String(inp.city));
+          if (entry) {
+            setCity(entry.city);
+            setCityComboInput(formatCityOptionLabel(entry));
+          } else {
+            setCity(String(inp.city));
+            setCityComboInput(String(inp.city));
+          }
+        }
+        if (typeof inp.priceUSD === 'number' && inp.priceUSD > 0) setPriceUSD(inp.priceUSD);
+        if (typeof inp.rentUSD === 'number' && inp.rentUSD > 0) setRentUSD(inp.rentUSD);
+        if (typeof inp.downPaymentPct === 'number') {
+          setDownPaymentPct(inp.downPaymentPct);
+          setDownDraft(String(inp.downPaymentPct));
+        }
+        if (typeof inp.interestRatePct === 'number') {
+          setInterestRatePct(inp.interestRatePct);
+          setRateDraft(String(inp.interestRatePct));
+        }
+        if (typeof inp.operatingExpensePct === 'number') {
+          setOperatingExpensePct(inp.operatingExpensePct);
+          setOpexDraft(String(inp.operatingExpensePct));
+        }
+        setRunResult({
+          analyzedAt: lr.analysis.created_at || new Date().toISOString(),
+          inputs: {
+            propertyTitle: String(inp.propertyTitle || 'Institutional Asset'),
+            city: String(inp.city || 'Muscat'),
+            priceUSD: Number(inp.priceUSD || 0),
+            rentUSD: Number(inp.rentUSD || 0),
+            downPaymentPct: Number(inp.downPaymentPct ?? 30),
+            interestRatePct: Number(inp.interestRatePct ?? 5.5),
+            operatingExpensePct: Number(inp.operatingExpensePct ?? 15),
+          },
+          ...lr.analysis.results,
+        });
+        setMonteCarloResult(lr.analysis.results.monteCarlo || null);
+        setStressTestActive(Boolean(lr.analysis.results.monteCarlo));
+        setAnalysisCreatedAt(lr.analysis.created_at || null);
+        setHasRunAnalysis(true);
+      }
+    }
+
+    if (lr.deal_finder && Array.isArray(lr.deal_finder.deals) && lr.deal_finder.deals.length > 0) {
+      const dfSig = `${lr.deal_finder.created_at}|${lr.deal_finder.city}|${lr.deal_finder.deals.length}`;
+      if (lastHydratedSigRef.current.deal_finder !== dfSig) {
+        lastHydratedSigRef.current.deal_finder = dfSig;
+        const inp = lr.deal_finder.inputs;
+        if (inp?.city || lr.deal_finder.city) {
+          const cEntry = resolveCityFromInput(inp?.city || lr.deal_finder.city);
+          setDfCityComboInput(cEntry ? formatCityOptionLabel(cEntry) : (inp?.city || lr.deal_finder.city));
+        }
+        if (typeof inp?.budget === 'number' && inp.budget > 0) {
+          setDfBudgetUSD(inp.budget);
+          setDfBudgetDraft(String(inp.budget));
+        }
+        if (typeof inp?.minCapRate === 'number' && inp.minCapRate > 0) {
+          setDfMinCapPct(inp.minCapRate);
+          setDfMinCapDraft(String(inp.minCapRate));
+        }
+        if (inp?.propertyType === 'All' || inp?.propertyType === 'Apartment' || inp?.propertyType === 'Villa' || inp?.propertyType === 'Commercial') {
+          setDfPropType(inp.propertyType);
+        }
+        if (inp?.risk === 'Low' || inp?.risk === 'Medium' || inp?.risk === 'High') {
+          setDfRisk(inp.risk);
+        }
+        setDfDeals(lr.deal_finder.deals);
+        setDfResultsCity(lr.deal_finder.city || inp?.city || '');
+        setDfDisclaimer(
+          lr.deal_finder.disclaimer ||
+            `AI Deal Finder - Simulated deals based on market avg for ${lr.deal_finder.city} - For illustration, verify with local agent`
+        );
+        setDfCreatedAt(lr.deal_finder.created_at || null);
+      }
+    }
+
+    if (lr.forecast?.forecast) {
+      const fcSig = `${lr.forecast.created_at}|${lr.forecast.forecast.city}|${lr.forecast.forecast.period}`;
+      if (lastHydratedSigRef.current.forecast !== fcSig) {
+        lastHydratedSigRef.current.forecast = fcSig;
+        const inp = lr.forecast.inputs;
+        if (inp?.city || lr.forecast.forecast.city) {
+          const cEntry = resolveCityFromInput(inp?.city || lr.forecast.forecast.city);
+          setFcCityComboInput(cEntry ? formatCityOptionLabel(cEntry) : (inp?.city || lr.forecast.forecast.city));
+        }
+        if (inp?.propertyType === 'Apartment' || inp?.propertyType === 'Villa' || inp?.propertyType === 'Commercial') {
+          setFcPropType(inp.propertyType);
+        }
+        if (inp?.period === '12 months' || inp?.period === '3 years' || inp?.period === '5 years') {
+          setFcPeriod(inp.period);
+        }
+        setFcResult(lr.forecast.forecast);
+        setFcCreatedAt(lr.forecast.created_at || (lr.forecast.forecast as any).generatedAt || null);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (user?.lastResults) {
+      applyPersistedLastResults(user.lastResults);
+    }
+  }, [user?.email, user?.lastResults]);
+
+  useEffect(() => {
+    if (!user?.email) return;
+    let cancelled = false;
+    fetch(`/api/app?action=get-last-results&login_email=${encodeURIComponent(user.email)}&t=${Date.now()}`, {
+      credentials: 'include',
+      cache: 'no-store',
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d?.success && d?.last_results) {
+          applyPersistedLastResults(d.last_results);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.email]);
+
+  const handleClearLastResult = async (tool: 'analysis' | 'deal_finder' | 'forecast') => {
+    if (!user?.email) return;
+    setIsClearingTool(tool);
+    try {
+      const res = await fetch('/api/app?action=clear-last-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          tool,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        showToast(data?.error || 'Unable to clear saved result.');
+        return;
+      }
+      if (tool === 'analysis') {
+        lastHydratedSigRef.current.analysis = 'cleared';
+        clearPendingRun();
+      } else if (tool === 'deal_finder') {
+        lastHydratedSigRef.current.deal_finder = 'cleared';
+        setDfDeals([]);
+        setDfDisclaimer(null);
+        setDfResultsCity('');
+        setDfCreatedAt(null);
+      } else if (tool === 'forecast') {
+        lastHydratedSigRef.current.forecast = 'cleared';
+        setFcResult(null);
+        setFcCreatedAt(null);
+      }
+      onUpdateUser({
+        ...user,
+        lastResults: data.last_results || {},
+      });
+      showToast('Last result cleared.');
+    } catch {
+      showToast('Network error clearing result.');
+    } finally {
+      setIsClearingTool(null);
+    }
   };
 
   const selectedCityEntry = useMemo(
@@ -786,6 +992,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
       const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
       const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
+      const createdAtVal = String(data.created_at || data.last_results?.deal_finder?.created_at || new Date().toISOString());
+      const dealsArr = Array.isArray(data.deals) ? data.deals : [];
+      const resCity = String(data.city || cityEntry.city);
+      lastHydratedSigRef.current.deal_finder = `${createdAtVal}|${resCity}|${dealsArr.length}`;
       onUpdateUser({
         ...user,
         analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
@@ -795,15 +1005,17 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         freeAnalysesLeft: nextLeft,
         successfulAnalyses: Number(data.successful_analyses ?? (user.successfulAnalyses ?? 0) + 1),
         cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
+        lastResults: data.last_results ?? user.lastResults,
       });
 
-      setDfDeals(Array.isArray(data.deals) ? data.deals : []);
-      setDfResultsCity(data.city || cityEntry.city);
+      setDfDeals(dealsArr);
+      setDfResultsCity(resCity);
+      setDfCreatedAt(createdAtVal);
       setDfDisclaimer(
         data.disclaimer ||
-          `AI Deal Finder - Simulated deals based on market avg for ${data.city || cityEntry.city} - For illustration, verify with local agent`
+          `AI Deal Finder - Simulated deals based on market avg for ${resCity} - For illustration, verify with local agent`
       );
-      showToast(`Found ${Array.isArray(data.deals) ? data.deals.length : 5} simulated deals in ${data.city || cityEntry.city} (-1 credit, ${nextLeft} left).`);
+      showToast(`Found ${dealsArr.length || 5} simulated deals in ${resCity} (-1 credit, ${nextLeft} left).`);
     } catch {
       setDfError('Network error connecting to AI Deal Finder.');
     } finally {
@@ -882,6 +1094,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
       const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
       const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
+      const fcCreated = String(data.created_at || data.forecast?.generatedAt || new Date().toISOString());
+      lastHydratedSigRef.current.forecast = `${fcCreated}|${data.forecast.city}|${data.forecast.period}`;
       onUpdateUser({
         ...user,
         analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
@@ -891,9 +1105,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         freeAnalysesLeft: nextLeft,
         successfulAnalyses: Number(data.successful_analyses ?? (user.successfulAnalyses ?? 0) + 1),
         cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
+        lastResults: data.last_results ?? user.lastResults,
       });
 
       setFcResult(data.forecast as MarketForecastResult);
+      setFcCreatedAt(fcCreated);
       showToast(`Market forecast ready for ${data.forecast.city} (-1 credit, ${nextLeft} left).`);
     } catch {
       setFcError('Network error connecting to AI Market Forecast.');
@@ -1623,6 +1839,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         typeof data.successful_analyses === 'number'
           ? data.successful_analyses
           : (user.successfulAnalyses ?? 0) + 1;
+      const analyzedAtStr = String(data.analyzedAt || data.last_results?.analysis?.created_at || new Date().toISOString());
+      const resCityName = data.inputs?.city || cleanCityName;
+      lastHydratedSigRef.current.analysis = `${analyzedAtStr}|${resCityName}|${priceUSD}|${rentUSD}`;
       onUpdateUser({
         ...user,
         plan: data?.license?.planKey || user.plan,
@@ -1633,14 +1852,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         freeAnalyses: nextLeft,
         freeAnalysesLeft: nextLeft,
         analysesLeft: nextLeft,
+        lastResults: data.last_results ?? user.lastResults,
       });
 
       if (data?.result) {
         setRunResult({
-          analyzedAt: data.analyzedAt || new Date().toISOString(),
+          analyzedAt: analyzedAtStr,
           inputs: data.inputs || {
             propertyTitle: propertyName,
-            city,
+            city: cleanCityName,
             priceUSD,
             rentUSD,
             downPaymentPct,
@@ -1651,6 +1871,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         });
         setMonteCarloResult(data.result.monteCarlo || null);
         setStressTestActive(Boolean(data.result.monteCarlo));
+        setAnalysisCreatedAt(analyzedAtStr);
       }
       setHasRunAnalysis(true);
       const nextRemaining =
@@ -3225,19 +3446,36 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                 {/* Right: Authoritative Backend Underwriting Output */}
                 <div className="lg:col-span-5 glass-panel p-6 space-y-5 border border-[#D4AF37]/30 shadow-[0_0_35px_rgba(212,175,55,0.08)]">
-                  <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-3">
                     <div className="flex items-center gap-2">
                       <span className={`w-2.5 h-2.5 rounded-full ${hasRunAnalysis && runResult ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'}`} />
                       <h3 className="text-sm font-mono font-bold uppercase text-white">Underwriting Model</h3>
                     </div>
-                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
-                      hasRunAnalysis && runResult
-                        ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
-                        : 'text-amber-400 bg-amber-500/10 border-amber-500/20'
-                    }`}>
-                      {hasRunAnalysis && runResult ? 'VERIFIED RUN' : 'AWAITING RUN'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                        hasRunAnalysis && runResult
+                          ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+                          : 'text-amber-400 bg-amber-500/10 border-amber-500/20'
+                      }`}>
+                        {hasRunAnalysis && runResult ? 'VERIFIED RUN' : 'AWAITING RUN'}
+                      </span>
+                      {hasRunAnalysis && runResult && (
+                        <button
+                          type="button"
+                          disabled={isClearingTool === 'analysis'}
+                          onClick={() => handleClearLastResult('analysis')}
+                          className="text-[10px] font-mono px-2 py-0.5 rounded border border-white/15 bg-white/[0.04] hover:bg-rose-500/20 hover:border-rose-500/40 text-zinc-300 hover:text-rose-200 cursor-pointer transition"
+                        >
+                          {isClearingTool === 'analysis' ? 'Clearing...' : 'Clear Last Result'}
+                        </button>
+                      )}
+                    </div>
                   </div>
+                  {hasRunAnalysis && runResult && (
+                    <div className="px-3 py-1.5 rounded-lg bg-white/[0.03] border border-white/[0.07] text-[11px] font-mono text-[#D4AF37]">
+                      Last Result - {formatLastResultTimestamp(analysisCreatedAt || runResult.analyzedAt)} - {runResult.inputs?.city || city}
+                    </div>
+                  )}
 
                   {!hasRunAnalysis || !runResult ? (
                     <>
@@ -4282,13 +4520,28 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               {/* Deals Results Table */}
               {dfDeals.length > 0 && (
                 <div className="glass-panel p-6 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-mono font-bold uppercase text-white">
-                      Ranked Simulated Deals • {dfResultsCity}
-                    </h3>
-                    <span className="text-xs font-mono text-emerald-400">
-                      Sorted by Score Desc
-                    </span>
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3">
+                    <div>
+                      <div className="text-[11px] font-mono text-[#D4AF37]">
+                        Last Result - {formatLastResultTimestamp(dfCreatedAt)} - {dfResultsCity}
+                      </div>
+                      <h3 className="text-sm font-mono font-bold uppercase text-white mt-0.5">
+                        Ranked Simulated Deals • {dfResultsCity}
+                      </h3>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-mono text-emerald-400">
+                        Sorted by Score Desc
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isClearingTool === 'deal_finder'}
+                        onClick={() => handleClearLastResult('deal_finder')}
+                        className="px-3 py-1.5 rounded-lg border border-white/15 bg-white/[0.04] hover:bg-rose-500/20 hover:border-rose-500/40 text-xs font-mono text-zinc-300 hover:text-rose-200 cursor-pointer transition"
+                      >
+                        {isClearingTool === 'deal_finder' ? 'Clearing...' : 'Clear Last Result'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="overflow-x-auto">
@@ -4578,6 +4831,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 <div className="glass-panel p-6 space-y-6 border border-[#D4AF37]/30">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.08] pb-4">
                     <div>
+                      <div className="text-[11px] font-mono text-emerald-400 mb-0.5">
+                        Last Result - {formatLastResultTimestamp(fcCreatedAt || (fcResult as any).generatedAt)} - {fcResult.city}
+                      </div>
                       <div className="text-[11px] font-mono text-[#D4AF37] uppercase tracking-wider">
                         {fcResult.city}, {fcResult.country} • {fcResult.propertyType} • Horizon: {fcResult.period}
                       </div>
@@ -4609,6 +4865,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       >
                         Recommendation: {fcResult.recommendation}
                       </span>
+                      <button
+                        type="button"
+                        disabled={isClearingTool === 'forecast'}
+                        onClick={() => handleClearLastResult('forecast')}
+                        className="px-3 py-1 rounded-lg border border-white/15 bg-white/[0.04] hover:bg-rose-500/20 hover:border-rose-500/40 text-xs font-mono text-zinc-300 hover:text-rose-200 cursor-pointer transition"
+                      >
+                        {isClearingTool === 'forecast' ? 'Clearing...' : 'Clear Last Result'}
+                      </button>
                     </div>
                   </div>
 
@@ -5869,6 +6133,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       {savedAnalyses.length} / {maxSaved}
                     </span>
                   </div>
+                </div>
+                <div className="pt-3 border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+                  <span className="text-zinc-400">Official Support Contact (Loomora Studios):</span>
+                  <a
+                    href="mailto:azzamalshmale@gmail.com"
+                    className="text-[#D4AF37] underline font-bold hover:text-amber-300"
+                  >
+                    azzamalshmale@gmail.com
+                  </a>
                 </div>
               </div>
 

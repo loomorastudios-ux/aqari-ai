@@ -124,7 +124,7 @@ function cleanEnvValue(value?: string | null): string {
 }
 
 function getAdminEmail(): string {
-  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'loomora.studios@gmail.com').toLowerCase();
+  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'azzamalshmale@gmail.com').toLowerCase();
 }
 
 function getSessionSecret(): string {
@@ -139,11 +139,7 @@ function getSessionSecret(): string {
 function isAdminEmail(email?: string | null): boolean {
   const norm = (email || '').trim().toLowerCase();
   if (!norm) return false;
-  return (
-    norm === getAdminEmail() ||
-    norm === 'loomora.studios@gmail.com' ||
-    norm === 'loomorastudios@gmail.com'
-  );
+  return norm === getAdminEmail() || norm === 'azzamalshmale@gmail.com';
 }
 
 function parseCookies(cookieHeader?: string | null): Record<string, string> {
@@ -253,15 +249,28 @@ function normalizeEmail(email: string): string {
 
 function hydrateUserRecord(raw: any, email: string) {
   const now = Date.now();
+  const plan = normalizePlanKey(raw?.plan);
+  const planCfg = PLANS[plan];
+  const analysesTotal = Math.max(1, Number(raw?.analyses_total ?? planCfg.analysesLimit));
+  const analysesUsed = Math.max(0, Number(raw?.analyses_used ?? 0));
+  const rawLeft = raw?.analyses_left !== undefined && raw?.analyses_left !== null ? Number(raw.analyses_left) : NaN;
+  const analysesLeft = Number.isFinite(rawLeft)
+    ? Math.max(0, Math.min(analysesTotal, rawLeft))
+    : Math.max(0, analysesTotal - analysesUsed);
+  const savedList = Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [];
   return {
     email,
     name: raw?.name || email.split('@')[0],
-    plan: normalizePlanKey(raw?.plan),
+    plan,
     license_start: raw?.license_start ?? now,
     license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
-    analyses_used: Math.max(0, Number(raw?.analyses_used ?? 0)),
+    analyses_used: analysesUsed,
+    analyses_left: analysesLeft,
+    analyses_total: analysesTotal,
     successful_analyses: Math.max(0, Number(raw?.successful_analyses ?? 0)),
-    saved_analyses: Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [],
+    saved_analyses: savedList,
+    saved_count: savedList.length > 0 ? savedList.length : Math.max(0, Number(raw?.saved_count ?? 0)),
+    max_saved: Number.isFinite(Number(raw?.max_saved)) && Number(raw?.max_saved) > 0 ? Number(raw.max_saved) : planCfg.savedLimit,
     custom_cities: Array.isArray(raw?.custom_cities) ? raw.custom_cities : [],
     timezone: raw?.timezone || 'Asia/Muscat',
     day29_email_sent: Boolean(raw?.day29_email_sent),
@@ -278,7 +287,10 @@ function hydrateUserRecord(raw: any, email: string) {
     refund_notes: raw?.refund_notes || '',
     refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
     locked_launch_price: typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
+    payment_provider: String(raw?.payment_provider || 'stripe'),
+    payment_intent_id: raw?.payment_intent_id ? String(raw.payment_intent_id) : null,
     payment_customer_email: raw?.payment_customer_email ? String(raw.payment_customer_email).toLowerCase() : null,
+    status: raw?.status || (analysesLeft <= 0 ? 'exhausted' : 'active'),
     has_reported_issue: Boolean(raw?.has_reported_issue),
     issue_reported_at: typeof raw?.issue_reported_at === 'number' ? raw.issue_reported_at : null,
     issue_resolved_at: typeof raw?.issue_resolved_at === 'number' ? raw.issue_resolved_at : null,
@@ -298,6 +310,14 @@ function hydrateUserRecord(raw: any, email: string) {
         : Array.isArray(raw?.payments) && raw.payments[0]?.order_id
         ? String(raw.payments[0].order_id)
         : null,
+    last_results:
+      raw?.last_results && typeof raw.last_results === 'object'
+        ? {
+            analysis: raw.last_results.analysis || null,
+            deal_finder: raw.last_results.deal_finder || null,
+            forecast: raw.last_results.forecast || null,
+          }
+        : { analysis: null, deal_finder: null, forecast: null },
   };
 }
 
@@ -1737,7 +1757,7 @@ export default async function handler(req: any, res: any) {
         const email = (
           getQueryParam(req, url, 'email') ||
           body.email ||
-          'loomorastudios@gmail.com'
+          'azzamalshmale@gmail.com'
         )
           .toString()
           .trim()

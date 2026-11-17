@@ -310,13 +310,18 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="pt-4 border-t border-white/[0.08] flex items-center justify-between text-xs text-zinc-400 font-mono">
-          <div className="flex items-center gap-1.5">
+        <div className="pt-4 border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-400 font-mono">
+          <div className="flex flex-wrap items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
             {checkoutNotice && (
               <span className="text-amber-300 font-bold mr-2">{checkoutNotice}</span>
             )}
-            <span>Encrypted Stripe Checkout • Automated Webhook +30d Extension</span>
+            <span>
+              Encrypted Stripe Checkout • Support:{' '}
+              <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
+                azzamalshmale@gmail.com
+              </a>
+            </span>
           </div>
           <button onClick={onClose} className="hover:text-white underline cursor-pointer">
             Dismiss

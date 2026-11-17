@@ -186,6 +186,10 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
             By purchasing, you agree to{' '}
             <a href="/refund-policy" className="text-[#D4AF37] underline font-bold hover:text-amber-300">
               Refund Policy
+            </a>{' '}
+            • Support:{' '}
+            <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
+              azzamalshmale@gmail.com
             </a>
           </div>
         </div>

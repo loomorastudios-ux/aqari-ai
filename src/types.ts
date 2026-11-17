@@ -197,10 +197,70 @@ export interface User {
   lockError?: string | null;
   paymentProvider?: string;
   paymentIntentId?: string | null;
+  lastResults?: LastResultsData | null;
   portfolio?: {
     totalValue: number;
     monthlyCashflow: number;
   };
+}
+
+export interface LastResultsData {
+  analysis?: {
+    inputs: {
+      propertyTitle: string;
+      city: string;
+      country?: string;
+      countryCode?: string;
+      currency?: string;
+      priceUSD: number;
+      rentUSD: number;
+      downPaymentPct: number;
+      interestRatePct: number;
+      operatingExpensePct: number;
+    };
+    cityData?: any;
+    results: {
+      capRate: number;
+      cashOnCash: number;
+      irr5Yr: number | null;
+      dscr: string | null;
+      monthlyCashflowUSD: number | null;
+      monthlyMortgageUSD: number | null;
+      netOperatingIncomeUSD: number;
+      annualGrossRentUSD: number;
+      annualOPEXUSD: number;
+      annualDebtServiceUSD: number;
+      downPaymentUSD: number;
+      sensitivity: any[] | null;
+      monteCarlo: any | null;
+    };
+    created_at: string;
+  } | null;
+  deal_finder?: {
+    inputs: {
+      city: string;
+      budget: number;
+      minCapRate: number;
+      propertyType: string;
+      risk: string;
+    };
+    city: string;
+    country: string;
+    countryCode?: string;
+    avgCapRate?: number;
+    disclaimer?: string;
+    deals: DealFinderDeal[];
+    created_at: string;
+  } | null;
+  forecast?: {
+    inputs: {
+      city: string;
+      propertyType: string;
+      period: string;
+    };
+    forecast: MarketForecastResult;
+    created_at: string;
+  } | null;
 }
 
 export interface PlanFeatureConfig {
