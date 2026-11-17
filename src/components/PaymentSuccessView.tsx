@@ -177,9 +177,17 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
           </button>
         </div>
 
-        <div className="mt-8 text-center text-[11px] font-mono text-zinc-400 flex items-center justify-center gap-2">
-          <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          <span>Receipt and invoice sent to your email by Lemon Squeezy</span>
+        <div className="mt-8 text-center text-[11px] font-mono text-zinc-400 space-y-1.5">
+          <div className="flex items-center justify-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <span>Receipt and invoice sent to your email by Lemon Squeezy</span>
+          </div>
+          <div>
+            By purchasing, you agree to{' '}
+            <a href="/refund-policy" className="text-[#D4AF37] underline font-bold hover:text-amber-300">
+              Refund Policy
+            </a>
+          </div>
         </div>
       </div>
     </div>

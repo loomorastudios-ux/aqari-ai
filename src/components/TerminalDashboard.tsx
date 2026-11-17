@@ -10,6 +10,7 @@ import {
   AnalystThread,
   WhiteGloveRequest,
   WhiteGloveDeliverable,
+  DealFinderDeal,
 } from '../types';
 import {
   PLAN_LIMITS,
@@ -150,16 +151,6 @@ const DEMO_SAVED_BENCHMARKS: SavedAnalysis[] = [
 
 const COMING_SOON_AI_MODULES = [
   {
-    title: 'AI Deal Finder',
-    arabicDesc: 'ابحث عن أفضل الصفقات العقارية تلقائياً',
-    badge: 'PROFESSIONAL / SOVEREIGN',
-  },
-  {
-    title: 'AI Market Forecast',
-    arabicDesc: 'توقعات الأسعار والإيجارات بالذكاء الاصطناعي',
-    badge: 'PROFESSIONAL / SOVEREIGN',
-  },
-  {
     title: 'AI Due Diligence',
     arabicDesc: 'فحص شامل للمخاطر القانونية والمالية',
     badge: 'PROFESSIONAL / SOVEREIGN',
@@ -188,8 +179,8 @@ interface TerminalDashboardProps {
   onGoToPricing?: () => void;
   onOpenRenewal: () => void;
   onUpdateUser: (u: User) => void;
-  onConsumeAnalysis?: () => boolean;
   onOpenAuth?: () => void;
+  onOpenLegal?: (slug: 'terms' | 'privacy' | 'refund' | 'disclaimer') => void;
   initialToast?: string | null;
 }
 
@@ -210,12 +201,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   onGoToPricing,
   onOpenRenewal,
   onUpdateUser,
-  onConsumeAnalysis,
   onOpenAuth,
+  onOpenLegal,
   initialToast,
 }) => {
   // Navigation active tab
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'analyze' | 'saved' | 'portfolio' | 'radar' | 'settings'>(
+  const [activeTab, setActiveTab] = useState<
+    'dashboard' | 'analyze' | 'dealfinder' | 'saved' | 'portfolio' | 'radar' | 'settings'
+  >(
     initialToast?.startsWith('Welcome to AQARI') ? 'dashboard' : 'analyze'
   );
 
@@ -230,6 +223,24 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
   const [isCancellingSub, setIsCancellingSub] = useState(false);
   const [cancelModalError, setCancelModalError] = useState<string | null>(null);
+  const [showRefundPolicyDrawer, setShowRefundPolicyDrawer] = useState(false);
+  const [cancelPolicyAck, setCancelPolicyAck] = useState(false);
+
+  // AI Deal Finder state
+  const [dfBudgetDraft, setDfBudgetDraft] = useState<string>('500000');
+  const [dfBudgetUSD, setDfBudgetUSD] = useState<number>(500000);
+  const [dfMinCapDraft, setDfMinCapDraft] = useState<string>('6');
+  const [dfMinCapPct, setDfMinCapPct] = useState<number>(6);
+  const [dfCityComboInput, setDfCityComboInput] = useState<string>('Muscat (Oman OM)');
+  const [dfCityOpen, setDfCityOpen] = useState<boolean>(false);
+  const [dfPropType, setDfPropType] = useState<'All' | 'Apartment' | 'Villa' | 'Commercial'>('All');
+  const [dfRisk, setDfRisk] = useState<'Low' | 'Medium' | 'High'>('Medium');
+  const [isFindingDeals, setIsFindingDeals] = useState<boolean>(false);
+  const [dfError, setDfError] = useState<string | null>(null);
+  const [dfDeals, setDfDeals] = useState<DealFinderDeal[]>([]);
+  const [dfDisclaimer, setDfDisclaimer] = useState<string | null>(null);
+  const [dfResultsCity, setDfResultsCity] = useState<string>('');
+  const [savingDealId, setSavingDealId] = useState<string | null>(null);
 
   // Success / notification toast
   const [toastMessage, setToastMessage] = useState<string | null>(initialToast || null);
@@ -292,18 +303,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   } | null>(null);
 
   const customCities: CustomCityCard[] = useMemo(() => {
-    if (Array.isArray(user.customCities) && user.customCities.length > 0) {
-      return user.customCities;
-    }
-    try {
-      const raw = localStorage.getItem(`aqari_custom_cities_${user.email.toLowerCase()}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    } catch {}
-    return [];
-  }, [user.customCities, user.email]);
+    return Array.isArray(user.customCities) ? user.customCities : [];
+  }, [user.customCities]);
 
   const isTestMode =
     import.meta.env.VITE_LEMON_TEST_MODE === 'true' ||
@@ -321,6 +322,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const endsAt = user.subscriptionEndsAt || user.subscriptionExpiry;
   const msRemaining = endsAt ? Math.max(0, endsAt - Date.now()) : 0;
 
+  const isCreditsLoaded =
+    typeof user.analysesLeft === 'number' ||
+    typeof user.freeAnalysesLeft === 'number' ||
+    typeof user.freeAnalyses === 'number';
+
   const dynamicPlanPricing = findPlanPricing(pricingData, normalizePlanKey(user.plan));
   const license = computeLicenseStatus({
     plan: user.plan,
@@ -329,7 +335,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     analysesUsed: user.analysesUsed,
     freeAnalysesLeft: user.freeAnalysesLeft ?? user.freeAnalyses,
     analysesLeft: user.analysesLeft,
-    analysesLimitOverride: dynamicPlanPricing?.analysesLimit,
+    analysesLimitOverride: user.analysesTotal ?? dynamicPlanPricing?.analysesLimit,
     savedLimitOverride:
       dynamicPlanPricing?.savedLimit === null ? Infinity : dynamicPlanPricing?.savedLimit,
   });
@@ -341,8 +347,16 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const isEndingIn24h = Boolean(license.planKey !== 'free' && endsAt && msRemaining > 0 && msRemaining <= 24 * 60 * 60 * 1000);
   const countdownText = endsAt ? formatTimeLeft(msRemaining) : null;
 
-  const analysesRemaining = license.isUnlimitedAnalyses ? 9999 : license.analysesLeft;
-  const analysesLeftStr = license.isUnlimitedAnalyses ? 'Unlimited analyses left' : `${license.analysesLeft} analyses left`;
+  const analysesRemaining = !isCreditsLoaded
+    ? 0
+    : license.isUnlimitedAnalyses
+    ? 9999
+    : license.analysesLeft;
+  const analysesLeftStr = !isCreditsLoaded
+    ? 'Loading...'
+    : license.isUnlimitedAnalyses
+    ? 'Unlimited analyses left'
+    : `${license.analysesLeft} analyses left`;
 
   const meFeatures: string[] = useMemo(() => {
     if (Array.isArray(user.features) && user.features.length > 0) {
@@ -398,6 +412,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const canCustomUnderwriting =
     !isPlanEnded &&
     (meFeatures.includes('White-glove Custom Underwriting') || canUseFeature(license.planKey, 'customUnderwriting'));
+  const canDealFinder =
+    !isPlanEnded && (license.planKey === 'pro' || license.planKey === 'enterprise');
   const canSaveProperty = !isPlanEnded && maxSaved > 0;
 
   const loadWebhookLogs = async () => {
@@ -644,6 +660,276 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     } else if (typeof entryOrRaw === 'string') {
       setCity(entryOrRaw);
       setCityComboInput(entryOrRaw);
+    }
+  };
+
+  const dfCityOptions = useMemo(() => {
+    const q = dfCityComboInput.trim();
+    const matched = resolveCityFromInput(q);
+    if (matched && q === formatCityOptionLabel(matched)) {
+      return searchCities(matched.city, 25);
+    }
+    if (q.length >= 2) {
+      return searchCities(q, 25);
+    }
+    const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
+    return defaults.map((n) => findCityEntry(n)).filter((c): c is CityEntry => Boolean(c));
+  }, [dfCityComboInput]);
+
+  const handleFindDeals = async () => {
+    if (!canDealFinder) {
+      setDfError('AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade');
+      showToast('AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    if (!isCreditsLoaded || analysesRemaining <= 0) {
+      setDfError('No analyses left. Renew / Upgrade.');
+      showToast('No analyses left. Renew / Upgrade.');
+      onOpenRenewal();
+      return;
+    }
+    const cityEntry = resolveCityFromInput(dfCityComboInput);
+    if (!cityEntry) {
+      setDfError('City not supported yet. Choose from list.');
+      showToast('City not supported yet. Choose from list.');
+      return;
+    }
+    if (!Number.isFinite(dfBudgetUSD) || dfBudgetUSD <= 0 || !Number.isFinite(dfMinCapPct) || dfMinCapPct <= 0) {
+      setDfError('Enter valid Budget ($) and Min Cap Rate (%) greater than 0.');
+      return;
+    }
+
+    setDfError(null);
+    setIsFindingDeals(true);
+    try {
+      const res = await fetch('/api/app?action=find-deals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          city: cityEntry.city,
+          budget: dfBudgetUSD,
+          minCapRate: dfMinCapPct,
+          propertyType: dfPropType,
+          risk: dfRisk,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        setDfError(data?.error || 'AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        showToast(data?.error || 'Upgrade required');
+        onOpenRenewal();
+        return;
+      }
+      if (!res.ok || data?.success === false) {
+        setDfError(data?.error || 'Unable to find deals with those inputs.');
+        return;
+      }
+
+      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
+      const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
+      onUpdateUser({
+        ...user,
+        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
+        analysesTotal: nextTotal,
+        analysesLeft: nextLeft,
+        freeAnalyses: nextLeft,
+        freeAnalysesLeft: nextLeft,
+        successfulAnalyses: Number(data.successful_analyses ?? (user.successfulAnalyses ?? 0) + 1),
+        cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
+      });
+
+      setDfDeals(Array.isArray(data.deals) ? data.deals : []);
+      setDfResultsCity(data.city || cityEntry.city);
+      setDfDisclaimer(
+        data.disclaimer ||
+          `AI Deal Finder - Simulated deals based on market avg for ${data.city || cityEntry.city} - For illustration, verify with local agent`
+      );
+      showToast(`Found ${Array.isArray(data.deals) ? data.deals.length : 5} simulated deals in ${data.city || cityEntry.city} (-1 credit, ${nextLeft} left).`);
+    } catch {
+      setDfError('Network error connecting to AI Deal Finder.');
+    } finally {
+      setIsFindingDeals(false);
+    }
+  };
+
+  const handleViewDealInAnalyze = (deal: DealFinderDeal) => {
+    setPropertyName(deal.name);
+    selectTargetCity(deal.city, true);
+    setPriceUSD(deal.price);
+    setRentUSD(deal.rent);
+    setDownPaymentPct(deal.downPaymentPct);
+    setDownDraft(String(deal.downPaymentPct));
+    setInterestRatePct(deal.interestRatePct);
+    setRateDraft(String(deal.interestRatePct));
+    setOperatingExpensePct(deal.operatingExpensePct);
+    setOpexDraft(String(deal.operatingExpensePct));
+
+    const annualGross = Math.round(deal.rent * 12 * 0.95);
+    const annualOpex = Math.round(annualGross * (deal.operatingExpensePct / 100));
+    const noi = Math.round(annualGross - annualOpex);
+    const dpUsd = Math.round(deal.price * (deal.downPaymentPct / 100));
+    const annualDebt = Math.max(0, noi - deal.monthlyCashflow * 12);
+
+    setRunResult({
+      analyzedAt: new Date().toISOString(),
+      inputs: {
+        propertyTitle: deal.name,
+        city: deal.city,
+        priceUSD: deal.price,
+        rentUSD: deal.rent,
+        downPaymentPct: deal.downPaymentPct,
+        interestRatePct: deal.interestRatePct,
+        operatingExpensePct: deal.operatingExpensePct,
+      },
+      capRate: deal.capRate,
+      cashOnCash: deal.cashOnCash,
+      irr5Yr: deal.irr,
+      dscr: deal.dscr,
+      monthlyCashflowUSD: deal.monthlyCashflow,
+      monthlyMortgageUSD: null,
+      netOperatingIncomeUSD: noi,
+      annualGrossRentUSD: annualGross,
+      annualOPEXUSD: annualOpex,
+      annualDebtServiceUSD: Math.round(annualDebt),
+      downPaymentUSD: dpUsd,
+      sensitivity: null,
+      monteCarlo: null,
+    });
+    setHasRunAnalysis(true);
+    setActiveTab('analyze');
+    showToast(`Opened "${deal.name}" in Analyze (no extra credit deducted).`);
+  };
+
+  const handleSaveDealFromFinder = async (deal: DealFinderDeal) => {
+    if (!canSaveProperty) {
+      showToast('Licensing window expired - Renew');
+      onOpenRenewal();
+      return;
+    }
+    const savedList = user.savedAnalyses || [];
+    if (savedList.length >= maxSaved) {
+      showToast(`Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}. Upgrade to save more.`);
+      onOpenRenewal();
+      return;
+    }
+    const newAnalysis: SavedAnalysis = {
+      id: `saved_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      property: deal.name,
+      city: deal.city,
+      price: deal.price,
+      rent: deal.rent,
+      capRate: deal.capRate,
+      cashOnCash: deal.cashOnCash,
+      irr: deal.irr,
+      dscr: deal.dscr,
+      monthlyCashflow: deal.monthlyCashflow,
+      riskScore: deal.risk === 'Low' ? 'AAA' : deal.risk === 'High' ? 'A' : 'AA',
+      date: Date.now(),
+      imageUrl: PROPERTY_LISTINGS[0].imageUrl,
+      notes: `AI Deal Finder (${deal.propertyType}) - Score ${deal.score}/100 - Risk: ${deal.risk}`,
+    };
+
+    setSavingDealId(deal.id);
+    try {
+      const res = await fetch('/api/app?action=save-to-portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          currentSavedCount: savedList.length,
+          analysis: newAnalysis,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        showToast(data?.error || `Save limit reached (${savedList.length}/${maxSaved}).`);
+        onOpenRenewal();
+        return;
+      }
+      const savedItem = data?.savedItem || newAnalysis;
+      const newSavedList = [savedItem, ...savedList];
+      onUpdateUser({
+        ...user,
+        savedCount: data?.saved_count ?? newSavedList.length,
+        savedAnalyses: newSavedList,
+        portfolio: {
+          totalValue: newSavedList.reduce((acc, curr) => acc + curr.price, 0),
+          monthlyCashflow: newSavedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0),
+        },
+      });
+      showToast(`Saved "${savedItem.property}" to Portfolio (${newSavedList.length}/${maxSaved}).`);
+    } catch {
+      showToast('Unable to save deal to portfolio right now. Please try again.');
+    } finally {
+      setSavingDealId(null);
+    }
+  };
+
+  const handleExportDealPdf = async (deal: DealFinderDeal) => {
+    if (!canPdfExport) {
+      showToast('Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    const metricsLines = [
+      `Source: AI Deal Finder (Simulated Deal - Verify with Local Agent)`,
+      `Deal Score: ${deal.score}/100 | Risk: ${deal.risk} | Type: ${deal.propertyType}`,
+      `Target City: ${deal.city}, ${deal.country}`,
+      `Acquisition Price: ${formatPrice(deal.price, 'USD')}`,
+      `Est. Monthly Rent: ${formatPrice(deal.rent, 'USD')}/mo`,
+      `Unlevered Cap Rate: ${deal.capRate}%`,
+      `Cash-on-Cash Return: ${deal.cashOnCash}%`,
+      `5-Year Equity IRR: ${deal.irr}%`,
+      `Debt Service Coverage Ratio (DSCR): ${deal.dscr}x`,
+      `Est. Monthly Cashflow: ${formatPrice(deal.monthlyCashflow, 'USD')}`,
+    ];
+    try {
+      const res = await fetch('/api/app?action=export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          format: 'pdf',
+          propertyTitle: deal.name,
+        }),
+      });
+      if (res.status === 403) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err?.error || 'Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        onOpenRenewal();
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      const filename = downloadMemorandumPdf({
+        title: deal.name,
+        city: deal.city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: 'AI Deal Finder Simulated Memorandum',
+        watermarkText: data?.watermark,
+      });
+      showToast(`Exported PDF: ${filename}`);
+    } catch {
+      const filename = downloadMemorandumPdf({
+        title: deal.name,
+        city: deal.city,
+        userEmail: user.email,
+        planDisplay: license.displayName,
+        metricsLines,
+        notes: 'AI Deal Finder Simulated Memorandum',
+      });
+      showToast(`Exported PDF: ${filename}`);
     }
   };
 
@@ -897,24 +1183,20 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         ? data.custom_cities
         : [data.cityCard, ...customCities.filter((c) => c.city.toLowerCase() !== data.cityCard.city.toLowerCase())];
 
-      try {
-        localStorage.setItem(
-          `aqari_custom_cities_${user.email.toLowerCase()}`,
-          JSON.stringify(nextCustomCities)
-        );
-      } catch {}
-
-      const nextLeft = data.license?.isUnlimitedAnalyses
-        ? 999999
-        : data.license?.analysesLeft ?? Math.max(0, analysesRemaining - 1);
+      const nextLeft = Number(
+        data.analyses_left ?? data.license?.analysesLeft ?? Math.max(0, analysesRemaining - 1)
+      );
 
       onUpdateUser({
         ...user,
         customCities: nextCustomCities,
-        analysesUsed: data.license?.analysesUsed ?? (user.analysesUsed || 0) + 1,
+        analysesUsed: data.analyses_used ?? data.license?.analysesUsed ?? (user.analysesUsed || 0) + 1,
+        analysesTotal: data.analyses_total ?? user.analysesTotal,
         freeAnalyses: nextLeft,
         freeAnalysesLeft: nextLeft,
         analysesLeft: nextLeft,
+        successfulAnalyses: data.successful_analyses ?? (user.successfulAnalyses ?? 0) + 1,
+        cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
       });
 
       const card: CustomCityCard = data.cityCard;
@@ -1039,27 +1321,27 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         return;
       }
 
-      if (data?.license) {
-        const nextLeft = data.license.isUnlimitedAnalyses
-          ? 999999
-          : data.license.analysesLeft ?? Math.max(0, analysesRemaining - 1);
-        const nextSucc =
-          typeof data.successful_analyses === 'number'
-            ? data.successful_analyses
-            : (user.successfulAnalyses ?? 0) + 1;
-        onUpdateUser({
-          ...user,
-          plan: data.license.planKey || user.plan,
-          analysesUsed: data.license.analysesUsed ?? (user.analysesUsed || 0) + 1,
-          successfulAnalyses: nextSucc,
-          cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
-          freeAnalyses: nextLeft,
-          freeAnalysesLeft: nextLeft,
-          analysesLeft: nextLeft,
-        });
-      } else if (onConsumeAnalysis) {
-        onConsumeAnalysis();
-      }
+      const nextLeft = Number(
+        data.analyses_left ?? data?.license?.analysesLeft ?? Math.max(0, analysesRemaining - 1)
+      );
+      const nextTotal = Number(
+        data.analyses_total ?? data?.license?.analysesLimit ?? user.analysesTotal ?? license.analysesLimit
+      );
+      const nextSucc =
+        typeof data.successful_analyses === 'number'
+          ? data.successful_analyses
+          : (user.successfulAnalyses ?? 0) + 1;
+      onUpdateUser({
+        ...user,
+        plan: data?.license?.planKey || user.plan,
+        analysesUsed: data?.license?.analysesUsed ?? (user.analysesUsed || 0) + 1,
+        analysesTotal: nextTotal,
+        successfulAnalyses: nextSucc,
+        cancellationEligibility: data.cancellationEligibility ?? user.cancellationEligibility,
+        freeAnalyses: nextLeft,
+        freeAnalysesLeft: nextLeft,
+        analysesLeft: nextLeft,
+      });
 
       if (data?.result) {
         setRunResult({
@@ -1217,18 +1499,35 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
   };
 
-  // Delete saved analysis
-  const handleDeleteSaved = (id: string) => {
-    const updatedList = (user.savedAnalyses || []).filter((item) => item.id !== id);
-    const newTotalVal = updatedList.reduce((acc, curr) => acc + curr.price, 0);
-    const newMonthlyCash = updatedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0);
-    onUpdateUser({
-      ...user,
-      savedCount: updatedList.length,
-      savedAnalyses: updatedList,
-      portfolio: { totalValue: newTotalVal, monthlyCashflow: newMonthlyCash },
-    });
-    showToast('Analysis deleted from portfolio.');
+  // Delete saved analysis (Backend Single Source of Truth)
+  const handleDeleteSaved = async (id: string) => {
+    try {
+      const res = await fetch('/api/app?action=delete-saved', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          id,
+          email: user.email,
+          login_email: user.email,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      const updatedList = Array.isArray(data?.saved_analyses)
+        ? data.saved_analyses
+        : (user.savedAnalyses || []).filter((item) => item.id !== id);
+      const newTotalVal = updatedList.reduce((acc: number, curr: SavedAnalysis) => acc + curr.price, 0);
+      const newMonthlyCash = updatedList.reduce((acc: number, curr: SavedAnalysis) => acc + curr.monthlyCashflow, 0);
+      onUpdateUser({
+        ...user,
+        savedCount: data?.saved_count ?? updatedList.length,
+        savedAnalyses: updatedList,
+        portfolio: { totalValue: newTotalVal, monthlyCashflow: newMonthlyCash },
+      });
+      showToast('Analysis deleted from portfolio.');
+    } catch {
+      showToast('Unable to delete analysis from server. Please retry.');
+    }
   };
 
   // Load saved analysis back into calculator
@@ -1865,7 +2164,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               ) : (
                 <>
                   <div className="text-[#D4AF37] font-bold leading-snug">
-                    {license.sidebarText}
+                    {isCreditsLoaded
+                      ? license.sidebarText
+                      : `LICENSING COUNTDOWN - ${license.displayName} - ${daysLeft} days left - Loading...`}
                   </div>
                   <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
                     <div
@@ -1904,6 +2205,27 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               >
                 <Calculator className="w-4 h-4" />
                 <span>Analyze New Property</span>
+              </button>
+
+              <button
+                onClick={() => { setActiveTab('dealfinder'); setMobileSidebarOpen(false); }}
+                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
+                  activeTab === 'dealfinder'
+                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
+                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
+                }`}
+              >
+                <span className="flex items-center gap-3">
+                  <Radar className="w-4 h-4" />
+                  <span>AI Deal Finder</span>
+                </span>
+                {!canDealFinder && (
+                  <Lock
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      activeTab === 'dealfinder' ? 'text-black' : 'text-[#D4AF37]'
+                    }`}
+                  />
+                )}
               </button>
 
               <button
@@ -3396,6 +3718,359 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             </div>
           )}
 
+          {/* TAB 1B: AI DEAL FINDER (PROFESSIONAL / SOVEREIGN ONLY) */}
+          {activeTab === 'dealfinder' && (
+            <div className="space-y-6 max-w-6xl mx-auto">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.08] pb-5">
+                <div>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-xs font-mono text-[#D4AF37] mb-2">
+                    <Radar className="w-3.5 h-3.5" />
+                    <span>AI DEAL FINDER • PROFESSIONAL / SOVEREIGN</span>
+                  </div>
+                  <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+                    AI Deal Finder
+                  </h2>
+                </div>
+                <div className="text-xs font-mono text-zinc-400">
+                  Credits Remaining: <strong className="text-[#D4AF37]">{analysesLeftStr}</strong>
+                </div>
+              </div>
+
+              {!canDealFinder && (
+                <div className="p-5 rounded-2xl bg-amber-950/35 border border-[#D4AF37]/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <Lock className="w-5 h-5 text-[#D4AF37] shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="text-sm font-mono font-bold text-[#D4AF37]">
+                        AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade
+                      </div>
+                      <div className="text-xs font-mono text-zinc-300">
+                        FREE and STARTER accounts cannot scan deals. Upgrade to unlock 5 ranked simulated deals per scan.
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenRenewal}
+                    className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono uppercase tracking-wider cursor-pointer shrink-0"
+                  >
+                    Upgrade Plan
+                  </button>
+                </div>
+              )}
+
+              {/* Deal Finder Form */}
+              <div className={`glass-panel p-6 space-y-5 ${!canDealFinder ? 'opacity-65' : ''}`}>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                  {/* Budget ($) */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="df-budget" className="text-xs font-mono text-zinc-300 block">
+                      Budget ($)
+                    </label>
+                    <div className="flex items-center rounded-xl bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-3">
+                      <span className="text-xs font-mono text-zinc-400 mr-1.5">$</span>
+                      <input
+                        id="df-budget"
+                        type="text"
+                        disabled={!canDealFinder}
+                        lang="en"
+                        dir="ltr"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        style={EN_INPUT_STYLE}
+                        value={dfBudgetDraft}
+                        onChange={(e) => {
+                          const clean = sanitizeEnglishDecimal(e.target.value, false);
+                          setDfBudgetDraft(clean);
+                          setDfBudgetUSD(Math.max(0, parseEnglishNumber(clean, 0)));
+                        }}
+                        onBlur={() => setDfBudgetDraft(String(dfBudgetUSD || 0))}
+                        className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                      />
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-500">
+                      {formatUsdInputDisplay(dfBudgetUSD)}
+                    </div>
+                  </div>
+
+                  {/* Target City (750+ Searchable Combobox) */}
+                  <div className="space-y-1.5 relative">
+                    <label htmlFor="df-city" className="text-xs font-mono text-zinc-300 block">
+                      Target City ({CITIES.length}+ Cities)
+                    </label>
+                    <input
+                      id="df-city"
+                      type="text"
+                      disabled={!canDealFinder}
+                      lang="en"
+                      dir="ltr"
+                      autoComplete="off"
+                      value={dfCityComboInput}
+                      onFocus={() => canDealFinder && setDfCityOpen(true)}
+                      onBlur={() => setTimeout(() => setDfCityOpen(false), 180)}
+                      onChange={(e) => {
+                        setDfCityComboInput(e.target.value);
+                        setDfCityOpen(true);
+                      }}
+                      placeholder="Type city... e.g. Muscat"
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    />
+                    {dfCityOpen && canDealFinder && (
+                      <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
+                        {dfCityOptions.length === 0 ? (
+                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
+                            City not supported yet. Try another spelling.
+                          </div>
+                        ) : (
+                          dfCityOptions.map((c) => (
+                            <button
+                              key={`${c.city}-${c.countryCode}`}
+                              type="button"
+                              onMouseDown={() => {
+                                setDfCityComboInput(formatCityOptionLabel(c));
+                                setDfCityOpen(false);
+                              }}
+                              className="w-full text-left px-3 py-2 text-xs font-mono text-zinc-200 hover:bg-[#D4AF37] hover:text-black transition cursor-pointer flex items-center justify-between"
+                            >
+                              <span>{formatCityOptionLabel(c)}</span>
+                              <span className="text-[10px] opacity-75">Avg {c.avgCapRate}%</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Min Cap Rate (%) */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="df-min-cap" className="text-xs font-mono text-zinc-300 block">
+                      Min Cap Rate (%)
+                    </label>
+                    <div className="flex items-center rounded-xl bg-black/50 border border-white/15 focus-within:border-[#D4AF37] px-3">
+                      <input
+                        id="df-min-cap"
+                        type="text"
+                        disabled={!canDealFinder}
+                        lang="en"
+                        dir="ltr"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        style={EN_INPUT_STYLE}
+                        value={dfMinCapDraft}
+                        onChange={(e) => {
+                          const clean = sanitizeEnglishDecimal(e.target.value, true);
+                          setDfMinCapDraft(clean);
+                          setDfMinCapPct(Math.max(0, Math.min(50, parseEnglishNumber(clean, 0))));
+                        }}
+                        onBlur={() => setDfMinCapDraft(String(dfMinCapPct || 0))}
+                        className="w-full py-2.5 bg-transparent text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                      />
+                      <span className="text-xs font-mono text-zinc-400">%</span>
+                    </div>
+                  </div>
+
+                  {/* Property Type */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="df-prop-type" className="text-xs font-mono text-zinc-300 block">
+                      Property Type
+                    </label>
+                    <select
+                      id="df-prop-type"
+                      disabled={!canDealFinder}
+                      value={dfPropType}
+                      onChange={(e) => setDfPropType(e.target.value as any)}
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/70 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    >
+                      <option value="All">All</option>
+                      <option value="Apartment">Apartment</option>
+                      <option value="Villa">Villa</option>
+                      <option value="Commercial">Commercial</option>
+                    </select>
+                  </div>
+
+                  {/* Risk */}
+                  <div className="space-y-1.5">
+                    <label htmlFor="df-risk" className="text-xs font-mono text-zinc-300 block">
+                      Risk
+                    </label>
+                    <select
+                      id="df-risk"
+                      disabled={!canDealFinder}
+                      value={dfRisk}
+                      onChange={(e) => setDfRisk(e.target.value as any)}
+                      className="w-full px-3 py-2.5 rounded-xl bg-black/70 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
+                    >
+                      <option value="Low">Low</option>
+                      <option value="Medium">Medium</option>
+                      <option value="High">High</option>
+                    </select>
+                  </div>
+                </div>
+
+                {dfError && (
+                  <div className="p-3 rounded-xl bg-rose-950/50 border border-rose-500/40 text-xs font-mono text-rose-200">
+                    {dfError}
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                  <button
+                    type="button"
+                    disabled={
+                      !canDealFinder ||
+                      isFindingDeals ||
+                      isExpired ||
+                      !isCreditsLoaded ||
+                      (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                    }
+                    onClick={handleFindDeals}
+                    className={`px-6 py-3.5 rounded-xl font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition min-h-[46px] ${
+                      !canDealFinder ||
+                      isExpired ||
+                      !isCreditsLoaded ||
+                      (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                        ? 'bg-zinc-800 text-zinc-500 border border-white/10 cursor-not-allowed'
+                        : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.3)]'
+                    }`}
+                  >
+                    {!canDealFinder ? (
+                      <>
+                        <Lock className="w-4 h-4" />
+                        <span>Find Deals (-1 CREDIT)</span>
+                      </>
+                    ) : isFindingDeals ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Scanning Deals...</span>
+                      </>
+                    ) : !isCreditsLoaded ? (
+                      <span>Loading...</span>
+                    ) : !license.isUnlimitedAnalyses && analysesRemaining <= 0 ? (
+                      <>
+                        <Lock className="w-4 h-4 text-rose-400" />
+                        <span>No analyses left</span>
+                      </>
+                    ) : (
+                      <>
+                        <Radar className="w-4 h-4" />
+                        <span>Find Deals (-1 CREDIT)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <span className="text-[11px] font-mono text-zinc-400">
+                    Returns 5 ranked deals sorted by institutional score (0-100)
+                  </span>
+                </div>
+              </div>
+
+              {/* Deals Results Table */}
+              {dfDeals.length > 0 && (
+                <div className="glass-panel p-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-mono font-bold uppercase text-white">
+                      Ranked Simulated Deals • {dfResultsCity}
+                    </h3>
+                    <span className="text-xs font-mono text-emerald-400">
+                      Sorted by Score Desc
+                    </span>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse font-mono text-xs tabular-nums">
+                      <thead>
+                        <tr className="border-b border-white/10 text-zinc-400 uppercase text-[10px]">
+                          <th className="py-3 pr-3">Deal Name</th>
+                          <th className="py-3 pr-3">City</th>
+                          <th className="py-3 pr-3">Price ($)</th>
+                          <th className="py-3 pr-3">Est. Rent ($/mo)</th>
+                          <th className="py-3 pr-3">Cap Rate (%)</th>
+                          <th className="py-3 pr-3">Cash-on-Cash (%)</th>
+                          <th className="py-3 pr-3">Score (0-100)</th>
+                          <th className="py-3 pr-3">Risk</th>
+                          <th className="py-3 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/[0.06]">
+                        {dfDeals.map((deal) => (
+                          <tr key={deal.id} className="hover:bg-white/[0.03] transition">
+                            <td className="py-3.5 pr-3">
+                              <div className="font-bold text-white">{deal.name}</div>
+                              <div className="text-[10px] text-zinc-500">{deal.propertyType}</div>
+                            </td>
+                            <td className="py-3.5 pr-3 text-zinc-300">{deal.city}</td>
+                            <td className="py-3.5 pr-3 text-white font-semibold">
+                              ${deal.price.toLocaleString('en-US')}
+                            </td>
+                            <td className="py-3.5 pr-3 text-zinc-200">
+                              ${deal.rent.toLocaleString('en-US')}/mo
+                            </td>
+                            <td className="py-3.5 pr-3 text-[#D4AF37] font-bold">
+                              {deal.capRate}%
+                            </td>
+                            <td className="py-3.5 pr-3 text-emerald-400 font-bold">
+                              {deal.cashOnCash}%
+                            </td>
+                            <td className="py-3.5 pr-3">
+                              <span className="px-2 py-0.5 rounded bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37] font-bold">
+                                {deal.score}/100
+                              </span>
+                            </td>
+                            <td className="py-3.5 pr-3">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                  deal.risk === 'Low'
+                                    ? 'bg-emerald-500/20 text-emerald-300'
+                                    : deal.risk === 'High'
+                                    ? 'bg-rose-500/20 text-rose-300'
+                                    : 'bg-amber-500/20 text-amber-300'
+                                }`}
+                              >
+                                {deal.risk}
+                              </span>
+                            </td>
+                            <td className="py-3.5 text-right">
+                              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleViewDealInAnalyze(deal)}
+                                  className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-[#D4AF37] hover:text-black text-white font-bold text-[11px] cursor-pointer transition"
+                                >
+                                  View Analysis
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={savingDealId === deal.id}
+                                  onClick={() => handleSaveDealFromFinder(deal)}
+                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-300 font-bold text-[11px] cursor-pointer transition disabled:opacity-50"
+                                >
+                                  {savingDealId === deal.id ? 'Saving...' : 'Save to Portfolio'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleExportDealPdf(deal)}
+                                  className="px-2.5 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-bold text-[11px] cursor-pointer transition flex items-center gap-1"
+                                >
+                                  {!canPdfExport && <Lock className="w-3 h-3" />}
+                                  <span>Export PDF</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200">
+                    {dfDisclaimer ||
+                      `AI Deal Finder - Simulated deals based on market avg for ${dfResultsCity} - For illustration, verify with local agent`}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TAB 2: MY SAVED ANALYSES */}
           {activeTab === 'saved' && (
             <div className="space-y-6 max-w-6xl mx-auto">
@@ -4379,6 +5054,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       disabled={!localCancelEligibility.canCancel}
                       onClick={() => {
                         setCancelModalError(null);
+                        setCancelPolicyAck(false);
                         setIsCancelModalOpen(true);
                       }}
                       className={`px-4 py-2.5 rounded-xl font-bold text-xs font-mono transition min-h-[44px] flex items-center gap-2 ${
@@ -4390,6 +5066,68 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       {!localCancelEligibility.canCancel && <Lock className="w-3.5 h-3.5" />}
                       <span>{localCancelEligibility.buttonText}</span>
                     </button>
+                  )}
+                </div>
+
+                {/* Collapsible Refund Policy - Read before cancelling */}
+                <div className="pt-2 border-t border-white/[0.08]">
+                  <button
+                    type="button"
+                    onClick={() => setShowRefundPolicyDrawer((v) => !v)}
+                    className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-xs font-mono font-bold text-[#D4AF37] cursor-pointer transition"
+                  >
+                    <span>Refund Policy - Read before cancelling</span>
+                    <ChevronDown
+                      className={`w-4 h-4 transition-transform ${
+                        showRefundPolicyDrawer ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </button>
+
+                  {showRefundPolicyDrawer && (
+                    <div className="mt-3 p-4 rounded-xl bg-black/50 border border-white/10 space-y-2.5 text-xs font-mono text-zinc-300 leading-relaxed">
+                      <div className="font-bold text-white">
+                        AQARI AI - Refund &amp; Cancellation Policy
+                      </div>
+                      <p>
+                        1. 7-Day Cancellation Window: You may cancel within 7 days of activation ONLY if you have completed ZERO (0) successful analyses.
+                      </p>
+                      <p>
+                        2. No Refund After 1 Successful Analysis: If you complete 1 or more successful analyses, your subscription is non-refundable and non-cancellable, even within 7 days.
+                      </p>
+                      <p>
+                        3. No Refund After 7 Days Without Tool Issue: If 7 days have passed since activation and you have not reported a tool issue, you cannot cancel or request a refund, even if you completed 0 analyses.
+                      </p>
+                      <p>
+                        4. Tool Issue Exception: If tool has verified issue and you reported it via Report Tool Issue, and we do NOT resolve it within 7 days of report, AND you completed 0 successful analyses, you may cancel and receive full refund in 5-10 business days. If we resolve within 7 days, standard 7-day window applies.
+                      </p>
+                      <p>
+                        5. How to Cancel: Settings &gt; SUBSCRIPTION &amp; CANCELLATION. If eligible, Cancel button enabled. If not eligible, automatically locked with reason.
+                      </p>
+                      <p>
+                        6. What Happens After Cancellation: Plan reverts to FREE (3 analyses), paid analyses deactivated, refund ($79 / $199 / $599) issued to original payment method via Lemon Squeezy.
+                      </p>
+                      <p>
+                        7. No Partial Refunds for unused days or unused analyses. By purchasing, you agree to this policy.
+                      </p>
+                      <div className="pt-1">
+                        <a
+                          href="/refund-policy"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            if (onOpenLegal) {
+                              onOpenLegal('refund');
+                            } else {
+                              window.history.pushState({}, '', '/refund-policy');
+                              window.dispatchEvent(new PopStateEvent('popstate'));
+                            }
+                          }}
+                          className="text-[#D4AF37] underline font-bold hover:text-amber-300"
+                        >
+                          Open public /refund-policy page &rarr;
+                        </a>
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>
@@ -4920,6 +5658,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </strong>{' '}
               will be issued to original payment method in 5-10 business days. This cannot be undone.
             </p>
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.04] border border-white/10 cursor-pointer select-none text-xs font-mono text-zinc-200">
+              <input
+                type="checkbox"
+                checked={cancelPolicyAck}
+                onChange={(e) => setCancelPolicyAck(e.target.checked)}
+                className="mt-0.5 w-4 h-4 accent-[#D4AF37] cursor-pointer shrink-0"
+              />
+              <span>I have read the Refund Policy above</span>
+            </label>
             {cancelModalError && (
               <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/50 text-xs font-mono text-rose-200">
                 {cancelModalError}
@@ -4935,9 +5682,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </button>
               <button
                 type="button"
-                disabled={isCancellingSub}
+                disabled={isCancellingSub || !cancelPolicyAck}
                 onClick={handleCancelSubscription}
-                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-mono font-bold text-white cursor-pointer disabled:opacity-60"
+                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-mono font-bold text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isCancellingSub ? 'Processing Refund...' : 'Confirm Cancel + Refund'}
               </button>
