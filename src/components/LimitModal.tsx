@@ -54,6 +54,16 @@ export const LimitModal: React.FC<LimitModalProps> = ({
   const proAnalyses = proPlan?.analysesLimit ?? PLANS.pro.analysesLimit;
 
   const handleCheckout = async (plan: 'starter' | 'pro' | 'enterprise') => {
+    setPolicyError(false);
+    setCheckoutNotice(null);
+    setCheckoutSuccess(null);
+    onClose();
+    window.dispatchEvent(
+      new CustomEvent('aqari:open-manual-payment', { detail: { plan } })
+    );
+  };
+
+  const handlePaddleCheckout = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
       setPolicyError(true);
       return;
@@ -139,13 +149,22 @@ export const LimitModal: React.FC<LimitModalProps> = ({
               </p>
             </div>
 
-            <button
-              onClick={() => handleCheckout('pro')}
-              className="w-full py-2.5 px-3 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
-            >
-              <span>Unlock Pro Plan</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+            <div className="space-y-1.5">
+              <button
+                onClick={() => handleCheckout('pro')}
+                className="w-full py-2.5 px-3 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+              >
+                <span>Unlock Pro Plan</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePaddleCheckout('pro')}
+                className="w-full py-1.5 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/10 text-[10px] font-mono transition cursor-pointer"
+              >
+                International Card (Paddle)
+              </button>
+            </div>
           </div>
 
           {/* Starter Card */}
@@ -176,6 +195,13 @@ export const LimitModal: React.FC<LimitModalProps> = ({
               >
                 <span>Unlock Starter</span>
                 <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePaddleCheckout('starter')}
+                className="w-full py-1.5 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/10 text-[10px] font-mono transition cursor-pointer"
+              >
+                International Card (Paddle)
               </button>
               <div className="text-[10px] font-mono text-zinc-400 text-center">
                 7-Day Refund - 0 successful analyses or unresolved tool issue

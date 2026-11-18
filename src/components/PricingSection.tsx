@@ -162,18 +162,13 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     });
   }, [user?.email, pricingVersion]);
 
-  const handleChoosePlan = async (planId: 'free' | 'starter' | 'pro' | 'enterprise') => {
-    if (planId === 'free') {
-      if (!user) {
-        onOpenAuth();
-      } else if (onGoToTerminal) {
-        onGoToTerminal();
-      } else {
-        window.location.hash = '#/terminal';
-      }
-      return;
-    }
+  const handleOpenManualTransfer = (planId: 'starter' | 'pro' | 'enterprise') => {
+    window.dispatchEvent(
+      new CustomEvent('aqari:open-manual-payment', { detail: { plan: planId } })
+    );
+  };
 
+  const handlePayPaddle = async (planId: 'starter' | 'pro' | 'enterprise') => {
     if (!user) {
       onOpenAuth();
       return;
@@ -181,7 +176,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
 
     if (!refundAccepted) {
       setHighlightPolicy(true);
-      showError('Please agree to the "7-Day Refund & Issue Policy" checkbox below before checkout.');
+      showError('Please agree to the "7-Day Refund & Issue Policy" checkbox below before card checkout.');
       setTimeout(() => setHighlightPolicy(false), 3000);
       return;
     }
@@ -213,6 +208,21 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       showError(err?.message || 'Checkout is temporarily unavailable. Please try again.');
       setLoadingPlan(null);
     }
+  };
+
+  const handleChoosePlan = async (planId: 'free' | 'starter' | 'pro' | 'enterprise') => {
+    if (planId === 'free') {
+      if (!user) {
+        onOpenAuth();
+      } else if (onGoToTerminal) {
+        onGoToTerminal();
+      } else {
+        window.location.hash = '#/terminal';
+      }
+      return;
+    }
+
+    handleOpenManualTransfer(planId);
   };
 
   const getTierData = (key: PlanKey) => {
@@ -544,6 +554,17 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     </>
                   )}
                 </button>
+                {tier.id !== 'free' && !isCurrentPlan && (
+                  <button
+                    type="button"
+                    disabled={isLoadingThis}
+                    onClick={() => handlePayPaddle(tier.id as 'starter' | 'pro' | 'enterprise')}
+                    className="w-full py-2 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.09] text-zinc-300 border border-white/10 text-[10px] font-mono transition flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <CreditCard className="w-3 h-3 text-[#D4AF37]" />
+                    <span>International Card (Paddle)</span>
+                  </button>
+                )}
                 {tier.activePrice > 0 && (
                   <p className="text-[10px] font-mono text-zinc-400 text-center leading-snug">
                     7-Day Refund - 0 successful analyses or unresolved tool issue

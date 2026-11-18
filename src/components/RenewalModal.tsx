@@ -48,6 +48,16 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   const enterprisePricing = findPlanPricing(pricingData, 'enterprise');
 
   const handleRenew = async (plan: 'starter' | 'pro' | 'enterprise') => {
+    setPolicyError(false);
+    setCheckoutNotice(null);
+    setCheckoutSuccess(null);
+    onClose();
+    window.dispatchEvent(
+      new CustomEvent('aqari:open-manual-payment', { detail: { plan } })
+    );
+  };
+
+  const handleRenewPaddle = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
       setPolicyError(true);
       return;
@@ -244,6 +254,13 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
                   >
                     <span>{buttonLabel}</span>
                     {!isDisabled && <ArrowRight className="w-3.5 h-3.5" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRenewPaddle(p.id)}
+                    className="w-full py-2 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/10 text-[10px] font-mono transition cursor-pointer"
+                  >
+                    International Card (Paddle)
                   </button>
                   <div className="text-[10px] font-mono text-zinc-400 text-center">
                     7-Day Refund - 0 successful analyses or unresolved tool issue

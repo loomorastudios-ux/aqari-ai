@@ -54,6 +54,7 @@ import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { DemoAnalysisView } from './components/DemoAnalysisView';
 import { LegalPages, LegalDocSlug } from './components/LegalPages';
 import { AdminDashboard } from './components/AdminDashboard';
+import { BankTransferCheckoutPage, PaidPlanChoice } from './components/BankTransferCheckoutPage';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { checkAndSendExpiryEmail } from './utils/emailService';
 import {
@@ -70,6 +71,7 @@ type AppRoute =
   | 'landing'
   | 'terminal'
   | 'pricing'
+  | 'manual-payment'
   | 'payment-success'
   | 'demo'
   | 'terms'
@@ -118,6 +120,7 @@ export default function App() {
       if (path === '/refund' || path === '/refund-policy' || hash === '#/refund' || hash === '#/refund-policy') return 'refund';
       if (path === '/disclaimer' || hash === '#/disclaimer') return 'disclaimer';
       if (path === '/admin' || hash === '#/admin') return 'admin';
+      if (path === '/manual-payment' || hash.startsWith('#/manual-payment')) return 'manual-payment';
       if (path === '/payment-success' || hash.startsWith('#/payment-success')) return 'payment-success';
       if (path === '/pricing' || hash === '#/pricing') return 'pricing';
       if (path.startsWith('/demo/') || hash.startsWith('#/demo/')) return 'demo';
@@ -132,6 +135,14 @@ export default function App() {
       }
     }
     return 'landing';
+  });
+
+  const [manualPaymentPlan, setManualPaymentPlan] = useState<PaidPlanChoice>(() => {
+    if (typeof window !== 'undefined') {
+      const p = new URLSearchParams(window.location.search).get('plan');
+      if (p === 'starter' || p === 'pro' || p === 'enterprise') return p;
+    }
+    return 'pro';
   });
 
   const [verifyingPlanName, setVerifyingPlanName] = useState<string>('SUBSCRIPTION');
@@ -253,6 +264,13 @@ export default function App() {
       if (path === '/refund' || path === '/refund-policy' || hash === '#/refund' || hash === '#/refund-policy') return setRoute('refund');
       if (path === '/disclaimer' || hash === '#/disclaimer') return setRoute('disclaimer');
       if (path === '/admin' || hash === '#/admin') return setRoute('admin');
+      if (path === '/manual-payment' || hash.startsWith('#/manual-payment')) {
+        const qp = new URLSearchParams(window.location.search).get('plan');
+        if (qp === 'starter' || qp === 'pro' || qp === 'enterprise') {
+          setManualPaymentPlan(qp);
+        }
+        return setRoute('manual-payment');
+      }
       if (path === '/payment-success' || hash.startsWith('#/payment-success')) return setRoute('payment-success');
       if (path === '/pricing' || hash === '#/pricing') return setRoute('pricing');
 
@@ -276,11 +294,23 @@ export default function App() {
       }
     };
 
+    const handleOpenManualPayment = (ev: Event) => {
+      const p = (ev as CustomEvent)?.detail?.plan;
+      const validPlan: PaidPlanChoice =
+        p === 'starter' || p === 'pro' || p === 'enterprise' ? p : 'pro';
+      setManualPaymentPlan(validPlan);
+      window.history.pushState({}, '', `/manual-payment?plan=${validPlan}`);
+      setRoute('manual-payment');
+      window.scrollTo(0, 0);
+    };
+
     window.addEventListener('hashchange', handleLocationChange);
     window.addEventListener('popstate', handleLocationChange);
+    window.addEventListener('aqari:open-manual-payment', handleOpenManualPayment);
     return () => {
       window.removeEventListener('hashchange', handleLocationChange);
       window.removeEventListener('popstate', handleLocationChange);
+      window.removeEventListener('aqari:open-manual-payment', handleOpenManualPayment);
     };
   }, []);
 
@@ -1463,6 +1493,45 @@ export default function App() {
             window.history.pushState({}, '', `/demo/${s}`);
           }}
         />
+        {renderLegalFooter()}
+        {isAuthOpen && (
+          <AuthModal
+            isOpen={isAuthOpen}
+            onClose={() => setIsAuthOpen(false)}
+            onSignIn={handleSignIn}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // View: Oman Manual Bank Transfer + Secondary International Paddle Checkout (/manual-payment)
+  if (route === 'manual-payment') {
+    return (
+      <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#D4AF37]/30 selection:text-white relative">
+        <AmbientBackground />
+        <CustomCursor />
+        <Navbar
+          currentCurrency={currency}
+          onCurrencyChange={handleCurrencyChange}
+          user={user}
+          config={config}
+          onOpenAuth={() => setIsAuthOpen(true)}
+          onSignOut={handleSignOut}
+          onOpenAdmin={() => setIsAdminOpen(true)}
+          onGoToTerminal={handleGoToTerminal}
+          onOpenPricing={handleGoToPricing}
+          onGoToHome={handleGoToHome}
+        />
+        <div className="flex-1">
+          <BankTransferCheckoutPage
+            initialPlan={manualPaymentPlan}
+            user={user}
+            onRequireAuth={() => setIsAuthOpen(true)}
+            onBack={handleGoToPricing}
+            onGoToTerminal={handleGoToTerminal}
+          />
+        </div>
         {renderLegalFooter()}
         {isAuthOpen && (
           <AuthModal
