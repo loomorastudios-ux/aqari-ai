@@ -3651,6 +3651,7 @@ export default async function handler(req: any, res: any) {
             'me',
             'pricing',
             'verify-checkout',
+            'verify-payment',
             'debug-plan',
             'run-analysis',
             'find-deals',
@@ -3896,14 +3897,20 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json(getPricingPublicPayload());
       }
 
+      case 'verify-payment':
       case 'verify-checkout': {
         try {
           res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
         } catch {}
 
         let orderId = '';
+        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+        const paddleBaseUrl =
+          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'production'
+            ? 'https://api.paddle.com'
+            : 'https://sandbox-api.paddle.com';
         const stripeSecretKey = cleanEnvValue(getEnv('STRIPE_SECRET_KEY') || getEnv('PAYMENT_API_KEY'));
-        const hasPaymentKey = Boolean(stripeSecretKey);
+        const hasPaymentKey = Boolean(paddleApiKey || stripeSecretKey);
 
         try {
           const src: Record<string, any> = {
@@ -3921,6 +3928,16 @@ export default async function handler(req: any, res: any) {
               error: 'Please sign in first to verify your payment - سجل دخولك أولاً لتفعيل حسابك',
             });
           }
+
+          const requestedPlanRaw = String(src?.plan || '').trim().toLowerCase();
+          const requestedPlan: PlanKey | undefined =
+            requestedPlanRaw === 'starter' ||
+            requestedPlanRaw === 'pro' ||
+            requestedPlanRaw === 'professional' ||
+            requestedPlanRaw === 'enterprise' ||
+            requestedPlanRaw === 'sovereign'
+              ? normalizePlanKey(requestedPlanRaw)
+              : undefined;
 
           const cleanPlaceholderOrderId = (raw: any): string => {
             const cleaned = normalizeOrderId(String(raw || ''));
@@ -3942,7 +3959,9 @@ export default async function handler(req: any, res: any) {
             return cleaned;
           };
 
-          const rawOrderParam = String(src?.order_id || src?.order || '').trim();
+          const rawOrderParam = String(
+            src?.transaction_id || src?.transactionId || src?._ptxn || src?.order_id || src?.order || ''
+          ).trim();
           const lowerOrderParam = rawOrderParam.toLowerCase();
           const isFallbackMode =
             !rawOrderParam ||
@@ -3962,6 +3981,7 @@ export default async function handler(req: any, res: any) {
             productId?: string;
             fallbackPlan?: PlanKey;
             paymentEmail: string;
+            paymentProvider?: string;
             testMode: boolean;
             createdAtIso?: string;
             skipWebhookLogAppend?: boolean;
@@ -3987,7 +4007,7 @@ export default async function handler(req: any, res: any) {
               refundPolicyAcceptedAt: src?.refundAcceptedAt || new Date(now).toISOString(),
               lockedLaunchPrice: pricing.launchDiscountActive ? params.amountUSD : null,
               paymentCustomerEmail: params.paymentEmail || null,
-              paymentProvider: 'stripe',
+              paymentProvider: params.paymentProvider || 'paddle',
               paymentIntentId: params.resolvedOrderId,
             });
             await saveUserToDb(dbUser).catch(() => {});
@@ -4037,10 +4057,15 @@ export default async function handler(req: any, res: any) {
             const license = computeServerLicenseStatus(dbUser);
             const features =
               findPlanPricing(pricing, tier.plan)?.features || PLAN_DEFINITIONS[tier.plan].features;
+            const successMessage =
+              tier.plan === 'pro'
+                ? 'تم الاشتراك بنجاح! تم تفعيل باقة Pro'
+                : `تم الاشتراك بنجاح! تم تفعيل باقة ${tier.planDisplay}`;
 
             return res.status(200).json({
               success: true,
               verified: true,
+              message: successMessage,
               plan: tier.planDisplay,
               plan_name: tier.planDisplay,
               planKey: tier.plan,
@@ -4048,8 +4073,9 @@ export default async function handler(req: any, res: any) {
               analyses_left: tier.analyses,
               payment_email_for_log_only: params.paymentEmail || null,
               order_id: params.resolvedOrderId,
+              transaction_id: params.resolvedOrderId,
               payment_intent_id: params.resolvedOrderId,
-              payment_provider: 'stripe',
+              payment_provider: params.paymentProvider || 'paddle',
               login_email: dbUser.email,
               license_end: dbUser.license_end,
               user: dbUser,
@@ -4088,7 +4114,7 @@ export default async function handler(req: any, res: any) {
                 currency: 'USD',
                 testMode: Boolean(existingUsedOrder.test_mode),
                 paymentCustomerEmail: existingUsedOrder.payment_email || null,
-                paymentProvider: 'stripe',
+                paymentProvider: existingUser.payment_provider || 'paddle',
                 paymentIntentId: existingUsedOrder.order_id,
               });
               await saveUserToDb(existingUser).catch(() => {});
@@ -4097,6 +4123,10 @@ export default async function handler(req: any, res: any) {
             const license = computeServerLicenseStatus(existingUser);
             const features =
               findPlanPricing(pricing, usedPlanKey)?.features || PLAN_DEFINITIONS[usedPlanKey].features;
+            const successMessage =
+              usedPlanKey === 'pro'
+                ? 'تم الاشتراك بنجاح! تم تفعيل باقة Pro'
+                : `تم الاشتراك بنجاح! تم تفعيل باقة ${license.displayName}`;
             try {
               setSessionCookie(res, existingUser.email);
               if (existingUser.cancel_status !== 'refunded') {
@@ -4116,6 +4146,7 @@ export default async function handler(req: any, res: any) {
             return res.status(200).json({
               success: true,
               verified: true,
+              message: successMessage,
               plan: license.displayName,
               plan_name: license.displayName,
               planKey: license.planKey,
@@ -4124,8 +4155,9 @@ export default async function handler(req: any, res: any) {
               analyses_total: license.analysesLimit,
               payment_email_for_log_only: existingUsedOrder.payment_email || null,
               order_id: existingUsedOrder.order_id,
+              transaction_id: existingUsedOrder.order_id,
               payment_intent_id: existingUsedOrder.order_id,
-              payment_provider: existingUser.payment_provider || 'stripe',
+              payment_provider: existingUser.payment_provider || 'paddle',
               login_email: existingUser.email,
               license_end: existingUser.license_end,
               user: existingUser,
@@ -4226,7 +4258,7 @@ export default async function handler(req: any, res: any) {
 
             return res.status(200).json({
               success: false,
-              error: 'No completed Stripe payment found yet. Enter Payment ID below once received.',
+              error: 'No completed payment found yet. Complete Paddle checkout or enter Transaction ID below.',
             });
           }
 
@@ -4238,11 +4270,116 @@ export default async function handler(req: any, res: any) {
           if (!hasPaymentKey) {
             return res.status(200).json({
               success: false,
-              error: 'Stripe payment gateway integration pending. Use Admin manual grant or webhook activation.',
+              error: 'Paddle API key (PADDLE_API_KEY) is missing on server.',
             });
           }
 
-          // Generic Stripe PaymentIntent / Checkout Session lookup when STRIPE_SECRET_KEY is provided
+          const isStripeTx = orderId.startsWith('pi_') || orderId.startsWith('cs_');
+
+          if (!isStripeTx && paddleApiKey) {
+            // Verify Paddle Sandbox/Live transaction against Paddle API v2
+            const paddleRes = await fetch(
+              `${paddleBaseUrl}/transactions/${encodeURIComponent(orderId)}`,
+              {
+                headers: {
+                  Authorization: `Bearer ${paddleApiKey}`,
+                  Accept: 'application/json',
+                },
+              }
+            );
+            const paddleJson: any = await paddleRes.json().catch(() => null);
+            const txnData = paddleJson?.data;
+            if (!paddleRes.ok || !txnData?.id) {
+              return res.status(200).json({
+                success: false,
+                error:
+                  paddleJson?.error?.detail ||
+                  paddleJson?.error?.message ||
+                  `Transaction not found in Paddle: ${orderId}`,
+              });
+            }
+
+            const txnStatus = String(txnData.status || '').toLowerCase();
+            const isPaid =
+              txnStatus === 'completed' ||
+              txnStatus === 'billed' ||
+              txnStatus === 'paid';
+            if (!isPaid) {
+              return res.status(200).json({
+                success: false,
+                error: `Paddle transaction #${orderId} status is '${txnData.status || 'pending'}' (not completed)`,
+              });
+            }
+
+            const rawGrandTotal = Number(
+              txnData?.details?.totals?.grand_total ??
+                txnData?.details?.totals?.total ??
+                txnData?.details?.totals?.subtotal ??
+                0
+            );
+            const amountUSD =
+              Number.isFinite(rawGrandTotal) && rawGrandTotal > 0
+                ? rawGrandTotal / 100
+                : PLAN_DEFINITIONS[requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro'].launchPrice;
+
+            const proPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
+            const starterPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID'));
+            const sovereignPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID'));
+            const firstItem = Array.isArray(txnData?.items) ? txnData.items[0] : null;
+            const itemPriceId = String(firstItem?.price?.id || firstItem?.price_id || '').trim();
+            const itemProductName = String(
+              firstItem?.price?.name || firstItem?.product?.name || firstItem?.price?.description || ''
+            ).trim();
+
+            let resolvedFallbackPlan: PlanKey = requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro';
+            if (proPriceId && itemPriceId === proPriceId) {
+              resolvedFallbackPlan = 'pro';
+            } else if (starterPriceId && itemPriceId === starterPriceId) {
+              resolvedFallbackPlan = 'starter';
+            } else if (sovereignPriceId && itemPriceId === sovereignPriceId) {
+              resolvedFallbackPlan = 'enterprise';
+            } else if (txnData?.custom_data?.plan) {
+              const cdPlan = normalizePlanKey(String(txnData.custom_data.plan));
+              if (cdPlan !== 'free') resolvedFallbackPlan = cdPlan;
+            } else if (itemProductName) {
+              resolvedFallbackPlan = resolvePlanFromOrderAttributes(
+                { product_name: itemProductName, amount: rawGrandTotal },
+                resolvedFallbackPlan
+              );
+            }
+
+            const paymentEmail = String(
+              txnData?.customer?.email ||
+                txnData?.custom_data?.email ||
+                txnData?.custom_data?.login_email ||
+                src?.email ||
+                loginEmail
+            )
+              .trim()
+              .toLowerCase();
+
+            return await completeActivation({
+              resolvedOrderId: String(txnData.id),
+              amountUSD,
+              rawAmountCents: Number.isFinite(rawGrandTotal) ? rawGrandTotal : undefined,
+              productName: itemProductName || undefined,
+              variantId: itemPriceId || undefined,
+              fallbackPlan: resolvedFallbackPlan,
+              paymentEmail,
+              paymentProvider: 'paddle',
+              testMode: paddleBaseUrl.includes('sandbox'),
+              createdAtIso: txnData.created_at || new Date().toISOString(),
+            });
+          }
+
+          if (!stripeSecretKey) {
+            return res.status(200).json({
+              success: false,
+              error: 'Payment verification key not configured for this transaction format.',
+            });
+          }
+
+          // Fallback Stripe lookup only if orderId is pi_/cs_ and STRIPE_SECRET_KEY exists
           const stripeEndpoint = orderId.startsWith('cs_')
             ? `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(orderId)}`
             : `https://api.stripe.com/v1/payment_intents/${encodeURIComponent(orderId)}`;
@@ -4255,7 +4392,7 @@ export default async function handler(req: any, res: any) {
           if (!stripeRes.ok || !stripeJson?.id) {
             return res.status(200).json({
               success: false,
-              error: stripeJson?.error?.message || `Payment record not found in Stripe: ${orderId}`,
+              error: stripeJson?.error?.message || `Payment record not found: ${orderId}`,
             });
           }
 
@@ -4288,6 +4425,7 @@ export default async function handler(req: any, res: any) {
             rawAmountCents,
             fallbackPlan,
             paymentEmail,
+            paymentProvider: 'stripe',
             testMode: !Boolean(stripeJson.livemode),
             createdAtIso: new Date().toISOString(),
           });
@@ -6462,7 +6600,19 @@ export default async function handler(req: any, res: any) {
         const activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
 
         const isTestMode =
-          getEnv('PAYMENT_TEST_MODE') === 'true' || getEnv('VITE_PAYMENT_TEST_MODE') === 'true';
+          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() !== 'production' ||
+          getEnv('PAYMENT_TEST_MODE') === 'true' ||
+          getEnv('VITE_PAYMENT_TEST_MODE') === 'true';
+
+        const proPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
+        const starterPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID'));
+        const sovereignPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID'));
+        const resolvedPriceId =
+          validPlan === 'pro'
+            ? proPriceId
+            : validPlan === 'starter'
+            ? starterPriceId || proPriceId
+            : sovereignPriceId || proPriceId;
 
         if (email) {
           recordPendingCheckout({
@@ -6478,8 +6628,12 @@ export default async function handler(req: any, res: any) {
         const duration = Date.now() - startTime;
         return res.status(200).json({
           success: true,
-          provider: 'stripe',
-          pendingStripeIntegration: true,
+          provider: 'paddle',
+          environment:
+            cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'production'
+              ? 'production'
+              : 'sandbox',
+          priceId: resolvedPriceId,
           url: '/#pricing',
           success_url: SUCCESS_REDIRECT,
           cancel_url: CANCEL_REDIRECT,
@@ -7392,6 +7546,7 @@ export default async function handler(req: any, res: any) {
             'me',
             'pricing',
             'verify-checkout',
+            'verify-payment',
             'debug-plan',
             'run-analysis',
             'find-deals',

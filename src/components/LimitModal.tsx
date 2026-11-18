@@ -3,6 +3,7 @@ import { CurrencyCode, RemoteConfig, User } from '../types';
 import { CHECKOUT_LINKS } from '../constants';
 import { PLANS, PricingPublicPayload, findPlanPricing } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
+import { openPaddleCheckout, PADDLE_PRO_SUCCESS_MESSAGE } from '../utils/paddleClient';
 import { 
   X, 
   Lock, 
@@ -37,6 +38,8 @@ export const LimitModal: React.FC<LimitModalProps> = ({
 }) => {
   const [refundAccepted, setRefundAccepted] = useState(false);
   const [policyError, setPolicyError] = useState(false);
+  const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
+  const [checkoutSuccess, setCheckoutSuccess] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -50,8 +53,6 @@ export const LimitModal: React.FC<LimitModalProps> = ({
   const starterAnalyses = starterPlan?.analysesLimit ?? PLANS.starter.analysesLimit;
   const proAnalyses = proPlan?.analysesLimit ?? PLANS.pro.analysesLimit;
 
-  const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
-
   const handleCheckout = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
       setPolicyError(true);
@@ -59,37 +60,23 @@ export const LimitModal: React.FC<LimitModalProps> = ({
     }
     setPolicyError(false);
     setCheckoutNotice(null);
+    setCheckoutSuccess(null);
 
-    if (user?.email) {
-      try {
-        const res = await fetch('/api/app?action=checkout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            plan,
-            email: user.email,
-            userId: user.id || user.googleId,
-            refundAcceptedAt: new Date().toISOString(),
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.url && data.url !== '/#pricing' && !data.pendingStripeIntegration) {
-            window.location.href = data.url;
-            return;
-          }
-          setCheckoutNotice(data?.message || 'Stripe Checkout integration coming next.');
-          return;
-        }
-      } catch {}
-    }
-
-    const fallbackUrl = CHECKOUT_LINKS[plan];
-    if (fallbackUrl && fallbackUrl !== '/#pricing') {
-      window.location.href = fallbackUrl;
-    } else {
-      onClose();
-      onOpenPricing();
+    try {
+      await openPaddleCheckout({
+        plan,
+        email: user?.email,
+        userId: user?.id || user?.googleId,
+        refundAcceptedAt: new Date().toISOString(),
+        onVerified: (verifyData) => {
+          setCheckoutSuccess(verifyData?.message || PADDLE_PRO_SUCCESS_MESSAGE);
+        },
+        onError: (msg) => {
+          setCheckoutNotice(msg);
+        },
+      });
+    } catch (err: any) {
+      setCheckoutNotice(err?.message || 'Unable to launch Paddle Checkout.');
     }
   };
 
@@ -218,6 +205,12 @@ export const LimitModal: React.FC<LimitModalProps> = ({
             </span>
           </label>
         </div>
+
+          {checkoutSuccess && (
+            <div className="mb-3 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-xs font-mono font-bold text-emerald-200 text-center">
+              {checkoutSuccess}
+            </div>
+          )}
 
           {checkoutNotice && (
             <div className="mb-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/40 text-xs font-mono text-amber-200 text-center">

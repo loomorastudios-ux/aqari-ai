@@ -3,6 +3,7 @@ import { CurrencyCode, RemoteConfig, User } from '../types';
 import { CHECKOUT_LINKS } from '../constants';
 import { PLANS, PricingPublicPayload, findPlanPricing } from '../../lib/plans';
 import { formatPrice, getDaysRemaining } from '../utils/formatters';
+import { openPaddleCheckout, PADDLE_PRO_SUCCESS_MESSAGE } from '../utils/paddleClient';
 import { 
   X, 
   Sparkles, 
@@ -36,6 +37,8 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
 }) => {
   const [refundAccepted, setRefundAccepted] = useState(false);
   const [policyError, setPolicyError] = useState(false);
+  const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
+  const [checkoutSuccess, setCheckoutSuccess] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -44,8 +47,6 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   const proPricing = findPlanPricing(pricingData, 'pro');
   const enterprisePricing = findPlanPricing(pricingData, 'enterprise');
 
-  const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
-
   const handleRenew = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
       setPolicyError(true);
@@ -53,36 +54,23 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     }
     setPolicyError(false);
     setCheckoutNotice(null);
+    setCheckoutSuccess(null);
 
-    if (user?.email) {
-      try {
-        const res = await fetch('/api/app?action=checkout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            plan,
-            email: user.email,
-            userId: user.id || user.googleId,
-            refundAcceptedAt: new Date().toISOString(),
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.url && data.url !== '/#pricing' && !data.pendingStripeIntegration) {
-            window.location.href = data.url;
-            return;
-          }
-          setCheckoutNotice(data?.message || 'Stripe Checkout integration coming next.');
-          return;
-        }
-      } catch {}
-    }
-
-    const baseLink = CHECKOUT_LINKS[plan];
-    if (baseLink && baseLink !== '/#pricing') {
-      window.location.href = baseLink;
-    } else {
-      setCheckoutNotice('Stripe Checkout integration coming next.');
+    try {
+      await openPaddleCheckout({
+        plan,
+        email: user?.email,
+        userId: user?.id || user?.googleId,
+        refundAcceptedAt: new Date().toISOString(),
+        onVerified: (verifyData) => {
+          setCheckoutSuccess(verifyData?.message || PADDLE_PRO_SUCCESS_MESSAGE);
+        },
+        onError: (msg) => {
+          setCheckoutNotice(msg);
+        },
+      });
+    } catch (err: any) {
+      setCheckoutNotice(err?.message || 'Unable to launch Paddle Checkout.');
     }
   };
 
@@ -151,7 +139,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
             Extend Your 30-Day Terminal Access
           </h3>
           <p className="text-xs sm:text-sm text-zinc-400 mt-2 max-w-lg mx-auto">
-            Choose your institutional tier. Payments process through Stripe 256-bit SSL encryption and immediately extend your licensing +30 days from today.
+            Choose your institutional tier. Payments process through Paddle 256-bit SSL encryption and immediately extend your licensing +30 days from today.
           </p>
 
           {launchActive && (
@@ -313,11 +301,14 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
         <div className="pt-4 border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-400 font-mono">
           <div className="flex flex-wrap items-center gap-1.5">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            {checkoutSuccess && (
+              <span className="text-emerald-300 font-bold mr-2">{checkoutSuccess}</span>
+            )}
             {checkoutNotice && (
               <span className="text-amber-300 font-bold mr-2">{checkoutNotice}</span>
             )}
             <span>
-              Encrypted Stripe Checkout • Support:{' '}
+              Encrypted Paddle Checkout • Support:{' '}
               <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
                 azzamalshmale@gmail.com
               </a>

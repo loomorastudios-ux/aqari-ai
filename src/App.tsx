@@ -395,13 +395,129 @@ export default function App() {
     return cleaned;
   };
 
+  const applyVerifiedUserPayload = (data: any, meData: any, fallbackEmail: string) => {
+    const sessionUser = getSessionUser();
+    const existing = sessionUser || user;
+    const verifiedPlan = normalizePlanKey(
+      meData?.planKey || data?.planKey || data?.user?.plan
+    );
+    const verifiedCfg = PLANS[verifiedPlan];
+    const planDisplay =
+      meData?.plan_name ||
+      meData?.plan ||
+      data?.plan_name ||
+      data?.plan ||
+      verifiedCfg.displayName;
+    const planPrice =
+      typeof meData?.price === 'number'
+        ? meData.price
+        : typeof data?.price === 'number'
+        ? data.price
+        : verifiedCfg.priceUSD;
+    const planFeatures: string[] = Array.isArray(meData?.features)
+      ? meData.features
+      : Array.isArray(data?.features)
+      ? data.features
+      : verifiedCfg.features;
+    const analysesLeftVal =
+      meData?.analyses_left ??
+      data?.analyses_left ??
+      (Number.isFinite(verifiedCfg.analysesLimit) ? verifiedCfg.analysesLimit : 999999);
+
+    const serverUsed = Number(meData?.analyses_used ?? data?.user?.analyses_used ?? 0);
+    const numericLeft =
+      typeof analysesLeftVal === 'number'
+        ? analysesLeftVal
+        : Number.isFinite(verifiedCfg.analysesLimit)
+        ? verifiedCfg.analysesLimit
+        : 999999;
+
+    const licenseStartVal = meData?.license_start ?? data?.user?.license_start ?? Date.now();
+    const licenseEndVal =
+      meData?.license_end ?? data?.license_end ?? data?.user?.license_end ?? null;
+
+    const maxSavedVal =
+      typeof meData?.maxSaved === 'number'
+        ? meData.maxSaved
+        : verifiedCfg.savedLimit;
+    const serverSavedList =
+      Array.isArray(meData?.saved_analyses) && meData.saved_analyses.length > 0
+        ? meData.saved_analyses
+        : existing?.savedAnalyses || [];
+
+    const resolvedEmail = meData?.email || data?.login_email || fallbackEmail || existing?.email || '';
+    const updatedUser: User = {
+      ...(existing || {
+        id: 'user_' + Date.now(),
+        email: resolvedEmail,
+        name: resolvedEmail.split('@')[0],
+        avatar: resolvedEmail.charAt(0).toUpperCase(),
+        provider: 'google',
+        createdAt: Date.now(),
+        savedAnalyses: [],
+      }),
+      email: resolvedEmail,
+      plan: verifiedPlan,
+      planName: planDisplay,
+      planPrice,
+      features: planFeatures,
+      maxSaved: maxSavedVal,
+      savedCount:
+        typeof meData?.saved_count === 'number'
+          ? meData.saved_count
+          : serverSavedList.length,
+      savedAnalyses: serverSavedList,
+      apiKey: meData?.api_key ?? null,
+      subscriptionPlan: verifiedPlan,
+      subscriptionStatus: 'active',
+      subscriptionStartAt: licenseStartVal,
+      subscriptionEndsAt: licenseEndVal,
+      subscriptionExpiry: licenseEndVal,
+      analysesUsed: serverUsed,
+      successfulAnalyses: Number(meData?.successful_analyses ?? data?.user?.successful_analyses ?? 0),
+      freeAnalyses: numericLeft,
+      freeAnalysesLeft: numericLeft,
+      analysesLeft: numericLeft,
+      lockedLaunchPrice:
+        meData?.locked_launch_price ?? data?.user?.locked_launch_price ?? null,
+      customCities: Array.isArray(meData?.custom_cities)
+        ? meData.custom_cities
+        : Array.isArray(data?.user?.custom_cities)
+        ? data.user.custom_cities
+        : existing?.customCities || [],
+      analystUnread: typeof meData?.analyst_unread === 'number' ? meData.analyst_unread : existing?.analystUnread || 0,
+      whiteGloveRequests: Array.isArray(meData?.whiteglove_requests) ? meData.whiteglove_requests : existing?.whiteGloveRequests || [],
+      whiteGloveDeliverables: Array.isArray(meData?.whiteglove_deliverables) ? meData.whiteglove_deliverables : existing?.whiteGloveDeliverables || [],
+      hasReportedIssue: Boolean(meData?.has_reported_issue ?? data?.user?.has_reported_issue),
+      issueReportedAt: meData?.issue_reported_at ?? data?.user?.issue_reported_at ?? null,
+      issueResolvedAt: meData?.issue_resolved_at ?? data?.user?.issue_resolved_at ?? null,
+      issueDescription: meData?.issue_description ?? data?.user?.issue_description ?? '',
+      issueStatus: meData?.issue_status ?? data?.user?.issue_status ?? 'none',
+      cancelStatus: meData?.cancel_status ?? data?.user?.cancel_status ?? 'none',
+      lastOrderId: meData?.last_order_id ?? data?.user?.last_order_id ?? null,
+      lastResults: meData?.last_results ?? data?.user?.last_results ?? null,
+      cancellationEligibility: meData?.cancellationEligibility ?? data?.cancellationEligibility ?? null,
+      expiryEmailSent: false,
+    };
+
+    saveUser(updatedUser);
+    setUser(updatedUser);
+    setServerSynced(true);
+    return { updatedUser, planDisplay, analysesLeftVal, verifiedPlan };
+  };
+
   const runAutoVerifyCheckout = async (overrideOrderId?: string) => {
     setVerifyState('verifying');
     setVerifyError(null);
 
     try {
       const urlParams = new URLSearchParams(window.location.search);
-      const urlOrderId = cleanPlaceholderOrderId(urlParams.get('order_id') || urlParams.get('order'));
+      const urlOrderId = cleanPlaceholderOrderId(
+        urlParams.get('transaction_id') ||
+          urlParams.get('_ptxn') ||
+          urlParams.get('order_id') ||
+          urlParams.get('order')
+      );
       setCheckoutUrlOrderId(urlOrderId || null);
 
       // 1. Get login_email from /api/app?action=me
@@ -437,12 +553,13 @@ export default function App() {
           ? cleanPlaceholderOrderId(overrideOrderId)
           : urlOrderId;
 
-      // 2. Verify checkout with { order_id, login_email } (backend handles webhook-logs fallback if empty or LAST)
-      const verifyRes = await fetch('/api/app?action=verify-checkout', {
+      // 2. Verify checkout with /api/app?action=verify-payment
+      const verifyRes = await fetch('/api/app?action=verify-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
+          transaction_id: targetOrderId || '',
           order_id: targetOrderId || '',
           login_email: loginEmail,
         }),
@@ -457,7 +574,6 @@ export default function App() {
       }
 
       if (verifyRes.ok && data?.success) {
-        // Immediately fetch authoritative /api/app?action=me to sync plan, price, credits & features
         let meData: any = null;
         try {
           const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {
@@ -469,111 +585,11 @@ export default function App() {
           }
         } catch {}
 
-        const verifiedPlan = normalizePlanKey(
-          meData?.planKey || data.planKey || data.user?.plan
+        const { planDisplay, analysesLeftVal, verifiedPlan } = applyVerifiedUserPayload(
+          data,
+          meData,
+          loginEmail
         );
-        const verifiedCfg = PLANS[verifiedPlan];
-        const planDisplay =
-          meData?.plan_name ||
-          meData?.plan ||
-          data.plan_name ||
-          data.plan ||
-          verifiedCfg.displayName;
-        const planPrice =
-          typeof meData?.price === 'number'
-            ? meData.price
-            : typeof data.price === 'number'
-            ? data.price
-            : verifiedCfg.priceUSD;
-        const planFeatures: string[] = Array.isArray(meData?.features)
-          ? meData.features
-          : Array.isArray(data.features)
-          ? data.features
-          : verifiedCfg.features;
-        const analysesLeftVal =
-          meData?.analyses_left ??
-          data.analyses_left ??
-          (Number.isFinite(verifiedCfg.analysesLimit) ? verifiedCfg.analysesLimit : 999999);
-
-        const existing = sessionUser || user;
-        const serverUsed = Number(meData?.analyses_used ?? data.user?.analyses_used ?? 0);
-        const numericLeft =
-          typeof analysesLeftVal === 'number'
-            ? analysesLeftVal
-            : Number.isFinite(verifiedCfg.analysesLimit)
-            ? verifiedCfg.analysesLimit
-            : 999999;
-
-        const licenseStartVal = meData?.license_start ?? data.user?.license_start ?? Date.now();
-        const licenseEndVal =
-          meData?.license_end ?? data.license_end ?? data.user?.license_end ?? null;
-
-        const maxSavedVal =
-          typeof meData?.maxSaved === 'number'
-            ? meData.maxSaved
-            : verifiedCfg.savedLimit;
-        const serverSavedList =
-          Array.isArray(meData?.saved_analyses) && meData.saved_analyses.length > 0
-            ? meData.saved_analyses
-            : existing?.savedAnalyses || [];
-
-        const updatedUser: User = {
-          ...(existing || {
-            id: 'user_' + Date.now(),
-            email: loginEmail,
-            name: loginEmail.split('@')[0],
-            avatar: loginEmail.charAt(0).toUpperCase(),
-            provider: 'google',
-            createdAt: Date.now(),
-            savedAnalyses: [],
-          }),
-          email: meData?.email || data.login_email || loginEmail,
-          plan: verifiedPlan,
-          planName: planDisplay,
-          planPrice,
-          features: planFeatures,
-          maxSaved: maxSavedVal,
-          savedCount:
-            typeof meData?.saved_count === 'number'
-              ? meData.saved_count
-              : serverSavedList.length,
-          savedAnalyses: serverSavedList,
-          apiKey: meData?.api_key ?? null,
-          subscriptionPlan: verifiedPlan,
-          subscriptionStatus: 'active',
-          subscriptionStartAt: licenseStartVal,
-          subscriptionEndsAt: licenseEndVal,
-          subscriptionExpiry: licenseEndVal,
-          analysesUsed: serverUsed,
-          successfulAnalyses: Number(meData?.successful_analyses ?? data.user?.successful_analyses ?? 0),
-          freeAnalyses: numericLeft,
-          freeAnalysesLeft: numericLeft,
-          analysesLeft: numericLeft,
-          lockedLaunchPrice:
-            meData?.locked_launch_price ?? data.user?.locked_launch_price ?? null,
-          customCities: Array.isArray(meData?.custom_cities)
-            ? meData.custom_cities
-            : Array.isArray(data.user?.custom_cities)
-            ? data.user.custom_cities
-            : existing?.customCities || [],
-          analystUnread: typeof meData?.analyst_unread === 'number' ? meData.analyst_unread : existing?.analystUnread || 0,
-          whiteGloveRequests: Array.isArray(meData?.whiteglove_requests) ? meData.whiteglove_requests : existing?.whiteGloveRequests || [],
-          whiteGloveDeliverables: Array.isArray(meData?.whiteglove_deliverables) ? meData.whiteglove_deliverables : existing?.whiteGloveDeliverables || [],
-          hasReportedIssue: Boolean(meData?.has_reported_issue ?? data.user?.has_reported_issue),
-          issueReportedAt: meData?.issue_reported_at ?? data.user?.issue_reported_at ?? null,
-          issueResolvedAt: meData?.issue_resolved_at ?? data.user?.issue_resolved_at ?? null,
-          issueDescription: meData?.issue_description ?? data.user?.issue_description ?? '',
-          issueStatus: meData?.issue_status ?? data.user?.issue_status ?? 'none',
-          cancelStatus: meData?.cancel_status ?? data.user?.cancel_status ?? 'none',
-          lastOrderId: meData?.last_order_id ?? data.user?.last_order_id ?? null,
-          lastResults: meData?.last_results ?? data.user?.last_results ?? null,
-          cancellationEligibility: meData?.cancellationEligibility ?? data.cancellationEligibility ?? null,
-          expiryEmailSent: false,
-        };
-
-        saveUser(updatedUser);
-        setUser(updatedUser);
-        setServerSynced(true);
         setVerifyingPlanName(planDisplay);
         setVerifiedSummary({
           plan: planDisplay,
@@ -590,8 +606,14 @@ export default function App() {
           });
         } catch {}
 
-        const unlockBanner = `Welcome to ${planDisplay} — Payment Successful! Your Terminal is unlocked.`;
-        const unlockToast = `Welcome to AQARI ${planDisplay} - Unlocked for 30 Days!`;
+        const unlockBanner =
+          verifiedPlan === 'pro'
+            ? 'تم الاشتراك بنجاح! تم تفعيل باقة Pro'
+            : data?.message || `Welcome to ${planDisplay} — Payment Successful!`;
+        const unlockToast =
+          verifiedPlan === 'pro'
+            ? 'تم الاشتراك بنجاح! تم تفعيل باقة Pro'
+            : `Welcome to AQARI ${planDisplay} - Unlocked for 30 Days!`;
         try {
           sessionStorage.setItem('aqari_unlock_msg', unlockBanner);
           sessionStorage.setItem('aqari_unlock_toast', unlockToast);
@@ -673,6 +695,32 @@ export default function App() {
     if (accessToken || idToken || oauthCredential) {
       handleVerifyRedirectToken();
     }
+
+    const handlePaddleVerified = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (!detail?.verifyData) return;
+      const { verifyData, meData, message } = detail;
+      const fallbackEmail = String(verifyData?.login_email || user?.email || '').trim().toLowerCase();
+      applyVerifiedUserPayload(verifyData, meData, fallbackEmail);
+      const successMsg = message || 'تم الاشتراك بنجاح! تم تفعيل باقة Pro';
+      setUnlockSuccessMsg(successMsg);
+      showTempToast(successMsg, 6000);
+      setIsLimitOpen(false);
+      setIsRenewalOpen(false);
+      try {
+        confetti({
+          particleCount: 160,
+          spread: 85,
+          origin: { y: 0.6 },
+          colors: ['#D4AF37', '#F3E5AB', '#8B5CF6', '#06B6D4'],
+        });
+      } catch {}
+    };
+
+    window.addEventListener('aqari:paddle-verified', handlePaddleVerified);
+    return () => {
+      window.removeEventListener('aqari:paddle-verified', handlePaddleVerified);
+    };
   }, []);
 
   const handleSaveUser = (updatedUser: User | null) => {
@@ -1250,7 +1298,7 @@ export default function App() {
                 Activating Your Terminal... - جاري تفعيل حسابك
               </h1>
               <p className="text-sm font-mono text-zinc-200 leading-relaxed">
-                Please wait, verifying your payment with Stripe...
+                Please wait, verifying your payment with Paddle...
               </p>
             </>
           )}

@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
 import { PLANS, PricingPublicPayload, PlanKey, DEFAULT_LAUNCH_BADGE, findPlanPricing } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
+import { openPaddleCheckout, PADDLE_PRO_SUCCESS_MESSAGE } from '../utils/paddleClient';
 import {
   Check,
+  CheckCircle2,
   Sparkles,
   Zap,
   ShieldCheck,
@@ -49,6 +51,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   const [livePricing, setLivePricing] = useState<PricingPublicPayload | null>(externalPricing || null);
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [errorToast, setErrorToast] = useState<string | null>(null);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
   const [refundAccepted, setRefundAccepted] = useState<boolean>(false);
   const [highlightPolicy, setHighlightPolicy] = useState<boolean>(false);
 
@@ -94,6 +97,11 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     setTimeout(() => setErrorToast(null), 6000);
   };
 
+  const showSuccess = (msg: string) => {
+    setSuccessToast(msg);
+    setTimeout(() => setSuccessToast(null), 8000);
+  };
+
   const pricingVersion = livePricing?.updatedAt || 0;
   const launchActive = livePricing?.launchDiscountActive ?? true;
   const launchBadgeText = livePricing?.launchBadgeText || DEFAULT_LAUNCH_BADGE;
@@ -102,7 +110,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   const getPrefetchKey = (plan: 'starter' | 'pro' | 'enterprise') =>
     `${user?.email?.toLowerCase() || 'anon'}:${plan}:${pricingVersion}`;
 
-  // Prefetch a plan checkout URL in background (invalidates when pricingVersion or user updates)
+  // Prefetch checkout metadata in background
   const prefetchPlan = async (plan: 'starter' | 'pro' | 'enterprise') => {
     const cacheKey = getPrefetchKey(plan);
     const cached = checkoutPrefetchCache[cacheKey];
@@ -179,78 +187,30 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     }
 
     const acceptedAt = new Date().toISOString();
-    const cacheKey = getPrefetchKey(planId);
-    const cached = checkoutPrefetchCache[cacheKey];
-    if (
-      cached &&
-      cached.pricingVersion === pricingVersion &&
-      Date.now() - cached.timestamp < 5 * 60 * 1000
-    ) {
-      fetch('/api/app?action=checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          plan: planId,
-          email: user.email,
-          userId: user.id || user.googleId,
-          refundAcceptedAt: acceptedAt,
-        }),
-      }).catch(() => {});
-      window.location.href = cached.url;
-      return;
-    }
-
     setLoadingPlan(planId);
     setErrorToast(null);
-
-    const callCheckoutApi = async (): Promise<{ url?: string; message?: string; pendingStripeIntegration?: boolean } | null> => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-      try {
-        const res = await fetch('/api/app?action=checkout', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            plan: planId,
-            email: user.email,
-            userId: user.id || user.googleId,
-            refundAcceptedAt: acceptedAt,
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.url && data.url !== '/#pricing') {
-            checkoutPrefetchCache[cacheKey] = {
-              url: data.url,
-              timestamp: Date.now(),
-              pricingVersion,
-            };
-          }
-          return data;
-        }
-      } catch (err) {
-        clearTimeout(timeoutId);
-        throw err;
-      }
-      return null;
-    };
+    setSuccessToast(null);
 
     try {
-      const result = await callCheckoutApi();
-      if (result?.url && result.url !== '/#pricing' && !result?.pendingStripeIntegration) {
-        window.location.href = result.url;
-        return;
-      }
-      showError(
-        result?.message ||
-          'Stripe Checkout integration is ready for activation. Your account remains preserved.'
-      );
-      return;
-    } catch {
-      showError('Checkout is temporarily unavailable. Please try again.');
-    } finally {
+      await openPaddleCheckout({
+        plan: planId,
+        email: user.email,
+        userId: user.id || user.googleId,
+        refundAcceptedAt: acceptedAt,
+        onVerified: (verifyData) => {
+          setLoadingPlan(null);
+          showSuccess(verifyData?.message || PADDLE_PRO_SUCCESS_MESSAGE);
+        },
+        onError: (msg) => {
+          setLoadingPlan(null);
+          showError(msg);
+        },
+        onClose: () => {
+          setLoadingPlan(null);
+        },
+      });
+    } catch (err: any) {
+      showError(err?.message || 'Checkout is temporarily unavailable. Please try again.');
       setLoadingPlan(null);
     }
   };
@@ -373,6 +333,19 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         </div>
       )}
 
+      {successToast && (
+        <div className="fixed bottom-6 right-6 z-50 p-4 rounded-xl bg-emerald-950/95 border border-emerald-500 text-white text-xs font-mono flex items-center gap-3 shadow-2xl animate-in slide-in-from-bottom-4 duration-200">
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          <span className="font-bold">{successToast}</span>
+          <button
+            onClick={() => setSuccessToast(null)}
+            className="text-zinc-400 hover:text-white ml-2 text-sm font-bold"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {errorToast && (
         <div className="fixed bottom-6 right-6 z-50 p-4 rounded-xl bg-rose-950/95 border border-rose-500 text-white text-xs font-mono flex items-center gap-3 shadow-2xl animate-in slide-in-from-bottom-4 duration-200">
           <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
@@ -396,7 +369,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
           Transparent Terminal Pricing
         </h2>
         <p className="text-zinc-400 text-sm mt-3 leading-relaxed">
-          Unlock institutional real estate underwriting. Secure Stripe payment with 30-day automated licensing.
+          Unlock institutional real estate underwriting. Secure Paddle payment with 30-day automated licensing.
         </p>
 
         {/* Live Launch Discount Banner + Countdown */}
@@ -456,7 +429,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     <div className="h-full bg-gradient-to-r from-[#D4AF37] to-amber-200 animate-pulse w-full" />
                   </div>
                   <div className="text-[10px] font-mono text-zinc-400">
-                    Encrypting session with Stripe
+                    Encrypting session with Paddle
                   </div>
                 </div>
               )}
@@ -637,7 +610,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       <div className="mt-8 text-center text-xs text-zinc-400 font-mono flex flex-wrap items-center justify-center gap-6">
         <span className="flex items-center gap-1.5">
           <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          <span>Secure Stripe 256-Bit SSL Checkout</span>
+          <span>Secure Paddle 256-Bit SSL Checkout</span>
         </span>
         <span className="text-zinc-600">•</span>
         <span>Instant Automated Webhook Provisioning</span>

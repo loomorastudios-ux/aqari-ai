@@ -112,6 +112,18 @@ export default defineConfig(() => {
       'process.env.GOOGLE_CLIENT_ID': JSON.stringify(process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || ''),
       'process.env.GOOGLE_REDIRECT_URI': JSON.stringify(process.env.GOOGLE_REDIRECT_URI || process.env.VITE_GOOGLE_REDIRECT_URI || ''),
       'process.env.LEMON_TEST_MODE': JSON.stringify(process.env.LEMON_TEST_MODE || 'true'),
+      'process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN': JSON.stringify(
+        process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN || process.env.VITE_PADDLE_CLIENT_TOKEN || ''
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_PRICE_ID': JSON.stringify(
+        process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || process.env.VITE_PADDLE_PRICE_ID || ''
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID': JSON.stringify(
+        process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || ''
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID': JSON.stringify(
+        process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || ''
+      ),
     },
     resolve: {
       alias: {
