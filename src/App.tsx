@@ -33,6 +33,7 @@ import {
   PricingPublicPayload,
   PRODUCTION_URL,
 } from '../lib/plans';
+import { getPaddleClient, getPaddleClientToken } from './utils/paddleClient';
 import { AmbientBackground } from './components/AmbientBackground';
 import { CustomCursor } from './components/CustomCursor';
 import { Navbar } from './components/Navbar';
@@ -724,6 +725,12 @@ export default function App() {
 
     if (accessToken || idToken || oauthCredential) {
       handleVerifyRedirectToken();
+    }
+
+    if (getPaddleClientToken()) {
+      void getPaddleClient().catch((err) => {
+        console.error('[Paddle] Startup init failed:', err);
+      });
     }
 
     const handlePaddleVerified = (ev: Event) => {

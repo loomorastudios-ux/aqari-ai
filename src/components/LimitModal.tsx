@@ -82,10 +82,12 @@ export const LimitModal: React.FC<LimitModalProps> = ({
           setCheckoutSuccess(verifyData?.message || PADDLE_PRO_SUCCESS_MESSAGE);
         },
         onError: (msg) => {
+          console.error('[Paddle] Checkout failed in LimitModal:', msg);
           setCheckoutNotice(msg);
         },
       });
     } catch (err: any) {
+      console.error('[Paddle] Checkout exception in LimitModal:', err);
       setCheckoutNotice(err?.message || 'Unable to launch Paddle Checkout.');
     }
   };

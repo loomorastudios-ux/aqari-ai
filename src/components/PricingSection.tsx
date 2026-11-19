@@ -197,6 +197,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
           showSuccess(verifyData?.message || PADDLE_PRO_SUCCESS_MESSAGE);
         },
         onError: (msg) => {
+          console.error('[Paddle] Checkout failed in PricingSection:', msg);
           setLoadingPlan(null);
           showError(msg);
         },
@@ -205,6 +206,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         },
       });
     } catch (err: any) {
+      console.error('[Paddle] Checkout exception in PricingSection:', err);
       showError(err?.message || 'Checkout is temporarily unavailable. Please try again.');
       setLoadingPlan(null);
     }

@@ -323,6 +323,7 @@ export const BankTransferCheckoutPage: React.FC<BankTransferCheckoutPageProps> =
           });
         },
         onError: (msg) => {
+          console.error('[Paddle] Checkout failed in BankTransferCheckoutPage:', msg);
           setPaddleLoading(false);
           setPaddleMsg({ type: 'error', text: msg });
         },
@@ -331,6 +332,7 @@ export const BankTransferCheckoutPage: React.FC<BankTransferCheckoutPageProps> =
         },
       });
     } catch (err: any) {
+      console.error('[Paddle] Checkout exception in BankTransferCheckoutPage:', err);
       setPaddleLoading(false);
       setPaddleMsg({
         type: 'error',

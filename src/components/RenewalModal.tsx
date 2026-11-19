@@ -76,10 +76,12 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
           setCheckoutSuccess(verifyData?.message || PADDLE_PRO_SUCCESS_MESSAGE);
         },
         onError: (msg) => {
+          console.error('[Paddle] Checkout failed in RenewalModal:', msg);
           setCheckoutNotice(msg);
         },
       });
     } catch (err: any) {
+      console.error('[Paddle] Checkout exception in RenewalModal:', err);
       setCheckoutNotice(err?.message || 'Unable to launch Paddle Checkout.');
     }
   };

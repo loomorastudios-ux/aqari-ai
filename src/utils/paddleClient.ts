@@ -1,10 +1,14 @@
 import { initializePaddle, Paddle, PaddleEventData } from '@paddle/paddle-js';
 
-declare const process: {
-  env: Record<string, string | undefined>;
+export type PaidPlanId = 'starter' | 'pro' | 'enterprise';
+
+export const LIVE_PADDLE_PRICE_IDS: Record<PaidPlanId, string> = {
+  starter: 'pri_01m7tgfvteegdih2mx4hgyz1c',
+  pro: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy',
+  enterprise: 'pri_01m7tgj4pp767gacchp49k2qev',
 };
 
-export type PaidPlanId = 'starter' | 'pro' | 'enterprise';
+const LEGACY_SANDBOX_PRICE_ID = 'pri_01m7qwqceh520nd4we9pg90f8m';
 
 export interface PaddleCheckoutHandlers {
   plan: PaidPlanId;
@@ -23,33 +27,94 @@ let cachedPaddleInstance: Paddle | undefined;
 let activeHandlers: PaddleCheckoutHandlers | null = null;
 let isVerifyingTransaction = false;
 
-function readClientEnv(key: string): string {
-  try {
-    if (typeof process !== 'undefined' && process.env && process.env[key]) {
-      return String(process.env[key]).trim();
+function cleanEnvStr(val: unknown): string {
+  const s = typeof val === 'string' ? val.trim() : '';
+  return s && s !== 'undefined' && s !== 'null' ? s : '';
+}
+
+function pickLivePriceId(candidates: string[], fallbackLiveId: string): string {
+  for (const raw of candidates) {
+    const cleaned = cleanEnvStr(raw);
+    if (cleaned && cleaned !== LEGACY_SANDBOX_PRICE_ID && cleaned.startsWith('pri_')) {
+      return cleaned;
     }
-  } catch {}
-  try {
-    const metaEnv = (import.meta as any)?.env;
-    if (metaEnv && metaEnv[key]) {
-      return String(metaEnv[key]).trim();
-    }
-  } catch {}
-  return '';
+  }
+  return fallbackLiveId;
 }
 
 export function getPaddleClientToken(): string {
-  return (
-    readClientEnv('NEXT_PUBLIC_PADDLE_CLIENT_TOKEN') ||
-    readClientEnv('VITE_PADDLE_CLIENT_TOKEN')
+  const viteClientToken = cleanEnvStr(import.meta.env?.VITE_PADDLE_CLIENT_TOKEN);
+  const viteNextToken = cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN);
+  let procViteToken = '';
+  let procNextToken = '';
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      procViteToken = cleanEnvStr(process.env.VITE_PADDLE_CLIENT_TOKEN);
+      procNextToken = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN);
+    }
+  } catch {}
+  return viteClientToken || procViteToken || viteNextToken || procNextToken;
+}
+
+export function getPaddlePriceId(plan: PaidPlanId): string {
+  let procStarter = '';
+  let procPro = '';
+  let procProAlt = '';
+  let procSovereign = '';
+  let procNextStarter = '';
+  let procNextPro = '';
+  let procNextSovereign = '';
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      procStarter = cleanEnvStr(process.env.VITE_PADDLE_STARTER_PRICE_ID);
+      procPro = cleanEnvStr(process.env.VITE_PADDLE_PRO_PRICE_ID);
+      procProAlt = cleanEnvStr(process.env.VITE_PADDLE_PRICE_ID);
+      procSovereign = cleanEnvStr(process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID);
+      procNextStarter = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID);
+      procNextPro = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_PRICE_ID);
+      procNextSovereign = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID);
+    }
+  } catch {}
+
+  if (plan === 'starter') {
+    return pickLivePriceId(
+      [
+        cleanEnvStr(import.meta.env?.VITE_PADDLE_STARTER_PRICE_ID),
+        procStarter,
+        cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID),
+        procNextStarter,
+      ],
+      LIVE_PADDLE_PRICE_IDS.starter
+    );
+  }
+
+  if (plan === 'enterprise') {
+    return pickLivePriceId(
+      [
+        cleanEnvStr(import.meta.env?.VITE_PADDLE_SOVEREIGN_PRICE_ID),
+        procSovereign,
+        cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID),
+        procNextSovereign,
+      ],
+      LIVE_PADDLE_PRICE_IDS.enterprise
+    );
+  }
+
+  return pickLivePriceId(
+    [
+      cleanEnvStr(import.meta.env?.VITE_PADDLE_PRO_PRICE_ID),
+      cleanEnvStr(import.meta.env?.VITE_PADDLE_PRICE_ID),
+      procPro,
+      procProAlt,
+      cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_PRICE_ID),
+      procNextPro,
+    ],
+    LIVE_PADDLE_PRICE_IDS.pro
   );
 }
 
 export function getPaddleProPriceId(): string {
-  return (
-    readClientEnv('NEXT_PUBLIC_PADDLE_PRICE_ID') ||
-    readClientEnv('VITE_PADDLE_PRICE_ID')
-  );
+  return getPaddlePriceId('pro');
 }
 
 async function handlePaddleEvent(event: PaddleEventData) {
@@ -60,9 +125,14 @@ async function handlePaddleEvent(event: PaddleEventData) {
     return;
   }
 
-  if (event.name === 'checkout.error' || event.name === 'checkout.failed') {
-    const detail = (event as any)?.detail || (event as any)?.error?.detail || 'Paddle checkout encountered an error.';
-    activeHandlers?.onError?.(String(detail));
+  if (event.name === 'checkout.error' || event.name === 'checkout.failed' || (event as any)?.error) {
+    console.error('[Paddle] Checkout error event:', event);
+    const rawError = (event as any)?.error || (event as any)?.detail || event;
+    const detail =
+      (typeof rawError === 'object'
+        ? rawError?.detail || rawError?.message || JSON.stringify(rawError)
+        : String(rawError)) || 'Paddle checkout encountered an error.';
+    activeHandlers?.onError?.(detail);
     return;
   }
 
@@ -94,9 +164,9 @@ async function handlePaddleEvent(event: PaddleEventData) {
       const verifyData = await verifyRes.json().catch(() => null);
 
       if (!verifyRes.ok || !verifyData?.success) {
-        handlers?.onError?.(
-          verifyData?.error || 'Unable to verify Paddle payment with server.'
-        );
+        const msg = verifyData?.error || 'Unable to verify Paddle payment with server.';
+        console.error('[Paddle] Payment verification error:', { verifyStatus: verifyRes.status, verifyData });
+        handlers?.onError?.(msg);
         return;
       }
 
@@ -138,6 +208,7 @@ async function handlePaddleEvent(event: PaddleEventData) {
         meData
       );
     } catch (err: any) {
+      console.error('[Paddle] Payment verification exception:', err);
       handlers?.onError?.(err?.message || 'Payment verification request failed.');
     } finally {
       isVerifyingTransaction = false;
@@ -149,17 +220,31 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
   if (cachedPaddleInstance) return cachedPaddleInstance;
 
   const token = getPaddleClientToken();
-  if (!token) return undefined;
+  if (!token) {
+    console.error('[Paddle] Cannot initialize Paddle.js: VITE_PADDLE_CLIENT_TOKEN is missing.');
+    return undefined;
+  }
 
   if (!paddleInstancePromise) {
     paddleInstancePromise = initializePaddle({
-      environment: 'sandbox',
+      environment: 'production',
       token,
       eventCallback: handlePaddleEvent,
-    }).then((paddle) => {
-      cachedPaddleInstance = paddle;
-      return paddle;
-    });
+    })
+      .then((paddle) => {
+        if (!paddle) {
+          console.error('[Paddle] initializePaddle resolved with undefined instance.');
+          paddleInstancePromise = null;
+          return undefined;
+        }
+        cachedPaddleInstance = paddle;
+        return paddle;
+      })
+      .catch((err) => {
+        console.error('[Paddle] initializePaddle error:', err);
+        paddleInstancePromise = null;
+        throw err;
+      });
   }
 
   return paddleInstancePromise;
@@ -168,55 +253,66 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
 export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Promise<void> {
   activeHandlers = handlers;
 
-  let serverPriceId = '';
-  try {
-    const checkoutRes = await fetch('/api/app?action=checkout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        plan: handlers.plan,
-        email: handlers.email || '',
-        userId: handlers.userId || 'guest',
-        refundAcceptedAt: handlers.refundAcceptedAt || new Date().toISOString(),
-      }),
-    });
-    if (checkoutRes.ok) {
-      const checkoutJson = await checkoutRes.json().catch(() => null);
-      if (checkoutJson?.priceId) {
-        serverPriceId = String(checkoutJson.priceId).trim();
-      }
-    }
-  } catch {
-    // Continue using client env config if checkout log call fails
-  }
-
-  const priceId =
-    (handlers.plan === 'pro'
-      ? getPaddleProPriceId()
-      : handlers.plan === 'starter'
-      ? readClientEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')
-      : readClientEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')) || serverPriceId || getPaddleProPriceId();
-
-  if (!priceId) {
-    throw new Error('Paddle Price ID (NEXT_PUBLIC_PADDLE_PRICE_ID) is not configured.');
-  }
-
-  const paddle = await getPaddleClient();
-  if (!paddle) {
-    throw new Error('Paddle Client Token (NEXT_PUBLIC_PADDLE_CLIENT_TOKEN) is not configured.');
-  }
-
-  paddle.Checkout.open({
-    items: [{ priceId, quantity: 1 }],
-    ...(handlers.email ? { customer: { email: handlers.email } } : {}),
-    customData: {
+  const priceId = getPaddlePriceId(handlers.plan);
+  if (!priceId || !priceId.startsWith('pri_')) {
+    const err = new Error(`Paddle Price ID for plan "${handlers.plan}" is missing or invalid.`);
+    console.error('[Paddle] Refusing to open checkout without valid priceId:', {
       plan: handlers.plan,
-      ...(handlers.email ? { email: handlers.email, login_email: handlers.email } : {}),
-    },
-    settings: {
-      displayMode: 'overlay',
-      theme: 'dark',
-    },
+      priceId,
+    });
+    throw err;
+  }
+
+  const token = getPaddleClientToken();
+  if (!token) {
+    const err = new Error('Paddle Client Token (VITE_PADDLE_CLIENT_TOKEN) is not configured.');
+    console.error('[Paddle] Refusing to open checkout: VITE_PADDLE_CLIENT_TOKEN is missing.');
+    throw err;
+  }
+
+  let paddle: Paddle | undefined;
+  try {
+    paddle = await getPaddleClient();
+  } catch (initErr: any) {
+    console.error('[Paddle] Failed to initialize Paddle client:', initErr);
+    throw new Error(initErr?.message || 'Failed to initialize Paddle Checkout.');
+  }
+
+  if (!paddle) {
+    const err = new Error('Paddle client could not be initialized.');
+    console.error('[Paddle] Checkout aborted: Paddle instance is undefined.');
+    throw err;
+  }
+
+  fetch('/api/app?action=checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      plan: handlers.plan,
+      email: handlers.email || '',
+      userId: handlers.userId || 'guest',
+      refundAcceptedAt: handlers.refundAcceptedAt || new Date().toISOString(),
+    }),
+  }).catch((err) => {
+    console.warn('[Paddle] Background checkout pre-log warning:', err);
   });
+
+  try {
+    paddle.Checkout.open({
+      items: [{ priceId, quantity: 1 }],
+      ...(handlers.email ? { customer: { email: handlers.email } } : {}),
+      customData: {
+        plan: handlers.plan,
+        ...(handlers.email ? { email: handlers.email, login_email: handlers.email } : {}),
+      },
+      settings: {
+        displayMode: 'overlay',
+        theme: 'dark',
+      },
+    });
+  } catch (openErr: any) {
+    console.error('[Paddle] Paddle.Checkout.open failed:', openErr);
+    throw openErr;
+  }
 }

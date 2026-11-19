@@ -4059,10 +4059,10 @@ export default async function handler(req: any, res: any) {
 
         let orderId = '';
         const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY') || getEnv('PAYMENT_API_KEY'));
-        const paddleBaseUrl =
-          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'production'
-            ? 'https://api.paddle.com'
-            : 'https://sandbox-api.paddle.com';
+        const isExplicitSandbox = cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox';
+        const paddleBaseUrl = isExplicitSandbox
+          ? 'https://sandbox-api.paddle.com'
+          : 'https://api.paddle.com';
         const hasPaymentKey = Boolean(paddleApiKey);
 
         try {
@@ -4434,19 +4434,33 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          // Verify Paddle Sandbox/Live transaction against Paddle API v2
-          const paddleRes = await fetch(
-            `${paddleBaseUrl}/transactions/${encodeURIComponent(orderId)}`,
-            {
-              headers: {
-                Authorization: `Bearer ${paddleApiKey}`,
-                Accept: 'application/json',
-              },
+          // Verify Paddle transaction against Paddle API v2 (production first so live checkouts work even if PADDLE_ENV wasn't switched yet)
+          const endpointsToTry = isExplicitSandbox
+            ? ['https://api.paddle.com', 'https://sandbox-api.paddle.com']
+            : ['https://api.paddle.com'];
+          let paddleRes: Response | null = null;
+          let paddleJson: any = null;
+          let verifiedBaseUrl = paddleBaseUrl;
+          for (const base of endpointsToTry) {
+            const candidateRes = await fetch(
+              `${base}/transactions/${encodeURIComponent(orderId)}`,
+              {
+                headers: {
+                  Authorization: `Bearer ${paddleApiKey}`,
+                  Accept: 'application/json',
+                },
+              }
+            );
+            const candidateJson: any = await candidateRes.json().catch(() => null);
+            paddleRes = candidateRes;
+            paddleJson = candidateJson;
+            verifiedBaseUrl = base;
+            if (candidateRes.ok && candidateJson?.data?.id) {
+              break;
             }
-          );
-          const paddleJson: any = await paddleRes.json().catch(() => null);
+          }
           const txnData = paddleJson?.data;
-          if (!paddleRes.ok || !txnData?.id) {
+          if (!paddleRes?.ok || !txnData?.id) {
             return res.status(200).json({
               success: false,
               error:
@@ -4479,9 +4493,18 @@ export default async function handler(req: any, res: any) {
               ? rawGrandTotal / 100
               : PLAN_DEFINITIONS[requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro'].launchPrice;
 
-          const proPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
-          const starterPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID'));
-          const sovereignPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID'));
+          const LEGACY_SANDBOX_PRICE_ID = 'pri_01m7qwqceh520nd4we9pg90f8m';
+          const rawProEnv = cleanEnvValue(getEnv('VITE_PADDLE_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
+          const proPriceId =
+            rawProEnv && rawProEnv !== LEGACY_SANDBOX_PRICE_ID
+              ? rawProEnv
+              : 'pri_01m7tggqhjtgk9fxmmg6mbp5wy';
+          const starterPriceId =
+            cleanEnvValue(getEnv('VITE_PADDLE_STARTER_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')) ||
+            'pri_01m7tgfvteegdih2mx4hgyz1c';
+          const sovereignPriceId =
+            cleanEnvValue(getEnv('VITE_PADDLE_SOVEREIGN_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')) ||
+            'pri_01m7tgj4pp767gacchp49k2qev';
           const firstItem = Array.isArray(txnData?.items) ? txnData.items[0] : null;
           const itemPriceId = String(firstItem?.price?.id || firstItem?.price_id || '').trim();
           const itemProductName = String(
@@ -4524,7 +4547,7 @@ export default async function handler(req: any, res: any) {
             fallbackPlan: resolvedFallbackPlan,
             paymentEmail,
             paymentProvider: 'paddle',
-            testMode: paddleBaseUrl.includes('sandbox'),
+            testMode: verifiedBaseUrl.includes('sandbox'),
             createdAtIso: txnData.created_at || new Date().toISOString(),
           });
         } catch (err: any) {
@@ -6698,19 +6721,28 @@ export default async function handler(req: any, res: any) {
         const activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
 
         const isTestMode =
-          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() !== 'production' ||
+          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox' ||
           getEnv('PAYMENT_TEST_MODE') === 'true' ||
           getEnv('VITE_PAYMENT_TEST_MODE') === 'true';
 
-        const proPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
-        const starterPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID'));
-        const sovereignPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID'));
+        const LEGACY_SANDBOX_PRICE_ID = 'pri_01m7qwqceh520nd4we9pg90f8m';
+        const rawProEnv = cleanEnvValue(getEnv('VITE_PADDLE_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
+        const proPriceId =
+          rawProEnv && rawProEnv !== LEGACY_SANDBOX_PRICE_ID
+            ? rawProEnv
+            : 'pri_01m7tggqhjtgk9fxmmg6mbp5wy';
+        const starterPriceId =
+          cleanEnvValue(getEnv('VITE_PADDLE_STARTER_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')) ||
+          'pri_01m7tgfvteegdih2mx4hgyz1c';
+        const sovereignPriceId =
+          cleanEnvValue(getEnv('VITE_PADDLE_SOVEREIGN_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')) ||
+          'pri_01m7tgj4pp767gacchp49k2qev';
         const resolvedPriceId =
           validPlan === 'pro'
             ? proPriceId
             : validPlan === 'starter'
-            ? starterPriceId || proPriceId
-            : sovereignPriceId || proPriceId;
+            ? starterPriceId
+            : sovereignPriceId;
 
         if (email) {
           recordPendingCheckout({
@@ -6728,9 +6760,9 @@ export default async function handler(req: any, res: any) {
           success: true,
           provider: 'paddle',
           environment:
-            cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'production'
-              ? 'production'
-              : 'sandbox',
+            cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox'
+              ? 'sandbox'
+              : 'production',
           priceId: resolvedPriceId,
           url: '/#pricing',
           success_url: SUCCESS_REDIRECT,
@@ -7449,9 +7481,9 @@ export default async function handler(req: any, res: any) {
         );
         const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY') || getEnv('PAYMENT_API_KEY'));
         const paddleBaseUrl =
-          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'production'
-            ? 'https://api.paddle.com'
-            : 'https://sandbox-api.paddle.com';
+          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox'
+            ? 'https://sandbox-api.paddle.com'
+            : 'https://api.paddle.com';
         let refundedAlready = false;
 
         if (paddleApiKey && orderId.startsWith('txn_')) {
