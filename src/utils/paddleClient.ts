@@ -48,18 +48,8 @@ function pickLivePriceId(candidates: string[], fallbackLiveId: string): string {
   return fallbackLiveId;
 }
 
-export function getPaddleEnvironment(): 'sandbox' | 'production' {
-  const viteEnv = cleanEnvStr(import.meta.env?.VITE_PADDLE_ENV).toLowerCase();
-  let procEnv = '';
-  let procViteEnv = '';
-  try {
-    if (typeof process !== 'undefined' && process.env) {
-      procEnv = cleanEnvStr(process.env.PADDLE_ENV).toLowerCase();
-      procViteEnv = cleanEnvStr(process.env.VITE_PADDLE_ENV).toLowerCase();
-    }
-  } catch {}
-  const resolved = viteEnv || procViteEnv || procEnv;
-  return resolved === 'sandbox' ? 'sandbox' : 'production';
+export function getPaddleEnvironment(): 'production' {
+  return 'production';
 }
 
 export function getPaddleClientToken(): string {
@@ -249,7 +239,7 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
 
   const token = getPaddleClientToken();
   if (!token) {
-    console.error('[Paddle] Cannot initialize Paddle.js: Missing VITE_PADDLE_CLIENT_TOKEN');
+    console.error('[Paddle] Missing VITE_PADDLE_CLIENT_TOKEN');
     return undefined;
   }
 
@@ -285,7 +275,7 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
 
   const token = getPaddleClientToken();
   if (!token) {
-    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN: Paddle checkout cannot open without a client token.';
+    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN';
     console.error('[Paddle]', msg);
     throw new Error(msg);
   }

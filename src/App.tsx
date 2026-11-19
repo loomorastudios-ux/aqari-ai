@@ -55,7 +55,6 @@ import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { DemoAnalysisView } from './components/DemoAnalysisView';
 import { LegalPages, LegalDocSlug } from './components/LegalPages';
 import { AdminDashboard } from './components/AdminDashboard';
-import { BankTransferCheckoutPage, PaidPlanChoice } from './components/BankTransferCheckoutPage';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { checkAndSendExpiryEmail } from './utils/emailService';
 import {
@@ -72,7 +71,6 @@ type AppRoute =
   | 'landing'
   | 'terminal'
   | 'pricing'
-  | 'manual-payment'
   | 'payment-success'
   | 'demo'
   | 'terms'
@@ -121,7 +119,6 @@ export default function App() {
       if (path === '/refund' || path === '/refund-policy' || hash === '#/refund' || hash === '#/refund-policy') return 'refund';
       if (path === '/disclaimer' || hash === '#/disclaimer') return 'disclaimer';
       if (path === '/admin' || hash === '#/admin') return 'admin';
-      if (path === '/manual-payment' || hash.startsWith('#/manual-payment')) return 'manual-payment';
       if (path === '/payment-success' || hash.startsWith('#/payment-success')) return 'payment-success';
       if (path === '/pricing' || hash === '#/pricing') return 'pricing';
       if (path.startsWith('/demo/') || hash.startsWith('#/demo/')) return 'demo';
@@ -136,14 +133,6 @@ export default function App() {
       }
     }
     return 'landing';
-  });
-
-  const [manualPaymentPlan, setManualPaymentPlan] = useState<PaidPlanChoice>(() => {
-    if (typeof window !== 'undefined') {
-      const p = new URLSearchParams(window.location.search).get('plan');
-      if (p === 'starter' || p === 'pro' || p === 'enterprise') return p;
-    }
-    return 'pro';
   });
 
   const [verifyingPlanName, setVerifyingPlanName] = useState<string>('SUBSCRIPTION');
@@ -265,13 +254,6 @@ export default function App() {
       if (path === '/refund' || path === '/refund-policy' || hash === '#/refund' || hash === '#/refund-policy') return setRoute('refund');
       if (path === '/disclaimer' || hash === '#/disclaimer') return setRoute('disclaimer');
       if (path === '/admin' || hash === '#/admin') return setRoute('admin');
-      if (path === '/manual-payment' || hash.startsWith('#/manual-payment')) {
-        const qp = new URLSearchParams(window.location.search).get('plan');
-        if (qp === 'starter' || qp === 'pro' || qp === 'enterprise') {
-          setManualPaymentPlan(qp);
-        }
-        return setRoute('manual-payment');
-      }
       if (path === '/payment-success' || hash.startsWith('#/payment-success')) return setRoute('payment-success');
       if (path === '/pricing' || hash === '#/pricing') return setRoute('pricing');
 
@@ -295,23 +277,11 @@ export default function App() {
       }
     };
 
-    const handleOpenManualPayment = (ev: Event) => {
-      const p = (ev as CustomEvent)?.detail?.plan;
-      const validPlan: PaidPlanChoice =
-        p === 'starter' || p === 'pro' || p === 'enterprise' ? p : 'pro';
-      setManualPaymentPlan(validPlan);
-      window.history.pushState({}, '', `/manual-payment?plan=${validPlan}`);
-      setRoute('manual-payment');
-      window.scrollTo(0, 0);
-    };
-
     window.addEventListener('hashchange', handleLocationChange);
     window.addEventListener('popstate', handleLocationChange);
-    window.addEventListener('aqari:open-manual-payment', handleOpenManualPayment);
     return () => {
       window.removeEventListener('hashchange', handleLocationChange);
       window.removeEventListener('popstate', handleLocationChange);
-      window.removeEventListener('aqari:open-manual-payment', handleOpenManualPayment);
     };
   }, []);
 
@@ -1378,7 +1348,7 @@ export default function App() {
                   e.preventDefault();
                   const cleaned = cleanPlaceholderOrderId(manualOrderId);
                   if (!cleaned) {
-                    setVerifyError('Please enter your Payment Intent / Order ID (e.g. pi_123456) from your payment receipt.');
+                    setVerifyError('Please enter your Paddle Transaction / Order ID (e.g. txn_123456) from your Paddle invoice.');
                     return;
                   }
                   runAutoVerifyCheckout(cleaned);
@@ -1386,13 +1356,13 @@ export default function App() {
                 className="space-y-2.5 text-left p-4 rounded-2xl bg-zinc-900/80 border border-white/15"
               >
                 <label className="block text-[11px] font-mono uppercase tracking-wider text-zinc-300 font-bold">
-                  Enter Order / Payment Intent ID (from receipt)
+                  Enter Paddle Transaction / Order ID (from invoice)
                 </label>
                 <input
                   type="text"
                   value={manualOrderId}
                   onChange={(e) => setManualOrderId(e.target.value)}
-                  placeholder="Enter Order / Payment Intent ID (e.g. pi_123456)"
+                  placeholder="Enter Paddle Transaction / Order ID (e.g. txn_123456)"
                   className="w-full px-3.5 py-3 rounded-xl bg-black/70 border border-white/20 text-white font-mono text-sm placeholder:text-zinc-500 focus:outline-none focus:border-[#D4AF37]"
                 />
                 <button
@@ -1500,45 +1470,6 @@ export default function App() {
             window.history.pushState({}, '', `/demo/${s}`);
           }}
         />
-        {renderLegalFooter()}
-        {isAuthOpen && (
-          <AuthModal
-            isOpen={isAuthOpen}
-            onClose={() => setIsAuthOpen(false)}
-            onSignIn={handleSignIn}
-          />
-        )}
-      </div>
-    );
-  }
-
-  // View: Oman Manual Bank Transfer + Secondary International Paddle Checkout (/manual-payment)
-  if (route === 'manual-payment') {
-    return (
-      <div className="min-h-screen bg-black text-slate-100 flex flex-col selection:bg-[#D4AF37]/30 selection:text-white relative">
-        <AmbientBackground />
-        <CustomCursor />
-        <Navbar
-          currentCurrency={currency}
-          onCurrencyChange={handleCurrencyChange}
-          user={user}
-          config={config}
-          onOpenAuth={() => setIsAuthOpen(true)}
-          onSignOut={handleSignOut}
-          onOpenAdmin={() => setIsAdminOpen(true)}
-          onGoToTerminal={handleGoToTerminal}
-          onOpenPricing={handleGoToPricing}
-          onGoToHome={handleGoToHome}
-        />
-        <div className="flex-1">
-          <BankTransferCheckoutPage
-            initialPlan={manualPaymentPlan}
-            user={user}
-            onRequireAuth={() => setIsAuthOpen(true)}
-            onBack={handleGoToPricing}
-            onGoToTerminal={handleGoToTerminal}
-          />
-        </div>
         {renderLegalFooter()}
         {isAuthOpen && (
           <AuthModal

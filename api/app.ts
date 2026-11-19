@@ -992,27 +992,6 @@ interface PendingCheckoutEntry {
   checkoutId?: string;
 }
 
-interface ManualPaymentRecord {
-  id: string;
-  orderNumber: string;
-  plan: 'starter' | 'pro' | 'enterprise';
-  planDisplay: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
-  amountUSD: number;
-  amountOMR: number;
-  currency: 'OMR' | 'USD';
-  selectedAmount: number;
-  customerName: string;
-  email: string;
-  senderAccountName: string;
-  transferDate: string;
-  whatsappNumber?: string;
-  receiptImage: string;
-  status: 'Pending' | 'Activated' | 'Rejected';
-  createdAt: string;
-  activatedAt?: string | null;
-  activatedBy?: string | null;
-}
-
 interface StoreShape {
   users: Record<string, ServerUserRecord>;
   webhook_logs: WebhookLogEntry[];
@@ -1025,8 +1004,6 @@ interface StoreShape {
   used_orders: Record<string, UsedOrderRecord>;
   analyst_threads: Record<string, any>;
   whiteglove_requests: any[];
-  manual_payments: ManualPaymentRecord[];
-  manual_order_seq: number;
   api_keys: Record<string, string>;
 }
 
@@ -1102,8 +1079,6 @@ function getMemoryStore(): StoreShape {
       used_orders: {},
       analyst_threads: {},
       whiteglove_requests: [],
-      manual_payments: [],
-      manual_order_seq: 0,
       api_keys: {},
     };
   }
@@ -1309,13 +1284,6 @@ function loadStore(): StoreShape {
           whiteglove_requests: Array.isArray(parsed.whiteglove_requests)
             ? parsed.whiteglove_requests
             : [],
-          manual_payments: Array.isArray(parsed.manual_payments)
-            ? parsed.manual_payments
-            : [],
-          manual_order_seq:
-            typeof parsed.manual_order_seq === 'number' && Number.isFinite(parsed.manual_order_seq)
-              ? parsed.manual_order_seq
-              : 0,
           api_keys:
             parsed.api_keys &&
             typeof parsed.api_keys === 'object' &&
@@ -2396,124 +2364,6 @@ async function saveWhiteGloveRequestsToDb(requests: any[]): Promise<any[]> {
     }
   } catch {}
   return trimmed;
-}
-
-const OMR_PER_USD = 0.385;
-
-function getBankTransferDetailsFromEnv() {
-  const bankName = cleanEnvValue(getEnv('BANK_NAME'));
-  const accountName = cleanEnvValue(getEnv('BANK_ACCOUNT_NAME'));
-  const accountNumber = cleanEnvValue(getEnv('BANK_ACCOUNT_NUMBER'));
-  const iban = cleanEnvValue(getEnv('BANK_IBAN'));
-  return {
-    companyName: 'Aqari AI',
-    bankName,
-    accountName,
-    accountNumber,
-    iban,
-    configured: Boolean(bankName || accountName || accountNumber || iban),
-  };
-}
-
-function resolveManualPlanPricing(rawPlan: any): {
-  plan: 'starter' | 'pro' | 'enterprise';
-  planDisplay: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
-  amountUSD: number;
-  amountOMR: number;
-} {
-  const norm = normalizePlanKey(String(rawPlan || 'starter'));
-  const plan: 'starter' | 'pro' | 'enterprise' =
-    norm === 'starter' || norm === 'pro' || norm === 'enterprise' ? norm : 'starter';
-  const amountUSD =
-    plan === 'starter'
-      ? PLANS.STARTER.price
-      : plan === 'pro'
-      ? PLANS.PROFESSIONAL.price
-      : PLANS.SOVEREIGN.price;
-  const planDisplay =
-    plan === 'starter'
-      ? 'STARTER'
-      : plan === 'pro'
-      ? 'PROFESSIONAL'
-      : 'SOVEREIGN';
-  const amountOMR = Number((amountUSD * OMR_PER_USD).toFixed(2));
-  return { plan, planDisplay, amountUSD, amountOMR };
-}
-
-async function getManualPaymentsFromDb(): Promise<ManualPaymentRecord[]> {
-  const store = loadStore();
-  let list: ManualPaymentRecord[] = Array.isArray(store.manual_payments)
-    ? [...store.manual_payments]
-    : [];
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', 'aqari:manual_payments:v1']);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (Array.isArray(parsed)) {
-          list = parsed;
-          store.manual_payments = list;
-          persistStore(store);
-        }
-      }
-    }
-  } catch {}
-  return list;
-}
-
-async function saveManualPaymentsToDb(payments: ManualPaymentRecord[]): Promise<ManualPaymentRecord[]> {
-  const trimmed = payments.slice(0, 500);
-  const store = loadStore();
-  store.manual_payments = trimmed;
-  persistStore(store);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', 'aqari:manual_payments:v1', JSON.stringify(trimmed)]);
-    }
-  } catch {}
-  return trimmed;
-}
-
-async function allocateManualOrderNumber(): Promise<string> {
-  const year = 2026;
-  const existing = await getManualPaymentsFromDb().catch(() => []);
-  let maxExistingSeq = 0;
-  for (const item of existing) {
-    const match = /^AQ-\d{4}-(\d+)$/i.exec(String(item?.orderNumber || '').trim());
-    if (match) {
-      const n = Number(match[1]);
-      if (Number.isFinite(n) && n > maxExistingSeq) maxExistingSeq = n;
-    }
-  }
-
-  let seq = 0;
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const incrVal = await kvCommand(['INCR', `aqari:manual_order_seq:${year}`]);
-      if (Number.isFinite(Number(incrVal))) {
-        seq = Number(incrVal);
-      }
-    }
-  } catch {}
-
-  const store = loadStore();
-  const baseSeq = Math.max(maxExistingSeq, Number(store.manual_order_seq || 0));
-  if (seq <= baseSeq) {
-    seq = baseSeq + 1;
-    try {
-      const kv = getKvConfig();
-      if (kv) {
-        await kvCommand(['SET', `aqari:manual_order_seq:${year}`, String(seq)]);
-      }
-    } catch {}
-  }
-  store.manual_order_seq = seq;
-  persistStore(store);
-
-  return `AQ-${year}-${String(seq).padStart(3, '0')}`;
 }
 
 async function appendWebhookLogToDb(
@@ -3817,10 +3667,6 @@ export default async function handler(req: any, res: any) {
             'whiteglove-request',
             'sovereign-request',
             'checkout',
-            'manual-payment-init',
-            'create-manual-payment',
-            'manual-payments',
-            'activate-manual-payment',
             'session',
             'license',
             'market-live',
@@ -7690,345 +7536,6 @@ export default async function handler(req: any, res: any) {
         });
       }
 
-      case 'manual-payment-init': {
-        const src: Record<string, any> = {
-          ...(req?.query && typeof req.query === 'object' ? req.query : {}),
-          ...(parsedBody && typeof parsedBody === 'object' ? parsedBody : {}),
-        };
-        const resolved = resolveManualPlanPricing(src?.plan);
-        const currency: 'OMR' | 'USD' =
-          String(src?.currency || '').toUpperCase() === 'USD' ? 'USD' : 'OMR';
-        const passedOrder = String(src?.orderNumber || '').trim();
-        const orderNumber = /^AQ-\d{4}-\d{3,}$/i.test(passedOrder)
-          ? passedOrder.toUpperCase()
-          : await allocateManualOrderNumber();
-        const bankDetails = getBankTransferDetailsFromEnv();
-
-        return res.status(200).json({
-          success: true,
-          orderNumber,
-          plan: resolved.plan,
-          planDisplay: resolved.planDisplay,
-          amountUSD: resolved.amountUSD,
-          amountOMR: resolved.amountOMR,
-          currency,
-          selectedAmount: currency === 'USD' ? resolved.amountUSD : resolved.amountOMR,
-          companyName: bankDetails.companyName,
-          bankDetails,
-        });
-      }
-
-      case 'create-manual-payment': {
-        if (req.method !== 'POST') {
-          return res.status(405).json({ success: false, error: 'Method not allowed' });
-        }
-
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = normalizeEmail(
-          sessionEmail || parsedBody?.email || parsedBody?.login_email || ''
-        );
-        if (!email || !email.includes('@')) {
-          return res.status(400).json({
-            success: false,
-            error: 'يرجى تسجيل الدخول أو إدخال بريد إلكتروني صحيح.',
-          });
-        }
-
-        const senderAccountName = String(parsedBody?.senderAccountName || '').trim();
-        const transferDate = String(parsedBody?.transferDate || '').trim();
-        const receiptImage = String(parsedBody?.receiptImage || '').trim();
-        const whatsappNumber = String(parsedBody?.whatsappNumber || '').trim();
-
-        if (!receiptImage || !receiptImage.startsWith('data:image/')) {
-          return res.status(400).json({
-            success: false,
-            error: 'صورة إيصال التحويل مطلوبة.',
-          });
-        }
-        if (receiptImage.length > 2_500_000) {
-          return res.status(400).json({
-            success: false,
-            error: 'حجم صورة الإيصال كبير جداً. يرجى اختيار صورة أصغر.',
-          });
-        }
-        if (!senderAccountName) {
-          return res.status(400).json({
-            success: false,
-            error: 'اسم الحساب المُحوِّل مطلوب.',
-          });
-        }
-        if (!transferDate) {
-          return res.status(400).json({
-            success: false,
-            error: 'تاريخ التحويل مطلوب.',
-          });
-        }
-
-        const resolved = resolveManualPlanPricing(parsedBody?.plan);
-        const currency: 'OMR' | 'USD' =
-          String(parsedBody?.currency || '').toUpperCase() === 'USD' ? 'USD' : 'OMR';
-        const selectedAmount = currency === 'USD' ? resolved.amountUSD : resolved.amountOMR;
-
-        const existingUser =
-          (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email, {
-            name: String(parsedBody?.customerName || email.split('@')[0]),
-          });
-        const customerName = String(
-          parsedBody?.customerName || existingUser?.name || email.split('@')[0]
-        ).trim();
-
-        const rawOrderNumber = String(parsedBody?.orderNumber || '').trim().toUpperCase();
-        const orderNumber = /^AQ-\d{4}-\d{3,}$/i.test(rawOrderNumber)
-          ? rawOrderNumber
-          : await allocateManualOrderNumber();
-
-        const existingPayments = await getManualPaymentsFromDb();
-        const nowIso = new Date().toISOString();
-
-        const record: ManualPaymentRecord = {
-          id: `mp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-          orderNumber,
-          plan: resolved.plan,
-          planDisplay: resolved.planDisplay,
-          amountUSD: resolved.amountUSD,
-          amountOMR: resolved.amountOMR,
-          currency,
-          selectedAmount,
-          customerName,
-          email,
-          senderAccountName,
-          transferDate,
-          whatsappNumber: whatsappNumber || undefined,
-          receiptImage,
-          status: 'Pending',
-          createdAt: nowIso,
-          activatedAt: null,
-          activatedBy: null,
-        };
-
-        const deduped = existingPayments.filter(
-          (item) => item.orderNumber !== orderNumber || item.status === 'Pending'
-        );
-        const nextList = [
-          record,
-          ...deduped.filter((item) => item.orderNumber !== orderNumber),
-        ];
-        await saveManualPaymentsToDb(nextList);
-
-        try {
-          const updatedTimeline = [
-            {
-              id: `tl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: nowIso,
-              type: 'purchase' as const,
-              message: `Manual bank transfer proof submitted (${orderNumber}) for ${resolved.planDisplay} - ${selectedAmount} ${currency} (Pending Admin Review)`,
-              actor: email,
-            },
-            ...(existingUser.timeline || []),
-          ].slice(0, 200);
-          const updatedUser = updateServerUser(email, { timeline: updatedTimeline });
-          await saveUserToDb(updatedUser).catch(() => {});
-        } catch {}
-
-        const appBaseUrl = cleanEnvValue(getEnv('APP_URL')) || 'https://aqari-ai-rho.vercel.app';
-        const adminReviewUrl = `${appBaseUrl}/admin?tab=manual-payments`;
-        const adminSubject = `[Aqari AI] طلب تحويل بنكي جديد ${orderNumber} - ${resolved.planDisplay} (${selectedAmount} ${currency})`;
-        const adminText = [
-          `تم استلام إثبات تحويل بنكي جديد عبر موقع Aqari AI:`,
-          ``,
-          `Customer Name: ${customerName}`,
-          `Email: ${email}`,
-          `Chosen Plan: ${resolved.planDisplay} ($${resolved.amountUSD} USD)`,
-          `Amount + Currency: ${selectedAmount} ${currency} ($${resolved.amountUSD} USD / ${resolved.amountOMR} OMR)`,
-          `Order Number (Reference): ${orderNumber}`,
-          `Transfer Date: ${transferDate}`,
-          `Sender Account Name: ${senderAccountName}`,
-          `WhatsApp Number: ${whatsappNumber || 'Not provided'}`,
-          `Status: Pending`,
-          ``,
-          `Review & Activate Link:`,
-          adminReviewUrl,
-        ].join('\n');
-
-        const adminHtml = `
-          <div style="font-family:Arial,sans-serif;background:#0a0a0d;color:#f4f4f5;padding:24px;border-radius:12px;border:1px solid #d4af37;">
-            <h2 style="color:#d4af37;margin-top:0;">طلب تحويل بنكي جديد - ${orderNumber}</h2>
-            <p><strong>Customer Name:</strong> ${customerName}</p>
-            <p><strong>Email:</strong> ${email}</p>
-            <p><strong>Chosen Plan:</strong> ${resolved.planDisplay}</p>
-            <p><strong>Amount + Currency:</strong> ${selectedAmount} ${currency} ($${resolved.amountUSD} USD)</p>
-            <p><strong>Order Number:</strong> ${orderNumber}</p>
-            <p><strong>Transfer Date:</strong> ${transferDate}</p>
-            <p><strong>Sender Account Name:</strong> ${senderAccountName}</p>
-            <p><strong>WhatsApp Number:</strong> ${whatsappNumber || 'Not provided'}</p>
-            <p><strong>Status:</strong> Pending</p>
-            <p style="margin-top:20px;">
-              <a href="${adminReviewUrl}" style="display:inline-block;padding:12px 20px;background:#d4af37;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;">
-                مراجعة وتفعيل الاشتراك في لوحة الأدمن (/admin)
-              </a>
-            </p>
-          </div>
-        `;
-
-        await dispatchEmailAlert({
-          to: getAdminEmail(),
-          subject: adminSubject,
-          text: adminText,
-          html: adminHtml,
-          eventType: 'manual_payment_pending',
-        }).catch(() => {});
-
-        return res.status(200).json({
-          success: true,
-          status: 'Pending',
-          orderNumber,
-          plan: resolved.plan,
-          planDisplay: resolved.planDisplay,
-          currency,
-          selectedAmount,
-          message:
-            'تم استلام طلبك. الطلب قيد المراجعة. سيتم التفعيل خلال 12-24 ساعة عمل بعد التحقق من وصول المبلغ.',
-        });
-      }
-
-      case 'manual-payments': {
-        const sessionEmail = getSessionEmailFromReq(req);
-        if (!isAdminEmail(sessionEmail)) {
-          return res.status(403).json({
-            success: false,
-            error: '403 Forbidden: Owner admin authentication required.',
-          });
-        }
-        const payments = await getManualPaymentsFromDb();
-        return res.status(200).json({
-          success: true,
-          payments,
-          bankDetails: getBankTransferDetailsFromEnv(),
-        });
-      }
-
-      case 'activate-manual-payment': {
-        if (req.method !== 'POST') {
-          return res.status(405).json({ success: false, error: 'Method not allowed' });
-        }
-        const sessionEmail = getSessionEmailFromReq(req);
-        if (!isAdminEmail(sessionEmail)) {
-          return res.status(403).json({
-            success: false,
-            error: '403 Forbidden: Owner admin authentication required.',
-          });
-        }
-
-        const targetOrder = String(parsedBody?.orderNumber || '').trim().toUpperCase();
-        const targetId = String(parsedBody?.id || '').trim();
-        const payments = await getManualPaymentsFromDb();
-        const idx = payments.findIndex(
-          (p) =>
-            (targetOrder && p.orderNumber.toUpperCase() === targetOrder) ||
-            (targetId && p.id === targetId)
-        );
-        if (idx < 0) {
-          return res.status(404).json({
-            success: false,
-            error: 'Manual bank transfer order not found.',
-          });
-        }
-
-        const targetPayment = payments[idx];
-        const now = Date.now();
-        const nowIso = new Date(now).toISOString();
-
-        await getUserFromDb(targetPayment.email).catch(() => null);
-        const activatedUser = activatePaidPlanOnServer({
-          email: targetPayment.email,
-          name: targetPayment.customerName,
-          plan: targetPayment.plan,
-          paymentTimestamp: now,
-          orderId: targetPayment.orderNumber,
-          amountUSD: targetPayment.amountUSD,
-          currency: targetPayment.currency,
-          testMode: false,
-          paymentCustomerEmail: targetPayment.email,
-          paymentProvider: 'manual_bank_transfer',
-          paymentIntentId: targetPayment.orderNumber,
-        });
-        await saveUserToDb(activatedUser);
-
-        await markOrderUsedInDb({
-          order_id: targetPayment.orderNumber,
-          login_email: targetPayment.email,
-          payment_email: targetPayment.email,
-          plan: targetPayment.plan,
-          plan_display: targetPayment.planDisplay,
-          analyses: PLAN_DEFINITIONS[targetPayment.plan].analysesLimit,
-          amount: targetPayment.amountUSD,
-          test_mode: false,
-          used_at: now,
-        });
-
-        payments[idx] = {
-          ...targetPayment,
-          status: 'Activated',
-          activatedAt: nowIso,
-          activatedBy: sessionEmail || getAdminEmail(),
-        };
-        await saveManualPaymentsToDb(payments);
-
-        const appBaseUrl = cleanEnvValue(getEnv('APP_URL')) || 'https://aqari-ai-rho.vercel.app';
-        const unlockedFeatures = PLAN_DEFINITIONS[targetPayment.plan].features;
-        const customerSubject = `تم تفعيل اشتراكك بنجاح - Aqari AI (${targetPayment.orderNumber})`;
-        const customerText = [
-          `تم تفعيل اشتراكك بنجاح`,
-          ``,
-          `مرحباً ${targetPayment.customerName}،`,
-          `تم التحقق من حوالتك البنكية وتفعيل اشتراكك في منصة Aqari AI.`,
-          ``,
-          `رقم الطلب: ${targetPayment.orderNumber}`,
-          `الباقة: ${targetPayment.planDisplay}`,
-          `المميزات المفعلة:`,
-          ...unlockedFeatures.map((f) => `- ${f}`),
-          ``,
-          `افتح المنصة الآن: ${appBaseUrl}/app`,
-        ].join('\n');
-
-        const customerHtml = `
-          <div dir="rtl" style="font-family:Arial,sans-serif;background:#0a0a0d;color:#f4f4f5;padding:24px;border-radius:12px;border:1px solid #d4af37;">
-            <h2 style="color:#d4af37;margin-top:0;">تم تفعيل اشتراكك بنجاح</h2>
-            <p>مرحباً <strong>${targetPayment.customerName}</strong>،</p>
-            <p>تم التحقق من حوالتك البنكية وتفعيل باقة <strong>${targetPayment.planDisplay}</strong> بنجاح.</p>
-            <p><strong>رقم الطلب:</strong> ${targetPayment.orderNumber}</p>
-            <p><strong>المميزات المفعلة:</strong></p>
-            <ul>
-              ${unlockedFeatures.map((f) => `<li>${f}</li>`).join('')}
-            </ul>
-            <p style="margin-top:20px;">
-              <a href="${appBaseUrl}/app" style="display:inline-block;padding:12px 20px;background:#d4af37;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;">
-                الدخول إلى المنصة الآن
-              </a>
-            </p>
-          </div>
-        `;
-
-        await dispatchEmailAlert({
-          to: targetPayment.email,
-          subject: customerSubject,
-          text: customerText,
-          html: customerHtml,
-          eventType: 'manual_payment_activated',
-        }).catch(() => {});
-
-        return res.status(200).json({
-          success: true,
-          status: 'Activated',
-          orderNumber: targetPayment.orderNumber,
-          email: targetPayment.email,
-          plan: targetPayment.planDisplay,
-          user: activatedUser,
-          payment: payments[idx],
-        });
-      }
-
       default:
         return res.status(400).json({
           success: false,
@@ -8059,10 +7566,6 @@ export default async function handler(req: any, res: any) {
             'whiteglove-request',
             'sovereign-request',
             'checkout',
-            'manual-payment-init',
-            'create-manual-payment',
-            'manual-payments',
-            'activate-manual-payment',
             'session',
             'license',
             'market-live',

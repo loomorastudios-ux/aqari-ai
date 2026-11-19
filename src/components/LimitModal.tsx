@@ -53,16 +53,6 @@ export const LimitModal: React.FC<LimitModalProps> = ({
   const starterAnalyses = starterPlan?.analysesLimit ?? PLANS.starter.analysesLimit;
   const proAnalyses = proPlan?.analysesLimit ?? PLANS.pro.analysesLimit;
 
-  const handleCheckout = async (plan: 'starter' | 'pro' | 'enterprise') => {
-    setPolicyError(false);
-    setCheckoutNotice(null);
-    setCheckoutSuccess(null);
-    onClose();
-    window.dispatchEvent(
-      new CustomEvent('aqari:open-manual-payment', { detail: { plan } })
-    );
-  };
-
   const handlePaddleCheckout = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
       setPolicyError(true);
@@ -159,15 +149,6 @@ export const LimitModal: React.FC<LimitModalProps> = ({
                 <span>Unlock Pro Plan</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
-              <div className="text-center">
-                <button
-                  type="button"
-                  onClick={() => handleCheckout('pro')}
-                  className="text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] underline transition cursor-pointer"
-                >
-                  Pay by bank transfer
-                </button>
-              </div>
             </div>
           </div>
 
@@ -200,15 +181,6 @@ export const LimitModal: React.FC<LimitModalProps> = ({
                 <span>Unlock Starter</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
-              <div className="text-center">
-                <button
-                  type="button"
-                  onClick={() => handleCheckout('starter')}
-                  className="text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] underline transition cursor-pointer"
-                >
-                  Pay by bank transfer
-                </button>
-              </div>
               <div className="text-[10px] font-mono text-zinc-400 text-center">
                 7-Day Refund - 0 successful analyses or unresolved tool issue
               </div>

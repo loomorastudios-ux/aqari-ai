@@ -162,12 +162,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     });
   }, [user?.email, pricingVersion]);
 
-  const handleOpenManualTransfer = (planId: 'starter' | 'pro' | 'enterprise') => {
-    window.dispatchEvent(
-      new CustomEvent('aqari:open-manual-payment', { detail: { plan: planId } })
-    );
-  };
-
   const handlePayPaddle = async (planId: 'starter' | 'pro' | 'enterprise') => {
     if (!user) {
       onOpenAuth();
@@ -556,18 +550,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     </>
                   )}
                 </button>
-                {tier.id !== 'free' && !isCurrentPlan && (
-                  <div className="text-center pt-0.5">
-                    <button
-                      type="button"
-                      disabled={isLoadingThis}
-                      onClick={() => handleOpenManualTransfer(tier.id as 'starter' | 'pro' | 'enterprise')}
-                      className="text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] underline transition cursor-pointer"
-                    >
-                      Pay by bank transfer
-                    </button>
-                  </div>
-                )}
                 {tier.activePrice > 0 && (
                   <p className="text-[10px] font-mono text-zinc-400 text-center leading-snug">
                     7-Day Refund - 0 successful analyses or unresolved tool issue

@@ -25,7 +25,6 @@ import {
   Plus,
   Trash2,
   RefreshCw,
-  Building2,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -74,23 +73,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onRedirectHome,
   onPricingUpdated,
 }) => {
-  const [adminTab, setAdminTab] = useState<'users' | 'pricing' | 'analyst' | 'whiteglove' | 'issues' | 'manual-payments' | 'logs'>(() => {
-    if (typeof window !== 'undefined') {
-      const t = new URLSearchParams(window.location.search).get('tab');
-      if (t === 'manual-payments') return 'manual-payments';
-    }
-    return 'users';
-  });
+  const [adminTab, setAdminTab] = useState<'users' | 'pricing' | 'analyst' | 'whiteglove' | 'issues' | 'logs'>('users');
   const [users, setUsers] = useState<any[]>([]);
   const [failedWebhooks, setFailedWebhooks] = useState<any[]>([]);
   const [emailLogs, setEmailLogs] = useState<any[]>([]);
   const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
   const [issuesList, setIssuesList] = useState<any[]>([]);
   const [cancellationsList, setCancellationsList] = useState<any[]>([]);
-  const [manualPayments, setManualPayments] = useState<any[]>([]);
-  const [activatingOrderNum, setActivatingOrderNum] = useState<string | null>(null);
-  const [manualPayMsg, setManualPayMsg] = useState<string | null>(null);
-  const [previewReceiptUrl, setPreviewReceiptUrl] = useState<string | null>(null);
   const [resolvingIssueEmail, setResolvingIssueEmail] = useState<string | null>(null);
   const [issuesMsg, setIssuesMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -492,44 +481,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     } catch {}
   };
 
-  const loadManualPayments = async () => {
-    try {
-      const res = await fetch('/api/app?action=manual-payments', { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setManualPayments(Array.isArray(data?.payments) ? data.payments : []);
-      }
-    } catch {}
-  };
-
-  const handleActivateManualPayment = async (orderNumber: string) => {
-    setActivatingOrderNum(orderNumber);
-    setManualPayMsg(null);
-    try {
-      const res = await fetch('/api/app?action=activate-manual-payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ orderNumber }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.success) {
-        setManualPayMsg(
-          `Activated ${data.plan} for ${data.email} (Order ${orderNumber}). Confirmation email dispatched.`
-        );
-        await loadManualPayments();
-        await loadUsers();
-        await loadAdminLogs();
-      } else {
-        setManualPayMsg(data?.error || 'Failed to activate manual subscription.');
-      }
-    } catch {
-      setManualPayMsg('Network error activating manual subscription.');
-    } finally {
-      setActivatingOrderNum(null);
-    }
-  };
-
   useEffect(() => {
     const em = (currentUser?.email || '').toLowerCase();
     if (!em || em !== 'azzamalshmale@gmail.com') {
@@ -541,7 +492,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     loadAnalystInbox();
     loadWhiteGloveRequests();
     loadIssuesAndCancellations();
-    loadManualPayments();
     loadAdminLogs();
   }, [currentUser?.email]);
 
@@ -794,23 +744,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <button
               type="button"
               onClick={() => {
-                setAdminTab('manual-payments');
-                loadManualPayments();
-              }}
-              className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 cursor-pointer border transition ${
-                adminTab === 'manual-payments'
-                  ? 'bg-[#D4AF37] text-black border-[#D4AF37]'
-                  : 'bg-white/[0.05] text-zinc-300 border-white/10 hover:bg-white/10'
-              }`}
-            >
-              <Building2 className="w-4 h-4" />
-              <span>
-                BANK TRANSFERS ({manualPayments.filter((p) => p.status === 'Pending').length})
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
                 setAdminTab('logs');
                 loadAdminLogs();
               }}
@@ -833,145 +766,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </button>
           </div>
         </div>
-
-        {/* MANUAL BANK TRANSFERS TAB */}
-        {adminTab === 'manual-payments' && (
-          <div className="space-y-6">
-            {manualPayMsg && (
-              <div className="p-3.5 rounded-2xl bg-emerald-950/50 border border-emerald-500/40 text-xs font-mono text-emerald-200 flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>{manualPayMsg}</span>
-              </div>
-            )}
-
-            <div className="glass-panel rounded-3xl p-6 border border-white/10 space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-bold text-white">
-                    Manual Bank Transfer Requests (Oman)
-                  </h2>
-                  <p className="text-xs font-mono text-zinc-400 mt-0.5">
-                    Verify bank receipt &amp; click &quot;Activate Subscription&quot; to unlock the customer&apos;s plan and send activation email.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={loadManualPayments}
-                  className="px-3 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs font-mono text-white flex items-center gap-1.5 cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>Refresh</span>
-                </button>
-              </div>
-
-              {manualPayments.length === 0 ? (
-                <div className="text-xs font-mono text-zinc-500 py-8 text-center">
-                  No manual bank transfer requests submitted yet.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {manualPayments.map((mp) => {
-                    const isPending = mp.status === 'Pending';
-                    return (
-                      <div
-                        key={mp.id || mp.orderNumber}
-                        className="p-4 rounded-2xl bg-black/50 border border-white/10 flex flex-col lg:flex-row lg:items-center justify-between gap-4 text-xs font-mono"
-                      >
-                        <div className="space-y-1.5 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="px-2.5 py-0.5 rounded-full bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37] font-bold">
-                              {mp.orderNumber}
-                            </span>
-                            <span
-                              className={`px-2.5 py-0.5 rounded-full font-bold ${
-                                isPending
-                                  ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                                  : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                              }`}
-                            >
-                              {mp.status}
-                            </span>
-                            <span className="text-white font-bold">{mp.planDisplay}</span>
-                            <span className="text-emerald-300 font-bold">
-                              {mp.selectedAmount} {mp.currency} (${mp.amountUSD})
-                            </span>
-                          </div>
-                          <div className="text-zinc-300">
-                            Customer: <strong className="text-white">{mp.customerName}</strong> ({mp.email})
-                          </div>
-                          <div className="text-zinc-400">
-                            Sender Account: <span className="text-zinc-200">{mp.senderAccountName}</span> • Transfer Date:{' '}
-                            <span className="text-zinc-200">{mp.transferDate}</span>
-                            {mp.whatsappNumber ? ` • WhatsApp: ${mp.whatsappNumber}` : ''}
-                          </div>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-3">
-                          {mp.receiptImage && (
-                            <button
-                              type="button"
-                              onClick={() => setPreviewReceiptUrl(mp.receiptImage)}
-                              className="px-3 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 text-zinc-200 cursor-pointer"
-                            >
-                              View Receipt
-                            </button>
-                          )}
-
-                          {isPending ? (
-                            <button
-                              type="button"
-                              disabled={activatingOrderNum === mp.orderNumber}
-                              onClick={() => handleActivateManualPayment(mp.orderNumber)}
-                              className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 disabled:opacity-60 text-black font-black cursor-pointer"
-                            >
-                              {activatingOrderNum === mp.orderNumber
-                                ? 'Activating...'
-                                : 'Activate Subscription'}
-                            </button>
-                          ) : (
-                            <span className="text-emerald-400 font-bold">
-                              Activated {mp.activatedAt ? new Date(mp.activatedAt).toLocaleDateString('en-US') : ''}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {previewReceiptUrl && (
-              <div
-                onClick={() => setPreviewReceiptUrl(null)}
-                className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xl flex items-center justify-center p-4"
-              >
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="max-w-2xl w-full rounded-3xl glass-dropdown border border-[#D4AF37]/40 p-4 space-y-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-mono font-bold text-[#D4AF37]">
-                      Bank Transfer Receipt Preview
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setPreviewReceiptUrl(null)}
-                      className="p-1.5 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <img
-                    src={previewReceiptUrl}
-                    alt="Transfer Receipt"
-                    className="w-full max-h-[75vh] object-contain rounded-xl bg-black"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        )}
 
         {/* PRICING CONTROL TAB */}
         {adminTab === 'pricing' && (

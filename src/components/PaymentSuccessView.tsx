@@ -180,7 +180,7 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
         <div className="mt-8 text-center text-[11px] font-mono text-zinc-400 space-y-1.5">
           <div className="flex items-center justify-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>Receipt and invoice sent to your email by Paddle</span>
+            <span>Invoice and confirmation sent to your email by Paddle</span>
           </div>
           <div>
             By purchasing, you agree to{' '}
