@@ -123,7 +123,7 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
         </h1>
 
         <p className="text-sm text-zinc-400 max-w-md mx-auto mb-8 leading-relaxed">
-          Your payment was processed successfully via Stripe. Your institutional license is unlocked and ready for underwriting.
+          Your payment was processed successfully via Paddle. Your institutional license is unlocked and ready for underwriting.
         </p>
 
         <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-3.5 text-left mb-8">
@@ -180,7 +180,7 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
         <div className="mt-8 text-center text-[11px] font-mono text-zinc-400 space-y-1.5">
           <div className="flex items-center justify-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>Receipt and invoice sent to your email by Stripe</span>
+            <span>Receipt and invoice sent to your email by Paddle</span>
           </div>
           <div>
             By purchasing, you agree to{' '}

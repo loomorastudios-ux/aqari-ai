@@ -2040,10 +2040,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               )}
             </div>
 
-            {/* Cancellations & Stripe Refunds Log */}
+            {/* Cancellations & Paddle Refunds Log */}
             <div className="glass-panel p-5 border border-white/10 space-y-3">
               <div className="font-bold uppercase text-rose-300">
-                Cancellations &amp; Stripe Refunds ({cancellationsList.length})
+                Cancellations &amp; Paddle Refunds ({cancellationsList.length})
               </div>
               {cancellationsList.length === 0 ? (
                 <div className="text-zinc-500 py-6 text-center">No cancellations processed yet.</div>
@@ -2295,7 +2295,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   type="text"
                   value={planReason}
                   onChange={(e) => setPlanReason(e.target.value)}
-                  placeholder="Mandatory audit reason (e.g., Manual Stripe order pi_123 reconciliation)"
+                  placeholder="Mandatory audit reason (e.g., Manual Paddle order txn_123 reconciliation)"
                   className="flex-1 min-w-[220px] px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white"
                 />
                 <button

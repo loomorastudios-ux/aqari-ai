@@ -457,7 +457,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className="px-3.5 py-2.5 rounded-xl text-sm text-[#D4AF37] bg-[#D4AF37]/10 hover:bg-[#D4AF37]/20 transition flex items-center justify-between font-semibold"
             >
               <span>Pricing Tiers</span>
-              <span className="text-[10px] font-mono text-[#D4AF37]">STRIPE</span>
+              <span className="text-[10px] font-mono text-[#D4AF37]">PADDLE</span>
             </a>
 
             {/* Plan status indicator on mobile */}

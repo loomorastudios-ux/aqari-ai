@@ -303,7 +303,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="text-[10px] font-mono text-zinc-400 block mb-1">Promo Code (Stripe)</label>
+                  <label className="text-[10px] font-mono text-zinc-400 block mb-1">Promo Code (Paddle)</label>
                   <input
                     type="text"
                     value={discountCode}

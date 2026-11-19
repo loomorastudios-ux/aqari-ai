@@ -1184,7 +1184,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     refund_notes: raw?.refund_notes || '',
     refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
     locked_launch_price: typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
-    payment_provider: String(raw?.payment_provider || 'stripe'),
+    payment_provider: String(raw?.payment_provider || 'paddle'),
     payment_intent_id: raw?.payment_intent_id ? String(raw.payment_intent_id) : null,
     payment_customer_email: raw?.payment_customer_email
       ? String(raw.payment_customer_email).toLowerCase()
@@ -1718,7 +1718,7 @@ function activatePaidPlanOnServer(params: {
     issue_status: 'none',
     cancel_status: 'none',
     last_order_id: orderId,
-    payment_provider: params.paymentProvider || 'stripe',
+    payment_provider: params.paymentProvider || 'paddle',
     payment_intent_id: params.paymentIntentId || orderId,
     day29_email_sent: false,
     expired_email_sent: false,
@@ -1746,9 +1746,9 @@ export async function activateLicense(
     email: normEmail,
     plan: planKey,
     paymentTimestamp: Date.now(),
-    orderId: payment_intent_id || `pi_${Date.now()}`,
-    paymentIntentId: payment_intent_id || `pi_${Date.now()}`,
-    paymentProvider: 'stripe',
+    orderId: payment_intent_id || `txn_${Date.now()}`,
+    paymentIntentId: payment_intent_id || `txn_${Date.now()}`,
+    paymentProvider: 'paddle',
     paymentCustomerEmail: normEmail,
   });
   await saveUserToDb(activated);
@@ -3713,7 +3713,7 @@ const DEMO_ANALYSES: Record<string, any> = {
 };
 
 // =========================================================================
-// 5. ABSTRACT PAYMENT CHECKOUT & TIER RESOLUTION HELPERS (STRIPE READY)
+// 5. ABSTRACT PAYMENT CHECKOUT & TIER RESOLUTION HELPERS (PADDLE READY)
 // =========================================================================
 
 const SUCCESS_REDIRECT = 'https://aqari-ai-rho.vercel.app/app?checkout=success';
@@ -3949,7 +3949,7 @@ export default async function handler(req: any, res: any) {
           authenticated: true,
           email: dbUser.email,
           login_email: dbUser.email,
-          payment_provider: dbUser.payment_provider || 'stripe',
+          payment_provider: dbUser.payment_provider || 'paddle',
           payment_intent_id: dbUser.payment_intent_id || null,
           payment_customer_email: dbUser.payment_customer_email || null,
           name: dbUser.name,
@@ -3998,7 +3998,7 @@ export default async function handler(req: any, res: any) {
           user: {
             email: dbUser.email,
             login_email: dbUser.email,
-            payment_provider: dbUser.payment_provider || 'stripe',
+            payment_provider: dbUser.payment_provider || 'paddle',
             payment_intent_id: dbUser.payment_intent_id || null,
             payment_customer_email: dbUser.payment_customer_email || null,
             name: dbUser.name,
@@ -4058,13 +4058,12 @@ export default async function handler(req: any, res: any) {
         } catch {}
 
         let orderId = '';
-        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY') || getEnv('PAYMENT_API_KEY'));
         const paddleBaseUrl =
           cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'production'
             ? 'https://api.paddle.com'
             : 'https://sandbox-api.paddle.com';
-        const stripeSecretKey = cleanEnvValue(getEnv('STRIPE_SECRET_KEY') || getEnv('PAYMENT_API_KEY'));
-        const hasPaymentKey = Boolean(paddleApiKey || stripeSecretKey);
+        const hasPaymentKey = Boolean(paddleApiKey);
 
         try {
           const src: Record<string, any> = {
@@ -4428,160 +4427,105 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          const isStripeTx = orderId.startsWith('pi_') || orderId.startsWith('cs_');
-
-          if (!isStripeTx && paddleApiKey) {
-            // Verify Paddle Sandbox/Live transaction against Paddle API v2
-            const paddleRes = await fetch(
-              `${paddleBaseUrl}/transactions/${encodeURIComponent(orderId)}`,
-              {
-                headers: {
-                  Authorization: `Bearer ${paddleApiKey}`,
-                  Accept: 'application/json',
-                },
-              }
-            );
-            const paddleJson: any = await paddleRes.json().catch(() => null);
-            const txnData = paddleJson?.data;
-            if (!paddleRes.ok || !txnData?.id) {
-              return res.status(200).json({
-                success: false,
-                error:
-                  paddleJson?.error?.detail ||
-                  paddleJson?.error?.message ||
-                  `Transaction not found in Paddle: ${orderId}`,
-              });
-            }
-
-            const txnStatus = String(txnData.status || '').toLowerCase();
-            const isPaid =
-              txnStatus === 'completed' ||
-              txnStatus === 'billed' ||
-              txnStatus === 'paid';
-            if (!isPaid) {
-              return res.status(200).json({
-                success: false,
-                error: `Paddle transaction #${orderId} status is '${txnData.status || 'pending'}' (not completed)`,
-              });
-            }
-
-            const rawGrandTotal = Number(
-              txnData?.details?.totals?.grand_total ??
-                txnData?.details?.totals?.total ??
-                txnData?.details?.totals?.subtotal ??
-                0
-            );
-            const amountUSD =
-              Number.isFinite(rawGrandTotal) && rawGrandTotal > 0
-                ? rawGrandTotal / 100
-                : PLAN_DEFINITIONS[requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro'].launchPrice;
-
-            const proPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
-            const starterPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID'));
-            const sovereignPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID'));
-            const firstItem = Array.isArray(txnData?.items) ? txnData.items[0] : null;
-            const itemPriceId = String(firstItem?.price?.id || firstItem?.price_id || '').trim();
-            const itemProductName = String(
-              firstItem?.price?.name || firstItem?.product?.name || firstItem?.price?.description || ''
-            ).trim();
-
-            let resolvedFallbackPlan: PlanKey = requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro';
-            if (proPriceId && itemPriceId === proPriceId) {
-              resolvedFallbackPlan = 'pro';
-            } else if (starterPriceId && itemPriceId === starterPriceId) {
-              resolvedFallbackPlan = 'starter';
-            } else if (sovereignPriceId && itemPriceId === sovereignPriceId) {
-              resolvedFallbackPlan = 'enterprise';
-            } else if (txnData?.custom_data?.plan) {
-              const cdPlan = normalizePlanKey(String(txnData.custom_data.plan));
-              if (cdPlan !== 'free') resolvedFallbackPlan = cdPlan;
-            } else if (itemProductName) {
-              resolvedFallbackPlan = resolvePlanFromOrderAttributes(
-                { product_name: itemProductName, amount: rawGrandTotal },
-                resolvedFallbackPlan
-              );
-            }
-
-            const paymentEmail = String(
-              txnData?.customer?.email ||
-                txnData?.custom_data?.email ||
-                txnData?.custom_data?.login_email ||
-                src?.email ||
-                loginEmail
-            )
-              .trim()
-              .toLowerCase();
-
-            return await completeActivation({
-              resolvedOrderId: String(txnData.id),
-              amountUSD,
-              rawAmountCents: Number.isFinite(rawGrandTotal) ? rawGrandTotal : undefined,
-              productName: itemProductName || undefined,
-              variantId: itemPriceId || undefined,
-              fallbackPlan: resolvedFallbackPlan,
-              paymentEmail,
-              paymentProvider: 'paddle',
-              testMode: paddleBaseUrl.includes('sandbox'),
-              createdAtIso: txnData.created_at || new Date().toISOString(),
-            });
-          }
-
-          if (!stripeSecretKey) {
+          if (!paddleApiKey) {
             return res.status(200).json({
               success: false,
-              error: 'Payment verification key not configured for this transaction format.',
+              error: 'Paddle API key (PADDLE_API_KEY) is missing on server.',
             });
           }
 
-          // Fallback Stripe lookup only if orderId is pi_/cs_ and STRIPE_SECRET_KEY exists
-          const stripeEndpoint = orderId.startsWith('cs_')
-            ? `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(orderId)}`
-            : `https://api.stripe.com/v1/payment_intents/${encodeURIComponent(orderId)}`;
-          const stripeRes = await fetch(stripeEndpoint, {
-            headers: {
-              Authorization: `Bearer ${stripeSecretKey}`,
-            },
-          });
-          const stripeJson: any = await stripeRes.json().catch(() => null);
-          if (!stripeRes.ok || !stripeJson?.id) {
+          // Verify Paddle Sandbox/Live transaction against Paddle API v2
+          const paddleRes = await fetch(
+            `${paddleBaseUrl}/transactions/${encodeURIComponent(orderId)}`,
+            {
+              headers: {
+                Authorization: `Bearer ${paddleApiKey}`,
+                Accept: 'application/json',
+              },
+            }
+          );
+          const paddleJson: any = await paddleRes.json().catch(() => null);
+          const txnData = paddleJson?.data;
+          if (!paddleRes.ok || !txnData?.id) {
             return res.status(200).json({
               success: false,
-              error: stripeJson?.error?.message || `Payment record not found: ${orderId}`,
+              error:
+                paddleJson?.error?.detail ||
+                paddleJson?.error?.message ||
+                `Transaction not found in Paddle: ${orderId}`,
             });
           }
 
+          const txnStatus = String(txnData.status || '').toLowerCase();
           const isPaid =
-            stripeJson.status === 'succeeded' ||
-            stripeJson.payment_status === 'paid' ||
-            stripeJson.status === 'complete';
+            txnStatus === 'completed' ||
+            txnStatus === 'billed' ||
+            txnStatus === 'paid';
           if (!isPaid) {
             return res.status(200).json({
               success: false,
-              error: `Payment #${orderId} status is '${stripeJson.payment_status || stripeJson.status || 'pending'}' (not paid)`,
+              error: `Paddle transaction #${orderId} status is '${txnData.status || 'pending'}' (not completed)`,
             });
           }
 
-          const rawAmountCents = Number(stripeJson.amount_total ?? stripeJson.amount ?? 0);
+          const rawGrandTotal = Number(
+            txnData?.details?.totals?.grand_total ??
+              txnData?.details?.totals?.total ??
+              txnData?.details?.totals?.subtotal ??
+              0
+          );
           const amountUSD =
-            Number.isFinite(rawAmountCents) && rawAmountCents > 0
-              ? rawAmountCents / 100
-              : PLANS.PROFESSIONAL.price;
-          const fallbackPlan = resolvePlanFromOrderAttributes(stripeJson, 'pro');
+            Number.isFinite(rawGrandTotal) && rawGrandTotal > 0
+              ? rawGrandTotal / 100
+              : PLAN_DEFINITIONS[requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro'].launchPrice;
+
+          const proPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
+          const starterPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID'));
+          const sovereignPriceId = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID'));
+          const firstItem = Array.isArray(txnData?.items) ? txnData.items[0] : null;
+          const itemPriceId = String(firstItem?.price?.id || firstItem?.price_id || '').trim();
+          const itemProductName = String(
+            firstItem?.price?.name || firstItem?.product?.name || firstItem?.price?.description || ''
+          ).trim();
+
+          let resolvedFallbackPlan: PlanKey = requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro';
+          if (proPriceId && itemPriceId === proPriceId) {
+            resolvedFallbackPlan = 'pro';
+          } else if (starterPriceId && itemPriceId === starterPriceId) {
+            resolvedFallbackPlan = 'starter';
+          } else if (sovereignPriceId && itemPriceId === sovereignPriceId) {
+            resolvedFallbackPlan = 'enterprise';
+          } else if (txnData?.custom_data?.plan) {
+            const cdPlan = normalizePlanKey(String(txnData.custom_data.plan));
+            if (cdPlan !== 'free') resolvedFallbackPlan = cdPlan;
+          } else if (itemProductName) {
+            resolvedFallbackPlan = resolvePlanFromOrderAttributes(
+              { product_name: itemProductName, amount: rawGrandTotal },
+              resolvedFallbackPlan
+            );
+          }
+
           const paymentEmail = String(
-            stripeJson?.customer_details?.email || stripeJson?.receipt_email || stripeJson?.metadata?.email || ''
+            txnData?.customer?.email ||
+              txnData?.custom_data?.email ||
+              txnData?.custom_data?.login_email ||
+              src?.email ||
+              loginEmail
           )
             .trim()
             .toLowerCase();
 
           return await completeActivation({
-            resolvedOrderId: String(stripeJson.id),
+            resolvedOrderId: String(txnData.id),
             amountUSD,
-            rawAmountCents,
-            fallbackPlan,
+            rawAmountCents: Number.isFinite(rawGrandTotal) ? rawGrandTotal : undefined,
+            productName: itemProductName || undefined,
+            variantId: itemPriceId || undefined,
+            fallbackPlan: resolvedFallbackPlan,
             paymentEmail,
-            paymentProvider: 'stripe',
-            testMode: !Boolean(stripeJson.livemode),
-            createdAtIso: new Date().toISOString(),
+            paymentProvider: 'paddle',
+            testMode: paddleBaseUrl.includes('sandbox'),
+            createdAtIso: txnData.created_at || new Date().toISOString(),
           });
         } catch (err: any) {
           console.error('[verify-checkout] Unhandled error (returning HTTP 200):', err);
@@ -6970,11 +6914,11 @@ export default async function handler(req: any, res: any) {
         const logs = await getWebhookLogsFromDb(50);
         const emailLogs = await getEmailLogsFromDb(50);
         const webhookSecretPresent = Boolean(
-          cleanEnvValue(getEnv('STRIPE_WEBHOOK_SECRET')) ||
+          cleanEnvValue(getEnv('PADDLE_WEBHOOK_SECRET')) ||
             cleanEnvValue(getEnv('PAYMENT_WEBHOOK_SECRET'))
         );
         const apiKeyPresent = Boolean(
-          cleanEnvValue(getEnv('STRIPE_SECRET_KEY')) ||
+          cleanEnvValue(getEnv('PADDLE_API_KEY')) ||
             cleanEnvValue(getEnv('PAYMENT_API_KEY'))
         );
 
@@ -6993,7 +6937,7 @@ export default async function handler(req: any, res: any) {
           },
           ...(logs.length === 0
             ? {
-                debug: 'No webhook received yet — Stripe payment webhook integration is abstract/ready.',
+                debug: 'No webhook received yet — Paddle payment webhook integration is abstract/ready.',
               }
             : {}),
         });
@@ -7498,40 +7442,50 @@ export default async function handler(req: any, res: any) {
             orderId = normalizeOrderId(matchingLog.order_id);
           }
         }
-        orderId = orderId || `pi_${now}`;
+        orderId = orderId || `txn_${now}`;
 
         const refundedAmountUSD = Number(
           user.payments?.[0]?.amount || PLAN_DEFINITIONS[planKey].launchPrice || 0
         );
-        const stripeSecretKey = cleanEnvValue(getEnv('STRIPE_SECRET_KEY') || getEnv('PAYMENT_API_KEY'));
+        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY') || getEnv('PAYMENT_API_KEY'));
+        const paddleBaseUrl =
+          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'production'
+            ? 'https://api.paddle.com'
+            : 'https://sandbox-api.paddle.com';
         let refundedAlready = false;
 
-        if (stripeSecretKey && orderId.startsWith('pi_')) {
+        if (paddleApiKey && orderId.startsWith('txn_')) {
           try {
-            const refundRes = await fetch('https://api.stripe.com/v1/refunds', {
+            const refundRes = await fetch(`${paddleBaseUrl}/adjustments`, {
               method: 'POST',
               headers: {
-                Authorization: `Bearer ${stripeSecretKey}`,
-                'Content-Type': 'application/x-www-form-urlencoded',
+                Authorization: `Bearer ${paddleApiKey}`,
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
               },
-              body: new URLSearchParams({ payment_intent: orderId }),
+              body: JSON.stringify({
+                action: 'refund',
+                type: 'full',
+                transaction_id: orderId,
+                reason: `Self-serve cancellation (${eligibility.eligibleRule})`,
+              }),
             });
             if (!refundRes.ok) {
               const refErr: any = await refundRes.json().catch(() => ({}));
               const errCode = String(refErr?.error?.code || '');
-              if (errCode === 'charge_already_refunded') {
+              if (errCode === 'adjustment_transaction_already_refunded' || errCode === 'already_refunded') {
                 refundedAlready = true;
               } else {
                 return res.status(200).json({
                   success: false,
-                  error: `Stripe refund failed (${refErr?.error?.message || refundRes.status}). Your subscription was NOT cancelled or deactivated.`,
+                  error: `Paddle refund failed (${refErr?.error?.detail || refErr?.error?.message || refundRes.status}). Your subscription was NOT cancelled or deactivated.`,
                 });
               }
             }
           } catch (err: any) {
             return res.status(200).json({
               success: false,
-              error: `Stripe refund error (${err?.message || 'network'}). Subscription was NOT cancelled.`,
+              error: `Paddle refund error (${err?.message || 'network'}). Subscription was NOT cancelled.`,
             });
           }
         }
@@ -7542,7 +7496,7 @@ export default async function handler(req: any, res: any) {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: iso,
           type: 'cancellation',
-          message: `Self-serve cancellation & Stripe refund ($${refundedAmountUSD}) Ref #${orderId} -> Downgraded ${prevPlanDisplay} to FREE (${eligibility.eligibleRule})`,
+          message: `Self-serve cancellation & Paddle refund ($${refundedAmountUSD}) Ref #${orderId} -> Downgraded ${prevPlanDisplay} to FREE (${eligibility.eligibleRule})`,
           actor: email,
         };
 
@@ -7559,7 +7513,7 @@ export default async function handler(req: any, res: any) {
           cancel_status: 'refunded',
           refund_requested: true,
           refund_status: 'approved',
-          refund_notes: `Cancelled + Stripe refund Ref #${orderId} ($${refundedAmountUSD}) via ${eligibility.eligibleRule}`,
+          refund_notes: `Cancelled + Paddle refund Ref #${orderId} ($${refundedAmountUSD}) via ${eligibility.eligibleRule}`,
           timeline: [timelineEntry, ...user.timeline].slice(0, 200),
         });
         await saveUserToDb(updatedUser).catch(() => {});
@@ -7591,7 +7545,7 @@ export default async function handler(req: any, res: any) {
         const nextEligibility = evaluateCancelRefundEligibility(updatedUser, now);
         return res.status(200).json({
           success: true,
-          message: `${prevPlanDisplay} cancelled. Refund ($${refundedAmountUSD}) issued to original payment method via Stripe in 5-10 business days.`,
+          message: `${prevPlanDisplay} cancelled. Refund ($${refundedAmountUSD}) issued to original payment method via Paddle in 5-10 business days.`,
           refundedAmount: refundedAmountUSD,
           order_id: orderId,
           plan: 'FREE',

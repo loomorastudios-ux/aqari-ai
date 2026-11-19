@@ -132,7 +132,7 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                   </li>
                   <li>
                     <strong>Billing Metadata:</strong> Payment email, order ID, plan tier, and timestamp
-                    received via Stripe webhooks. <strong>We NEVER store, process, or have access
+                    received via Paddle webhooks. <strong>We NEVER store, process, or have access
                     to credit or debit card numbers.</strong>
                   </li>
                 </ul>
@@ -199,7 +199,7 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                   5. How to Cancel: Settings &gt; SUBSCRIPTION &amp; CANCELLATION. If eligible, Cancel button enabled. If not eligible, automatically locked with reason.
                 </p>
                 <p>
-                  6. What Happens After Cancellation: Plan reverts to FREE (3 analyses), paid analyses deactivated, refund ($79 / $199 / $599) issued to original payment method via Stripe in 5-10 business days.
+                  6. What Happens After Cancellation: Plan reverts to FREE (3 analyses), paid analyses deactivated, refund ($79 / $199 / $599) issued to original payment method via Paddle in 5-10 business days.
                 </p>
                 <p>
                   7. No Partial Refunds for unused days or unused analyses. By purchasing, you agree to this policy.

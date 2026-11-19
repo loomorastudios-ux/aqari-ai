@@ -853,7 +853,7 @@ export default function App() {
             locked: serverLocked,
             lockReason: serverLockReason,
             lockError: serverLockError,
-            paymentProvider: data.payment_provider ?? data.user?.payment_provider ?? 'stripe',
+            paymentProvider: data.payment_provider ?? data.user?.payment_provider ?? 'paddle',
             paymentIntentId: data.payment_intent_id ?? data.user?.payment_intent_id ?? null,
             lastResults: data.last_results ?? data.user?.last_results ?? null,
           };
@@ -1013,7 +1013,7 @@ export default function App() {
         );
         const serverLockReason = data.lockReason ?? data.reason ?? null;
         const serverLockError = data.lockError ?? data.error ?? null;
-        const serverPaymentProvider = String(data.payment_provider ?? data.user?.payment_provider ?? 'stripe');
+        const serverPaymentProvider = String(data.payment_provider ?? data.user?.payment_provider ?? 'paddle');
         const serverPaymentIntentId = data.payment_intent_id ?? data.user?.payment_intent_id ?? null;
         const serverLastResults = data.last_results ?? data.user?.last_results ?? null;
 
@@ -1046,7 +1046,7 @@ export default function App() {
           (user.status ?? 'active') !== serverStatus ||
           (user.lockReason ?? null) !== serverLockReason ||
           (user.lockError ?? null) !== serverLockError ||
-          (user.paymentProvider ?? 'stripe') !== serverPaymentProvider ||
+          (user.paymentProvider ?? 'paddle') !== serverPaymentProvider ||
           (user.paymentIntentId ?? null) !== serverPaymentIntentId ||
           JSON.stringify(user.lastResults || null) !== JSON.stringify(serverLastResults) ||
           user.analysesLeft !== serverLeft;

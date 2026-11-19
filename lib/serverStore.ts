@@ -445,7 +445,7 @@ export function normalizeEmail(email: string): string {
 /**
  * SECURITY CRITICAL:
  * Client hints MUST NEVER elevate `plan` or `license_end`.
- * New users always start as FREE (3 analyses / 30 days) until verified Stripe payment.
+ * New users always start as FREE (3 analyses / 30 days) until verified Paddle payment.
  */
 export function getOrCreateServerUser(
   rawEmail: string,
@@ -1158,7 +1158,7 @@ export function recordOrderRefunded(params: {
     timestamp: iso,
     type: 'refund_request',
     message: `Order #${params.orderId} refunded ($${params.amountUSD ?? 0}) -> License revoked to FREE`,
-    actor: 'stripe',
+    actor: 'paddle',
   };
   return updateServerUser(user.email, {
     plan: 'free',
@@ -1166,7 +1166,7 @@ export function recordOrderRefunded(params: {
     license_end: now,
     refund_requested: true,
     refund_status: 'approved',
-    refund_notes: `Refunded via Stripe webhook (Order #${params.orderId})`,
+    refund_notes: `Refunded via Paddle webhook (Order #${params.orderId})`,
     timeline: [timelineEntry, ...user.timeline].slice(0, 200),
   });
 }

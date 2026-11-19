@@ -3316,7 +3316,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         cancellationEligibility: data.cancellationEligibility ?? null,
       });
       setIsCancelModalOpen(false);
-      showToast(data?.message || 'Subscription cancelled & refund issued via Stripe in 5-10 business days');
+      showToast(data?.message || 'Subscription cancelled & refund issued via Paddle in 5-10 business days');
     } catch {
       setCancelModalError('Network error processing cancellation. Plan not deactivated.');
     } finally {
@@ -3777,7 +3777,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               <span>Upgrade / Renew Plan</span>
             </button>
             <div className="text-[11px] text-center text-zinc-500 font-mono">
-              30-day licensing • Secure Stripe Checkout
+              30-day licensing • Secure Paddle Checkout
             </div>
           </div>
 
@@ -8125,7 +8125,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         5. How to Cancel: Settings &gt; SUBSCRIPTION &amp; CANCELLATION. If eligible, Cancel button enabled. If not eligible, automatically locked with reason.
                       </p>
                       <p>
-                        6. What Happens After Cancellation: Plan reverts to FREE (3 analyses), paid analyses deactivated, refund ($79 / $199 / $599) issued to original payment method via Stripe in 5-10 business days.
+                        6. What Happens After Cancellation: Plan reverts to FREE (3 analyses), paid analyses deactivated, refund ($79 / $199 / $599) issued to original payment method via Paddle in 5-10 business days.
                       </p>
                       <p>
                         7. No Partial Refunds for unused days or unused analyses. By purchasing, you agree to this policy.
@@ -8367,13 +8367,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         Webhook URL to copy:
                       </div>
                       <div className="text-white break-all select-all">
-                        https://aqari-ai-rho.vercel.app/api/webhooks/stripe
+                        https://aqari-ai-rho.vercel.app/api/app?action=paddle-webhook
                       </div>
                     </div>
                     <button
                       type="button"
                       onClick={() => {
-                        navigator.clipboard?.writeText('https://aqari-ai-rho.vercel.app/api/webhooks/stripe');
+                        navigator.clipboard?.writeText('https://aqari-ai-rho.vercel.app/api/app?action=paddle-webhook');
                         setCopiedWebhookUrl(true);
                         setTimeout(() => setCopiedWebhookUrl(false), 2000);
                       }}

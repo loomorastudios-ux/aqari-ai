@@ -287,7 +287,7 @@ function hydrateUserRecord(raw: any, email: string) {
     refund_notes: raw?.refund_notes || '',
     refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
     locked_launch_price: typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
-    payment_provider: String(raw?.payment_provider || 'stripe'),
+    payment_provider: String(raw?.payment_provider || 'paddle'),
     payment_intent_id: raw?.payment_intent_id ? String(raw.payment_intent_id) : null,
     payment_customer_email: raw?.payment_customer_email ? String(raw.payment_customer_email).toLowerCase() : null,
     status: raw?.status || (analysesLeft <= 0 ? 'exhausted' : 'active'),
