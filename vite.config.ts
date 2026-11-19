@@ -112,6 +112,12 @@ export default defineConfig(() => {
       'process.env.GOOGLE_CLIENT_ID': JSON.stringify(process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || ''),
       'process.env.GOOGLE_REDIRECT_URI': JSON.stringify(process.env.GOOGLE_REDIRECT_URI || process.env.VITE_GOOGLE_REDIRECT_URI || ''),
       'process.env.LEMON_TEST_MODE': JSON.stringify(process.env.LEMON_TEST_MODE || 'true'),
+      'process.env.PADDLE_ENV': JSON.stringify(
+        process.env.PADDLE_ENV || process.env.VITE_PADDLE_ENV || 'production'
+      ),
+      'process.env.VITE_PADDLE_ENV': JSON.stringify(
+        process.env.VITE_PADDLE_ENV || process.env.PADDLE_ENV || 'production'
+      ),
       'process.env.VITE_PADDLE_CLIENT_TOKEN': JSON.stringify(
         process.env.VITE_PADDLE_CLIENT_TOKEN || process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN || ''
       ),
@@ -124,17 +130,23 @@ export default defineConfig(() => {
       'process.env.NEXT_PUBLIC_PADDLE_PRICE_ID': JSON.stringify(
         process.env.VITE_PADDLE_PRICE_ID || process.env.VITE_PADDLE_PRO_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || ''
       ),
+      'process.env.VITE_PADDLE_STARTER_PRICE': JSON.stringify(
+        process.env.VITE_PADDLE_STARTER_PRICE || process.env.VITE_PADDLE_STARTER_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || ''
+      ),
       'process.env.VITE_PADDLE_STARTER_PRICE_ID': JSON.stringify(
-        process.env.VITE_PADDLE_STARTER_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || ''
+        process.env.VITE_PADDLE_STARTER_PRICE || process.env.VITE_PADDLE_STARTER_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || ''
       ),
       'process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID': JSON.stringify(
-        process.env.VITE_PADDLE_STARTER_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || ''
+        process.env.VITE_PADDLE_STARTER_PRICE || process.env.VITE_PADDLE_STARTER_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || ''
+      ),
+      'process.env.VITE_PADDLE_SOVEREIGN_PRICE': JSON.stringify(
+        process.env.VITE_PADDLE_SOVEREIGN_PRICE || process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || ''
       ),
       'process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID': JSON.stringify(
-        process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || ''
+        process.env.VITE_PADDLE_SOVEREIGN_PRICE || process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || ''
       ),
       'process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID': JSON.stringify(
-        process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || ''
+        process.env.VITE_PADDLE_SOVEREIGN_PRICE || process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || ''
       ),
     },
     resolve: {

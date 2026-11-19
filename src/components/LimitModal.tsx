@@ -153,19 +153,21 @@ export const LimitModal: React.FC<LimitModalProps> = ({
 
             <div className="space-y-1.5">
               <button
-                onClick={() => handleCheckout('pro')}
+                onClick={() => handlePaddleCheckout('pro')}
                 className="w-full py-2.5 px-3 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
               >
                 <span>Unlock Pro Plan</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
-              <button
-                type="button"
-                onClick={() => handlePaddleCheckout('pro')}
-                className="w-full py-1.5 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/10 text-[10px] font-mono transition cursor-pointer"
-              >
-                International Card (Paddle)
-              </button>
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={() => handleCheckout('pro')}
+                  className="text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] underline transition cursor-pointer"
+                >
+                  Pay by bank transfer
+                </button>
+              </div>
             </div>
           </div>
 
@@ -192,19 +194,21 @@ export const LimitModal: React.FC<LimitModalProps> = ({
 
             <div className="space-y-1.5">
               <button
-                onClick={() => handleCheckout('starter')}
+                onClick={() => handlePaddleCheckout('starter')}
                 className="w-full py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <span>Unlock Starter</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
-              <button
-                type="button"
-                onClick={() => handlePaddleCheckout('starter')}
-                className="w-full py-1.5 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/10 text-[10px] font-mono transition cursor-pointer"
-              >
-                International Card (Paddle)
-              </button>
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={() => handleCheckout('starter')}
+                  className="text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] underline transition cursor-pointer"
+                >
+                  Pay by bank transfer
+                </button>
+              </div>
               <div className="text-[10px] font-mono text-zinc-400 text-center">
                 7-Day Refund - 0 successful analyses or unresolved tool issue
               </div>

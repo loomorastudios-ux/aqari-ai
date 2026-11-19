@@ -8,6 +8,12 @@ export const LIVE_PADDLE_PRICE_IDS: Record<PaidPlanId, string> = {
   enterprise: 'pri_01m7tgj4pp767gacchp49k2qev',
 };
 
+export const PADDLE_PRICE_ENV_KEYS: Record<PaidPlanId, string> = {
+  starter: 'VITE_PADDLE_STARTER_PRICE',
+  pro: 'VITE_PADDLE_PRICE_ID',
+  enterprise: 'VITE_PADDLE_SOVEREIGN_PRICE',
+};
+
 const LEGACY_SANDBOX_PRICE_ID = 'pri_01m7qwqceh520nd4we9pg90f8m';
 
 export interface PaddleCheckoutHandlers {
@@ -42,6 +48,20 @@ function pickLivePriceId(candidates: string[], fallbackLiveId: string): string {
   return fallbackLiveId;
 }
 
+export function getPaddleEnvironment(): 'sandbox' | 'production' {
+  const viteEnv = cleanEnvStr(import.meta.env?.VITE_PADDLE_ENV).toLowerCase();
+  let procEnv = '';
+  let procViteEnv = '';
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      procEnv = cleanEnvStr(process.env.PADDLE_ENV).toLowerCase();
+      procViteEnv = cleanEnvStr(process.env.VITE_PADDLE_ENV).toLowerCase();
+    }
+  } catch {}
+  const resolved = viteEnv || procViteEnv || procEnv;
+  return resolved === 'sandbox' ? 'sandbox' : 'production';
+}
+
 export function getPaddleClientToken(): string {
   const viteClientToken = cleanEnvStr(import.meta.env?.VITE_PADDLE_CLIENT_TOKEN);
   const viteNextToken = cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN);
@@ -58,18 +78,22 @@ export function getPaddleClientToken(): string {
 
 export function getPaddlePriceId(plan: PaidPlanId): string {
   let procStarter = '';
+  let procStarterAlt = '';
   let procPro = '';
   let procProAlt = '';
   let procSovereign = '';
+  let procSovereignAlt = '';
   let procNextStarter = '';
   let procNextPro = '';
   let procNextSovereign = '';
   try {
     if (typeof process !== 'undefined' && process.env) {
-      procStarter = cleanEnvStr(process.env.VITE_PADDLE_STARTER_PRICE_ID);
-      procPro = cleanEnvStr(process.env.VITE_PADDLE_PRO_PRICE_ID);
-      procProAlt = cleanEnvStr(process.env.VITE_PADDLE_PRICE_ID);
-      procSovereign = cleanEnvStr(process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID);
+      procStarter = cleanEnvStr(process.env.VITE_PADDLE_STARTER_PRICE);
+      procStarterAlt = cleanEnvStr(process.env.VITE_PADDLE_STARTER_PRICE_ID);
+      procPro = cleanEnvStr(process.env.VITE_PADDLE_PRICE_ID);
+      procProAlt = cleanEnvStr(process.env.VITE_PADDLE_PRO_PRICE_ID);
+      procSovereign = cleanEnvStr(process.env.VITE_PADDLE_SOVEREIGN_PRICE);
+      procSovereignAlt = cleanEnvStr(process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID);
       procNextStarter = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID);
       procNextPro = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_PRICE_ID);
       procNextSovereign = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID);
@@ -79,8 +103,10 @@ export function getPaddlePriceId(plan: PaidPlanId): string {
   if (plan === 'starter') {
     return pickLivePriceId(
       [
+        cleanEnvStr(import.meta.env?.VITE_PADDLE_STARTER_PRICE),
         cleanEnvStr(import.meta.env?.VITE_PADDLE_STARTER_PRICE_ID),
         procStarter,
+        procStarterAlt,
         cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID),
         procNextStarter,
       ],
@@ -91,8 +117,10 @@ export function getPaddlePriceId(plan: PaidPlanId): string {
   if (plan === 'enterprise') {
     return pickLivePriceId(
       [
+        cleanEnvStr(import.meta.env?.VITE_PADDLE_SOVEREIGN_PRICE),
         cleanEnvStr(import.meta.env?.VITE_PADDLE_SOVEREIGN_PRICE_ID),
         procSovereign,
+        procSovereignAlt,
         cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID),
         procNextSovereign,
       ],
@@ -102,8 +130,8 @@ export function getPaddlePriceId(plan: PaidPlanId): string {
 
   return pickLivePriceId(
     [
-      cleanEnvStr(import.meta.env?.VITE_PADDLE_PRO_PRICE_ID),
       cleanEnvStr(import.meta.env?.VITE_PADDLE_PRICE_ID),
+      cleanEnvStr(import.meta.env?.VITE_PADDLE_PRO_PRICE_ID),
       procPro,
       procProAlt,
       cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_PRICE_ID),
@@ -221,13 +249,15 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
 
   const token = getPaddleClientToken();
   if (!token) {
-    console.error('[Paddle] Cannot initialize Paddle.js: VITE_PADDLE_CLIENT_TOKEN is missing.');
+    console.error('[Paddle] Cannot initialize Paddle.js: Missing VITE_PADDLE_CLIENT_TOKEN');
     return undefined;
   }
 
+  const environment = getPaddleEnvironment();
+
   if (!paddleInstancePromise) {
     paddleInstancePromise = initializePaddle({
-      environment: 'production',
+      environment,
       token,
       eventCallback: handlePaddleEvent,
     })
@@ -253,21 +283,19 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
 export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Promise<void> {
   activeHandlers = handlers;
 
-  const priceId = getPaddlePriceId(handlers.plan);
-  if (!priceId || !priceId.startsWith('pri_')) {
-    const err = new Error(`Paddle Price ID for plan "${handlers.plan}" is missing or invalid.`);
-    console.error('[Paddle] Refusing to open checkout without valid priceId:', {
-      plan: handlers.plan,
-      priceId,
-    });
-    throw err;
-  }
-
   const token = getPaddleClientToken();
   if (!token) {
-    const err = new Error('Paddle Client Token (VITE_PADDLE_CLIENT_TOKEN) is not configured.');
-    console.error('[Paddle] Refusing to open checkout: VITE_PADDLE_CLIENT_TOKEN is missing.');
-    throw err;
+    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN: Paddle checkout cannot open without a client token.';
+    console.error('[Paddle]', msg);
+    throw new Error(msg);
+  }
+
+  const expectedPriceKey = PADDLE_PRICE_ENV_KEYS[handlers.plan] || 'VITE_PADDLE_PRICE_ID';
+  const priceId = getPaddlePriceId(handlers.plan);
+  if (!priceId || !priceId.startsWith('pri_')) {
+    const msg = `Missing ${expectedPriceKey}: Paddle Price ID for ${handlers.plan} is not configured.`;
+    console.error('[Paddle]', msg, { plan: handlers.plan, priceId });
+    throw new Error(msg);
   }
 
   let paddle: Paddle | undefined;
@@ -279,9 +307,9 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
   }
 
   if (!paddle) {
-    const err = new Error('Paddle client could not be initialized.');
-    console.error('[Paddle] Checkout aborted: Paddle instance is undefined.');
-    throw err;
+    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN or Paddle failed to initialize.';
+    console.error('[Paddle]', msg);
+    throw new Error(msg);
   }
 
   fetch('/api/app?action=checkout', {

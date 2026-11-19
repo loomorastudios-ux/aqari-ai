@@ -224,7 +224,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       return;
     }
 
-    handleOpenManualTransfer(planId);
+    await handlePayPaddle(planId);
   };
 
   const getTierData = (key: PlanKey) => {
@@ -557,15 +557,16 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   )}
                 </button>
                 {tier.id !== 'free' && !isCurrentPlan && (
-                  <button
-                    type="button"
-                    disabled={isLoadingThis}
-                    onClick={() => handlePayPaddle(tier.id as 'starter' | 'pro' | 'enterprise')}
-                    className="w-full py-2 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.09] text-zinc-300 border border-white/10 text-[10px] font-mono transition flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <CreditCard className="w-3 h-3 text-[#D4AF37]" />
-                    <span>International Card (Paddle)</span>
-                  </button>
+                  <div className="text-center pt-0.5">
+                    <button
+                      type="button"
+                      disabled={isLoadingThis}
+                      onClick={() => handleOpenManualTransfer(tier.id as 'starter' | 'pro' | 'enterprise')}
+                      className="text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] underline transition cursor-pointer"
+                    >
+                      Pay by bank transfer
+                    </button>
+                  </div>
                 )}
                 {tier.activePrice > 0 && (
                   <p className="text-[10px] font-mono text-zinc-400 text-center leading-snug">

@@ -244,7 +244,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
 
                 <div className="space-y-1.5">
                   <button
-                    onClick={() => !isDisabled && handleRenew(p.id)}
+                    onClick={() => !isDisabled && handleRenewPaddle(p.id)}
                     disabled={isDisabled}
                     className={`w-full py-3 px-4 rounded-xl text-xs font-bold font-mono tracking-wider transition-all duration-200 flex items-center justify-center gap-2 shadow-md ${
                       isDisabled
@@ -257,13 +257,15 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
                     <span>{buttonLabel}</span>
                     {!isDisabled && <ArrowRight className="w-3.5 h-3.5" />}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRenewPaddle(p.id)}
-                    className="w-full py-2 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] text-zinc-300 border border-white/10 text-[10px] font-mono transition cursor-pointer"
-                  >
-                    International Card (Paddle)
-                  </button>
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => handleRenew(p.id)}
+                      className="text-[11px] font-mono text-zinc-400 hover:text-[#D4AF37] underline transition cursor-pointer"
+                    >
+                      Pay by bank transfer
+                    </button>
+                  </div>
                   <div className="text-[10px] font-mono text-zinc-400 text-center">
                     7-Day Refund - 0 successful analyses or unresolved tool issue
                   </div>

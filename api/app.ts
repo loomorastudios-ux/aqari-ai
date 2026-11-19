@@ -4500,11 +4500,17 @@ export default async function handler(req: any, res: any) {
               ? rawProEnv
               : 'pri_01m7tggqhjtgk9fxmmg6mbp5wy';
           const starterPriceId =
-            cleanEnvValue(getEnv('VITE_PADDLE_STARTER_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')) ||
-            'pri_01m7tgfvteegdih2mx4hgyz1c';
+            cleanEnvValue(
+              getEnv('VITE_PADDLE_STARTER_PRICE') ||
+                getEnv('VITE_PADDLE_STARTER_PRICE_ID') ||
+                getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')
+            ) || 'pri_01m7tgfvteegdih2mx4hgyz1c';
           const sovereignPriceId =
-            cleanEnvValue(getEnv('VITE_PADDLE_SOVEREIGN_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')) ||
-            'pri_01m7tgj4pp767gacchp49k2qev';
+            cleanEnvValue(
+              getEnv('VITE_PADDLE_SOVEREIGN_PRICE') ||
+                getEnv('VITE_PADDLE_SOVEREIGN_PRICE_ID') ||
+                getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')
+            ) || 'pri_01m7tgj4pp767gacchp49k2qev';
           const firstItem = Array.isArray(txnData?.items) ? txnData.items[0] : null;
           const itemPriceId = String(firstItem?.price?.id || firstItem?.price_id || '').trim();
           const itemProductName = String(
@@ -6732,11 +6738,17 @@ export default async function handler(req: any, res: any) {
             ? rawProEnv
             : 'pri_01m7tggqhjtgk9fxmmg6mbp5wy';
         const starterPriceId =
-          cleanEnvValue(getEnv('VITE_PADDLE_STARTER_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')) ||
-          'pri_01m7tgfvteegdih2mx4hgyz1c';
+          cleanEnvValue(
+            getEnv('VITE_PADDLE_STARTER_PRICE') ||
+              getEnv('VITE_PADDLE_STARTER_PRICE_ID') ||
+              getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')
+          ) || 'pri_01m7tgfvteegdih2mx4hgyz1c';
         const sovereignPriceId =
-          cleanEnvValue(getEnv('VITE_PADDLE_SOVEREIGN_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')) ||
-          'pri_01m7tgj4pp767gacchp49k2qev';
+          cleanEnvValue(
+            getEnv('VITE_PADDLE_SOVEREIGN_PRICE') ||
+              getEnv('VITE_PADDLE_SOVEREIGN_PRICE_ID') ||
+              getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')
+          ) || 'pri_01m7tgj4pp767gacchp49k2qev';
         const resolvedPriceId =
           validPlan === 'pro'
             ? proPriceId
