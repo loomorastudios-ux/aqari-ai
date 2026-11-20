@@ -16,6 +16,7 @@ import {
   PortfolioOptimizerResult,
   AdvisorResult,
   LastResultsData,
+  FileAnalysisReport,
 } from '../types';
 import {
   PLAN_LIMITS,
@@ -42,7 +43,11 @@ import {
   sanitizeEnglishDecimal,
 } from '../utils/formatters';
 import { formatTimeLeft } from '../utils/emailService';
-import { downloadMemorandumPdf, downloadWhiteGlovePdf } from '../utils/pdfExport';
+import {
+  downloadMemorandumPdf,
+  downloadInstitutionalMemorandumPdf,
+  downloadWhiteGlovePdf,
+} from '../utils/pdfExport';
 import type { LiveMarketResponse } from '../utils/marketDataService';
 import {
   Building2,
@@ -90,6 +95,9 @@ import {
   PieChart,
   CheckCircle2,
   XCircle,
+  FileUp,
+  Scale,
+  Users,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { PWAInstallButton } from './PWAInstallButton';
@@ -134,6 +142,13 @@ import {
   mapDealsToCompareItems,
   RiskScenarioChart,
 } from './charts/AqariRecharts';
+import { AnalyzeFromFileTab } from './features/AnalyzeFromFileTab';
+import { PropertyStudioTab } from './features/PropertyStudioTab';
+import { PortfolioIntelligencePanel } from './features/PortfolioIntelligenceTab';
+import { DocumentDueDiligencePanel } from './features/DocumentDueDiligencePanel';
+import { ScenarioComparatorTab } from './features/ScenarioComparatorTab';
+import { EnterpriseWorkspaceTab } from './features/EnterpriseWorkspaceTab';
+import { MarketIntelligencePanel } from './features/MarketIntelligencePanel';
 
 function resolveCityFromInput(rawInput: string): CityEntry | null {
   const cleaned = String(rawInput || '').trim();
@@ -245,11 +260,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [activeTab, setActiveTab] = useState<
     | 'dashboard'
     | 'analyze'
+    | 'fileanalyze'
+    | 'studio'
     | 'dealfinder'
     | 'forecast'
     | 'duediligence'
     | 'optimizer'
     | 'advisor'
+    | 'comparator'
+    | 'workspace'
     | 'saved'
     | 'portfolio'
     | 'radar'
@@ -3461,7 +3480,77 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     showToast('Loaded 3 institutional sample assets into portfolio.');
   };
 
-  // Backend-enforced PDF Memorandum Export with real watermarked PDF download
+  // Save File Analysis Report directly into User Portfolio
+  const handleSaveFileAnalysisToPortfolio = async (report: FileAnalysisReport) => {
+    const savedList = user.savedAnalyses || [];
+    if (!canSaveProperty || savedList.length >= maxSaved) {
+      showToast(
+        `Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}. Upgrade to save more.`
+      );
+      onOpenRenewal();
+      return;
+    }
+
+    const newAnalysis: SavedAnalysis = {
+      id: `saved_file_${Date.now()}`,
+      property: report.inputs.propertyTitle || report.fileName,
+      city: report.inputs.city || 'Muscat',
+      price: report.inputs.priceUSD,
+      rent: report.inputs.rentUSD,
+      noi: report.results.netOperatingIncomeUSD,
+      capRate: report.results.capRate,
+      cashOnCash: report.results.cashOnCash,
+      irr: report.results.irr5Yr,
+      dscr: report.results.dscr ?? null,
+      monthlyCashflow: report.results.monthlyCashflowUSD ?? 0,
+      riskScore: report.results.capRate > 7 ? 'AAA' : 'AA',
+      date: Date.now(),
+      imageUrl: PROPERTY_LISTINGS[0].imageUrl,
+      notes: `Source File: ${report.fileName} | ${report.inputs.downPaymentPct}% down, ${report.inputs.interestRatePct}% rate`,
+    };
+
+    try {
+      const res = await fetch('/api/app?action=save-to-portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          name: user.name,
+          currentSavedCount: savedList.length,
+          analysis: newAnalysis,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.success === false) {
+        if (data?.locked) applyServerLockFromResponse(data);
+        showToast(
+          data?.error ||
+            `Save limit reached for ${planDisplayName}: ${savedList.length}/${maxSaved}.`
+        );
+        onOpenRenewal();
+        return;
+      }
+
+      const savedItem = data?.savedItem || newAnalysis;
+      const newSavedList = [savedItem, ...savedList];
+      const newTotalVal = newSavedList.reduce((acc, curr) => acc + curr.price, 0);
+      const newMonthlyCash = newSavedList.reduce((acc, curr) => acc + curr.monthlyCashflow, 0);
+
+      onUpdateUser({
+        ...user,
+        savedCount: data?.saved_count ?? newSavedList.length,
+        savedAnalyses: newSavedList,
+        portfolio: { totalValue: newTotalVal, monthlyCashflow: newMonthlyCash },
+      });
+      showToast(`Saved "${savedItem.property}" (${newSavedList.length}/${maxSaved})!`);
+    } catch {
+      showToast('Unable to save file analysis to portfolio.');
+    }
+  };
+
+  // Backend-enforced Institutional PDF Memorandum Export
   const handleExportPDF = async (title: string) => {
     if (isAccountLocked) {
       showToast(lockBannerMessage);
@@ -3479,28 +3568,40 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
     const r = runResult;
     const mc = monteCarloResult || r.monteCarlo;
-    const metricsLines = [
-      `Analysis Timestamp: ${new Date(r.analyzedAt).toLocaleString('en-US')}`,
-      `Acquisition Price: ${formatPrice(r.inputs.priceUSD, currentCurrency)}`,
-      `Gross Monthly Rent: ${formatPrice(r.inputs.rentUSD, currentCurrency)}`,
-      `Equity Down: ${r.inputs.downPaymentPct}% (${formatPrice(r.downPaymentUSD, currentCurrency)})`,
-      `Mortgage Interest Rate: ${r.inputs.interestRatePct}% | OPEX & HOA: ${r.inputs.operatingExpensePct}%`,
-      `Net Operating Income (NOI): ${formatPrice(r.netOperatingIncomeUSD, currentCurrency)} / yr`,
-      `Unlevered Cap Rate: ${r.capRate}%`,
-      `Cash-on-Cash Return: ${r.cashOnCash}%`,
-      `5-Year Equity IRR: ${r.irr5Yr !== null ? `${r.irr5Yr}%` : (r.irrError || 'N/A')}`,
-      `Monthly Net Cashflow: ${r.monthlyCashflowUSD !== null ? formatPrice(r.monthlyCashflowUSD, currentCurrency) : '--'}`,
-      `Debt Service Coverage Ratio (DSCR): ${r.dscr ?? '--'}x`,
-      ...(mc
-        ? [
-            `${mc.cycles}-Cycle Monte Carlo Pass Rate (DSCR >= 1.20x): ${mc.passRatePct}% (${mc.passCount}/${mc.cycles})`,
-            `DSCR Percentiles: P10 ${mc.dscrP10}x | P50 ${mc.dscrP50}x | P90 ${mc.dscrP90}x`,
-            `IRR Percentiles: P10 ${mc.irrP10 ?? 'N/A'}% | P50 ${mc.irrP50 ?? 'N/A'}% | P90 ${mc.irrP90 ?? 'N/A'}%`,
-            `+200bps Rate Shock CoC: ${mc.rateShockCoC}% | 15% Vacancy Net Yield: ${mc.vacancySurgeNetYield}%`,
-          ]
-        : []),
-    ];
-    const pdfNotes = `${r.inputs.downPaymentPct}% Equity Down | ${r.inputs.interestRatePct}% Interest Rate | ${r.inputs.operatingExpensePct}% OPEX`;
+    const targetCity = r.inputs.city || city;
+    const cityBench = CROSS_BORDER_DATA.find(
+      (m) => m.city.toLowerCase() === targetCity.toLowerCase()
+    );
+    const memoPayload = {
+      title,
+      city: targetCity,
+      country: selectedCityEntry?.country || cityBench?.country || undefined,
+      userEmail: user.email,
+      planDisplay: license.displayName,
+      valuationUSD: r.inputs.priceUSD,
+      monthlyRentUSD: r.inputs.rentUSD,
+      noiUSD: r.netOperatingIncomeUSD,
+      capRate: r.capRate,
+      cashOnCash: r.cashOnCash,
+      irr5Yr: r.irr5Yr,
+      irrError: r.irrError,
+      dscr: r.dscr ?? null,
+      monthlyCashflowUSD: r.monthlyCashflowUSD,
+      riskScore: r.capRate >= 7.5 && (r.dscrNumeric ?? 0) >= 1.35 ? 'AAA Institutional Grade' : 'Moderate Sensitivity',
+      noiBreakdown: r.noiBreakdown,
+      yearByYear: r.yearByYear,
+      marketBenchmarks: {
+        avgGrossYield: cityBench?.avgGrossYield ?? selectedCityEntry?.avgCapRate,
+        transferTaxPct: cityBench?.transferTaxPct,
+        capitalGainsTax: cityBench?.capitalGainsTax,
+        rentGrowthYoY: cityBench?.rentalGrowthYoY,
+        source: cityBench?.source || 'World Bank / FRED / DLD / ONS / JLL / REGA',
+        updatedDate: cityBench?.updatedDate || '2026-04-01',
+      },
+      monteCarlo: mc || null,
+      warnings: r.warnings || [],
+      notes: `${r.inputs.downPaymentPct}% Equity Down | ${r.inputs.interestRatePct}% Interest Rate | ${r.inputs.operatingExpensePct}% OPEX`,
+    };
 
     try {
       const res = await fetch('/api/app?action=export', {
@@ -3519,27 +3620,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         onOpenRenewal();
         return;
       }
-      const data = await res.json().catch(() => ({}));
-      const filename = downloadMemorandumPdf({
-        title,
-        city: r.inputs.city || city,
-        userEmail: user.email,
-        planDisplay: license.displayName,
-        metricsLines,
-        notes: pdfNotes,
-        watermarkText: data?.watermark,
-      });
-      showToast(`Downloaded watermarked PDF: ${filename}`);
+      await res.json().catch(() => ({}));
+      const filename = downloadInstitutionalMemorandumPdf(memoPayload);
+      showToast(`Downloaded Institutional Memorandum PDF: ${filename}`);
     } catch {
-      const filename = downloadMemorandumPdf({
-        title,
-        city: r.inputs.city || city,
-        userEmail: user.email,
-        planDisplay: license.displayName,
-        metricsLines,
-        notes: pdfNotes,
-      });
-      showToast(`Downloaded watermarked PDF: ${filename}`);
+      const filename = downloadInstitutionalMemorandumPdf(memoPayload);
+      showToast(`Downloaded Institutional Memorandum PDF: ${filename}`);
     }
   };
 
@@ -4038,6 +4124,30 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
               <SidebarMenuItem>
                 <SidebarMenuButton
+                  isActive={activeTab === 'fileanalyze'}
+                  onClick={() => { setActiveTab('fileanalyze'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <FileUp className="w-4 h-4" />
+                    <span>Analyze Image / PDF</span>
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'studio'}
+                  onClick={() => { setActiveTab('studio'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <Sparkles className="w-4 h-4" />
+                    <span>AI Property Studio</span>
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              <SidebarMenuItem>
+                <SidebarMenuButton
                   isActive={activeTab === 'dealfinder'}
                   onClick={() => { setActiveTab('dealfinder'); setMobileSidebarOpen(false); }}
                 >
@@ -4108,6 +4218,30 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   {!canInstitutionalAdvisor && (
                     <Lock className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'advisor' ? 'text-black' : 'text-[#D4AF37]'}`} />
                   )}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'comparator'}
+                  onClick={() => { setActiveTab('comparator'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <Scale className="w-4 h-4" />
+                    <span>Scenario Comparator</span>
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'workspace'}
+                  onClick={() => { setActiveTab('workspace'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <Users className="w-4 h-4" />
+                    <span>Enterprise Workspace</span>
+                  </span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
@@ -7490,6 +7624,41 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </div>
                 </FadeInCard>
               )}
+
+              <DocumentDueDiligencePanel
+                userEmail={user.email}
+                canDueDiligence={canDueDiligence}
+                isAccountLocked={isAccountLocked}
+                financialModel={{
+                  city: resolveCityFromInput(ddCityComboInput)?.city || 'Muscat',
+                  priceUSD: ddPriceUSD,
+                  monthlyRentUSD: ddRentUSD,
+                  hoaUSD,
+                  ownershipType: ddOwnershipType,
+                }}
+                persistedDocResult={user.lastResults?.due_diligence_docs || null}
+                onResultCreated={(docResult, billingPatch) => {
+                  onUpdateUser({
+                    ...user,
+                    ...(typeof billingPatch?.analysesLeft === 'number'
+                      ? {
+                          analysesLeft: billingPatch.analysesLeft,
+                          freeAnalyses: billingPatch.analysesLeft,
+                          freeAnalysesLeft: billingPatch.analysesLeft,
+                        }
+                      : {}),
+                    ...(typeof billingPatch?.analysesUsed === 'number'
+                      ? { analysesUsed: billingPatch.analysesUsed }
+                      : {}),
+                    lastResults: {
+                      ...(user.lastResults || {}),
+                      due_diligence_docs: docResult,
+                    },
+                  });
+                  showToast('Document Due Diligence scan complete.');
+                }}
+                onOpenRenewal={onOpenRenewal}
+              />
             </div>
           )}
 
@@ -8213,6 +8382,120 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             </div>
           )}
 
+          {/* TAB 1G: ANALYZE FROM IMAGE / PDF */}
+          {activeTab === 'fileanalyze' && (
+            <div className="max-w-6xl mx-auto">
+              <AnalyzeFromFileTab
+                userEmail={user.email}
+                planDisplay={license.displayName}
+                currentCurrency={currentCurrency}
+                isAccountLocked={isAccountLocked}
+                lockBannerMessage={lockBannerMessage}
+                analysesLeftStr={analysesLeftStr}
+                canPdfExport={canPdfExport}
+                persistedReport={user.lastResults?.file_analysis || null}
+                onReportCreated={(report, billingPatch) => {
+                  onUpdateUser({
+                    ...user,
+                    ...(typeof billingPatch?.analysesLeft === 'number'
+                      ? {
+                          analysesLeft: billingPatch.analysesLeft,
+                          freeAnalyses: billingPatch.analysesLeft,
+                          freeAnalysesLeft: billingPatch.analysesLeft,
+                        }
+                      : {}),
+                    ...(typeof billingPatch?.analysesUsed === 'number'
+                      ? { analysesUsed: billingPatch.analysesUsed }
+                      : {}),
+                    lastResults: {
+                      ...(user.lastResults || {}),
+                      file_analysis: report,
+                    },
+                  });
+                  showToast(`Underwriting generated from "${report.fileName}"`);
+                }}
+                onClearPersisted={async () => {
+                  try {
+                    await fetch('/api/app?action=clear-last-result', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      credentials: 'include',
+                      body: JSON.stringify({
+                        email: user.email,
+                        login_email: user.email,
+                        tool: 'file_analysis',
+                      }),
+                    });
+                  } catch {}
+                  onUpdateUser({
+                    ...user,
+                    lastResults: {
+                      ...(user.lastResults || {}),
+                      file_analysis: null,
+                    },
+                  });
+                  showToast('Cleared file analysis report.');
+                }}
+                onSaveToPortfolio={handleSaveFileAnalysisToPortfolio}
+                onOpenRenewal={onOpenRenewal}
+              />
+            </div>
+          )}
+
+          {/* TAB 1H: AI PROPERTY STUDIO */}
+          {activeTab === 'studio' && (
+            <div className="max-w-6xl mx-auto">
+              <PropertyStudioTab
+                userEmail={user.email}
+                userName={user.name}
+                persistedDraft={user.lastResults?.property_studio || null}
+                onDraftSaved={(draft) => {
+                  onUpdateUser({
+                    ...user,
+                    lastResults: {
+                      ...(user.lastResults || {}),
+                      property_studio: draft,
+                    },
+                  });
+                  showToast('Property Studio brief generated and saved.');
+                }}
+              />
+            </div>
+          )}
+
+          {/* TAB 1I: SCENARIO COMPARATOR */}
+          {activeTab === 'comparator' && (
+            <div className="max-w-6xl mx-auto">
+              <ScenarioComparatorTab
+                userEmail={user.email}
+                currentCurrency={currentCurrency}
+                savedAnalyses={savedAnalyses}
+                persistedComparison={user.lastResults?.scenario_comparison || null}
+                onComparisonSaved={(payload) => {
+                  onUpdateUser({
+                    ...user,
+                    lastResults: {
+                      ...(user.lastResults || {}),
+                      scenario_comparison: payload,
+                    },
+                  });
+                  showToast('Scenario comparison updated.');
+                }}
+              />
+            </div>
+          )}
+
+          {/* TAB 1J: ENTERPRISE WORKSPACE */}
+          {activeTab === 'workspace' && (
+            <div className="max-w-6xl mx-auto">
+              <EnterpriseWorkspaceTab
+                userEmail={user.email}
+                currentCurrency={currentCurrency}
+                savedAnalyses={savedAnalyses}
+              />
+            </div>
+          )}
+
           {/* TAB 2: MY SAVED ANALYSES */}
           {activeTab === 'saved' && (
             <div className="space-y-6 max-w-6xl mx-auto">
@@ -8616,6 +8899,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               </div>
                 </>
               )}
+
+              <PortfolioIntelligencePanel
+                userEmail={user.email}
+                currentCurrency={currentCurrency}
+                savedAnalyses={savedAnalyses}
+                initialAssets={user.portfolioAssets}
+              />
             </div>
           )}
 
@@ -8723,6 +9013,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </div>
                 )}
               </div>
+
+              <MarketIntelligencePanel currentCurrency={currentCurrency} />
             </div>
           )}
 

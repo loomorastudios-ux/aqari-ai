@@ -498,6 +498,11 @@ export default function App() {
       cancelStatus: meData?.cancel_status ?? data?.user?.cancel_status ?? 'none',
       lastOrderId: meData?.last_order_id ?? data?.user?.last_order_id ?? null,
       lastResults: meData?.last_results ?? data?.user?.last_results ?? null,
+      portfolioAssets: Array.isArray(meData?.portfolio_assets)
+        ? meData.portfolio_assets
+        : Array.isArray(data?.user?.portfolio_assets)
+        ? data.user.portfolio_assets
+        : existing?.portfolioAssets || [],
       cancellationEligibility: meData?.cancellationEligibility ?? data?.cancellationEligibility ?? null,
       expiryEmailSent: false,
     };
@@ -835,6 +840,11 @@ export default function App() {
             paymentProvider: data.payment_provider ?? data.user?.payment_provider ?? 'paddle',
             paymentIntentId: data.payment_intent_id ?? data.user?.payment_intent_id ?? null,
             lastResults: data.last_results ?? data.user?.last_results ?? null,
+            portfolioAssets: Array.isArray(data.portfolio_assets)
+              ? data.portfolio_assets
+              : Array.isArray(data.user?.portfolio_assets)
+              ? data.user.portfolio_assets
+              : [],
           };
           handleSaveUser(syncedUser);
           resolvedUser = syncedUser;
@@ -1084,6 +1094,11 @@ export default function App() {
             paymentProvider: serverPaymentProvider,
             paymentIntentId: serverPaymentIntentId,
             lastResults: serverLastResults,
+            portfolioAssets: Array.isArray(data.portfolio_assets)
+              ? data.portfolio_assets
+              : Array.isArray(data.user?.portfolio_assets)
+              ? data.user.portfolio_assets
+              : baseUser.portfolioAssets || [],
           };
           saveUser(syncedUser);
           setUser(syncedUser);

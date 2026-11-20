@@ -200,6 +200,7 @@ export interface User {
   paymentProvider?: string;
   paymentIntentId?: string | null;
   lastResults?: LastResultsData | null;
+  portfolioAssets?: PortfolioAssetPostPurchase[];
   portfolio?: {
     totalValue: number;
     monthlyCashflow: number;
@@ -343,6 +344,13 @@ export interface LastResultsData {
       budget: number;
     };
     result: AdvisorResult;
+    created_at: string;
+  } | null;
+  file_analysis?: FileAnalysisReport | null;
+  property_studio?: PropertyStudioDraft | null;
+  due_diligence_docs?: DocumentDueDiligenceResult | null;
+  scenario_comparison?: {
+    scenarios: ScenarioCompareOutput[];
     created_at: string;
   } | null;
 }
@@ -555,3 +563,279 @@ export interface AdvisorResult {
   disclaimer: string;
   generatedAt: string;
 }
+
+export type FieldProvenanceTag = 'Extracted' | 'AI Estimated' | 'User Confirmed' | 'Missing';
+
+export interface ExtractedFilePropertyDraft {
+  fileName: string;
+  mimeType: string;
+  isImageOnly: boolean;
+  propertyTitle: string;
+  locationText: string;
+  city: string;
+  country: string;
+  propertyType: 'Apartment' | 'Villa' | 'Commercial' | 'Land' | 'Hotel';
+  areaSqM: number | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  priceUSD: number | null;
+  monthlyRentUSD: number | null;
+  annualOpexUSD: number | null;
+  hoaUSD: number | null;
+  propertyTaxUSD: number | null;
+  vacancyRatePct: number | null;
+  extractedQuotes: Record<string, string>;
+  provenance: Record<string, FieldProvenanceTag>;
+  missingFields: string[];
+  imagePriceWarning: string;
+  aiSummary: string;
+}
+
+export interface FileAnalysisReport {
+  id: string;
+  fileName: string;
+  isImageOnly: boolean;
+  inputs: {
+    propertyTitle: string;
+    city: string;
+    country: string;
+    propertyType: string;
+    areaSqM: number;
+    bedrooms: number;
+    bathrooms: number;
+    priceUSD: number;
+    rentUSD: number;
+    downPaymentPct: number;
+    interestRatePct: number;
+    operatingExpensePct: number;
+    hoaUSD: number;
+    propertyTaxUSD: number;
+    vacancyRatePct: number;
+  };
+  provenance: Record<string, FieldProvenanceTag>;
+  extractedQuotes: Record<string, string>;
+  results: NonNullable<LastResultsData['analysis']>['results'];
+  marketContext: {
+    cityAvgCapRate: number;
+    marketAvgPriceSqM: number;
+    rentGrowthYoY: number;
+    transferTaxPct: number;
+    capitalGainsTax: string;
+    source: string;
+    updatedDate: string;
+  };
+  riskScore: number;
+  verdict: string;
+  warnings: string[];
+  imagePriceWarning: string;
+  createdAt: string;
+}
+
+export interface PropertyStudioDraft {
+  id?: string;
+  docType: 'listing' | 'memorandum';
+  isVirtual: boolean;
+  title: string;
+  country: string;
+  city: string;
+  areaDistrict: string;
+  propertyType: 'Apartment' | 'Villa' | 'Commercial' | 'Land' | 'Hotel';
+  budgetUSD: number;
+  areaSqM: number;
+  bedrooms: number;
+  bathrooms: number;
+  expectedMonthlyRentUSD: number;
+  targetYieldPct: number;
+  finishing: 'Shell & Core' | 'Standard' | 'Luxury' | 'Ultra-Prime Turnkey';
+  amenities: string[];
+  targetAudience: string;
+  description: string;
+  locationNarrative: string;
+  investmentHighlights: string[];
+  riskNotes: string[];
+  isRentYieldReliable: boolean;
+  rentYieldBasisNote: string;
+  contactName: string;
+  contactEmail: string;
+  contactPhone: string;
+  contactFirm: string;
+  aiEnhanced?: boolean;
+  generatedAt?: string;
+}
+
+export interface PortfolioAssetPostPurchase {
+  id: string;
+  property: string;
+  city: string;
+  country: string;
+  cluster: string;
+  lat: number;
+  lng: number;
+  purchaseDate: string;
+  purchasePriceUSD: number;
+  currentValueUSD: number;
+  forecastRentMonthlyUSD: number;
+  actualRentMonthlyUSD: number;
+  forecastYieldPct: number;
+  actualYieldPct: number;
+  loanBalanceUSD: number;
+  monthlyDebtServiceUSD: number;
+  loanMaturityDate: string;
+  interestRatePct: number;
+  demandScore: number;
+  mobilityScore: number;
+  climateScore: number;
+  esgScore: number;
+  overallScore: number;
+  climateFlags: string[];
+  riskAlerts: string[];
+  notes?: string;
+  updatedAt: string;
+}
+
+export interface DocumentDueDiligenceItem {
+  field: string;
+  docType: 'Lease' | 'Title Deed' | 'Valuation' | 'Service Fees' | 'Legal';
+  extractedValue: string;
+  modelValue: string;
+  status: 'Match' | 'Contradiction' | 'Missing' | 'Verified';
+  sourceCitation: string;
+  severity: 'High' | 'Medium' | 'Low';
+  note: string;
+}
+
+export interface DocumentDueDiligenceResult {
+  id: string;
+  documentsScanned: Array<{ fileName: string; docType: string }>;
+  overallComplianceScore: number;
+  contradictionsCount: number;
+  missingCount: number;
+  verdict: string;
+  items: DocumentDueDiligenceItem[];
+  extractedSummary: Record<string, { value: string; source: string }>;
+  missingDocumentsOrClauses: string[];
+  disclaimer: string;
+  generatedAt: string;
+}
+
+export interface ScenarioCompareInput {
+  id: string;
+  label: string;
+  city: string;
+  priceUSD: number;
+  monthlyRentUSD: number;
+  downPaymentPct: number;
+  interestRatePct: number;
+  operatingExpensePct: number;
+}
+
+export interface ScenarioCompareOutput {
+  id: string;
+  label: string;
+  city: string;
+  country: string;
+  priceUSD: number;
+  monthlyRentUSD: number;
+  noiUSD: number;
+  capRate: number;
+  netYieldPct: number;
+  cashOnCash: number;
+  irr5Yr: number | null;
+  dscr: string | null;
+  monthlyDebtServiceUSD: number;
+  monthlyCashflowUSD: number;
+  ltvPct: number;
+  transferTaxPct: number;
+  capitalGainsTax: string;
+  goldenVisaUSD: number | null;
+  riskScore: number;
+  liquidityScore: number;
+  taxSource: string;
+}
+
+export type WorkspaceRole = 'Analyst' | 'Manager' | 'Admin';
+
+export interface WorkspaceMember {
+  email: string;
+  name: string;
+  role: WorkspaceRole;
+  addedAt: string;
+  addedBy: string;
+}
+
+export interface WorkspaceComment {
+  id: string;
+  dealId: string;
+  authorEmail: string;
+  authorRole: WorkspaceRole;
+  text: string;
+  createdAt: string;
+}
+
+export interface WorkspaceSharedDeal {
+  id: string;
+  title: string;
+  city: string;
+  priceUSD: number;
+  rentUSD: number;
+  capRate: number;
+  irr5Yr: number | null;
+  dscr: string | null;
+  status: 'Under Review' | 'IC Approved' | 'On Hold' | 'Rejected';
+  sharedBy: string;
+  sharedAt: string;
+  notes?: string;
+}
+
+export interface WorkspaceAuditEntry {
+  id: string;
+  actorEmail: string;
+  actorRole: WorkspaceRole;
+  action: string;
+  target: string;
+  detail: string;
+  timestamp: string;
+}
+
+export interface EnterpriseOrganization {
+  id: string;
+  name: string;
+  ownerEmail: string;
+  createdAt: string;
+  members: WorkspaceMember[];
+  sharedDeals: WorkspaceSharedDeal[];
+  comments: WorkspaceComment[];
+  auditTrail: WorkspaceAuditEntry[];
+}
+
+export interface GlobalMarketIntelCity {
+  city: string;
+  country: string;
+  flag: string;
+  rentGrowthYoY: number;
+  rentGrowthSource: string;
+  rentGrowthDate: string;
+  vacancyPct: number;
+  vacancySource: string;
+  vacancyDate: string;
+  interestRatePct: number;
+  interestRateSource: string;
+  interestRateDate: string;
+  transactionVolumeUSD: number;
+  transactionVolumeLabel: string;
+  transactionSource: string;
+  transactionDate: string;
+  supplyForecast: string;
+  demandForecast: string;
+  supplyDemandBalance: 'Undersupplied' | 'Balanced' | 'High Pipeline';
+  supplyDemandSource: string;
+  supplyDemandDate: string;
+  politicalEconomicRisk: 'Low' | 'Moderate' | 'Elevated';
+  riskScore: number;
+  riskSource: string;
+  riskDate: string;
+  historicalPriceIndex: Array<{ year: string; index: number }>;
+  historicalSource: string;
+  historicalDate: string;
+}
+
