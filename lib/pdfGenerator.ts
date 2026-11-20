@@ -39,12 +39,29 @@ function wrapLine(text: string, maxChars = 84): string[] {
   return lines;
 }
 
+export interface PdfBrandingOptions {
+  firmName?: string;
+  logoUrl?: string;
+  accentColor?: string;
+}
+
+function hexToPdfRgb(hex?: string, fallback = '0.83 0.69 0.22'): string {
+  const clean = String(hex || '').trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return fallback;
+  const r = (parseInt(clean.slice(0, 2), 16) / 255).toFixed(2);
+  const g = (parseInt(clean.slice(2, 4), 16) / 255).toFixed(2);
+  const b = (parseInt(clean.slice(4, 6), 16) / 255).toFixed(2);
+  return `${r} ${g} ${b}`;
+}
+
 export interface PdfBuildOptions {
   title: string;
   subtitle?: string;
   lines: string[];
   watermark: string;
   footer: string;
+  isWatermarked?: boolean;
+  branding?: PdfBrandingOptions | null;
 }
 
 export interface InstitutionalPdfKpi {
@@ -91,6 +108,8 @@ export interface InstitutionalPdfOptions {
   watermark: string;
   footer: string;
   virtualBanner?: string | null;
+  isWatermarked?: boolean;
+  branding?: PdfBrandingOptions | null;
   cover: {
     eyebrow: string;
     title: string;
@@ -165,16 +184,17 @@ export function buildPdfDocument(opts: PdfBuildOptions): Uint8Array {
     pages.push(['']);
   }
 
+  const accentRgb = hexToPdfRgb(opts.branding?.accentColor, '0.83 0.69 0.22');
   const pageStreams: string[] = pages.map((pageLines, pageIdx) => {
     const ops: string[] = [];
     ops.push('0.06 0.06 0.09 rg');
     ops.push('36 728 540 50 re f');
-    ops.push('0.83 0.69 0.22 rg');
+    ops.push(`${accentRgb} rg`);
     ops.push('36 726 540 2 re f');
 
     ops.push('BT');
     ops.push('/F2 13 Tf');
-    ops.push('0.83 0.69 0.22 rg');
+    ops.push(`${accentRgb} rg`);
     ops.push(`48 756 Td (${escapePdfText(opts.title)}) Tj`);
     ops.push('ET');
 
@@ -186,11 +206,21 @@ export function buildPdfDocument(opts: PdfBuildOptions): Uint8Array {
       ops.push('ET');
     }
 
-    ops.push('BT');
-    ops.push('/F1 8 Tf');
-    ops.push('0.55 0.45 0.15 rg');
-    ops.push(`36 710 Td (${escapePdfText(opts.watermark)}) Tj`);
-    ops.push('ET');
+    if (opts.isWatermarked) {
+      ops.push('0.96 0.90 0.86 rg');
+      ops.push('36 706 540 16 re f');
+      ops.push('BT');
+      ops.push('/F2 8.5 Tf');
+      ops.push('0.68 0.22 0.14 rg');
+      ops.push(`44 711 Td (${escapePdfText('FREE TIER WATERMARK - AQARI TERMINAL SAMPLE - UPGRADE TO REMOVE WATERMARK')}) Tj`);
+      ops.push('ET');
+    } else {
+      ops.push('BT');
+      ops.push('/F1 8 Tf');
+      ops.push('0.55 0.45 0.15 rg');
+      ops.push(`36 710 Td (${escapePdfText(opts.watermark)}) Tj`);
+      ops.push('ET');
+    }
 
     let y = 688;
     for (const line of pageLines) {
@@ -230,23 +260,35 @@ export function buildPdfDocument(opts: PdfBuildOptions): Uint8Array {
  */
 export function buildInstitutionalPdfDocument(opts: InstitutionalPdfOptions): Uint8Array {
   const pagesOps: string[][] = [];
+  const accentRgb = hexToPdfRgb(opts.branding?.accentColor, '0.83 0.69 0.22');
+  const firmName = String(opts.branding?.firmName || '').trim();
 
-  // ---- COVER PAGE (Page 1 - Black & Gold Theme) ----
+  // ---- COVER PAGE (Page 1 - Black & Gold / White-Label Theme) ----
   const coverOps: string[] = [];
   // Deep Obsidian Background
   coverOps.push('0.05 0.05 0.07 rg');
   coverOps.push('0 0 612 792 re f');
-  // Subtle Top & Left Gold Accent Frame
-  coverOps.push('0.83 0.69 0.22 rg');
+  // Subtle Top & Left Accent Frame
+  coverOps.push(`${accentRgb} rg`);
   coverOps.push('42 742 528 3 re f');
   coverOps.push('42 56 528 1.5 re f');
   coverOps.push('42 680 4 64 re f');
 
+  if (opts.isWatermarked) {
+    coverOps.push('0.36 0.10 0.08 rg');
+    coverOps.push('42 752 528 22 re f');
+    coverOps.push('BT');
+    coverOps.push('/F2 8.5 Tf');
+    coverOps.push('0.98 0.82 0.78 rg');
+    coverOps.push(`56 760 Td (${escapePdfText('FREE TIER WATERMARK - AQARI TERMINAL SAMPLE - UPGRADE FOR CLEAN CLIENT PDF')}) Tj`);
+    coverOps.push('ET');
+  }
+
   // Brand Eyebrow
   coverOps.push('BT');
   coverOps.push('/F2 9.5 Tf');
-  coverOps.push('0.83 0.69 0.22 rg');
-  coverOps.push(`56 716 Td (${escapePdfText(opts.cover.eyebrow.toUpperCase())}) Tj`);
+  coverOps.push(`${accentRgb} rg`);
+  coverOps.push(`56 716 Td (${escapePdfText((firmName ? `${firmName} | ${opts.cover.eyebrow}` : opts.cover.eyebrow).toUpperCase())}) Tj`);
   coverOps.push('ET');
 
   // Main Cover Title (wrapped cleanly)
@@ -291,8 +333,8 @@ export function buildInstitutionalPdfDocument(opts: InstitutionalPdfOptions): Ui
     cy -= 24;
   }
 
-  // Gold horizontal divider
-  coverOps.push('0.83 0.69 0.22 rg');
+  // Horizontal accent divider
+  coverOps.push(`${accentRgb} rg`);
   coverOps.push(`56 ${cy} 120 2 re f`);
   cy -= 30;
 
@@ -357,12 +399,12 @@ export function buildInstitutionalPdfDocument(opts: InstitutionalPdfOptions): Ui
     // Dark obsidian header bar
     currentOps.push('0.06 0.06 0.09 rg');
     currentOps.push('36 732 540 42 re f');
-    currentOps.push('0.83 0.69 0.22 rg');
+    currentOps.push(`${accentRgb} rg`);
     currentOps.push('36 730 540 2 re f');
 
     currentOps.push('BT');
     currentOps.push('/F2 11 Tf');
-    currentOps.push('0.83 0.69 0.22 rg');
+    currentOps.push(`${accentRgb} rg`);
     currentOps.push(`46 756 Td (${escapePdfText(opts.docTitle)}) Tj`);
     currentOps.push('ET');
 
@@ -372,7 +414,16 @@ export function buildInstitutionalPdfDocument(opts: InstitutionalPdfOptions): Ui
     currentOps.push(`46 741 Td (${escapePdfText(opts.docSubtitle)}) Tj`);
     currentOps.push('ET');
 
-    if (opts.virtualBanner) {
+    if (opts.isWatermarked) {
+      currentOps.push('0.98 0.90 0.88 rg');
+      currentOps.push('36 708 540 16 re f');
+      currentOps.push('BT');
+      currentOps.push('/F2 8 Tf');
+      currentOps.push('0.68 0.20 0.14 rg');
+      currentOps.push(`44 713 Td (${escapePdfText('FREE TIER WATERMARK - AQARI TERMINAL SAMPLE - UPGRADE TO REMOVE')}) Tj`);
+      currentOps.push('ET');
+      y = 688;
+    } else if (opts.virtualBanner) {
       currentOps.push('0.98 0.93 0.82 rg');
       currentOps.push('36 708 540 16 re f');
       currentOps.push('BT');
@@ -412,7 +463,7 @@ export function buildInstitutionalPdfDocument(opts: InstitutionalPdfOptions): Ui
     y -= 6;
     currentOps.push('0.08 0.08 0.11 rg');
     currentOps.push(`36 ${y - 4} 4 18 re f`);
-    currentOps.push('0.83 0.69 0.22 rg');
+    currentOps.push(`${accentRgb} rg`);
     currentOps.push(`40 ${y - 6} 536 1 re f`);
 
     currentOps.push('BT');

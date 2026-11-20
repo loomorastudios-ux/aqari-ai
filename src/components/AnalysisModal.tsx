@@ -44,11 +44,11 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
   if (!property) return null;
 
   const hasMeFeatures = Array.isArray(user?.features) && user.features.length > 0;
+  const planKey = normalizePlanKey(user?.plan);
+  const planCfg = PLANS[planKey];
   const isActiveUser = Boolean(user && user.subscriptionStatus !== 'expired');
-  const isProOrEnterprise = hasMeFeatures
-    ? Boolean(isActiveUser && user!.features!.includes('PDF Memorandum Export'))
-    : canUseFeature(user?.plan, 'pdfExport');
-  const planCfg = PLANS[normalizePlanKey(user?.plan)];
+  const canExportPdf = Boolean(isActiveUser && canUseFeature(planKey, 'pdfExport'));
+  const isWatermarkedTier = Boolean(planCfg.isWatermarked);
   const currentSavedCount = (user?.savedAnalyses || []).length;
   const parsedSaveFeature = hasMeFeatures
     ? user!.features!
@@ -61,7 +61,7 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
       : parsedSaveFeature
       ? Number(parsedSaveFeature[1])
       : hasMeFeatures && user!.features!.some((f) => /^unlimited\s+saved$/i.test(f.trim()))
-      ? 400
+      ? 2000
       : planCfg.savedLimit;
   const hasSaveFeature = Boolean(isActiveUser && effectiveSavedLimit > 0);
   const canSave =
@@ -70,7 +70,7 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
     currentSavedCount < effectiveSavedLimit;
 
   const handleDownloadMemo = async () => {
-    if (!isProOrEnterprise) {
+    if (!canExportPdf) {
       if (onOpenUpgrade) onOpenUpgrade();
       return;
     }
@@ -82,14 +82,20 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
         body: JSON.stringify({
           email: user?.email || '',
           format: 'pdf',
+          docType: 'pdf',
           propertyTitle: property.title,
+          city: property.city,
+          priceUSD: property.basePriceUSD,
         }),
       });
-      if (res.status === 403) {
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403 || !res.ok || data?.success === false) {
         if (onOpenUpgrade) onOpenUpgrade();
         return;
       }
-      const data = await res.json().catch(() => ({}));
+      if (typeof window !== 'undefined' && typeof data?.analyses_left === 'number') {
+        window.dispatchEvent(new CustomEvent('aqari:user-updated', { detail: data }));
+      }
       const metricsLines = [
         `Acquisition Cost: ${formatPrice(property.basePriceUSD, currentCurrency)}`,
         `Monthly Gross Rent: ${formatPrice(property.baseRentMonthlyUSD, currentCurrency)}`,
@@ -107,24 +113,13 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
         metricsLines,
         notes: property.microLocationText,
         watermarkText: data?.watermark,
+        isWatermarked: Boolean(data?.isWatermarked ?? isWatermarkedTier),
+        branding: data?.branding ?? user?.branding ?? null,
       });
       setDownloadSuccess(true);
       setTimeout(() => setDownloadSuccess(false), 3000);
     } catch {
-      downloadMemorandumPdf({
-        title: property.title,
-        city: property.city,
-        userEmail: user?.email || 'licensed@aqari.ai',
-        planDisplay: planCfg.displayName,
-        metricsLines: [
-          `Acquisition Cost: ${formatPrice(property.basePriceUSD, currentCurrency)}`,
-          `Monthly Gross Rent: ${formatPrice(property.baseRentMonthlyUSD, currentCurrency)}`,
-          `Net Cap Rate: ${property.capRate}%`,
-        ],
-        notes: property.microLocationText,
-      });
-      setDownloadSuccess(true);
-      setTimeout(() => setDownloadSuccess(false), 3000);
+      if (onOpenUpgrade) onOpenUpgrade();
     }
   };
 
@@ -172,25 +167,29 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
             <button
               onClick={handleDownloadMemo}
               className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-mono font-semibold transition cursor-pointer ${
-                isProOrEnterprise
+                canExportPdf
                   ? 'bg-white/[0.06] hover:bg-[#D4AF37] hover:text-black border-white/10 text-white'
                   : 'bg-zinc-800 text-zinc-400 border-zinc-700 hover:border-amber-400/40'
               }`}
             >
-              {!isProOrEnterprise ? (
+              {!canExportPdf ? (
                 <>
                   <Lock className="w-3.5 h-3.5 text-amber-400" />
-                  <span>EXPORT PDF (PRO ONLY)</span>
+                  <span>EXPORT PDF (UPGRADE)</span>
                 </>
               ) : downloadSuccess ? (
                 <>
                   <Check className="w-4 h-4 text-emerald-400" />
-                  <span>MEMORANDUM EXPORTED</span>
+                  <span>PDF EXPORTED</span>
                 </>
               ) : (
                 <>
                   <Download className="w-4 h-4 text-[#D4AF37]" />
-                  <span>EXPORT PDF MEMO</span>
+                  <span>
+                    {isWatermarkedTier
+                      ? 'EXPORT PDF (FREE WATERMARK • 1 cr)'
+                      : 'EXPORT PDF (1 cr)'}
+                  </span>
                 </>
               )}
             </button>

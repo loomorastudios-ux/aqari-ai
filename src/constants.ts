@@ -25,23 +25,32 @@ export const CURRENCY_SYMBOLS: Record<CurrencyCode, { symbol: string; position: 
 
 import { PLANS, PRODUCTION_URL } from '../lib/plans';
 
-export const CHECKOUT_LINKS: Record<'starter' | 'pro' | 'enterprise', string> = {
+export const CHECKOUT_LINKS: Record<'starter' | 'pro' | 'enterprise' | 'institutional', string> = {
   starter: '/#pricing',
   pro: '/#pricing',
   enterprise: '/#pricing',
+  institutional: '/#pricing',
 };
 
-export const CHECKOUT_REDIRECT_URLS: Record<'starter' | 'pro' | 'enterprise', string> = {
+export const CHECKOUT_REDIRECT_URLS: Record<'starter' | 'pro' | 'enterprise' | 'institutional', string> = {
   starter: `${PRODUCTION_URL}/app?checkout=success`,
   pro: `${PRODUCTION_URL}/app?checkout=success`,
   enterprise: `${PRODUCTION_URL}/app?checkout=success`,
+  institutional: `${PRODUCTION_URL}/app?checkout=success`,
 };
 
 // Plan specifications synced from lib/plans.ts single source of truth
-export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', PlanFeatureConfig> = {
+export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise' | 'institutional', PlanFeatureConfig> = {
   free: {
     analyses: PLANS.free.analysesLimit,
-    maxSaved: PLANS.free.savedLimit, // 3 saved allowed on FREE
+    maxSaved: PLANS.free.savedLimit,
+    imagePdfLimit: PLANS.free.imagePdfLimit,
+    aiListingLimit: PLANS.free.aiListingLimit,
+    investmentPdfLimit: PLANS.free.investmentPdfLimit,
+    portfolioAssetsLimit: PLANS.free.portfolioAssetsLimit,
+    compareLimit: PLANS.free.compareLimit,
+    teamUsersLimit: PLANS.free.teamUsersLimit,
+    apiDailyLimit: PLANS.free.apiDailyLimit,
     label: 'FREE - 3 Analyses / 30 Days',
     priceUSD: PLANS.free.priceUSD,
     checkoutUrl: '',
@@ -57,6 +66,13 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
   starter: {
     analyses: PLANS.starter.analysesLimit,
     maxSaved: PLANS.starter.savedLimit,
+    imagePdfLimit: PLANS.starter.imagePdfLimit,
+    aiListingLimit: PLANS.starter.aiListingLimit,
+    investmentPdfLimit: PLANS.starter.investmentPdfLimit,
+    portfolioAssetsLimit: PLANS.starter.portfolioAssetsLimit,
+    compareLimit: PLANS.starter.compareLimit,
+    teamUsersLimit: PLANS.starter.teamUsersLimit,
+    apiDailyLimit: PLANS.starter.apiDailyLimit,
     label: `STARTER - ${PLANS.starter.analysesLimit} Analyses / 30 Days`,
     priceUSD: PLANS.starter.priceUSD,
     checkoutUrl: CHECKOUT_LINKS.starter,
@@ -72,6 +88,13 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
   pro: {
     analyses: PLANS.pro.analysesLimit,
     maxSaved: PLANS.pro.savedLimit,
+    imagePdfLimit: PLANS.pro.imagePdfLimit,
+    aiListingLimit: PLANS.pro.aiListingLimit,
+    investmentPdfLimit: PLANS.pro.investmentPdfLimit,
+    portfolioAssetsLimit: PLANS.pro.portfolioAssetsLimit,
+    compareLimit: PLANS.pro.compareLimit,
+    teamUsersLimit: PLANS.pro.teamUsersLimit,
+    apiDailyLimit: PLANS.pro.apiDailyLimit,
     label: `PROFESSIONAL - ${PLANS.pro.analysesLimit} Analyses / 30 Days`,
     priceUSD: PLANS.pro.priceUSD,
     checkoutUrl: CHECKOUT_LINKS.pro,
@@ -87,6 +110,13 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
   enterprise: {
     analyses: PLANS.enterprise.analysesLimit,
     maxSaved: PLANS.enterprise.savedLimit,
+    imagePdfLimit: PLANS.enterprise.imagePdfLimit,
+    aiListingLimit: PLANS.enterprise.aiListingLimit,
+    investmentPdfLimit: PLANS.enterprise.investmentPdfLimit,
+    portfolioAssetsLimit: PLANS.enterprise.portfolioAssetsLimit,
+    compareLimit: PLANS.enterprise.compareLimit,
+    teamUsersLimit: PLANS.enterprise.teamUsersLimit,
+    apiDailyLimit: PLANS.enterprise.apiDailyLimit,
     label: `SOVEREIGN - ${PLANS.enterprise.analysesLimit} Analyses / 30 Days`,
     priceUSD: PLANS.enterprise.priceUSD,
     checkoutUrl: CHECKOUT_LINKS.enterprise,
@@ -99,6 +129,28 @@ export const PLAN_LIMITS: Record<'free' | 'starter' | 'pro' | 'enterprise', Plan
     hasDedicatedAnalyst: PLANS.enterprise.capabilities.analystDesk,
     features: [...PLANS.enterprise.features],
   },
+  institutional: {
+    analyses: PLANS.institutional.analysesLimit,
+    maxSaved: PLANS.institutional.savedLimit,
+    imagePdfLimit: PLANS.institutional.imagePdfLimit,
+    aiListingLimit: PLANS.institutional.aiListingLimit,
+    investmentPdfLimit: PLANS.institutional.investmentPdfLimit,
+    portfolioAssetsLimit: PLANS.institutional.portfolioAssetsLimit,
+    compareLimit: PLANS.institutional.compareLimit,
+    teamUsersLimit: PLANS.institutional.teamUsersLimit,
+    apiDailyLimit: PLANS.institutional.apiDailyLimit,
+    label: `ENTERPRISE - ${PLANS.institutional.analysesLimit} Contract Analyses / mo`,
+    priceUSD: PLANS.institutional.priceUSD,
+    checkoutUrl: CHECKOUT_LINKS.institutional,
+    allowedInputs: ['all'],
+    allowedOutputs: ['all'],
+    hasMonteCarlo: PLANS.institutional.capabilities.monteCarlo,
+    hasPdfExport: PLANS.institutional.capabilities.pdfExport,
+    hasPortfolioAggregation: PLANS.institutional.capabilities.portfolioAggregation,
+    hasApiAccess: PLANS.institutional.capabilities.apiAccess,
+    hasDedicatedAnalyst: PLANS.institutional.capabilities.analystDesk,
+    features: [...PLANS.institutional.features],
+  },
 };
 
 export const DEFAULT_CONFIG: RemoteConfig = {
@@ -106,12 +158,13 @@ export const DEFAULT_CONFIG: RemoteConfig = {
     starter: PLANS.starter.launchPrice,
     pro: PLANS.pro.launchPrice,
     enterprise: PLANS.enterprise.launchPrice,
+    institutional: PLANS.institutional.launchPrice,
   },
   discount: {
     active: true,
     percent: 40,
     code: "LAUNCH40",
-    banner: "LAUNCH -40% - First 30 users only",
+    banner: "LAUNCH OFFER - First 30 institutional seats",
   },
   announcement: {
     active: false,

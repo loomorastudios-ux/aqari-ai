@@ -156,11 +156,11 @@ export interface User {
   picture?: string;
   provider?: 'email' | 'google' | 'guest';
   googleId?: string;
-  plan: 'free' | 'starter' | 'pro' | 'enterprise';
-  planName?: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | string;
+  plan: 'free' | 'starter' | 'pro' | 'enterprise' | 'institutional';
+  planName?: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE' | string;
   planPrice?: number;
   features?: string[];
-  subscriptionPlan?: 'free' | 'starter' | 'pro' | 'enterprise' | string;
+  subscriptionPlan?: 'free' | 'starter' | 'pro' | 'enterprise' | 'institutional' | string;
   subscriptionStatus?: 'active' | 'expired' | 'trial' | 'free' | 'cancelled' | 'past_due';
   freeAnalysesLeft?: number;
   freeAnalyses?: number; // fallback alias
@@ -168,6 +168,24 @@ export interface User {
   analysesTotal?: number;
   analysesUsed: number;
   successfulAnalyses?: number;
+  extraCredits?: number;
+  imagePdfUsed?: number;
+  imagePdfLimit?: number;
+  aiListingsUsed?: number;
+  aiListingLimit?: number;
+  pdfsUsed?: number;
+  investmentPdfLimit?: number;
+  portfolioAssetsLimit?: number;
+  compareLimit?: number;
+  teamUsersLimit?: number;
+  apiDailyLimit?: number;
+  apiCallsToday?: number;
+  whiteLabelMode?: 'none' | 'reports' | 'full';
+  branding?: {
+    firmName?: string;
+    logoUrl?: string;
+    accentColor?: string;
+  } | null;
   subscriptionExpiry: number | null;
   subscriptionStartAt?: number | null;
   subscriptionEndsAt?: number | null;
@@ -358,6 +376,13 @@ export interface LastResultsData {
 export interface PlanFeatureConfig {
   analyses: number;
   maxSaved: number;
+  imagePdfLimit: number;
+  aiListingLimit: number;
+  investmentPdfLimit: number;
+  portfolioAssetsLimit: number;
+  compareLimit: number;
+  teamUsersLimit: number;
+  apiDailyLimit: number;
   label: string;
   priceUSD: number;
   checkoutUrl: string;
@@ -376,6 +401,7 @@ export interface RemoteConfig {
     starter: number;
     pro: number;
     enterprise: number;
+    institutional?: number;
   };
   discount: {
     active: boolean;

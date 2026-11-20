@@ -476,10 +476,28 @@ export default function App() {
       subscriptionEndsAt: licenseEndVal,
       subscriptionExpiry: licenseEndVal,
       analysesUsed: serverUsed,
+      analysesTotal: Number(meData?.analyses_total ?? data?.analyses_total ?? verifiedCfg.analysesLimit),
       successfulAnalyses: Number(meData?.successful_analyses ?? data?.user?.successful_analyses ?? 0),
       freeAnalyses: numericLeft,
       freeAnalysesLeft: numericLeft,
       analysesLeft: numericLeft,
+      extraCredits: Number(meData?.extra_credits ?? data?.extra_credits ?? data?.user?.extra_credits ?? existing?.extraCredits ?? 0),
+      imagePdfUsed: Number(meData?.image_pdf_used ?? data?.image_pdf_used ?? data?.user?.image_pdf_used ?? existing?.imagePdfUsed ?? 0),
+      imagePdfLimit: Number(meData?.image_pdf_limit ?? data?.image_pdf_limit ?? verifiedCfg.imagePdfLimit),
+      aiListingsUsed: Number(meData?.ai_listings_used ?? data?.ai_listings_used ?? data?.user?.ai_listings_used ?? existing?.aiListingsUsed ?? 0),
+      aiListingLimit: Number(meData?.ai_listing_limit ?? data?.ai_listing_limit ?? verifiedCfg.aiListingLimit),
+      pdfsUsed: Number(meData?.pdfs_used ?? data?.pdfs_used ?? data?.user?.pdfs_used ?? existing?.pdfsUsed ?? 0),
+      investmentPdfLimit: Number(meData?.investment_pdf_limit ?? data?.investment_pdf_limit ?? verifiedCfg.investmentPdfLimit),
+      portfolioAssetsLimit: Number(meData?.portfolio_assets_limit ?? data?.portfolio_assets_limit ?? verifiedCfg.portfolioAssetsLimit),
+      compareLimit: Number(meData?.compare_limit ?? data?.compare_limit ?? verifiedCfg.compareLimit),
+      teamUsersLimit: Number(meData?.team_users_limit ?? data?.team_users_limit ?? verifiedCfg.teamUsersLimit),
+      apiDailyLimit: Number(meData?.api_daily_limit ?? data?.api_daily_limit ?? verifiedCfg.apiDailyLimit),
+      apiCallsToday: Number(meData?.api_calls_today ?? data?.api_calls_today ?? existing?.apiCallsToday ?? 0),
+      branding: meData?.branding ?? data?.branding ?? data?.user?.branding ?? existing?.branding ?? null,
+      status: 'active',
+      locked: false,
+      lockReason: null,
+      lockError: null,
       lockedLaunchPrice:
         meData?.locked_launch_price ?? data?.user?.locked_launch_price ?? null,
       customCities: Array.isArray(meData?.custom_cities)
@@ -730,9 +748,55 @@ export default function App() {
       } catch {}
     };
 
+    const handleUserUpdatedEvent = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (!detail || typeof detail !== 'object') return;
+      setUser((prev) => {
+        if (!prev) return prev;
+        const nextLeft =
+          typeof detail.analyses_left === 'number'
+            ? detail.analyses_left
+            : prev.analysesLeft;
+        const nextExtra =
+          typeof detail.extra_credits === 'number'
+            ? detail.extra_credits
+            : prev.extraCredits;
+        const nextTotal =
+          typeof detail.analyses_total === 'number'
+            ? detail.analyses_total
+            : prev.analysesTotal;
+        const unlocked = typeof nextLeft === 'number' && nextLeft > 0;
+        const nextUser: User = {
+          ...prev,
+          analysesLeft: nextLeft,
+          freeAnalyses: nextLeft,
+          freeAnalysesLeft: nextLeft,
+          analysesTotal: nextTotal,
+          extraCredits: nextExtra,
+          branding: detail.branding !== undefined ? detail.branding : prev.branding,
+          status: unlocked ? 'active' : prev.status,
+          locked: unlocked ? false : prev.locked,
+          lockReason: unlocked ? null : prev.lockReason,
+          lockError: unlocked ? null : prev.lockError,
+        };
+        saveUser(nextUser);
+        return nextUser;
+      });
+      if (detail.message) {
+        showTempToast(String(detail.message), 5000);
+      }
+      if (typeof detail.analyses_left === 'number' && detail.analyses_left > 0) {
+        setIsLimitOpen(false);
+        setIsRenewalOpen(false);
+      }
+      setSyncTrigger((c) => c + 1);
+    };
+
     window.addEventListener('aqari:paddle-verified', handlePaddleVerified);
+    window.addEventListener('aqari:user-updated', handleUserUpdatedEvent);
     return () => {
       window.removeEventListener('aqari:paddle-verified', handlePaddleVerified);
+      window.removeEventListener('aqari:user-updated', handleUserUpdatedEvent);
     };
   }, []);
 
@@ -824,6 +888,19 @@ export default function App() {
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
+            extraCredits: Number(data.extra_credits ?? data.user?.extra_credits ?? 0),
+            imagePdfUsed: Number(data.image_pdf_used ?? data.user?.image_pdf_used ?? 0),
+            imagePdfLimit: Number(data.image_pdf_limit ?? serverCfg.imagePdfLimit),
+            aiListingsUsed: Number(data.ai_listings_used ?? data.user?.ai_listings_used ?? 0),
+            aiListingLimit: Number(data.ai_listing_limit ?? serverCfg.aiListingLimit),
+            pdfsUsed: Number(data.pdfs_used ?? data.user?.pdfs_used ?? 0),
+            investmentPdfLimit: Number(data.investment_pdf_limit ?? serverCfg.investmentPdfLimit),
+            portfolioAssetsLimit: Number(data.portfolio_assets_limit ?? serverCfg.portfolioAssetsLimit),
+            compareLimit: Number(data.compare_limit ?? serverCfg.compareLimit),
+            teamUsersLimit: Number(data.team_users_limit ?? serverCfg.teamUsersLimit),
+            apiDailyLimit: Number(data.api_daily_limit ?? serverCfg.apiDailyLimit),
+            apiCallsToday: Number(data.api_calls_today ?? 0),
+            branding: data.branding ?? data.user?.branding ?? null,
             lockedLaunchPrice: data.user.locked_launch_price ?? null,
             hasReportedIssue: Boolean(data.user.has_reported_issue),
             issueReportedAt: data.user.issue_reported_at ?? null,
@@ -1006,6 +1083,20 @@ export default function App() {
         const serverPaymentProvider = String(data.payment_provider ?? data.user?.payment_provider ?? 'paddle');
         const serverPaymentIntentId = data.payment_intent_id ?? data.user?.payment_intent_id ?? null;
         const serverLastResults = data.last_results ?? data.user?.last_results ?? null;
+        const serverCfg = PLANS[serverPlan];
+        const serverExtraCredits = Number(data.extra_credits ?? data.user?.extra_credits ?? 0);
+        const serverImagePdfUsed = Number(data.image_pdf_used ?? data.user?.image_pdf_used ?? 0);
+        const serverImagePdfLimit = Number(data.image_pdf_limit ?? serverCfg.imagePdfLimit);
+        const serverAiListingsUsed = Number(data.ai_listings_used ?? data.user?.ai_listings_used ?? 0);
+        const serverAiListingLimit = Number(data.ai_listing_limit ?? serverCfg.aiListingLimit);
+        const serverPdfsUsed = Number(data.pdfs_used ?? data.user?.pdfs_used ?? 0);
+        const serverInvestmentPdfLimit = Number(data.investment_pdf_limit ?? serverCfg.investmentPdfLimit);
+        const serverPortfolioAssetsLimit = Number(data.portfolio_assets_limit ?? serverCfg.portfolioAssetsLimit);
+        const serverCompareLimit = Number(data.compare_limit ?? serverCfg.compareLimit);
+        const serverTeamUsersLimit = Number(data.team_users_limit ?? serverCfg.teamUsersLimit);
+        const serverApiDailyLimit = Number(data.api_daily_limit ?? serverCfg.apiDailyLimit);
+        const serverApiCallsToday = Number(data.api_calls_today ?? 0);
+        const serverBranding = data.branding ?? data.user?.branding ?? null;
 
         const changed =
           !user ||
@@ -1019,6 +1110,19 @@ export default function App() {
           (user.apiKey ?? null) !== serverApiKey ||
           (user.analysesUsed ?? -1) !== serverUsed ||
           (user.analysesTotal ?? -1) !== serverTotal ||
+          (user.extraCredits ?? -1) !== serverExtraCredits ||
+          (user.imagePdfUsed ?? -1) !== serverImagePdfUsed ||
+          (user.imagePdfLimit ?? -1) !== serverImagePdfLimit ||
+          (user.aiListingsUsed ?? -1) !== serverAiListingsUsed ||
+          (user.aiListingLimit ?? -1) !== serverAiListingLimit ||
+          (user.pdfsUsed ?? -1) !== serverPdfsUsed ||
+          (user.investmentPdfLimit ?? -1) !== serverInvestmentPdfLimit ||
+          (user.portfolioAssetsLimit ?? -1) !== serverPortfolioAssetsLimit ||
+          (user.compareLimit ?? -1) !== serverCompareLimit ||
+          (user.teamUsersLimit ?? -1) !== serverTeamUsersLimit ||
+          (user.apiDailyLimit ?? -1) !== serverApiDailyLimit ||
+          (user.apiCallsToday ?? -1) !== serverApiCallsToday ||
+          JSON.stringify(user.branding || null) !== JSON.stringify(serverBranding) ||
           (user.successfulAnalyses ?? -1) !== serverSuccessfulAnalyses ||
           Boolean(user.hasReportedIssue) !== serverHasReportedIssue ||
           (user.issueStatus ?? 'none') !== serverIssueStatus ||
@@ -1074,6 +1178,19 @@ export default function App() {
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
+            extraCredits: serverExtraCredits,
+            imagePdfUsed: serverImagePdfUsed,
+            imagePdfLimit: serverImagePdfLimit,
+            aiListingsUsed: serverAiListingsUsed,
+            aiListingLimit: serverAiListingLimit,
+            pdfsUsed: serverPdfsUsed,
+            investmentPdfLimit: serverInvestmentPdfLimit,
+            portfolioAssetsLimit: serverPortfolioAssetsLimit,
+            compareLimit: serverCompareLimit,
+            teamUsersLimit: serverTeamUsersLimit,
+            apiDailyLimit: serverApiDailyLimit,
+            apiCallsToday: serverApiCallsToday,
+            branding: serverBranding,
             lockedLaunchPrice: serverLockedLaunch,
             customCities: serverCustomCities,
             analystUnread: serverAnalystUnread,

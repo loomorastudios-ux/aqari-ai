@@ -9,27 +9,38 @@ import { GoogleGenAI, Type } from '@google/genai';
 // =========================================================================
 
 const PLANS = {
-  STARTER: { price: 79, analyses: 30, name: 'STARTER' },
+  STARTER: { price: 75, analyses: 30, name: 'STARTER' },
   PROFESSIONAL: { price: 199, analyses: 150, name: 'PROFESSIONAL' },
-  SOVEREIGN: { price: 599, analyses: 400, name: 'SOVEREIGN' },
+  SOVEREIGN: { price: 599, analyses: 500, name: 'SOVEREIGN' },
+  ENTERPRISE: { price: 1499, analyses: 1000, name: 'ENTERPRISE' },
 } as const;
 
 function planFromAmount(amount: any) {
   const num = Number(amount || 0);
   const rounded = Math.round(num);
+  if (rounded === 149900 || rounded === 1499 || rounded === 249900 || rounded === 2499) {
+    return PLANS.ENTERPRISE;
+  }
   if (rounded === 59900 || rounded === 599 || rounded === 99900 || rounded === 999) {
     return PLANS.SOVEREIGN;
   }
   if (rounded === 19900 || rounded === 199 || rounded === 34900 || rounded === 349) {
     return PLANS.PROFESSIONAL;
   }
-  if (rounded === 7900 || rounded === 79 || rounded === 12900 || rounded === 129) {
+  if (
+    rounded === 7500 ||
+    rounded === 75 ||
+    rounded === 7900 ||
+    rounded === 79 ||
+    rounded === 12900 ||
+    rounded === 129
+  ) {
     return PLANS.STARTER;
   }
   return null;
 }
 
-type PlanKey = 'free' | 'starter' | 'pro' | 'enterprise';
+type PlanKey = 'free' | 'starter' | 'pro' | 'enterprise' | 'institutional';
 
 type GatedFeature =
   | 'basicMetrics'
@@ -37,21 +48,49 @@ type GatedFeature =
   | 'crossBorderMatrixFull'
   | 'saveProperty'
   | 'monteCarlo'
+  | 'monteCarloAdvanced'
+  | 'monteCarlo10k'
   | 'pdfExport'
+  | 'memorandumPdf'
+  | 'customBrandingPdf'
+  | 'whiteLabelReports'
+  | 'whiteLabelPlatform'
+  | 'dealFinder'
+  | 'dealFinderAdvanced'
+  | 'forecastBasic'
+  | 'forecastAdvanced'
+  | 'dueDiligence'
+  | 'globalOptimizer'
+  | 'institutionalAdvisor'
   | 'portfolioAggregation'
   | 'apiAccess'
   | 'analystDesk'
   | 'customUnderwriting';
 
-interface PlanDefinition {
+interface PlanQuotas {
+  analysesLimit: number;
+  savedLimit: number;
+  isFairUseSaved: boolean;
+  imagePdfLimit: number;
+  aiListingLimit: number;
+  investmentPdfLimit: number;
+  portfolioAssetsLimit: number;
+  compareLimit: number;
+  teamUsersLimit: number;
+  apiDailyLimit: number;
+  monteCarloMaxCycles: number;
+  whiteLabelMode: 'none' | 'reports' | 'full';
+}
+
+interface PlanDefinition extends PlanQuotas {
   key: PlanKey;
-  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE';
+  tierTag?: string;
   originalPrice: number;
   launchPrice: number;
   priceUSD: number;
-  analysesLimit: number;
-  savedLimit: number;
   licensingDays: number;
+  isContractPricing?: boolean;
   features: string[];
   hiddenFeatures: string[];
   capabilities: Record<GatedFeature, boolean>;
@@ -60,7 +99,8 @@ interface PlanDefinition {
 interface DynamicPlanPublic {
   id?: PlanKey;
   key: PlanKey;
-  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE';
+  tierTag?: string;
   originalPrice: number;
   launchPrice: number;
   activePrice: number;
@@ -68,12 +108,24 @@ interface DynamicPlanPublic {
   analysesLimit: number;
   saved?: number | null;
   savedLimit: number | null;
+  isFairUseSaved?: boolean;
+  imagePdfLimit?: number;
+  aiListingLimit?: number;
+  investmentPdfLimit?: number;
+  portfolioAssetsLimit?: number;
+  compareLimit?: number;
+  teamUsersLimit?: number;
+  apiDailyLimit?: number;
+  monteCarloMaxCycles?: number;
+  whiteLabelMode?: 'none' | 'reports' | 'full';
+  isContractPricing?: boolean;
   features: string[];
   launchDiscountActive?: boolean;
 }
 
 interface PricingPublicPayload {
   success?: boolean;
+  schemaVersion?: number;
   launchDiscountActive: boolean;
   launchBadgeText: string;
   launchEndsAt: number;
@@ -99,33 +151,95 @@ interface ComputedLicenseStatus {
   sidebarText: string;
 }
 
+const CREDIT_COSTS = {
+  'run-analysis': 1,
+  'find-deals': 1,
+  'get-forecast': 1,
+  'export': 1,
+  'extract-from-file': 1,
+  'run-file-analysis': 1,
+  'studio-generate': 2,
+  'run-due-diligence': 2,
+  'optimize-portfolio': 2,
+  'ask-advisor': 2,
+  'due-diligence-docs': 3,
+  'scenario-compare': 0,
+} as const;
+
+const EXTRA_CREDIT_PACKS = [
+  {
+    id: 'pack_25',
+    label: '+25 AI Credits',
+    credits: 25,
+    priceUSD: 19,
+    perCreditUSD: '$0.76',
+    description: 'Immediate top-up for extra underwriting, Deal Finder, or OCR extractions.',
+  },
+  {
+    id: 'pack_100',
+    label: '+100 AI Credits',
+    credits: 100,
+    priceUSD: 59,
+    perCreditUSD: '$0.59',
+    description: 'Active acquisition sprint pack for Due Diligence & Studio workflows.',
+  },
+  {
+    id: 'pack_500',
+    label: '+500 AI Credits',
+    credits: 500,
+    priceUSD: 249,
+    perCreditUSD: '$0.50',
+    description: 'High-volume credit reserve for teams, portfolios, and multi-doc DD.',
+  },
+] as const;
+
+const PRICING_SCHEMA_VERSION = 3;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-const DEFAULT_LAUNCH_BADGE = 'LAUNCH -40% - First 30 users only';
+const DEFAULT_LAUNCH_BADGE = 'LAUNCH OFFER - First 30 institutional seats';
 
 const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
   free: {
     key: 'free',
     displayName: 'FREE',
+    tierTag: 'EXPLORATORY ACCESS',
     originalPrice: 0,
     launchPrice: 0,
     priceUSD: 0,
     analysesLimit: 3,
     savedLimit: 3,
+    isFairUseSaved: false,
+    imagePdfLimit: 1,
+    aiListingLimit: 1,
+    investmentPdfLimit: 1,
+    portfolioAssetsLimit: 1,
+    compareLimit: 1,
+    teamUsersLimit: 1,
+    apiDailyLimit: 0,
+    monteCarloMaxCycles: 0,
+    whiteLabelMode: 'none',
     licensingDays: 30,
     features: [
-      '3 Analyses / 30 Days',
-      'Basic Cap Rate',
-      'Cash-on-Cash only',
+      '3 analyses / 30 days',
+      'Basic ROI (Cap + NOI + Cashflow)',
+      '1 Image / PDF upload trial',
+      '1 AI Listing trial',
+      '1 Basic PDF with AQARI watermark',
+      'Limited Deal Finder (2 preview deals)',
+      'Basic Market intelligence (2 benchmarks)',
+      'Demo Portfolio (1 asset)',
+      'Save up to 3 properties',
+      'No API access',
+      'No Monte Carlo simulations',
+      'No White Label branding',
     ],
     hiddenFeatures: [
-      'Yield & Sensitivity Calculator',
-      'Cross-border Tax & Visa Matrix',
-      'Monte Carlo Stress Tests +200bps',
-      'PDF Memorandum Export',
-      'Multi-asset Portfolio Aggregation',
-      'Full REST API Credentials',
-      '1-on-1 Dedicated Analyst Desk',
-      'White-glove Custom Underwriting',
+      'Full IRR, DSCR & Waterfall Sensitivity',
+      'Monte Carlo Stress Tests',
+      'AI Due Diligence & Document Audit',
+      'Global Portfolio Optimizer',
+      'Institutional AI Advisor',
+      'REST API Credentials',
+      'White Label Reports',
     ],
     capabilities: {
       basicMetrics: true,
@@ -133,7 +247,20 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
       crossBorderMatrixFull: false,
       saveProperty: true,
       monteCarlo: false,
-      pdfExport: false,
+      monteCarloAdvanced: false,
+      monteCarlo10k: false,
+      pdfExport: true,
+      memorandumPdf: false,
+      customBrandingPdf: false,
+      whiteLabelReports: false,
+      whiteLabelPlatform: false,
+      dealFinder: true,
+      dealFinderAdvanced: false,
+      forecastBasic: false,
+      forecastAdvanced: false,
+      dueDiligence: false,
+      globalOptimizer: false,
+      institutionalAdvisor: false,
       portfolioAggregation: false,
       apiAccess: false,
       analystDesk: false,
@@ -143,25 +270,44 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
   starter: {
     key: 'starter',
     displayName: 'STARTER',
+    tierTag: 'INDIVIDUAL INVESTOR',
     originalPrice: 129,
     launchPrice: PLANS.STARTER.price,
     priceUSD: PLANS.STARTER.price,
     analysesLimit: PLANS.STARTER.analyses,
-    savedLimit: 15,
+    savedLimit: 30,
+    isFairUseSaved: false,
+    imagePdfLimit: 5,
+    aiListingLimit: 3,
+    investmentPdfLimit: 5,
+    portfolioAssetsLimit: 10,
+    compareLimit: 3,
+    teamUsersLimit: 1,
+    apiDailyLimit: 0,
+    monteCarloMaxCycles: 1000,
+    whiteLabelMode: 'none',
     licensingDays: 30,
     features: [
-      '30 Analyses / 30 Days',
-      'Yield & Sensitivity Calculator',
-      'Cross-border Tax & Visa Matrix',
-      'Save 15',
+      '30 analyses / 30 days',
+      'Full financial (Cap + NOI + DSCR + CoC + IRR)',
+      '5 Image / PDF extractions / mo',
+      '3 AI Listings / mo',
+      '5 Investment PDFs / mo',
+      'Deal Finder + Forecast Basic',
+      'Market Radar + Cross-Border Basic',
+      'Monte Carlo Basic (1,000 cycles)',
+      'Portfolio tracker up to 10 assets',
+      'Save 30 analyses • Compare 3 scenarios',
+      'Email support',
+      'No REST API access',
+      'No White Label branding',
     ],
     hiddenFeatures: [
-      'Monte Carlo Stress Tests +200bps',
-      'PDF Memorandum Export',
-      'Multi-asset Portfolio Aggregation',
-      'Full REST API Credentials',
-      '1-on-1 Dedicated Analyst Desk',
-      'White-glove Custom Underwriting',
+      'AI Due Diligence',
+      'Global Portfolio Optimizer',
+      'Institutional AI Advisor',
+      'REST API Credentials',
+      'White Label Reports',
     ],
     capabilities: {
       basicMetrics: true,
@@ -169,8 +315,21 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
       crossBorderMatrixFull: true,
       saveProperty: true,
       monteCarlo: true,
-      pdfExport: false,
-      portfolioAggregation: false,
+      monteCarloAdvanced: false,
+      monteCarlo10k: false,
+      pdfExport: true,
+      memorandumPdf: false,
+      customBrandingPdf: false,
+      whiteLabelReports: false,
+      whiteLabelPlatform: false,
+      dealFinder: true,
+      dealFinderAdvanced: false,
+      forecastBasic: true,
+      forecastAdvanced: false,
+      dueDiligence: false,
+      globalOptimizer: false,
+      institutionalAdvisor: false,
+      portfolioAggregation: true,
       apiAccess: false,
       analystDesk: false,
       customUnderwriting: false,
@@ -179,25 +338,44 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
   pro: {
     key: 'pro',
     displayName: 'PROFESSIONAL',
+    tierTag: 'MAIN MARKETING PLAN',
     originalPrice: 349,
     launchPrice: PLANS.PROFESSIONAL.price,
     priceUSD: PLANS.PROFESSIONAL.price,
     analysesLimit: PLANS.PROFESSIONAL.analyses,
-    savedLimit: 75,
+    savedLimit: 2000,
+    isFairUseSaved: true,
+    imagePdfLimit: 30,
+    aiListingLimit: 20,
+    investmentPdfLimit: 30,
+    portfolioAssetsLimit: 100,
+    compareLimit: 10,
+    teamUsersLimit: 2,
+    apiDailyLimit: 100,
+    monteCarloMaxCycles: 5000,
+    whiteLabelMode: 'none',
     licensingDays: 30,
     features: [
-      '150 Analyses / 30 Days',
-      'Monte Carlo Stress Tests +200bps',
-      'PDF Memorandum Export',
-      'Multi-asset Portfolio Aggregation',
-      'Yield & Sensitivity Calculator',
-      'Cross-border Tax & Visa Matrix',
-      'Save 75',
+      '150 analyses / 30 days',
+      'Advanced financial + Equity Waterfall',
+      'Advanced Monte Carlo (5,000) + Stress + Sensitivity',
+      '30 Image / PDF extractions / mo',
+      '20 AI Listings / mo',
+      '30 Investment PDFs + Memorandum PDF',
+      'Deal Finder Advanced + Forecast Advanced',
+      'AI Due Diligence (Deal + Document Audit)',
+      'Global Portfolio Optimizer + Institutional Advisor',
+      'Cross-Border Full + Tax & Sovereign Radar',
+      'Portfolio 100 assets • Compare 10 scenarios',
+      'Unlimited saves (fair-use cap 2,000)',
+      'Limited REST API (100 req/day) • 2 users',
+      'Priority support',
+      'No White Label branding',
     ],
     hiddenFeatures: [
-      'Full REST API Credentials',
+      'Monte Carlo 10,000 Cycles',
+      'White Label Custom Logo & Colors',
       '1-on-1 Dedicated Analyst Desk',
-      'White-glove Custom Underwriting',
     ],
     capabilities: {
       basicMetrics: true,
@@ -205,9 +383,22 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
       crossBorderMatrixFull: true,
       saveProperty: true,
       monteCarlo: true,
+      monteCarloAdvanced: true,
+      monteCarlo10k: false,
       pdfExport: true,
+      memorandumPdf: true,
+      customBrandingPdf: false,
+      whiteLabelReports: false,
+      whiteLabelPlatform: false,
+      dealFinder: true,
+      dealFinderAdvanced: true,
+      forecastBasic: true,
+      forecastAdvanced: true,
+      dueDiligence: true,
+      globalOptimizer: true,
+      institutionalAdvisor: true,
       portfolioAggregation: true,
-      apiAccess: false,
+      apiAccess: true,
       analystDesk: false,
       customUnderwriting: false,
     },
@@ -215,23 +406,38 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
   enterprise: {
     key: 'enterprise',
     displayName: 'SOVEREIGN',
+    tierTag: 'HIGHEST VALUE FOR INSTITUTIONS',
     originalPrice: 999,
     launchPrice: PLANS.SOVEREIGN.price,
     priceUSD: PLANS.SOVEREIGN.price,
     analysesLimit: PLANS.SOVEREIGN.analyses,
-    savedLimit: 400,
+    savedLimit: 5000,
+    isFairUseSaved: true,
+    imagePdfLimit: 100,
+    aiListingLimit: 100,
+    investmentPdfLimit: 100,
+    portfolioAssetsLimit: 400,
+    compareLimit: 25,
+    teamUsersLimit: 10,
+    apiDailyLimit: 2000,
+    monteCarloMaxCycles: 10000,
+    whiteLabelMode: 'reports',
     licensingDays: 30,
     features: [
-      '400 Analyses / 30 Days',
-      'Full REST API Credentials',
-      '1-on-1 Dedicated Analyst Desk',
-      'White-glove Custom Underwriting',
-      'Monte Carlo Stress Tests +200bps',
-      'PDF Memorandum Export',
-      'Multi-asset Portfolio Aggregation',
-      'Yield & Sensitivity Calculator',
-      'Cross-border Tax & Visa Matrix',
-      'Save 400',
+      '500 analyses / 30 days',
+      'All financial + institutional modeling',
+      '100 Image / PDF extractions / mo',
+      '100 AI Listings / mo',
+      '100 PDFs + Pro Memorandum',
+      'White Label Reports + Custom logo & colors',
+      'Advanced Due Diligence + Tax Audit',
+      'Advanced Deal Finder + Forecast + Optimizer + Advisor',
+      'Monte Carlo 10,000 cycles + Advanced Stress',
+      'Sovereign Radar + Cross-Border Intelligence',
+      'Portfolio 400 assets • Compare 25 scenarios',
+      'Unlimited saves (fair-use cap 5,000)',
+      'Full REST API (2,000 req/day) • 10 users + RBAC',
+      'High priority + Dedicated Analyst Desk',
     ],
     hiddenFeatures: [],
     capabilities: {
@@ -240,7 +446,84 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
       crossBorderMatrixFull: true,
       saveProperty: true,
       monteCarlo: true,
+      monteCarloAdvanced: true,
+      monteCarlo10k: true,
       pdfExport: true,
+      memorandumPdf: true,
+      customBrandingPdf: true,
+      whiteLabelReports: true,
+      whiteLabelPlatform: false,
+      dealFinder: true,
+      dealFinderAdvanced: true,
+      forecastBasic: true,
+      forecastAdvanced: true,
+      dueDiligence: true,
+      globalOptimizer: true,
+      institutionalAdvisor: true,
+      portfolioAggregation: true,
+      apiAccess: true,
+      analystDesk: true,
+      customUnderwriting: true,
+    },
+  },
+  institutional: {
+    key: 'institutional',
+    displayName: 'ENTERPRISE',
+    tierTag: 'CONTRACT PRICING — NO UNLIMITED PROMISE',
+    originalPrice: 2499,
+    launchPrice: PLANS.ENTERPRISE.price,
+    priceUSD: PLANS.ENTERPRISE.price,
+    analysesLimit: PLANS.ENTERPRISE.analyses,
+    savedLimit: 1000,
+    isFairUseSaved: false,
+    imagePdfLimit: 250,
+    aiListingLimit: 250,
+    investmentPdfLimit: 250,
+    portfolioAssetsLimit: 1000,
+    compareLimit: 50,
+    teamUsersLimit: 50,
+    apiDailyLimit: 10000,
+    monteCarloMaxCycles: 10000,
+    whiteLabelMode: 'full',
+    licensingDays: 30,
+    isContractPricing: true,
+    features: [
+      '1,000 analyses / mo (per contract)',
+      '250 Image / PDF / mo • 250 AI Listings / mo • 250 PDFs / mo',
+      'Portfolio 1,000 assets (per contract) • Save 1,000 (not unlimited)',
+      'Compare up to 50 scenarios',
+      'Multi-team + multi-user (up to 50 seats per contract)',
+      'Enterprise AI Due Diligence & Market Intelligence',
+      'Institutional Portfolio Optimization & Custom Risk Models',
+      'Full White Label for Platform + Custom Reports',
+      'Custom Investment Memorandum & Monte Carlo Models',
+      'Custom API Integration + Independent REST keys/permissions',
+      'Connect to company ERP/CRM & External data integrations',
+      'Advanced permissions + Audit Trail + Custom org dashboards',
+      'Custom data/markets, capacity & SLA per written contract',
+      'Dedicated onboarding + Custom training + Direct institutional support',
+    ],
+    hiddenFeatures: [],
+    capabilities: {
+      basicMetrics: true,
+      yieldSensitivity: true,
+      crossBorderMatrixFull: true,
+      saveProperty: true,
+      monteCarlo: true,
+      monteCarloAdvanced: true,
+      monteCarlo10k: true,
+      pdfExport: true,
+      memorandumPdf: true,
+      customBrandingPdf: true,
+      whiteLabelReports: true,
+      whiteLabelPlatform: true,
+      dealFinder: true,
+      dealFinderAdvanced: true,
+      forecastBasic: true,
+      forecastAdvanced: true,
+      dueDiligence: true,
+      globalOptimizer: true,
+      institutionalAdvisor: true,
       portfolioAggregation: true,
       apiAccess: true,
       analystDesk: true,
@@ -254,6 +537,14 @@ function normalizePlanKey(raw?: string | null): PlanKey {
   if (val === 'starter' || val === 'standard') return 'starter';
   if (val === 'pro' || val === 'professional') return 'pro';
   if (val === 'enterprise' || val === 'sovereign' || val === 'agency') return 'enterprise';
+  if (
+    val === 'institutional' ||
+    val === 'enterprise_contract' ||
+    val === 'contract' ||
+    val === 'custom_enterprise'
+  ) {
+    return 'institutional';
+  }
   return 'free';
 }
 
@@ -281,18 +572,30 @@ function canUseFeature(plan: string | null | undefined, feature: GatedFeature): 
 function getUpgradeMessage(feature: GatedFeature): string {
   switch (feature) {
     case 'monteCarlo':
-    case 'pdfExport':
+    case 'forecastBasic':
     case 'portfolioAggregation':
-      return 'Available in PROFESSIONAL - Upgrade';
-    case 'apiAccess':
-    case 'analystDesk':
-    case 'customUnderwriting':
-      return 'Available in SOVEREIGN - Upgrade';
-    case 'saveProperty':
-      return 'Upgrade to save more';
     case 'yieldSensitivity':
     case 'crossBorderMatrixFull':
-      return 'Available in STARTER - Upgrade';
+      return 'Available in STARTER or higher - Upgrade';
+    case 'memorandumPdf':
+    case 'monteCarloAdvanced':
+    case 'dealFinderAdvanced':
+    case 'forecastAdvanced':
+    case 'dueDiligence':
+    case 'globalOptimizer':
+    case 'institutionalAdvisor':
+    case 'apiAccess':
+      return 'Available in PROFESSIONAL / SOVEREIGN - Upgrade';
+    case 'monteCarlo10k':
+    case 'customBrandingPdf':
+    case 'whiteLabelReports':
+    case 'analystDesk':
+    case 'customUnderwriting':
+      return 'Available in SOVEREIGN / ENTERPRISE - Upgrade';
+    case 'whiteLabelPlatform':
+      return 'Available in ENTERPRISE Contract Tier - Contact Institutional Desk';
+    case 'saveProperty':
+      return 'Save quota reached - Upgrade plan';
     default:
       return 'Available in PROFESSIONAL - Upgrade';
   }
@@ -1052,13 +1355,12 @@ function computeLicenseStatus(params: {
     : Math.max(0, effectiveAnalysesLimit - analysesUsed);
 
   if (!isExpired && !isUnlimitedAnalyses) {
-    const explicitLeft =
-      effectivePlanKey === 'free'
-        ? params.freeAnalysesLeft
-        : params.analysesLeft ?? params.freeAnalysesLeft;
-    if (typeof explicitLeft === 'number' && analysesUsed === 0 && explicitLeft <= effectiveAnalysesLimit) {
+    const explicitLeft = params.analysesLeft ?? params.freeAnalysesLeft;
+    if (typeof explicitLeft === 'number') {
       analysesLeft = Math.max(0, explicitLeft);
-      analysesUsed = Math.max(0, effectiveAnalysesLimit - analysesLeft);
+      if (analysesUsed === 0 && explicitLeft <= effectiveAnalysesLimit) {
+        analysesUsed = Math.max(0, effectiveAnalysesLimit - analysesLeft);
+      }
     }
   }
 
@@ -1070,9 +1372,9 @@ function computeLicenseStatus(params: {
     ? 100
     : Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)));
 
-  const leftStr = isUnlimitedAnalyses ? 'Unlimited analyses left' : `${analysesLeft} analyses left`;
+  const leftStr = isUnlimitedAnalyses ? 'Unlimited credits left' : `${analysesLeft} credits left`;
   const sidebarText = isExpired
-    ? `LICENSING COUNTDOWN - ${planCfg.displayName} - EXPIRED - 0 analyses left`
+    ? `LICENSING COUNTDOWN - ${planCfg.displayName} - EXPIRED - 0 credits left`
     : `LICENSING COUNTDOWN - ${planCfg.displayName} - ${daysLeft} days left - ${leftStr}`;
 
   return {
@@ -1386,7 +1688,9 @@ interface ForensicTimelineEntry {
     | 'expired'
     | 'issue_reported'
     | 'issue_resolved'
-    | 'cancellation';
+    | 'cancellation'
+    | 'credits_purchase'
+    | 'branding_update';
   message: string;
   actor?: string;
 }
@@ -1517,6 +1821,18 @@ interface ServerUserRecord {
   api_key_revoked_legacy?: boolean;
   portfolio_assets?: any[];
   last_results?: PersistedLastResults;
+  extra_credits?: number;
+  image_pdf_used?: number;
+  ai_listings_used?: number;
+  pdfs_used?: number;
+  api_calls_today?: number;
+  api_calls_day?: string | null;
+  last_extraction_id?: string | null;
+  branding?: {
+    firmName?: string;
+    logoUrl?: string;
+    accentColor?: string;
+  } | null;
 }
 
 interface WebhookLogEntry {
@@ -1542,7 +1858,7 @@ interface UsedOrderRecord {
   login_email: string;
   payment_email: string;
   plan: PlanKey;
-  plan_display: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  plan_display: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE';
   analyses: number;
   amount: number;
   test_mode: boolean;
@@ -1551,15 +1867,28 @@ interface UsedOrderRecord {
 
 interface StoredPlanConfig {
   key: PlanKey;
-  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE';
+  tierTag?: string;
   originalPrice: number;
   launchPrice: number;
   analysesLimit: number;
   savedLimit: number | null;
+  isFairUseSaved?: boolean;
+  imagePdfLimit?: number;
+  aiListingLimit?: number;
+  investmentPdfLimit?: number;
+  portfolioAssetsLimit?: number;
+  compareLimit?: number;
+  teamUsersLimit?: number;
+  apiDailyLimit?: number;
+  monteCarloMaxCycles?: number;
+  whiteLabelMode?: 'none' | 'reports' | 'full';
+  isContractPricing?: boolean;
   features: string[];
 }
 
 interface StoredPricingConfig {
+  schemaVersion?: number;
   launchDiscountActive: boolean;
   launchBadgeText: string;
   launchEndsAt: number;
@@ -1590,52 +1919,48 @@ interface StoreShape {
   analyst_threads: Record<string, any>;
   whiteglove_requests: any[];
   api_keys: Record<string, string>;
+  enterprise_inquiries?: any[];
+}
+
+function buildStoredPlanEntry(k: PlanKey): StoredPlanConfig {
+  const def = PLAN_DEFINITIONS[k];
+  return {
+    key: k,
+    displayName: def.displayName,
+    tierTag: def.tierTag,
+    originalPrice: def.originalPrice,
+    launchPrice: def.launchPrice,
+    analysesLimit: def.analysesLimit,
+    savedLimit: def.savedLimit,
+    isFairUseSaved: def.isFairUseSaved,
+    imagePdfLimit: def.imagePdfLimit,
+    aiListingLimit: def.aiListingLimit,
+    investmentPdfLimit: def.investmentPdfLimit,
+    portfolioAssetsLimit: def.portfolioAssetsLimit,
+    compareLimit: def.compareLimit,
+    teamUsersLimit: def.teamUsersLimit,
+    apiDailyLimit: def.apiDailyLimit,
+    monteCarloMaxCycles: def.monteCarloMaxCycles,
+    whiteLabelMode: def.whiteLabelMode,
+    isContractPricing: Boolean(def.isContractPricing),
+    features: [...def.features],
+  };
 }
 
 function createDefaultPricingConfig(): StoredPricingConfig {
   const now = Date.now();
   return {
+    schemaVersion: PRICING_SCHEMA_VERSION,
     launchDiscountActive: true,
     launchBadgeText: DEFAULT_LAUNCH_BADGE,
     launchEndsAt: now + 7 * 24 * 60 * 60 * 1000,
     updatedAt: now,
     plans: {
-      free: {
-        key: 'free',
-        displayName: 'FREE',
-        originalPrice: PLAN_DEFINITIONS.free.originalPrice,
-        launchPrice: PLAN_DEFINITIONS.free.launchPrice,
-        analysesLimit: PLAN_DEFINITIONS.free.analysesLimit,
-        savedLimit: PLAN_DEFINITIONS.free.savedLimit,
-        features: [...PLAN_DEFINITIONS.free.features],
-      },
-      starter: {
-        key: 'starter',
-        displayName: 'STARTER',
-        originalPrice: PLAN_DEFINITIONS.starter.originalPrice,
-        launchPrice: PLAN_DEFINITIONS.starter.launchPrice,
-        analysesLimit: PLAN_DEFINITIONS.starter.analysesLimit,
-        savedLimit: PLAN_DEFINITIONS.starter.savedLimit,
-        features: [...PLAN_DEFINITIONS.starter.features],
-      },
-      pro: {
-        key: 'pro',
-        displayName: 'PROFESSIONAL',
-        originalPrice: PLAN_DEFINITIONS.pro.originalPrice,
-        launchPrice: PLAN_DEFINITIONS.pro.launchPrice,
-        analysesLimit: PLAN_DEFINITIONS.pro.analysesLimit,
-        savedLimit: PLAN_DEFINITIONS.pro.savedLimit,
-        features: [...PLAN_DEFINITIONS.pro.features],
-      },
-      enterprise: {
-        key: 'enterprise',
-        displayName: 'SOVEREIGN',
-        originalPrice: PLAN_DEFINITIONS.enterprise.originalPrice,
-        launchPrice: PLAN_DEFINITIONS.enterprise.launchPrice,
-        analysesLimit: PLAN_DEFINITIONS.enterprise.analysesLimit,
-        savedLimit: PLAN_DEFINITIONS.enterprise.savedLimit,
-        features: [...PLAN_DEFINITIONS.enterprise.features],
-      },
+      free: buildStoredPlanEntry('free'),
+      starter: buildStoredPlanEntry('starter'),
+      pro: buildStoredPlanEntry('pro'),
+      enterprise: buildStoredPlanEntry('enterprise'),
+      institutional: buildStoredPlanEntry('institutional'),
     },
   };
 }
@@ -1665,6 +1990,7 @@ function getMemoryStore(): StoreShape {
       analyst_threads: {},
       whiteglove_requests: [],
       api_keys: {},
+      enterprise_inquiries: [],
     };
   }
   return memoryStoreCache;
@@ -1682,12 +2008,17 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
   const now = Date.now();
   const plan = normalizePlanKey(raw?.plan);
   const planCfg = PLAN_DEFINITIONS[plan];
-  const analysesTotal = Math.max(1, Number(raw?.analyses_total ?? planCfg.analysesLimit));
+  const extraCredits = Math.max(0, Number(raw?.extra_credits || 0));
+  const analysesTotal = Math.max(
+    1,
+    Number(raw?.analyses_total ?? planCfg.analysesLimit + extraCredits)
+  );
   const rawUsedNum = raw?.analyses_used !== undefined && raw?.analyses_used !== null ? Number(raw.analyses_used) : NaN;
   const rawLeftNum = raw?.analyses_left !== undefined && raw?.analyses_left !== null ? Number(raw.analyses_left) : NaN;
   let analysesUsed = Number.isFinite(rawUsedNum) ? Math.max(0, rawUsedNum) : 0;
+  const maxPossibleLeft = Math.max(analysesTotal, analysesTotal + extraCredits);
   let analysesLeft = Number.isFinite(rawLeftNum)
-    ? Math.max(0, Math.min(analysesTotal, rawLeftNum))
+    ? Math.max(0, Math.min(maxPossibleLeft, rawLeftNum))
     : Math.max(0, analysesTotal - analysesUsed);
   if (!Number.isFinite(rawUsedNum) && Number.isFinite(rawLeftNum)) {
     analysesUsed = Math.max(0, analysesTotal - analysesLeft);
@@ -1695,7 +2026,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
   const savedList = Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [];
   const maxSaved =
     Number.isFinite(Number(raw?.max_saved)) && Number(raw?.max_saved) > 0
-      ? Number(raw.max_saved)
+      ? Math.max(Number(raw.max_saved), planCfg.savedLimit)
       : planCfg.savedLimit;
   const savedCount = savedList.length > 0 ? savedList.length : Math.max(0, Number(raw?.saved_count ?? 0));
 
@@ -1714,6 +2045,10 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
       : analysesLeft <= 0
       ? 'exhausted'
       : 'active';
+
+  const todayUtc = new Date(now).toISOString().slice(0, 10);
+  const apiCallsDay = typeof raw?.api_calls_day === 'string' ? raw.api_calls_day : todayUtc;
+  const apiCallsToday = apiCallsDay === todayUtc ? Math.max(0, Number(raw?.api_calls_today || 0)) : 0;
 
   return {
     email,
@@ -1775,14 +2110,32 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     portfolio_assets: Array.isArray(raw?.portfolio_assets) ? raw.portfolio_assets : [],
     last_results:
       raw?.last_results && typeof raw.last_results === 'object' ? raw.last_results : {},
+    extra_credits: extraCredits,
+    image_pdf_used: Math.max(0, Number(raw?.image_pdf_used || 0)),
+    ai_listings_used: Math.max(0, Number(raw?.ai_listings_used || 0)),
+    pdfs_used: Math.max(0, Number(raw?.pdfs_used || 0)),
+    api_calls_today: apiCallsToday,
+    api_calls_day: apiCallsDay,
+    last_extraction_id: typeof raw?.last_extraction_id === 'string' ? raw.last_extraction_id : null,
+    branding:
+      raw?.branding && typeof raw.branding === 'object'
+        ? {
+            firmName: typeof raw.branding.firmName === 'string' ? raw.branding.firmName.slice(0, 80) : undefined,
+            logoUrl: typeof raw.branding.logoUrl === 'string' ? raw.branding.logoUrl.slice(0, 500) : undefined,
+            accentColor:
+              typeof raw.branding.accentColor === 'string' ? raw.branding.accentColor.slice(0, 24) : undefined,
+          }
+        : null,
   };
 }
 
 function hydratePricingConfig(raw: any): StoredPricingConfig {
   const def = createDefaultPricingConfig();
-  if (!raw || typeof raw !== 'object') return def;
+  if (!raw || typeof raw !== 'object' || Number(raw.schemaVersion || 0) < PRICING_SCHEMA_VERSION) {
+    return def;
+  }
   const plans = { ...def.plans };
-  for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
+  for (const k of ['free', 'starter', 'pro', 'enterprise', 'institutional'] as PlanKey[]) {
     const r = raw.plans?.[k];
     if (r && typeof r === 'object') {
       const analysesLimit =
@@ -1793,17 +2146,8 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
         Array.isArray(r.features) && r.features.length > 0
           ? r.features.map(String)
           : def.plans[k].features;
-      const normalizedFeatures = rawFeatures
-        .filter((f) => !(k === 'free' && f.startsWith('No Monte Carlo')))
-        .map((f) => {
-          const trimmed = f.trim();
-          if (/^unlimited\s+saved$/i.test(trimmed)) return `Save ${def.plans[k].savedLimit ?? 400}`;
-          if (/^save\s+\d+$/i.test(trimmed)) return `Save ${def.plans[k].savedLimit ?? 15}`;
-          return f;
-        });
       plans[k] = {
-        key: k,
-        displayName: def.plans[k].displayName,
+        ...def.plans[k],
         originalPrice: Number.isFinite(Number(r.originalPrice))
           ? Number(r.originalPrice)
           : def.plans[k].originalPrice,
@@ -1811,12 +2155,12 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
           ? Number(r.launchPrice)
           : def.plans[k].launchPrice,
         analysesLimit,
-        savedLimit: Math.min(analysesLimit, def.plans[k].savedLimit ?? analysesLimit),
-        features: normalizedFeatures.length > 0 ? normalizedFeatures : def.plans[k].features,
+        features: rawFeatures.length > 0 ? rawFeatures : def.plans[k].features,
       };
     }
   }
   return {
+    schemaVersion: PRICING_SCHEMA_VERSION,
     launchDiscountActive:
       typeof raw.launchDiscountActive === 'boolean'
         ? raw.launchDiscountActive
@@ -1879,6 +2223,9 @@ function loadStore(): StoreShape {
             !Array.isArray(parsed.api_keys)
               ? parsed.api_keys
               : {},
+          enterprise_inquiries: Array.isArray(parsed.enterprise_inquiries)
+            ? parsed.enterprise_inquiries
+            : [],
         };
       }
     }
@@ -1940,18 +2287,24 @@ async function kvCommand(args: Array<string | number>): Promise<any> {
 
 function getPricingPublicPayload(): PricingPublicPayload {
   const store = loadStore();
-  const cfg = store.pricing_config || createDefaultPricingConfig();
+  const rawCfg = store.pricing_config || createDefaultPricingConfig();
+  const cfg =
+    Number(rawCfg.schemaVersion || 0) >= PRICING_SCHEMA_VERSION
+      ? rawCfg
+      : createDefaultPricingConfig();
   const now = Date.now();
   const daysRemaining = Math.max(0, Math.ceil((cfg.launchEndsAt - now) / (24 * 60 * 60 * 1000)));
   const plansMap = {} as Record<PlanKey, DynamicPlanPublic>;
   const plansList: DynamicPlanPublic[] = [];
 
-  for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
-    const p = cfg.plans[k];
+  for (const k of ['free', 'starter', 'pro', 'enterprise', 'institutional'] as PlanKey[]) {
+    const p = cfg.plans[k] || buildStoredPlanEntry(k);
+    const def = PLAN_DEFINITIONS[k];
     const entry: DynamicPlanPublic = {
       id: k,
       key: k,
       displayName: p.displayName,
+      tierTag: p.tierTag ?? def.tierTag,
       originalPrice: p.originalPrice,
       launchPrice: p.launchPrice,
       activePrice: k === 'free' ? 0 : cfg.launchDiscountActive ? p.launchPrice : p.originalPrice,
@@ -1959,6 +2312,17 @@ function getPricingPublicPayload(): PricingPublicPayload {
       analysesLimit: p.analysesLimit,
       saved: p.savedLimit,
       savedLimit: p.savedLimit,
+      isFairUseSaved: p.isFairUseSaved ?? def.isFairUseSaved,
+      imagePdfLimit: p.imagePdfLimit ?? def.imagePdfLimit,
+      aiListingLimit: p.aiListingLimit ?? def.aiListingLimit,
+      investmentPdfLimit: p.investmentPdfLimit ?? def.investmentPdfLimit,
+      portfolioAssetsLimit: p.portfolioAssetsLimit ?? def.portfolioAssetsLimit,
+      compareLimit: p.compareLimit ?? def.compareLimit,
+      teamUsersLimit: p.teamUsersLimit ?? def.teamUsersLimit,
+      apiDailyLimit: p.apiDailyLimit ?? def.apiDailyLimit,
+      monteCarloMaxCycles: p.monteCarloMaxCycles ?? def.monteCarloMaxCycles,
+      whiteLabelMode: p.whiteLabelMode ?? def.whiteLabelMode,
+      isContractPricing: p.isContractPricing ?? Boolean(def.isContractPricing),
       features: [...p.features],
       launchDiscountActive: cfg.launchDiscountActive,
     };
@@ -1967,6 +2331,7 @@ function getPricingPublicPayload(): PricingPublicPayload {
   }
   return {
     success: true,
+    schemaVersion: PRICING_SCHEMA_VERSION,
     launchDiscountActive: cfg.launchDiscountActive,
     launchBadgeText: cfg.launchBadgeText,
     launchEndsAt: cfg.launchEndsAt,
@@ -2005,7 +2370,7 @@ function evaluateLockState(
       locked: true,
       reason: 'expired',
       status: 'expired',
-      error: `Your ${planDisplay} expired on ${formattedDate}. Renew to continue.`,
+      error: `Your ${planDisplay} license expired on ${formattedDate}. Renew to continue.`,
       analysesLeft: 0,
     };
   }
@@ -2015,7 +2380,7 @@ function evaluateLockState(
       locked: true,
       reason: 'exhausted',
       status: 'exhausted',
-      error: `No analyses left for ${planDisplay}. Upgrade to continue.`,
+      error: `0 AI credits left for ${planDisplay}. Buy Extra Credits or Upgrade your plan.`,
       analysesLeft: 0,
     };
   }
@@ -2026,6 +2391,89 @@ function evaluateLockState(
     status: 'active',
     error: null,
     analysesLeft: rawLeft,
+  };
+}
+
+function ensureCreditsForAction(user: ServerUserRecord, cost: number) {
+  const lock = evaluateLockState(user);
+  if (lock.locked) {
+    return {
+      ok: false as const,
+      status: 403,
+      payload: {
+        success: false,
+        locked: true,
+        insufficientCredits: true,
+        reason: lock.reason,
+        status: lock.status,
+        error: lock.error || 'No AI credits remaining or license expired.',
+        code: lock.reason === 'expired' ? 'LICENSE_EXPIRED' : 'NO_ANALYSES_LEFT',
+        analyses_left: 0,
+        analysesLeft: 0,
+        requiredCredits: cost,
+        creditsRemaining: 0,
+      },
+    };
+  }
+  if (cost > 0 && lock.analysesLeft < cost) {
+    return {
+      ok: false as const,
+      status: 403,
+      payload: {
+        success: false,
+        locked: false,
+        insufficientCredits: true,
+        reason: 'insufficient_credits',
+        status: 'active',
+        error: `This action costs ${cost} AI credits, but only ${lock.analysesLeft} credit${lock.analysesLeft === 1 ? '' : 's'} remain. Buy Extra Credits or Upgrade your plan.`,
+        code: 'INSUFFICIENT_CREDITS',
+        analyses_left: lock.analysesLeft,
+        analysesLeft: lock.analysesLeft,
+        requiredCredits: cost,
+        creditsRemaining: lock.analysesLeft,
+      },
+    };
+  }
+  return { ok: true as const, lock };
+}
+
+function checkAndConsumeApiDailyQuota(user: ServerUserRecord) {
+  const planKey = normalizePlanKey(user.plan);
+  const planCfg = PLAN_DEFINITIONS[planKey];
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  const callsToday = user.api_calls_day === todayUtc ? Math.max(0, Number(user.api_calls_today || 0)) : 0;
+
+  if (!canUseFeature(planKey, 'apiAccess') || planCfg.apiDailyLimit <= 0) {
+    return {
+      ok: false as const,
+      status: 403,
+      payload: {
+        success: false,
+        error: 'REST API access requires PROFESSIONAL (100/day), SOVEREIGN (2,000/day), or ENTERPRISE (10,000/day).',
+        code: 'FEATURE_LOCKED',
+        feature: 'apiAccess',
+        requiredPlan: 'pro',
+      },
+    };
+  }
+  if (callsToday >= planCfg.apiDailyLimit) {
+    return {
+      ok: false as const,
+      status: 429,
+      payload: {
+        success: false,
+        error: `Daily REST API quota exceeded (${callsToday}/${planCfg.apiDailyLimit} req/day for ${planCfg.displayName}). Resets at 00:00 UTC.`,
+        code: 'API_DAILY_LIMIT_REACHED',
+        apiDailyLimit: planCfg.apiDailyLimit,
+        apiCallsToday: callsToday,
+      },
+    };
+  }
+  return {
+    ok: true as const,
+    api_calls_day: todayUtc,
+    api_calls_today: callsToday + 1,
+    apiDailyLimit: planCfg.apiDailyLimit,
   };
 }
 
@@ -2267,6 +2715,11 @@ function activatePaidPlanOnServer(params: {
     analyses_left: planCfg.analysesLimit,
     analyses_total: planCfg.analysesLimit,
     max_saved: planCfg.savedLimit,
+    extra_credits: 0,
+    image_pdf_used: 0,
+    ai_listings_used: 0,
+    pdfs_used: 0,
+    last_extraction_id: null,
     successful_analyses: 0,
     has_reported_issue: false,
     issue_reported_at: null,
@@ -2471,7 +2924,8 @@ function evaluateCancelRefundEligibility(user: ServerUserRecord, now = Date.now(
 function recordUserAnalysis(
   userOrEmail: string | ServerUserRecord,
   entry: Omit<ForensicAnalysisEntry, 'id' | 'timestamp'>,
-  extraPatch?: Partial<ServerUserRecord>
+  extraPatch?: Partial<ServerUserRecord>,
+  creditCost = 1
 ): ServerUserRecord {
   const store = loadStore();
   let user: ServerUserRecord;
@@ -2486,14 +2940,19 @@ function recordUserAnalysis(
   const now = Date.now();
   const iso = new Date(now).toISOString();
   const planCfg = PLAN_DEFINITIONS[normalizePlanKey(user.plan)];
-  const analysesTotal = user.analyses_total > 0 ? user.analyses_total : planCfg.analysesLimit;
+  const extraCredits = Math.max(0, Number(user.extra_credits || 0));
+  const analysesTotal = Math.max(
+    user.analyses_total > 0 ? user.analyses_total : planCfg.analysesLimit,
+    planCfg.analysesLimit + extraCredits
+  );
   const currentUsed = Math.max(0, Number(user.analyses_used || 0));
   const currentLeft =
     typeof user.analyses_left === 'number' && Number.isFinite(user.analyses_left)
       ? Math.max(0, user.analyses_left)
       : Math.max(0, analysesTotal - currentUsed);
-  const analysisNum = currentUsed + 1;
-  const nextLeft = Math.max(0, currentLeft - 1);
+  const cost = Math.max(0, Number.isFinite(creditCost) ? Math.round(creditCost) : 1);
+  const nextUsed = currentUsed + cost;
+  const nextLeft = Math.max(0, currentLeft - cost);
   const successfulNum = (user.successful_analyses || 0) + 1;
   const logEntry: ForensicAnalysisEntry = {
     id: `ana_${now}_${Math.random().toString(36).slice(2, 6)}`,
@@ -2504,13 +2963,13 @@ function recordUserAnalysis(
     id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
     timestamp: iso,
     type: 'analysis',
-    message: `Analysis #${analysisNum} - ${entry.property} (${entry.city}) - ${entry.resultSummary}`,
+    message: `Action #${successfulNum} (-${cost} ${cost === 1 ? 'credit' : 'credits'}) - ${entry.property} (${entry.city}) - ${entry.resultSummary}`,
     actor: user.email,
   };
 
   return updateServerUser(user.email, {
     ...(extraPatch || {}),
-    analyses_used: analysisNum,
+    analyses_used: nextUsed,
     analyses_left: nextLeft,
     analyses_total: analysesTotal,
     successful_analyses: successfulNum,
@@ -4857,6 +5316,9 @@ export default async function handler(req: any, res: any) {
             'pricing',
             'verify-checkout',
             'verify-payment',
+            'buy-credits',
+            'update-branding',
+            'enterprise-inquiry',
             'debug-plan',
             'run-analysis',
             'extract-from-file',
@@ -4980,12 +5442,15 @@ export default async function handler(req: any, res: any) {
           license.planKey === 'free'
             ? 0
             : dynamicPlan?.activePrice ?? PLAN_DEFINITIONS[license.planKey].priceUSD;
-        const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
+        const planCfg = PLAN_DEFINITIONS[license.planKey];
+        const maxSaved = planCfg.savedLimit;
         const savedCount = Array.isArray(dbUser.saved_analyses)
           ? dbUser.saved_analyses.length
           : dbUser.saved_count || 0;
         const hasApiAccess =
-          license.planKey === 'enterprise' && !lockState.locked && sessionEmail === dbUser.email;
+          canUseFeature(license.planKey, 'apiAccess') &&
+          !lockState.locked &&
+          sessionEmail === dbUser.email;
         let maskedApiKey: string | null = null;
         let apiKeyLast4: string | null = null;
         if (hasApiAccess) {
@@ -5001,14 +5466,12 @@ export default async function handler(req: any, res: any) {
             await saveUserToDb(dbUser).catch(() => {});
           }
         }
-        const analystThread =
-          license.planKey === 'enterprise'
-            ? await getAnalystThreadFromDb(dbUser.email).catch(() => null)
-            : null;
-        const allWhiteGlove =
-          license.planKey === 'enterprise'
-            ? await getWhiteGloveRequestsFromDb().catch(() => [])
-            : [];
+        const analystThread = canUseFeature(license.planKey, 'analystDesk')
+          ? await getAnalystThreadFromDb(dbUser.email).catch(() => null)
+          : null;
+        const allWhiteGlove = canUseFeature(license.planKey, 'customUnderwriting')
+          ? await getWhiteGloveRequestsFromDb().catch(() => [])
+          : [];
         const userWhiteGlove = Array.isArray(allWhiteGlove)
           ? allWhiteGlove.filter((r: any) => normalizeEmail(r?.email) === dbUser.email)
           : [];
@@ -5018,6 +5481,27 @@ export default async function handler(req: any, res: any) {
 
         const cancellationEligibility = evaluateCancelRefundEligibility(dbUser);
         const lastResults = dbUser.last_results || {};
+        const todayUtc = new Date().toISOString().slice(0, 10);
+        const apiCallsToday =
+          dbUser.api_calls_day === todayUtc ? Math.max(0, Number(dbUser.api_calls_today || 0)) : 0;
+
+        const quotaEnvelope = {
+          extra_credits: Math.max(0, Number(dbUser.extra_credits || 0)),
+          image_pdf_used: Math.max(0, Number(dbUser.image_pdf_used || 0)),
+          image_pdf_limit: planCfg.imagePdfLimit,
+          ai_listings_used: Math.max(0, Number(dbUser.ai_listings_used || 0)),
+          ai_listing_limit: planCfg.aiListingLimit,
+          pdfs_used: Math.max(0, Number(dbUser.pdfs_used || 0)),
+          investment_pdf_limit: planCfg.investmentPdfLimit,
+          portfolio_assets_limit: planCfg.portfolioAssetsLimit,
+          compare_limit: planCfg.compareLimit,
+          team_users_limit: planCfg.teamUsersLimit,
+          api_daily_limit: planCfg.apiDailyLimit,
+          api_calls_today: apiCallsToday,
+          monte_carlo_max_cycles: planCfg.monteCarloMaxCycles,
+          white_label_mode: planCfg.whiteLabelMode,
+          branding: dbUser.branding || null,
+        };
 
         return res.status(200).json({
           success: true,
@@ -5047,6 +5531,9 @@ export default async function handler(req: any, res: any) {
           analyses_used: license.analysesUsed,
           analyses_left: lockState.analysesLeft,
           successful_analyses: dbUser.successful_analyses || 0,
+          ...quotaEnvelope,
+          credit_costs: CREDIT_COSTS,
+          credit_packs: EXTRA_CREDIT_PACKS,
           has_reported_issue: Boolean(dbUser.has_reported_issue),
           issue_reported_at: dbUser.issue_reported_at ?? null,
           issue_resolved_at: dbUser.issue_resolved_at ?? null,
@@ -5067,7 +5554,7 @@ export default async function handler(req: any, res: any) {
           locked_launch_price: dbUser.locked_launch_price ?? null,
           custom_cities: dbUser.custom_cities || [],
           features,
-          capabilities: PLAN_DEFINITIONS[license.planKey].capabilities,
+          capabilities: planCfg.capabilities,
           analyst_unread: Number(analystThread?.unreadForClient || 0),
           analyst_thread: analystThread,
           whiteglove_requests: userWhiteGlove,
@@ -5090,6 +5577,7 @@ export default async function handler(req: any, res: any) {
             analyses_left: lockState.analysesLeft,
             analyses_total: license.analysesLimit,
             successful_analyses: dbUser.successful_analyses || 0,
+            ...quotaEnvelope,
             has_reported_issue: Boolean(dbUser.has_reported_issue),
             issue_reported_at: dbUser.issue_reported_at ?? null,
             issue_resolved_at: dbUser.issue_resolved_at ?? null,
@@ -5745,33 +6233,26 @@ export default async function handler(req: any, res: any) {
             name: body.name,
             timezone: body.timezone,
           });
-        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
-
-        if (isApiKeyBearer && (!canUseFeature(license.planKey, 'apiAccess') || lockState.locked)) {
-          return res.status(403).json({
-            success: false,
-            locked: lockState.locked,
-            reason: lockState.reason,
-            error: lockState.error || 'Full REST API Access requires an active SOVEREIGN license.',
-            code: 'FEATURE_LOCKED',
-            requiredPlan: 'enterprise',
-          });
+        const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['run-analysis']);
+        let apiDailyPatch: Partial<ServerUserRecord> = {};
+        if (isApiKeyBearer) {
+          const apiCheck = checkAndConsumeApiDailyQuota(userRecord);
+          if (!apiCheck.ok) {
+            return res.status(apiCheck.status).json(apiCheck.payload);
+          }
+          apiDailyPatch = {
+            api_calls_day: apiCheck.api_calls_day,
+            api_calls_today: apiCheck.api_calls_today,
+          };
         }
 
-        if (lockState.locked) {
-          return res.status(403).json({
-            success: false,
-            locked: true,
-            reason: lockState.reason,
-            status: lockState.status,
-            error: lockState.error,
-            code: lockState.reason === 'expired' ? 'LICENSE_EXPIRED' : 'NO_ANALYSES_LEFT',
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
             plan: license.planKey,
             displayName: license.displayName,
-            analysesLeft: 0,
-            analyses_left: 0,
-            daysLeft: 0,
+            daysLeft: creditCheck.lock?.reason === 'expired' ? 0 : license.daysLeft,
           });
         }
 
@@ -5781,7 +6262,7 @@ export default async function handler(req: any, res: any) {
             error: getUpgradeMessage('monteCarlo'),
             code: 'FEATURE_LOCKED',
             feature: 'monteCarlo',
-            requiredPlan: 'pro',
+            requiredPlan: 'starter',
           });
         }
 
@@ -5885,7 +6366,7 @@ export default async function handler(req: any, res: any) {
         const cashOnCash = uw.cashOnCash;
         const hasSensitivity = canUseFeature(license.planKey, 'yieldSensitivity');
         const hasMonteCarlo = canUseFeature(license.planKey, 'monteCarlo');
-        const mcCycles = license.planKey === 'enterprise' ? 10000 : 1000;
+        const mcCycles = PLAN_DEFINITIONS[license.planKey].monteCarloMaxCycles || 1000;
 
         const sensitivity = hasSensitivity
           ? [-10, 0, 10].map((deltaPct) => {
@@ -5955,6 +6436,7 @@ export default async function handler(req: any, res: any) {
             resultSummary: `Cap ${capRate}% | CoC ${cashOnCash}%${uw.irr5Yr !== null ? ` | IRR ${uw.irr5Yr}%` : ''}`,
           },
           {
+            ...apiDailyPatch,
             last_results: {
               ...(userRecord.last_results || {}),
               analysis: {
@@ -5964,7 +6446,8 @@ export default async function handler(req: any, res: any) {
                 created_at: analyzedAt,
               },
             },
-          }
+          },
+          CREDIT_COSTS['run-analysis']
         );
         await saveUserToDb(updatedUser);
         const nextLicense = computeServerLicenseStatus(updatedUser);
@@ -6029,27 +6512,35 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
+        const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['find-deals']);
 
-        if (lockState.locked) {
-          return res.status(403).json({
-            success: false,
-            locked: true,
-            reason: lockState.reason,
-            status: lockState.status,
-            error: lockState.error,
-            analyses_left: 0,
+        let apiDailyPatch: Partial<ServerUserRecord> = {};
+        if (isApiKeyBearer) {
+          const apiCheck = checkAndConsumeApiDailyQuota(userRecord);
+          if (!apiCheck.ok) {
+            return res.status(apiCheck.status).json(apiCheck.payload);
+          }
+          apiDailyPatch = {
+            api_calls_day: apiCheck.api_calls_day,
+            api_calls_today: apiCheck.api_calls_today,
+          };
+        }
+
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
-        // Strictly gated to PROFESSIONAL + SOVEREIGN
-        if (license.planKey !== 'pro' && license.planKey !== 'enterprise') {
+        if (!canUseFeature(license.planKey, 'dealFinder')) {
           return res.status(403).json({
             success: false,
-            error: 'AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade',
+            error: getUpgradeMessage('dealFinder'),
             code: 'FEATURE_LOCKED',
-            requiredPlan: 'pro',
+            requiredPlan: 'starter',
           });
         }
 
@@ -6201,8 +6692,12 @@ export default async function handler(req: any, res: any) {
           })
           .sort((a, b) => b.score - a.score);
 
+        const isFreeLimitedPreview = license.planKey === 'free';
+        const returnedDeals = isFreeLimitedPreview ? deals.slice(0, 2) : deals;
         const dealCreatedAt = new Date().toISOString();
-        const dealDisclaimer = `AI Deal Finder - Simulated deals based on market avg for ${cityEntry.city} - For illustration, verify with local agent`;
+        const dealDisclaimer = isFreeLimitedPreview
+          ? `Limited Deal Finder Preview (2 of ${deals.length} deals shown for FREE tier) — Simulated benchmarks for ${cityEntry.city}. Upgrade to STARTER for full deal screening.`
+          : `AI Deal Finder - Simulated deals based on market avg for ${cityEntry.city} - For illustration, verify with local agent`;
 
         const updatedUser = recordUserAnalysis(
           userRecord,
@@ -6210,11 +6705,12 @@ export default async function handler(req: any, res: any) {
             property: `AI Deal Finder - ${cityEntry.city} (${propertyType})`,
             city: cityEntry.city,
             priceUSD: budget,
-            capRate: deals[0].capRate,
-            cashOnCash: deals[0].cashOnCash,
-            resultSummary: `AI Deal Finder: 5 deals (${cityEntry.city}, Top ${deals[0].score}/100)`,
+            capRate: returnedDeals[0]?.capRate || 0,
+            cashOnCash: returnedDeals[0]?.cashOnCash || 0,
+            resultSummary: `AI Deal Finder: ${returnedDeals.length} deals (${cityEntry.city}, Top ${returnedDeals[0]?.score || 0}/100)`,
           },
           {
+            ...apiDailyPatch,
             last_results: {
               ...(userRecord.last_results || {}),
               deal_finder: {
@@ -6229,12 +6725,15 @@ export default async function handler(req: any, res: any) {
                 country: cityEntry.country,
                 countryCode: cityEntry.countryCode,
                 avgCapRate: cityEntry.avgCapRate,
+                isLimitedPreview: isFreeLimitedPreview,
+                totalAvailableDeals: deals.length,
                 disclaimer: dealDisclaimer,
-                deals,
+                deals: returnedDeals,
                 created_at: dealCreatedAt,
               },
             },
-          }
+          },
+          CREDIT_COSTS['find-deals']
         );
         await saveUserToDb(updatedUser);
         const nextLicense = computeServerLicenseStatus(updatedUser);
@@ -6247,8 +6746,10 @@ export default async function handler(req: any, res: any) {
           country: cityEntry.country,
           countryCode: cityEntry.countryCode,
           avgCapRate: cityEntry.avgCapRate,
+          isLimitedPreview: isFreeLimitedPreview,
+          totalAvailableDeals: deals.length,
           disclaimer: dealDisclaimer,
-          deals,
+          deals: returnedDeals,
           last_results: updatedUser.last_results || {},
           analyses_left: nextLicense.analysesLeft,
           analyses_total: nextLicense.analysesLimit,
@@ -6296,27 +6797,37 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
+        const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['get-forecast']);
 
-        if (lockState.locked) {
-          return res.status(403).json({
-            success: false,
-            locked: true,
-            reason: lockState.reason,
-            status: lockState.status,
-            error: lockState.error,
-            analyses_left: 0,
+        let apiDailyPatch: Partial<ServerUserRecord> = {};
+        if (isApiKeyBearer) {
+          const apiCheck = checkAndConsumeApiDailyQuota(userRecord);
+          if (!apiCheck.ok) {
+            return res.status(apiCheck.status).json(apiCheck.payload);
+          }
+          apiDailyPatch = {
+            api_calls_day: apiCheck.api_calls_day,
+            api_calls_today: apiCheck.api_calls_today,
+          };
+        }
+
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
-        // Strictly gated to PROFESSIONAL + SOVEREIGN
-        if (license.planKey !== 'pro' && license.planKey !== 'enterprise') {
+        // Basic 12M forecast unlocked on STARTER+; multi-year 3Y/5Y forecast unlocked on PROFESSIONAL+
+        if (!canUseFeature(license.planKey, 'forecastBasic')) {
           return res.status(403).json({
             success: false,
-            error: 'AI Market Forecast available in PROFESSIONAL / SOVEREIGN - Upgrade',
+            error: getUpgradeMessage('forecastBasic'),
             code: 'FEATURE_LOCKED',
-            requiredPlan: 'pro',
+            feature: 'forecastBasic',
+            requiredPlan: 'starter',
           });
         }
 
@@ -6331,12 +6842,18 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        const hasAdvancedForecast = canUseFeature(license.planKey, 'forecastAdvanced');
         const rawType = String(body.propertyType || 'Apartment').trim();
         const propertyType: 'Apartment' | 'Villa' | 'Commercial' =
           rawType === 'Villa' || rawType === 'Commercial' ? rawType : 'Apartment';
         const rawPeriod = String(body.period || '12 months').trim().toLowerCase();
-        const period: '12 months' | '3 years' | '5 years' =
-          rawPeriod.includes('5') ? '5 years' : rawPeriod.includes('3') ? '3 years' : '12 months';
+        const period: '12 months' | '3 years' | '5 years' = !hasAdvancedForecast
+          ? '12 months'
+          : rawPeriod.includes('5')
+          ? '5 years'
+          : rawPeriod.includes('3')
+          ? '3 years'
+          : '12 months';
 
         const citySeed = `${cityEntry.city}:${propertyType}`
           .split('')
@@ -6373,6 +6890,13 @@ export default async function handler(req: any, res: any) {
 
         const disclaimer = `Forecast based on market averages for ${cityEntry.city} - Not financial advice, verify with local agent`;
 
+        const fullSeries = [
+          { label: 'Now', capRate: currentAvgCapRate, rentGrowthPct: 0, priceGrowthPct: 0 },
+          { label: '12M', capRate: forecastCap12M, rentGrowthPct: rentGrowth12M, priceGrowthPct: priceGrowth12M },
+          { label: '3Y', capRate: forecastCap3Y, rentGrowthPct: rentGrowth3Y, priceGrowthPct: priceGrowth3Y },
+          { label: '5Y', capRate: forecastCap5Y, rentGrowthPct: rentGrowth5Y, priceGrowthPct: priceGrowth5Y },
+        ];
+
         const forecast = {
           id: `fc_${Date.now()}`,
           city: cityEntry.city,
@@ -6380,27 +6904,25 @@ export default async function handler(req: any, res: any) {
           countryCode: cityEntry.countryCode,
           propertyType,
           period,
+          isBasicForecast: !hasAdvancedForecast,
           currentAvgCapRate,
           forecastCap12M,
-          forecastCap3Y,
-          forecastCap5Y,
+          forecastCap3Y: hasAdvancedForecast ? forecastCap3Y : null,
+          forecastCap5Y: hasAdvancedForecast ? forecastCap5Y : null,
           rentGrowth12M,
-          rentGrowth3Y,
-          rentGrowth5Y,
+          rentGrowth3Y: hasAdvancedForecast ? rentGrowth3Y : null,
+          rentGrowth5Y: hasAdvancedForecast ? rentGrowth5Y : null,
           priceGrowth12M,
-          priceGrowth3Y,
-          priceGrowth5Y,
+          priceGrowth3Y: hasAdvancedForecast ? priceGrowth3Y : null,
+          priceGrowth5Y: hasAdvancedForecast ? priceGrowth5Y : null,
           selectedRentGrowthPct,
           selectedPriceGrowthPct,
           confidence,
           recommendation,
-          series: [
-            { label: 'Now', capRate: currentAvgCapRate, rentGrowthPct: 0, priceGrowthPct: 0 },
-            { label: '12M', capRate: forecastCap12M, rentGrowthPct: rentGrowth12M, priceGrowthPct: priceGrowth12M },
-            { label: '3Y', capRate: forecastCap3Y, rentGrowthPct: rentGrowth3Y, priceGrowthPct: priceGrowth3Y },
-            { label: '5Y', capRate: forecastCap5Y, rentGrowthPct: rentGrowth5Y, priceGrowthPct: priceGrowth5Y },
-          ],
-          disclaimer,
+          series: hasAdvancedForecast ? fullSeries : fullSeries.slice(0, 2),
+          disclaimer: hasAdvancedForecast
+            ? disclaimer
+            : `${disclaimer} (STARTER includes 12-Month Basic Forecast; upgrade to PROFESSIONAL for 3Y/5Y projections).`,
           generatedAt: new Date().toISOString(),
         };
 
@@ -6412,9 +6934,10 @@ export default async function handler(req: any, res: any) {
             priceUSD: 0,
             capRate: forecastCap12M,
             cashOnCash: rentGrowth12M,
-            resultSummary: `Forecast ${period}: Cap ${forecastCap12M}%->${forecastCap5Y}% | ${recommendation}`,
+            resultSummary: `Forecast ${period}: Cap ${forecastCap12M}%${hasAdvancedForecast ? `->${forecastCap5Y}%` : ''} | ${recommendation}`,
           },
           {
+            ...apiDailyPatch,
             last_results: {
               ...(userRecord.last_results || {}),
               forecast: {
@@ -6427,7 +6950,8 @@ export default async function handler(req: any, res: any) {
                 created_at: forecast.generatedAt,
               },
             },
-          }
+          },
+          CREDIT_COSTS['get-forecast']
         );
         await saveUserToDb(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
@@ -6437,6 +6961,7 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({
           success: true,
           created_at: forecast.generatedAt,
+          isBasicForecast: !hasAdvancedForecast,
           forecast,
           last_results: updatedUser.last_results || {},
           analyses_left: nextLock.analysesLeft,
@@ -6485,26 +7010,35 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
+        const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['run-due-diligence']);
 
-        if (lockState.locked) {
-          return res.status(403).json({
-            success: false,
-            locked: true,
-            reason: lockState.reason,
-            status: lockState.status,
-            error: lockState.error,
-            analyses_left: 0,
+        let apiDailyPatch: Partial<ServerUserRecord> = {};
+        if (isApiKeyBearer) {
+          const apiCheck = checkAndConsumeApiDailyQuota(userRecord);
+          if (!apiCheck.ok) {
+            return res.status(apiCheck.status).json(apiCheck.payload);
+          }
+          apiDailyPatch = {
+            api_calls_day: apiCheck.api_calls_day,
+            api_calls_today: apiCheck.api_calls_today,
+          };
+        }
+
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
-        // Strictly gated to PROFESSIONAL + SOVEREIGN
-        if (license.planKey !== 'pro' && license.planKey !== 'enterprise') {
+        if (!canUseFeature(license.planKey, 'dueDiligence')) {
           return res.status(403).json({
             success: false,
-            error: 'AI Due Diligence available in PROFESSIONAL / SOVEREIGN - Upgrade',
+            error: getUpgradeMessage('dueDiligence'),
             code: 'FEATURE_LOCKED',
+            feature: 'dueDiligence',
             requiredPlan: 'pro',
           });
         }
@@ -6794,6 +7328,7 @@ export default async function handler(req: any, res: any) {
             resultSummary: `Due Diligence Score ${riskScore}/100 (${verdict})`,
           },
           {
+            ...apiDailyPatch,
             last_results: {
               ...(userRecord.last_results || {}),
               due_diligence: {
@@ -6809,7 +7344,8 @@ export default async function handler(req: any, res: any) {
                 created_at: ddCreatedAt,
               },
             },
-          }
+          },
+          CREDIT_COSTS['run-due-diligence']
         );
         await saveUserToDb(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
@@ -6867,27 +7403,36 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
+        const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['optimize-portfolio']);
 
-        if (lockState.locked) {
-          return res.status(403).json({
-            success: false,
-            locked: true,
-            reason: lockState.reason,
-            status: lockState.status,
-            error: lockState.error,
-            analyses_left: 0,
+        let apiDailyPatch: Partial<ServerUserRecord> = {};
+        if (isApiKeyBearer) {
+          const apiCheck = checkAndConsumeApiDailyQuota(userRecord);
+          if (!apiCheck.ok) {
+            return res.status(apiCheck.status).json(apiCheck.payload);
+          }
+          apiDailyPatch = {
+            api_calls_day: apiCheck.api_calls_day,
+            api_calls_today: apiCheck.api_calls_today,
+          };
+        }
+
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
-        // Strictly gated to SOVEREIGN only
-        if (license.planKey !== 'enterprise') {
+        if (!canUseFeature(license.planKey, 'globalOptimizer')) {
           return res.status(403).json({
             success: false,
-            error: 'Global Portfolio Optimizer available in SOVEREIGN only - Upgrade to SOVEREIGN',
+            error: getUpgradeMessage('globalOptimizer'),
             code: 'FEATURE_LOCKED',
-            requiredPlan: 'enterprise',
+            feature: 'globalOptimizer',
+            requiredPlan: 'pro',
           });
         }
 
@@ -7037,6 +7582,7 @@ export default async function handler(req: any, res: any) {
             resultSummary: `Blended Cap ${blendedCapRate}% | Diversification ${diversificationScore}/100`,
           },
           {
+            ...apiDailyPatch,
             last_results: {
               ...(userRecord.last_results || {}),
               portfolio_optimizer: {
@@ -7049,7 +7595,8 @@ export default async function handler(req: any, res: any) {
                 created_at: optCreatedAt,
               },
             },
-          }
+          },
+          CREDIT_COSTS['optimize-portfolio']
         );
         await saveUserToDb(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
@@ -7107,27 +7654,36 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
+        const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['ask-advisor']);
 
-        if (lockState.locked) {
-          return res.status(403).json({
-            success: false,
-            locked: true,
-            reason: lockState.reason,
-            status: lockState.status,
-            error: lockState.error,
-            analyses_left: 0,
+        let apiDailyPatch: Partial<ServerUserRecord> = {};
+        if (isApiKeyBearer) {
+          const apiCheck = checkAndConsumeApiDailyQuota(userRecord);
+          if (!apiCheck.ok) {
+            return res.status(apiCheck.status).json(apiCheck.payload);
+          }
+          apiDailyPatch = {
+            api_calls_day: apiCheck.api_calls_day,
+            api_calls_today: apiCheck.api_calls_today,
+          };
+        }
+
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
-        // Strictly gated to SOVEREIGN only
-        if (license.planKey !== 'enterprise') {
+        if (!canUseFeature(license.planKey, 'institutionalAdvisor')) {
           return res.status(403).json({
             success: false,
-            error: 'Institutional AI Advisor available in SOVEREIGN only - Upgrade to SOVEREIGN',
+            error: getUpgradeMessage('institutionalAdvisor'),
             code: 'FEATURE_LOCKED',
-            requiredPlan: 'enterprise',
+            feature: 'institutionalAdvisor',
+            requiredPlan: 'pro',
           });
         }
 
@@ -7261,6 +7817,7 @@ export default async function handler(req: any, res: any) {
             resultSummary: `Advisor ${recommendation} (${cityEntry.city}, ${budgetFmt})`,
           },
           {
+            ...apiDailyPatch,
             last_results: {
               ...(userRecord.last_results || {}),
               advisor: {
@@ -7273,7 +7830,8 @@ export default async function handler(req: any, res: any) {
                 created_at: advisorCreatedAt,
               },
             },
-          }
+          },
+          CREDIT_COSTS['ask-advisor']
         );
         await saveUserToDb(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
@@ -7320,7 +7878,7 @@ export default async function handler(req: any, res: any) {
             requiredPlan: 'starter',
           });
         }
-        const mcCycles = license.planKey === 'enterprise' ? 10000 : 1000;
+        const mcCycles = PLAN_DEFINITIONS[license.planKey].monteCarloMaxCycles || 1000;
         const monteCarlo = runServerMonteCarlo(
           {
             priceUSD: Number(body.priceUSD || 650000),
@@ -7411,10 +7969,14 @@ export default async function handler(req: any, res: any) {
 
         if (currentSavedCount >= maxSaved) {
           const nextPlanHint =
-            license.planKey === 'enterprise'
-              ? ''
-              : ' Upgrade to SOVEREIGN (400 saves) to save more.';
-          return res.status(200).json({
+            license.planKey === 'institutional'
+              ? ' Contract maximum reached (1,000 saves).'
+              : license.planKey === 'enterprise'
+              ? ' Upgrade to ENTERPRISE (1,000 saves per contract) for more capacity.'
+              : license.planKey === 'pro'
+              ? ' Upgrade to SOVEREIGN for more capacity.'
+              : ' Upgrade to PROFESSIONAL for more saved capacity.';
+          return res.status(403).json({
             success: false,
             error: `Save limit reached for ${license.displayName}: ${currentSavedCount}/${maxSaved}.${nextPlanHint}`,
             code: 'SAVE_LIMIT_REACHED',
@@ -7712,57 +8274,127 @@ export default async function handler(req: any, res: any) {
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) ||
           getOrCreateServerUser(email, { name: body.name });
-        const license = computeLicenseStatus({
-          plan: userRecord.plan,
-          licenseStart: userRecord.license_start,
-          licenseEnd: userRecord.license_end,
-          analysesUsed: userRecord.analyses_used,
-        });
+        const license = computeServerLicenseStatus(userRecord);
+        const planCfg = PLAN_DEFINITIONS[license.planKey];
 
         if (license.isExpired) {
           return res.status(403).json({
+            success: false,
             error: 'Licensing window expired - Renew',
             code: 'LICENSE_EXPIRED',
           });
         }
 
-        const format = (body.format || 'pdf').toLowerCase();
+        const format = String(body.format || 'pdf').toLowerCase();
+        const docType = String(body.docType || 'pdf').toLowerCase();
         if (format === 'api') {
           if (!canUseFeature(license.planKey, 'apiAccess')) {
             return res.status(403).json({
+              success: false,
               error: getUpgradeMessage('apiAccess'),
               code: 'FEATURE_LOCKED',
               feature: 'apiAccess',
-              requiredPlan: 'enterprise',
+              requiredPlan: 'pro',
             });
           }
-        } else if (!canUseFeature(license.planKey, 'pdfExport')) {
-          return res.status(403).json({
-            error: getUpgradeMessage('pdfExport'),
-            code: 'FEATURE_LOCKED',
-            feature: 'pdfExport',
-            requiredPlan: 'pro',
+        } else {
+          if (!canUseFeature(license.planKey, 'pdfExport')) {
+            return res.status(403).json({
+              success: false,
+              error: getUpgradeMessage('pdfExport'),
+              code: 'FEATURE_LOCKED',
+              feature: 'pdfExport',
+              requiredPlan: 'starter',
+            });
+          }
+          if (docType === 'memorandum' && !canUseFeature(license.planKey, 'memorandumPdf')) {
+            return res.status(403).json({
+              success: false,
+              error: getUpgradeMessage('memorandumPdf'),
+              code: 'FEATURE_LOCKED',
+              feature: 'memorandumPdf',
+              requiredPlan: 'pro',
+            });
+          }
+          const currentPdfsUsed = Math.max(0, Number(userRecord.pdfs_used || 0));
+          if (currentPdfsUsed >= planCfg.investmentPdfLimit) {
+            return res.status(403).json({
+              success: false,
+              error: `Monthly PDF export limit reached (${currentPdfsUsed}/${planCfg.investmentPdfLimit} for ${planCfg.displayName}). Upgrade your plan for additional PDF exports.`,
+              code: 'PDF_QUOTA_EXCEEDED',
+              pdfs_used: currentPdfsUsed,
+              investment_pdf_limit: planCfg.investmentPdfLimit,
+            });
+          }
+        }
+
+        const exportCost = format === 'api' ? 0 : CREDIT_COSTS['export'];
+        const creditCheck = ensureCreditsForAction(userRecord, exportCost);
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
         const propertyTitle = (body.propertyTitle || 'AQARI_Institutional_Asset').toString();
         const safeName = propertyTitle.replace(/[^a-z0-9_-]+/gi, '_');
         const dateStr = new Date().toISOString().slice(0, 10);
-        const watermark = `Generated by AQARI TERMINAL - Loomora Studios - Licensed to ${email} - ${dateStr}`;
+        const isWatermarked = license.planKey === 'free';
+        const branding = canUseFeature(license.planKey, 'whiteLabelReports')
+          ? userRecord.branding || null
+          : null;
+        const watermark = isWatermarked
+          ? `FREE TIER WATERMARK - AQARI TERMINAL SAMPLE - Licensed to ${email} - ${dateStr}`
+          : branding?.firmName
+          ? `Prepared by ${branding.firmName} - ${dateStr}`
+          : `Generated by AQARI TERMINAL - Licensed to ${email} - ${dateStr}`;
 
-        recordUserPdfDownload(email, {
+        const nextPdfsUsed = Math.max(0, Number(userRecord.pdfs_used || 0)) + (format === 'api' ? 0 : 1);
+        const pdfEntry: ForensicPdfEntry = {
+          id: `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: new Date().toISOString(),
           property: propertyTitle,
           format,
           watermark,
-        });
+        };
+
+        const updatedUser = recordUserAnalysis(
+          userRecord,
+          {
+            property: `${propertyTitle} (${format.toUpperCase()})`,
+            city: String(body.city || 'Global'),
+            priceUSD: Number(body.priceUSD || 0),
+            capRate: Number(body.capRate || 0),
+            cashOnCash: Number(body.cashOnCash || 0),
+            resultSummary: `Exported ${docType === 'memorandum' ? 'Memorandum' : format.toUpperCase()} Report`,
+          },
+          {
+            pdfs_used: nextPdfsUsed,
+            pdf_downloads: [pdfEntry, ...(userRecord.pdf_downloads || [])].slice(0, 200),
+          },
+          exportCost
+        );
+        await saveUserToDb(updatedUser).catch(() => {});
+        const nextLicense = computeServerLicenseStatus(updatedUser);
 
         return res.status(200).json({
           success: true,
           format,
+          docType,
           filename: `${safeName}_AQARI_MEMO.${format === 'api' ? 'json' : 'pdf'}`,
           watermark,
+          isWatermarked,
+          branding,
           generatedAt: new Date().toISOString(),
-          plan: license.displayName,
+          plan: nextLicense.displayName,
+          planKey: nextLicense.planKey,
+          pdfs_used: nextPdfsUsed,
+          investment_pdf_limit: planCfg.investmentPdfLimit,
+          analyses_left: nextLicense.analysesLeft,
+          analyses_used: nextLicense.analysesUsed,
+          analyses_total: nextLicense.analysesLimit,
         });
       }
 
@@ -8076,10 +8708,12 @@ export default async function handler(req: any, res: any) {
           (await getUserFromDb(sessionEmail).catch(() => null)) || getOrCreateServerUser(sessionEmail);
         const lockState = evaluateLockState(dbUser);
         const license = computeServerLicenseStatus(dbUser);
-        if (license.planKey !== 'enterprise' || lockState.locked) {
+        if (!canUseFeature(license.planKey, 'apiAccess') || lockState.locked) {
           return res.status(403).json({
             success: false,
-            error: 'Active SOVEREIGN license required for REST API access.',
+            error: 'Active PROFESSIONAL (100 req/day), SOVEREIGN (2,000 req/day), or ENTERPRISE (10,000 req/day) license required for REST API access.',
+            code: 'FEATURE_LOCKED',
+            requiredPlan: 'pro',
           });
         }
         const minted = getOrMintApiKeyForUser(dbUser);
@@ -8096,6 +8730,7 @@ export default async function handler(req: any, res: any) {
           token: minted.rawToken,
           masked: minted.masked,
           last4: minted.last4,
+          api_daily_limit: PLAN_DEFINITIONS[license.planKey].apiDailyLimit,
         });
       }
 
@@ -8111,10 +8746,12 @@ export default async function handler(req: any, res: any) {
           (await getUserFromDb(sessionEmail).catch(() => null)) || getOrCreateServerUser(sessionEmail);
         const lockState = evaluateLockState(dbUser);
         const license = computeServerLicenseStatus(dbUser);
-        if (license.planKey !== 'enterprise' || lockState.locked) {
+        if (!canUseFeature(license.planKey, 'apiAccess') || lockState.locked) {
           return res.status(403).json({
             success: false,
-            error: 'Active SOVEREIGN license required for REST API access.',
+            error: 'Active PROFESSIONAL (100 req/day), SOVEREIGN (2,000 req/day), or ENTERPRISE (10,000 req/day) license required for REST API access.',
+            code: 'FEATURE_LOCKED',
+            requiredPlan: 'pro',
           });
         }
 
@@ -8139,6 +8776,7 @@ export default async function handler(req: any, res: any) {
           api_key: newMasked,
           api_key_last4: newLast4,
           token: newToken,
+          api_daily_limit: PLAN_DEFINITIONS[license.planKey].apiDailyLimit,
           message: `API key regenerated (${newMasked}). Previous token revoked.`,
         });
       }
@@ -9071,14 +9709,24 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const lockState = evaluateLockState(userRecord);
-        if (lockState.locked) {
+        const license = computeServerLicenseStatus(userRecord);
+        const planCfg = PLAN_DEFINITIONS[license.planKey];
+        const currentImagePdfUsed = Math.max(0, Number(userRecord.image_pdf_used || 0));
+        if (currentImagePdfUsed >= planCfg.imagePdfLimit) {
           return res.status(403).json({
             success: false,
-            locked: true,
-            reason: lockState.reason,
-            error: lockState.error || 'No analyses left or license expired.',
-            analyses_left: 0,
+            error: `Monthly Image/PDF extraction limit reached (${currentImagePdfUsed}/${planCfg.imagePdfLimit} for ${planCfg.displayName}). Upgrade your plan for additional extractions.`,
+            code: 'IMAGE_PDF_QUOTA_EXCEEDED',
+            image_pdf_used: currentImagePdfUsed,
+            image_pdf_limit: planCfg.imagePdfLimit,
+          });
+        }
+        const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['extract-from-file']);
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -9260,7 +9908,37 @@ export default async function handler(req: any, res: any) {
           aiSummary: String(extracted.aiSummary || 'Extraction completed. Confirm any missing or estimated fields below.'),
         };
 
-        return res.status(200).json({ success: true, draft });
+        const extractionId = `ext_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const nextImagePdfUsed = currentImagePdfUsed + 1;
+        const updatedUser = recordUserAnalysis(
+          userRecord,
+          {
+            property: draft.propertyTitle,
+            city: draft.city,
+            priceUSD: Number(draft.priceUSD || 0),
+            capRate: 0,
+            cashOnCash: 0,
+            resultSummary: `File Extraction (${fileName})`,
+          },
+          {
+            image_pdf_used: nextImagePdfUsed,
+            last_extraction_id: extractionId,
+          },
+          CREDIT_COSTS['extract-from-file']
+        );
+        await saveUserToDb(updatedUser);
+        const nextLicense = computeServerLicenseStatus(updatedUser);
+
+        return res.status(200).json({
+          success: true,
+          extractionId,
+          draft,
+          analyses_left: nextLicense.analysesLeft,
+          analyses_used: nextLicense.analysesUsed,
+          analyses_total: nextLicense.analysesLimit,
+          image_pdf_used: nextImagePdfUsed,
+          image_pdf_limit: planCfg.imagePdfLimit,
+        });
       }
 
       case 'run-file-analysis': {
@@ -9280,15 +9958,29 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
-        if (lockState.locked) {
+        const planCfg = PLAN_DEFINITIONS[license.planKey];
+        const currentImagePdfUsed = Math.max(0, Number(userRecord.image_pdf_used || 0));
+        const alreadyCountedExtraction = Boolean(
+          body.extractionId &&
+            userRecord.last_extraction_id &&
+            String(body.extractionId) === String(userRecord.last_extraction_id)
+        );
+        if (!alreadyCountedExtraction && currentImagePdfUsed >= planCfg.imagePdfLimit) {
           return res.status(403).json({
             success: false,
-            locked: true,
-            reason: lockState.reason,
-            error: lockState.error || 'No analyses left or license expired.',
-            analyses_left: 0,
+            error: `Monthly Image/PDF analysis limit reached (${currentImagePdfUsed}/${planCfg.imagePdfLimit} for ${planCfg.displayName}). Upgrade your plan to analyze more files.`,
+            code: 'IMAGE_PDF_QUOTA_EXCEEDED',
+            image_pdf_used: currentImagePdfUsed,
+            image_pdf_limit: planCfg.imagePdfLimit,
+          });
+        }
+        const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['run-file-analysis']);
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -9380,7 +10072,9 @@ export default async function handler(req: any, res: any) {
             warnings: uw.warnings,
             sensitivity: null,
             monteCarlo: canUseFeature(license.planKey, 'monteCarlo')
-              ? runServerMonteCarlo(uw.inputs, { cycles: license.planKey === 'enterprise' ? 10000 : 1000 })
+              ? runServerMonteCarlo(uw.inputs, {
+                  cycles: PLAN_DEFINITIONS[license.planKey].monteCarloMaxCycles || 1000,
+                })
               : null,
           },
           marketContext: (() => {
@@ -9409,6 +10103,7 @@ export default async function handler(req: any, res: any) {
           createdAt,
         };
 
+        const nextImagePdfUsed = alreadyCountedExtraction ? currentImagePdfUsed : currentImagePdfUsed + 1;
         const updatedUser = recordUserAnalysis(
           userRecord,
           {
@@ -9420,11 +10115,14 @@ export default async function handler(req: any, res: any) {
             resultSummary: `[File Analysis] Cap ${uw.capRate}% | CoC ${uw.cashOnCash}%`,
           },
           {
+            image_pdf_used: nextImagePdfUsed,
+            last_extraction_id: null,
             last_results: {
               ...(userRecord.last_results || {}),
               file_analysis: report,
             },
-          }
+          },
+          CREDIT_COSTS['run-file-analysis']
         );
         await saveUserToDb(updatedUser);
         const nextLicense = computeServerLicenseStatus(updatedUser);
@@ -9436,6 +10134,8 @@ export default async function handler(req: any, res: any) {
           analyses_left: nextLicense.analysesLeft,
           analyses_used: nextLicense.analysesUsed,
           analyses_total: nextLicense.analysesLimit,
+          image_pdf_used: nextImagePdfUsed,
+          image_pdf_limit: planCfg.imagePdfLimit,
         });
       }
 
@@ -9453,18 +10153,39 @@ export default async function handler(req: any, res: any) {
           return res.status(503).json({ success: false, error: 'Database temporarily unavailable.' });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const lockState = evaluateLockState(userRecord);
-        if (lockState.locked) {
-          return res.status(403).json({
-            success: false,
-            locked: true,
-            reason: lockState.reason,
-            error: lockState.error || 'No analyses left or license expired.',
-          });
-        }
+        const license = computeServerLicenseStatus(userRecord);
+        const planCfg = PLAN_DEFINITIONS[license.planKey];
 
         const isVirtual = body.isVirtual !== false;
         const docType = body.docType === 'memorandum' ? 'memorandum' : 'listing';
+        if (docType === 'memorandum' && !canUseFeature(license.planKey, 'memorandumPdf')) {
+          return res.status(403).json({
+            success: false,
+            error: getUpgradeMessage('memorandumPdf'),
+            code: 'FEATURE_LOCKED',
+            feature: 'memorandumPdf',
+            requiredPlan: 'pro',
+          });
+        }
+        const currentAiListingsUsed = Math.max(0, Number(userRecord.ai_listings_used || 0));
+        if (currentAiListingsUsed >= planCfg.aiListingLimit) {
+          return res.status(403).json({
+            success: false,
+            error: `Monthly AI Property Studio limit reached (${currentAiListingsUsed}/${planCfg.aiListingLimit} for ${planCfg.displayName}). Upgrade your plan to generate more listings.`,
+            code: 'AI_LISTING_QUOTA_EXCEEDED',
+            ai_listings_used: currentAiListingsUsed,
+            ai_listing_limit: planCfg.aiListingLimit,
+          });
+        }
+        const studioCreditCost = body.useAiEnhance !== false ? CREDIT_COSTS['studio-generate'] : 1;
+        const creditCheck = ensureCreditsForAction(userRecord, studioCreditCost);
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
+          });
+        }
         const country = String(body.country || 'Oman').trim();
         const city = String(body.city || 'Muscat').trim();
         const areaDistrict = String(body.areaDistrict || 'Prime Waterfront District').trim();
@@ -9602,21 +10323,38 @@ STRICT GUARDRAILS:
           generatedAt: new Date().toISOString(),
         };
 
-        const store = loadStore();
-        store.users[email] = userRecord;
-        persistStore(store);
-        const updatedUser = updateServerUser(email, {
-          last_results: {
-            ...(userRecord.last_results || {}),
-            property_studio: draft,
+        const nextAiListingsUsed = currentAiListingsUsed + 1;
+        const updatedUser = recordUserAnalysis(
+          userRecord,
+          {
+            property: draft.title,
+            city: draft.city,
+            priceUSD: draft.budgetUSD,
+            capRate: impliedYield || 0,
+            cashOnCash: 0,
+            resultSummary: `Property Studio (${docType})`,
           },
-        });
+          {
+            ai_listings_used: nextAiListingsUsed,
+            last_results: {
+              ...(userRecord.last_results || {}),
+              property_studio: draft,
+            },
+          },
+          studioCreditCost
+        );
         await saveUserToDb(updatedUser);
+        const nextLicense = computeServerLicenseStatus(updatedUser);
 
         return res.status(200).json({
           success: true,
           draft,
           last_results: updatedUser.last_results || {},
+          analyses_left: nextLicense.analysesLeft,
+          analyses_used: nextLicense.analysesUsed,
+          analyses_total: nextLicense.analysesLimit,
+          ai_listings_used: nextAiListingsUsed,
+          ai_listing_limit: planCfg.aiListingLimit,
         });
       }
 
@@ -9633,6 +10371,8 @@ STRICT GUARDRAILS:
           return res.status(503).json({ success: false, error: 'Database temporarily unavailable.' });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
+        const license = computeServerLicenseStatus(userRecord);
+        const planCfg = PLAN_DEFINITIONS[license.planKey];
         let assets: any[] = Array.isArray(userRecord.portfolio_assets)
           ? [...userRecord.portfolio_assets]
           : [];
@@ -9651,22 +10391,41 @@ STRICT GUARDRAILS:
             assets[idx] = computePostPurchaseAssetRecord({ ...assets[idx], ...body.asset }, targetId);
           } else if (subAction === 'seed-from-saved') {
             const existingNames = new Set(assets.map((a) => `${a.property}|${a.city}`));
-            for (const s of userRecord.saved_analyses || []) {
-              const key = `${s.property}|${s.city}`;
-              if (!existingNames.has(key)) {
-                assets.unshift(
-                  computePostPurchaseAssetRecord({
-                    property: s.property,
-                    city: s.city,
-                    purchasePriceUSD: s.price,
-                    currentValueUSD: s.price,
-                    forecastRentMonthlyUSD: s.rent,
-                    actualRentMonthlyUSD: s.rent,
-                  })
-                );
-              }
+            const candidates = (userRecord.saved_analyses || []).filter(
+              (s: any) => !existingNames.has(`${s.property}|${s.city}`)
+            );
+            if (candidates.length > 0 && assets.length >= planCfg.portfolioAssetsLimit) {
+              return res.status(403).json({
+                success: false,
+                error: `Portfolio asset limit reached (${assets.length}/${planCfg.portfolioAssetsLimit} assets for ${planCfg.displayName}). Upgrade to expand portfolio tracking capacity.`,
+                code: 'PORTFOLIO_ASSET_LIMIT_REACHED',
+                portfolioAssetsLimit: planCfg.portfolioAssetsLimit,
+                assetCount: assets.length,
+              });
+            }
+            for (const s of candidates) {
+              if (assets.length >= planCfg.portfolioAssetsLimit) break;
+              assets.unshift(
+                computePostPurchaseAssetRecord({
+                  property: s.property,
+                  city: s.city,
+                  purchasePriceUSD: s.price,
+                  currentValueUSD: s.price,
+                  forecastRentMonthlyUSD: s.rent,
+                  actualRentMonthlyUSD: s.rent,
+                })
+              );
             }
           } else {
+            if (assets.length >= planCfg.portfolioAssetsLimit) {
+              return res.status(403).json({
+                success: false,
+                error: `Portfolio asset limit reached (${assets.length}/${planCfg.portfolioAssetsLimit} assets for ${planCfg.displayName}). Upgrade to add more post-purchase assets.`,
+                code: 'PORTFOLIO_ASSET_LIMIT_REACHED',
+                portfolioAssetsLimit: planCfg.portfolioAssetsLimit,
+                assetCount: assets.length,
+              });
+            }
             const record = computePostPurchaseAssetRecord(body.asset || body);
             assets.unshift(record);
           }
@@ -9674,7 +10433,9 @@ STRICT GUARDRAILS:
           const store = loadStore();
           store.users[email] = userRecord;
           persistStore(store);
-          const updated = updateServerUser(email, { portfolio_assets: assets.slice(0, 200) });
+          const updated = updateServerUser(email, {
+            portfolio_assets: assets.slice(0, planCfg.portfolioAssetsLimit),
+          });
           await saveUserToDb(updated);
           assets = updated.portfolio_assets || [];
         }
@@ -9724,6 +10485,8 @@ STRICT GUARDRAILS:
 
         return res.status(200).json({
           success: true,
+          planKey: license.planKey,
+          portfolioAssetsLimit: planCfg.portfolioAssetsLimit,
           assets,
           summary: {
             assetCount: assets.length,
@@ -9762,22 +10525,21 @@ STRICT GUARDRAILS:
           return res.status(503).json({ success: false, error: 'Database temporarily unavailable. No credit deducted.' });
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
-        if (lockState.locked) {
-          return res.status(403).json({
-            success: false,
-            locked: true,
-            reason: lockState.reason,
-            error: lockState.error || 'No analyses left or license expired.',
-            analyses_left: 0,
+        const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['due-diligence-docs']);
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
-        if (license.planKey !== 'pro' && license.planKey !== 'enterprise') {
+        if (!canUseFeature(license.planKey, 'dueDiligence')) {
           return res.status(403).json({
             success: false,
-            error: 'AI Document Due Diligence available in PROFESSIONAL / SOVEREIGN - Upgrade',
+            error: getUpgradeMessage('dueDiligence'),
             code: 'FEATURE_LOCKED',
+            feature: 'dueDiligence',
             requiredPlan: 'pro',
           });
         }
@@ -9938,7 +10700,8 @@ Return JSON with:
               ...(userRecord.last_results || {}),
               due_diligence_docs: result,
             },
-          }
+          },
+          CREDIT_COSTS['due-diligence-docs']
         );
         await saveUserToDb(updatedUser);
         const nextLicense = computeServerLicenseStatus(updatedUser);
@@ -9949,6 +10712,7 @@ Return JSON with:
           last_results: updatedUser.last_results || {},
           analyses_left: nextLicense.analysesLeft,
           analyses_used: nextLicense.analysesUsed,
+          analyses_total: nextLicense.analysesLimit,
         });
       }
 
@@ -9963,15 +10727,25 @@ Return JSON with:
         }
         const { user: hydratedDb } = await readUserFromDbStatus(email);
         const userRecord = hydratedDb || getOrCreateServerUser(email);
+        const license = computeServerLicenseStatus(userRecord);
+        const planCfg = PLAN_DEFINITIONS[license.planKey];
 
         const defaultScenarios = [
           { id: 'sc-1', label: 'Muscat ITC Prime', city: 'Muscat', priceUSD: 650000, monthlyRentUSD: 4550, downPaymentPct: 30, interestRatePct: 5.65, operatingExpensePct: 14 },
           { id: 'sc-2', label: 'Dubai Marina Core', city: 'Dubai', priceUSD: 950000, monthlyRentUSD: 6950, downPaymentPct: 30, interestRatePct: 4.85, operatingExpensePct: 18 },
           { id: 'sc-3', label: 'Riyadh Al Olaya Yield', city: 'Riyadh', priceUSD: 820000, monthlyRentUSD: 6010, downPaymentPct: 30, interestRatePct: 5.5, operatingExpensePct: 15 },
         ];
+        if (Array.isArray(body.scenarios) && body.scenarios.length > planCfg.compareLimit) {
+          return res.status(403).json({
+            success: false,
+            error: `Scenario compare limit is ${planCfg.compareLimit} scenario${planCfg.compareLimit === 1 ? '' : 's'} on ${planCfg.displayName}. Upgrade to compare more scenarios side-by-side.`,
+            code: 'COMPARE_LIMIT_EXCEEDED',
+            compareLimit: planCfg.compareLimit,
+          });
+        }
         const rawScenarios = Array.isArray(body.scenarios) && body.scenarios.length > 0
-          ? body.scenarios.slice(0, 3)
-          : defaultScenarios;
+          ? body.scenarios.slice(0, planCfg.compareLimit)
+          : defaultScenarios.slice(0, planCfg.compareLimit);
 
         const computed = rawScenarios.map((sc: any, idx: number) => {
           const cityEntry = findInlinedCity(String(sc.city || 'Muscat')) || findInlinedCity('Muscat')!;
@@ -10041,6 +10815,7 @@ Return JSON with:
 
         return res.status(200).json({
           success: true,
+          compareLimit: planCfg.compareLimit,
           ...payload,
           last_results: updated.last_results || {},
         });
@@ -10105,6 +10880,7 @@ Return JSON with:
           return res.status(200).json({
             success: true,
             planKey: license.planKey,
+            teamUsersLimit: PLAN_DEFINITIONS[license.planKey].teamUsersLimit,
             orgs,
             activeOrg,
             myRole: myMember?.role || 'Analyst',
@@ -10197,6 +10973,15 @@ Return JSON with:
               org.members[existingIdx].role = role;
               pushAudit('ROLE_UPDATED', memberEmail, `Changed ${memberEmail} role to ${role}`);
             } else {
+              const teamUsersLimit = PLAN_DEFINITIONS[license.planKey].teamUsersLimit;
+              if (org.members.length >= teamUsersLimit) {
+                return res.status(403).json({
+                  success: false,
+                  error: `Team seat limit reached (${org.members.length}/${teamUsersLimit} users for ${PLAN_DEFINITIONS[license.planKey].displayName}). Upgrade your plan to add more team seats.`,
+                  code: 'TEAM_SEAT_LIMIT_REACHED',
+                  teamUsersLimit,
+                });
+              }
               org.members.push({
                 email: memberEmail,
                 name: String(body.memberName || memberEmail.split('@')[0]),
@@ -10311,19 +11096,324 @@ Return JSON with:
           }
 
           await saveEnterpriseOrgToDb(org);
-          return res.status(200).json({ success: true, activeOrg: org, myRole: actorRole });
+          return res.status(200).json({
+            success: true,
+            activeOrg: org,
+            myRole: actorRole,
+            teamUsersLimit: PLAN_DEFINITIONS[license.planKey].teamUsersLimit,
+          });
         }
 
         return res.status(405).json({ success: false, error: 'Method not allowed' });
       }
 
       case 'market-intelligence': {
+        const allMarkets = getGlobalMarketIntelligenceData();
+        const sessionEmail = getSessionEmailFromReq(req);
+        const queryEmail = normalizeEmail(
+          sessionEmail || getQueryParam(req, url, 'email') || parsedBody?.login_email || parsedBody?.email
+        );
+        let planKey: PlanKey = 'free';
+        if (queryEmail && queryEmail.includes('@')) {
+          const userRec = (await getUserFromDb(queryEmail).catch(() => null)) || getServerUserByEmail(queryEmail);
+          if (userRec) {
+            planKey = computeServerLicenseStatus(userRec).planKey;
+          }
+        }
+        const isBasicMarket = planKey === 'free';
         return res.status(200).json({
           success: true,
-          markets: getGlobalMarketIntelligenceData(),
+          planKey,
+          isBasicMarket,
+          totalAvailable: allMarkets.length,
+          markets: isBasicMarket ? allMarkets.slice(0, 2) : allMarkets,
           generatedAt: new Date().toISOString(),
-          disclaimer:
-            'Each indicator displays its authoritative source and verification date. Market data is indicative; verify prior to capital allocation.',
+          disclaimer: isBasicMarket
+            ? 'FREE tier displays 2 basic market benchmarks. Upgrade to STARTER ($75 launch) for full Global Market Intelligence across all jurisdictions. Each indicator shows its authoritative source and date — not live exchange data.'
+            : 'Each indicator displays its authoritative source and verification date. Market data is indicative benchmark research, not live exchange telemetry; verify prior to capital allocation.',
+        });
+      }
+
+      case 'buy-credits': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody;
+        const email = normalizeEmail(getSessionEmailFromReq(req) || body.login_email || body.email);
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required to purchase credits.' });
+        }
+        const packId = String(body.packId || body.pack_id || '').trim();
+        const pack = EXTRA_CREDIT_PACKS.find((p) => p.id === packId);
+        if (!pack) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid credit pack. Choose pack_25 (+25 credits), pack_100 (+100 credits), or pack_500 (+500 credits).',
+            creditPacks: EXTRA_CREDIT_PACKS,
+          });
+        }
+
+        const rawOrderId = normalizeOrderId(String(body.transaction_id || body.transactionId || body.order_id || '').trim());
+        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY') || getEnv('PAYMENT_API_KEY'));
+        const isStrictProd =
+          process.env.NODE_ENV === 'production' &&
+          getEnv('PAYMENT_TEST_MODE') !== 'true' &&
+          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() !== 'sandbox';
+
+        if (rawOrderId) {
+          const used = await getUsedOrderFromDb(rawOrderId);
+          if (used) {
+            if (normalizeEmail(used.login_email) !== email) {
+              return res.status(403).json({
+                success: false,
+                error: 'This transaction ID has already been redeemed by another account.',
+              });
+            }
+            const existingUser =
+              (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+            const existingLic = computeServerLicenseStatus(existingUser);
+            return res.status(200).json({
+              success: true,
+              alreadyApplied: true,
+              pack,
+              analyses_left: existingLic.analysesLeft,
+              analyses_total: existingLic.analysesLimit,
+              extra_credits: existingUser.extra_credits || 0,
+            });
+          }
+
+          if (rawOrderId.startsWith('txn_') && paddleApiKey) {
+            const paddleBaseUrl =
+              cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox'
+                ? 'https://sandbox-api.paddle.com'
+                : 'https://api.paddle.com';
+            try {
+              const pRes = await fetch(`${paddleBaseUrl}/transactions/${encodeURIComponent(rawOrderId)}`, {
+                headers: {
+                  Authorization: `Bearer ${paddleApiKey}`,
+                  Accept: 'application/json',
+                },
+              });
+              const pJson: any = await pRes.json().catch(() => null);
+              const pStatus = String(pJson?.data?.status || '').toLowerCase();
+              if (!pRes.ok || (pStatus !== 'completed' && pStatus !== 'paid')) {
+                return res.status(400).json({
+                  success: false,
+                  error: `Paddle transaction ${rawOrderId} is not completed/paid (status: ${pStatus || pRes.status}).`,
+                });
+              }
+            } catch (err: any) {
+              return res.status(502).json({
+                success: false,
+                error: `Unable to verify Paddle transaction: ${err?.message || 'network error'}`,
+              });
+            }
+          }
+        } else if (isStrictProd && paddleApiKey) {
+          return res.status(402).json({
+            success: false,
+            requiresPayment: true,
+            code: 'PAYMENT_REQUIRED_FOR_CREDITS',
+            pack,
+            error: `Extra credit pack (${pack.label}, $${pack.priceUSD}) requires a verified Paddle transaction ID in production or a contract invoice top-up.`,
+          });
+        }
+
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({
+            success: false,
+            error: 'Database temporarily unavailable. Please retry.',
+          });
+        }
+        const userRecord = hydratedDb || getOrCreateServerUser(email);
+        const now = Date.now();
+        const iso = new Date(now).toISOString();
+        const txId = rawOrderId || `cr_${pack.id}_${now}_${Math.random().toString(36).slice(2, 6)}`;
+
+        const nextExtra = Math.max(0, Number(userRecord.extra_credits || 0)) + pack.credits;
+        const nextLeft = Math.max(0, Number(userRecord.analyses_left || 0)) + pack.credits;
+        const planCfg = PLAN_DEFINITIONS[normalizePlanKey(userRecord.plan)];
+        const nextTotal = Math.max(Number(userRecord.analyses_total || planCfg.analysesLimit), planCfg.analysesLimit) + pack.credits;
+
+        const updatedUser = updateServerUser(email, {
+          status: userRecord.license_end && now > userRecord.license_end ? 'expired' : 'active',
+          extra_credits: nextExtra,
+          analyses_left: nextLeft,
+          analyses_total: nextTotal,
+          total_paid_usd: Math.max(0, Number(userRecord.total_paid_usd || 0)) + pack.priceUSD,
+          payments: [
+            {
+              id: `pay_${now}_${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: iso,
+              order_id: txId,
+              plan: `${normalizePlanKey(userRecord.plan)}+${pack.id}`,
+              amount: pack.priceUSD,
+              currency: 'USD',
+              test_mode: !isStrictProd,
+            },
+            ...(userRecord.payments || []),
+          ],
+          timeline: [
+            {
+              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: iso,
+              type: 'purchase' as const,
+              message: `Purchased ${pack.label} ($${pack.priceUSD}) -> +${pack.credits} AI credits (Ref #${txId})`,
+              actor: email,
+            },
+            ...(userRecord.timeline || []),
+          ].slice(0, 200),
+        });
+        await saveUserToDb(updatedUser);
+        if (rawOrderId) {
+          await markOrderUsedInDb({
+            order_id: rawOrderId,
+            login_email: email,
+            payment_email: email,
+            plan: normalizePlanKey(userRecord.plan),
+            plan_display: pack.label,
+            analyses: pack.credits,
+            amount: pack.priceUSD,
+            test_mode: !isStrictProd,
+            used_at: now,
+          }).catch(() => {});
+        }
+        const nextLicense = computeServerLicenseStatus(updatedUser);
+
+        return res.status(200).json({
+          success: true,
+          message: `Added +${pack.credits} AI credits (${pack.label}) to your balance.`,
+          pack,
+          transaction_id: txId,
+          analyses_left: nextLicense.analysesLeft,
+          analyses_used: nextLicense.analysesUsed,
+          analyses_total: nextLicense.analysesLimit,
+          extra_credits: updatedUser.extra_credits || nextExtra,
+          license: nextLicense,
+        });
+      }
+
+      case 'update-branding': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody;
+        const email = normalizeEmail(getSessionEmailFromReq(req) || body.login_email || body.email);
+        if (!email || !email.includes('@')) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+        if (kvError && !hydratedDb) {
+          return res.status(503).json({ success: false, error: 'Database temporarily unavailable.' });
+        }
+        const userRecord = hydratedDb || getOrCreateServerUser(email);
+        const license = computeServerLicenseStatus(userRecord);
+        if (license.isExpired || !canUseFeature(license.planKey, 'whiteLabelReports')) {
+          return res.status(403).json({
+            success: false,
+            error: getUpgradeMessage('whiteLabelReports'),
+            code: 'FEATURE_LOCKED',
+            feature: 'whiteLabelReports',
+            requiredPlan: 'enterprise',
+          });
+        }
+
+        const firmName = String(body.firmName || '').trim().slice(0, 100);
+        const rawLogo = String(body.logoUrl || '').trim().slice(0, 200000);
+        const rawAccent = String(body.accentColor || '#D4AF37').trim();
+        const accentColor = /^#[0-9a-fA-F]{6}$/.test(rawAccent) ? rawAccent : '#D4AF37';
+        const branding = {
+          firmName: firmName || `${userRecord.name || 'Sovereign'} Capital`,
+          logoUrl: rawLogo.startsWith('data:image/') || rawLogo.startsWith('https://') ? rawLogo : '',
+          accentColor,
+        };
+        const now = Date.now();
+        const updatedUser = updateServerUser(email, {
+          branding,
+          timeline: [
+            {
+              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: new Date(now).toISOString(),
+              type: 'branding_update',
+              message: `Updated White-Label PDF Branding (${branding.firmName}, ${branding.accentColor})`,
+              actor: email,
+            },
+            ...(userRecord.timeline || []),
+          ].slice(0, 200),
+        });
+        await saveUserToDb(updatedUser);
+        return res.status(200).json({
+          success: true,
+          branding,
+          message: 'White-label branding saved for Memorandum and PDF exports.',
+        });
+      }
+
+      case 'enterprise-inquiry': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody;
+        const companyName = String(body.companyName || body.firmName || '').trim().slice(0, 120);
+        const contactEmail = normalizeEmail(body.email || getSessionEmailFromReq(req) || '');
+        const seats = Math.max(1, Math.min(500, Math.round(Number(body.seats || 50))));
+        const assetsCount = Math.max(1, Math.min(10000, Math.round(Number(body.assetsCount || 1000))));
+        const notes = String(body.notes || '').trim().slice(0, 2000);
+
+        if (!companyName || !contactEmail || !contactEmail.includes('@')) {
+          return res.status(400).json({
+            success: false,
+            error: 'Organization / Company Name and a valid contact email are required.',
+          });
+        }
+
+        const now = Date.now();
+        const inquiry = {
+          id: `ent_${now.toString(36).toUpperCase()}`,
+          companyName,
+          email: contactEmail,
+          seats,
+          assetsCount,
+          notes,
+          createdAt: new Date(now).toISOString(),
+        };
+
+        const store = loadStore();
+        store.enterprise_inquiries = [inquiry, ...(store.enterprise_inquiries || [])].slice(0, 200);
+        persistStore(store);
+
+        const kv = getKvConfig();
+        if (kv) {
+          try {
+            const raw = await kvCommand(['GET', 'aqari:enterprise_inquiries:v1']);
+            let list: any[] = [];
+            if (Array.isArray(raw)) list = raw;
+            else if (typeof raw === 'string') {
+              try {
+                const p = JSON.parse(raw);
+                if (Array.isArray(p)) list = p;
+              } catch {}
+            }
+            await kvCommand([
+              'SET',
+              'aqari:enterprise_inquiries:v1',
+              JSON.stringify([inquiry, ...list].slice(0, 200)),
+            ]);
+          } catch {}
+        }
+
+        await dispatchEmailAlert({
+          to: getAdminEmail(),
+          subject: `AQARI ENTERPRISE Contract Inquiry (${inquiry.id}) - ${companyName}`,
+          text: `Organization: ${companyName}\nEmail: ${contactEmail}\nRequested Seats (Contract Baseline 50): ${seats}\nPortfolio Assets (Contract Baseline 1,000): ${assetsCount}\nNotes:\n${notes || 'N/A'}\nSubmitted: ${inquiry.createdAt}`,
+          eventType: 'enterprise_inquiry',
+        }).catch(() => {});
+
+        return res.status(200).json({
+          success: true,
+          inquiry,
+          message: `Enterprise contract request received (${inquiry.id}). Our institutional team will respond within 24 hours with a tailored SLA proposal.`,
         });
       }
 
@@ -10351,6 +11441,9 @@ Return JSON with:
             'run-due-diligence',
             'optimize-portfolio',
             'ask-advisor',
+            'buy-credits',
+            'update-branding',
+            'enterprise-inquiry',
             'get-last-results',
             'clear-last-result',
             'underwrite',

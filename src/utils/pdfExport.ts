@@ -3,6 +3,7 @@ import {
   buildPdfDocument,
   buildInstitutionalPdfDocument,
   type InstitutionalPdfSection,
+  type PdfBrandingOptions,
 } from '../../lib/pdfGenerator';
 import type { WhiteGloveDeliverable } from '../types';
 
@@ -99,6 +100,8 @@ export interface InstitutionalMemoInput {
   notes?: string;
   recommendation?: string;
   sources?: string[];
+  isWatermarked?: boolean;
+  branding?: PdfBrandingOptions | null;
 }
 
 export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInput): string {
@@ -108,10 +111,16 @@ export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInpu
       .trim()
       .replace(/[^a-z0-9_-]+/gi, '-')
       .replace(/^-+|-+$/g, '') || 'Asset';
-  const filename = `AQARI-MEMO-${safeName}-${dateStr}.pdf`;
-  const watermark = toPdfSafeAscii(
-    `AQARI TERMINAL | Institutional Memorandum | Licensed to ${params.userEmail} | ${dateStr}`
-  );
+  const brandSlug = params.branding?.firmName
+    ? params.branding.firmName.trim().replace(/[^a-z0-9_-]+/gi, '-').toUpperCase()
+    : 'AQARI-MEMO';
+  const filename = `${brandSlug}-${safeName}-${dateStr}.pdf`;
+  const firmLabel = params.branding?.firmName ? toPdfSafeAscii(params.branding.firmName) : 'AQARI TERMINAL';
+  const watermark = params.isWatermarked
+    ? `FREE TIER WATERMARK - AQARI TERMINAL SAMPLE | ${params.userEmail} | ${dateStr}`
+    : toPdfSafeAscii(
+        `${firmLabel} | Institutional Memorandum | Licensed to ${params.userEmail} | ${dateStr}`
+      );
 
   const irrLabel =
     params.irr5Yr !== null && Number.isFinite(params.irr5Yr)
@@ -311,12 +320,20 @@ export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInpu
   ];
 
   const pdfBytes = buildInstitutionalPdfDocument({
-    docTitle: 'AQARI TERMINAL | INSTITUTIONAL MEMORANDUM',
+    docTitle: params.branding?.firmName
+      ? `${toPdfSafeAscii(params.branding.firmName)} | INSTITUTIONAL MEMORANDUM`
+      : 'AQARI TERMINAL | INSTITUTIONAL MEMORANDUM',
     docSubtitle: `${toPdfSafeAscii(params.title)} (${toPdfSafeAscii(params.city)})`,
     watermark,
-    footer: `Loomora Studios - AQARI TERMINAL | ${toPdfSafeAscii(params.userEmail)} | ${dateStr}`,
+    footer: params.branding?.firmName
+      ? `${toPdfSafeAscii(params.branding.firmName)} | Prepared for ${toPdfSafeAscii(params.userEmail)} | ${dateStr}`
+      : `Loomora Studios - AQARI TERMINAL | ${toPdfSafeAscii(params.userEmail)} | ${dateStr}`,
+    isWatermarked: Boolean(params.isWatermarked),
+    branding: params.branding || null,
     cover: {
-      eyebrow: 'AQARI TERMINAL • INSTITUTIONAL INVESTMENT COMMITTEE MEMORANDUM',
+      eyebrow: params.branding?.firmName
+        ? `${toPdfSafeAscii(params.branding.firmName)} • INVESTMENT COMMITTEE MEMORANDUM`
+        : 'AQARI TERMINAL • INSTITUTIONAL INVESTMENT COMMITTEE MEMORANDUM',
       title: toPdfSafeAscii(params.title),
       subtitle: `${toPdfSafeAscii(params.city)}${params.country ? `, ${toPdfSafeAscii(params.country)}` : ''} • Underwriting, Risk & Scenario Dossier`,
       preparedFor: `${toPdfSafeAscii(params.userEmail)} (${toPdfSafeAscii(params.planDisplay)})`,
@@ -362,6 +379,8 @@ export interface PropertyStudioPdfInput {
   contactEmail: string;
   contactPhone: string;
   contactFirm?: string;
+  isWatermarked?: boolean;
+  branding?: PdfBrandingOptions | null;
 }
 
 export function downloadPropertyStudioPdf(params: PropertyStudioPdfInput): string {
@@ -372,14 +391,19 @@ export function downloadPropertyStudioPdf(params: PropertyStudioPdfInput): strin
       .replace(/[^a-z0-9_-]+/gi, '-')
       .replace(/^-+|-+$/g, '') || 'Property-Studio';
   const kindSlug = params.docType === 'listing' ? 'LISTING' : 'MEMO';
+  const studioBrand = params.branding?.firmName
+    ? toPdfSafeAscii(params.branding.firmName)
+    : 'AQARI PROPERTY STUDIO';
   const filename = `AQARI-STUDIO-${kindSlug}-${safeName}-${dateStr}.pdf`;
 
   const virtualBanner = params.isVirtual
     ? 'VIRTUAL CONCEPT - NOT A REAL LISTING | NO REAL ADDRESS, NO FABRICATED PHOTOS, NO GUARANTEED RETURNS'
     : null;
-  const watermark = params.isVirtual
-    ? `VIRTUAL CONCEPT - NOT A REAL LISTING | AQARI PROPERTY STUDIO | ${dateStr}`
-    : `AQARI PROPERTY STUDIO | Prepared by ${toPdfSafeAscii(params.contactName || params.contactEmail)} | ${dateStr}`;
+  const watermark = params.isWatermarked
+    ? `FREE TIER WATERMARK - AQARI PROPERTY STUDIO SAMPLE | ${dateStr}`
+    : params.isVirtual
+    ? `VIRTUAL CONCEPT - NOT A REAL LISTING | ${studioBrand} | ${dateStr}`
+    : `${studioBrand} | Prepared by ${toPdfSafeAscii(params.contactName || params.contactEmail)} | ${dateStr}`;
 
   const annualRent = params.expectedMonthlyRentUSD * 12;
   const impliedGrossYield =
@@ -507,17 +531,19 @@ export function downloadPropertyStudioPdf(params: PropertyStudioPdfInput): strin
   const pdfBytes = buildInstitutionalPdfDocument({
     docTitle:
       params.docType === 'listing'
-        ? 'AQARI PROPERTY STUDIO | PROPERTY LISTING'
-        : 'AQARI PROPERTY STUDIO | INVESTMENT MEMORANDUM',
+        ? `${studioBrand} | PROPERTY LISTING`
+        : `${studioBrand} | INVESTMENT MEMORANDUM`,
     docSubtitle: `${toPdfSafeAscii(params.title)} (${toPdfSafeAscii(params.city)}, ${toPdfSafeAscii(params.country)})`,
     watermark,
-    footer: `AQARI Property Studio | ${toPdfSafeAscii(params.contactEmail || 'aqari-ai')} | ${dateStr}`,
+    footer: `${studioBrand} | ${toPdfSafeAscii(params.contactEmail || 'aqari-ai')} | ${dateStr}`,
     virtualBanner,
+    isWatermarked: Boolean(params.isWatermarked),
+    branding: params.branding || null,
     cover: {
       eyebrow:
         params.docType === 'listing'
-          ? 'AQARI PROPERTY STUDIO • BESPOKE PROPERTY LISTING DOSSIER'
-          : 'AQARI PROPERTY STUDIO • INSTITUTIONAL INVESTMENT MEMORANDUM',
+          ? `${studioBrand} • BESPOKE PROPERTY LISTING DOSSIER`
+          : `${studioBrand} • INSTITUTIONAL INVESTMENT MEMORANDUM`,
       title: toPdfSafeAscii(params.title),
       subtitle: `${toPdfSafeAscii(params.propertyType)} • ${toPdfSafeAscii(params.areaDistrict)}, ${toPdfSafeAscii(params.city)}, ${toPdfSafeAscii(params.country)}`,
       preparedFor: toPdfSafeAscii(params.targetAudience),
@@ -554,12 +580,17 @@ export function downloadMemorandumPdf(params: {
   metricsLines: string[];
   notes?: string;
   watermarkText?: string;
+  isWatermarked?: boolean;
+  branding?: PdfBrandingOptions | null;
 }): string {
   const dateStr = new Date().toISOString().slice(0, 10);
-  const watermark = toPdfSafeAscii(
-    params.watermarkText ||
-      `Generated by AQARI TERMINAL - Loomora Studios - Licensed to ${params.userEmail} - ${dateStr}`
-  );
+  const firmLabel = params.branding?.firmName ? toPdfSafeAscii(params.branding.firmName) : 'AQARI TERMINAL';
+  const watermark = params.isWatermarked
+    ? `FREE TIER WATERMARK - AQARI TERMINAL SAMPLE - ${dateStr}`
+    : toPdfSafeAscii(
+        params.watermarkText ||
+          `Generated by ${firmLabel} - Licensed to ${params.userEmail} - ${dateStr}`
+      );
   const safeName =
     params.title
       .trim()
@@ -581,12 +612,20 @@ export function downloadMemorandumPdf(params: {
     .filter((x): x is { label: string; value: string } => Boolean(x));
 
   const pdfBytes = buildInstitutionalPdfDocument({
-    docTitle: 'AQARI TERMINAL | INSTITUTIONAL MEMORANDUM',
+    docTitle: params.branding?.firmName
+      ? `${firmLabel} | INVESTMENT REPORT`
+      : 'AQARI TERMINAL | INSTITUTIONAL MEMORANDUM',
     docSubtitle: `${toPdfSafeAscii(params.title)} - ${toPdfSafeAscii(params.city)}`,
     watermark,
-    footer: `Loomora Studios - AQARI TERMINAL | ${watermark}`,
+    footer: params.branding?.firmName
+      ? `${firmLabel} | ${dateStr}`
+      : `Loomora Studios - AQARI TERMINAL | ${watermark}`,
+    isWatermarked: Boolean(params.isWatermarked),
+    branding: params.branding || null,
     cover: {
-      eyebrow: 'AQARI TERMINAL • INSTITUTIONAL UNDERWRITING REPORT',
+      eyebrow: params.branding?.firmName
+        ? `${firmLabel} • INSTITUTIONAL UNDERWRITING REPORT`
+        : 'AQARI TERMINAL • INSTITUTIONAL UNDERWRITING REPORT',
       title: toPdfSafeAscii(params.title),
       subtitle: `Target Market: ${toPdfSafeAscii(params.city)}`,
       preparedFor: `${toPdfSafeAscii(params.userEmail)} (${toPdfSafeAscii(params.planDisplay)})`,

@@ -1,19 +1,25 @@
 import React, { useState } from 'react';
 import { CurrencyCode, RemoteConfig, User } from '../types';
-import { CHECKOUT_LINKS } from '../constants';
-import { PLANS, PricingPublicPayload, findPlanPricing } from '../../lib/plans';
+import {
+  PLANS,
+  PricingPublicPayload,
+  EXTRA_CREDIT_PACKS,
+  findPlanPricing,
+} from '../../lib/plans';
 import { formatPrice, getDaysRemaining } from '../utils/formatters';
 import { openPaddleCheckout, PADDLE_PRO_SUCCESS_MESSAGE } from '../utils/paddleClient';
-import { 
-  X, 
-  Sparkles, 
-  Zap, 
-  Crown, 
-  Building2, 
-  Check, 
-  ArrowRight, 
+import {
+  X,
+  Sparkles,
+  Zap,
+  Crown,
+  Building2,
+  Check,
+  ArrowRight,
   ShieldCheck,
-  Flame
+  Flame,
+  Coins,
+  Loader2,
 } from 'lucide-react';
 
 interface RenewalModalProps {
@@ -30,7 +36,6 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   isOpen,
   onClose,
   user,
-  config,
   pricingData,
   currentCurrency,
   onOpenLegal,
@@ -39,10 +44,17 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   const [policyError, setPolicyError] = useState(false);
   const [checkoutNotice, setCheckoutNotice] = useState<string | null>(null);
   const [checkoutSuccess, setCheckoutSuccess] = useState<string | null>(null);
+  const [buyingPackId, setBuyingPackId] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const launchActive = pricingData?.launchDiscountActive ?? true;
+  const launchEndsAt = pricingData?.launchEndsAt || Date.now() + 7 * 86_400_000;
+  const launchEndDateStr = new Date(launchEndsAt).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
   const starterPricing = findPlanPricing(pricingData, 'starter');
   const proPricing = findPlanPricing(pricingData, 'pro');
   const enterprisePricing = findPlanPricing(pricingData, 'enterprise');
@@ -76,6 +88,34 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     }
   };
 
+  const handleBuyCreditPack = async (packId: string) => {
+    if (!user?.email) return;
+    setBuyingPackId(packId);
+    setCheckoutNotice(null);
+    setCheckoutSuccess(null);
+    try {
+      const res = await fetch('/api/app?action=buy-credits', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packId, email: user.email }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        setCheckoutNotice(
+          data?.error || 'Complete checkout on the Pricing page to apply extra credit packs.'
+        );
+        return;
+      }
+      setCheckoutSuccess(data.message || `Added credits. Balance: ${data.analyses_left} credits.`);
+      window.dispatchEvent(new CustomEvent('aqari:user-updated', { detail: data }));
+    } catch (err: any) {
+      setCheckoutNotice(err?.message || 'Unable to purchase credit pack.');
+    } finally {
+      setBuyingPackId(null);
+    }
+  };
+
   const plans: Array<{
     id: 'starter' | 'pro' | 'enterprise';
     name: string;
@@ -88,7 +128,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   }> = [
     {
       id: 'starter',
-      name: 'Starter Terminal',
+      name: 'STARTER',
       originalUSD: starterPricing?.originalPrice ?? PLANS.starter.originalPrice,
       activeUSD: starterPricing?.activePrice ?? (launchActive ? PLANS.starter.launchPrice : PLANS.starter.originalPrice),
       icon: <Building2 className="w-5 h-5 text-zinc-300" />,
@@ -97,7 +137,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     },
     {
       id: 'pro',
-      name: 'Professional Terminal',
+      name: 'PROFESSIONAL',
       originalUSD: proPricing?.originalPrice ?? PLANS.pro.originalPrice,
       activeUSD: proPricing?.activePrice ?? (launchActive ? PLANS.pro.launchPrice : PLANS.pro.originalPrice),
       popular: true,
@@ -107,7 +147,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     },
     {
       id: 'enterprise',
-      name: 'Sovereign Enterprise',
+      name: 'SOVEREIGN',
       originalUSD: enterprisePricing?.originalPrice ?? PLANS.enterprise.originalPrice,
       activeUSD: enterprisePricing?.activePrice ?? (launchActive ? PLANS.enterprise.launchPrice : PLANS.enterprise.originalPrice),
       icon: <Crown className="w-5 h-5 text-purple-400" />,
@@ -119,8 +159,6 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-2xl animate-in fade-in duration-200 overflow-y-auto">
       <div className="relative w-full max-w-4xl rounded-[32px] glass-dropdown p-6 sm:p-10 border border-[#D4AF37]/40 shadow-[0_30px_90px_rgba(0,0,0,0.9)] overflow-hidden my-auto max-h-[92vh] flex flex-col">
-        
-        {/* Glow */}
         <div className="absolute top-0 right-1/4 w-80 h-80 bg-[#D4AF37]/15 rounded-full blur-3xl pointer-events-none" />
 
         <button
@@ -132,7 +170,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
         </button>
 
         {/* Header */}
-        <div className="text-center mb-8">
+        <div className="text-center mb-6">
           <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/25 text-xs font-mono text-[#D4AF37] mb-2">
             <Sparkles className="w-3.5 h-3.5" />
             <span>INSTITUTIONAL SUBSCRIPTION UPGRADE / RENEWAL</span>
@@ -141,49 +179,49 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
             Extend Your 30-Day Terminal Access
           </h3>
           <p className="text-xs sm:text-sm text-zinc-400 mt-2 max-w-lg mx-auto">
-            Choose your institutional tier. Payments process through Paddle 256-bit SSL encryption and immediately extend your licensing +30 days from today.
+            Launch pricing and standard renewal rates are shown transparently below. Payments process securely via Paddle.
           </p>
 
           {launchActive && (
             <div className="mt-3 inline-flex items-center gap-2 px-4 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono">
               <Flame className="w-3.5 h-3.5" />
-              <span>{pricingData?.launchBadgeText || 'LAUNCH -40% - First 30 users only'} • Offer ends in {pricingData?.daysRemaining ?? 7} days</span>
+              <span>
+                {pricingData?.launchBadgeText || 'LAUNCH OFFER'} • Ends {launchEndDateStr} ({pricingData?.daysRemaining ?? 7} days left)
+              </span>
             </div>
           )}
         </div>
 
-        {/* 3 Tier Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-6 overflow-y-auto pr-1">
+        {/* 3 Paid Tier Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-5 overflow-y-auto pr-1">
           {plans.map((p) => {
             const originalUSD = p.originalUSD;
             const discountedUSD = p.activeUSD;
             const isCurrent = user?.plan === p.id && user?.subscriptionStatus !== 'expired';
             const daysRemaining = user?.subscriptionExpiry ? getDaysRemaining(user.subscriptionExpiry) : 30;
-            const tierDisplayName =
-              p.id === 'starter' ? 'STARTER' : p.id === 'pro' ? 'PROFESSIONAL' : 'SOVEREIGN';
+            const tierDisplayName = p.name;
 
             let badgeText: string | null = null;
-            let buttonLabel = user && user.plan !== 'free'
-              ? `Switch to ${tierDisplayName}`
-              : `Buy ${tierDisplayName}`;
+            let buttonLabel =
+              user && user.plan !== 'free'
+                ? `Switch to ${tierDisplayName}`
+                : `Buy ${tierDisplayName}`;
 
             if (isCurrent) {
               badgeText = `Current Plan: ${tierDisplayName} • ${daysRemaining}d left`;
               buttonLabel = `Renew ${tierDisplayName} (+30 Days)`;
             } else if (p.popular) {
-              badgeText = 'POPULAR';
+              badgeText = 'MAIN MARKETING PLAN';
             }
-
-            const isDisabled = false;
 
             return (
               <div
                 key={p.id}
-                className={`p-6 rounded-2xl flex flex-col justify-between transition-all duration-300 ${
+                className={`p-5 rounded-2xl flex flex-col justify-between transition-all duration-300 ${
                   isCurrent
                     ? 'bg-gradient-to-b from-white/[0.08] to-white/[0.02] border-2 border-[#D4AF37] shadow-[0_0_35px_rgba(212,175,55,0.25)]'
                     : p.popular
-                    ? 'bg-white/[0.05] border-2 border-[#D4AF37]/80 shadow-[0_0_35px_rgba(212,175,55,0.2)] md:-translate-y-1'
+                    ? 'bg-white/[0.05] border-2 border-[#D4AF37]/80 shadow-[0_0_35px_rgba(212,175,55,0.2)]'
                     : 'bg-white/[0.02] border border-white/10 hover:border-white/20'
                 }`}
               >
@@ -193,11 +231,13 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
                       {p.icon}
                     </div>
                     {badgeText && (
-                      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-black uppercase tracking-wider ${
-                        isCurrent
-                          ? 'bg-[#D4AF37] text-black shadow-sm'
-                          : 'bg-white/10 text-zinc-300 border border-white/10'
-                      }`}>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-black uppercase tracking-wider ${
+                          isCurrent
+                            ? 'bg-[#D4AF37] text-black shadow-sm'
+                            : 'bg-white/10 text-zinc-300 border border-white/10'
+                        }`}
+                      >
                         {badgeText}
                       </span>
                     )}
@@ -218,13 +258,15 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
                     <div className="text-3xl font-black font-mono text-white">
                       {formatPrice(discountedUSD, currentCurrency)}
                     </div>
-                    <div className="text-[10px] font-mono text-zinc-400 mt-0.5">30-day licensing window</div>
+                    <div className="text-[10px] font-mono text-amber-200/90 mt-1">
+                      Renews at {formatPrice(originalUSD, currentCurrency)}/mo after launch (ends {launchEndDateStr})
+                    </div>
                   </div>
 
                   {/* Features */}
-                  <div className="space-y-2 mb-6">
-                    {p.features.map((f, i) => (
-                      <div key={i} className="flex items-start gap-2 text-xs text-zinc-300">
+                  <div className="space-y-1.5 mb-5">
+                    {p.features.slice(0, 8).map((f, i) => (
+                      <div key={i} className="flex items-start gap-2 text-[11px] text-zinc-300">
                         <Check className="w-3.5 h-3.5 text-emerald-400 mt-0.5 shrink-0" />
                         <span>{f}</span>
                       </div>
@@ -234,18 +276,15 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
 
                 <div className="space-y-1.5">
                   <button
-                    onClick={() => !isDisabled && handleRenewPaddle(p.id)}
-                    disabled={isDisabled}
+                    onClick={() => handleRenewPaddle(p.id)}
                     className={`w-full py-3 px-4 rounded-xl text-xs font-bold font-mono tracking-wider transition-all duration-200 flex items-center justify-center gap-2 shadow-md ${
-                      isDisabled
-                        ? 'bg-zinc-800 text-zinc-500 border border-zinc-700/50 cursor-not-allowed'
-                        : isCurrent || p.popular
+                      isCurrent || p.popular
                         ? 'bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black cursor-pointer'
                         : 'bg-white/10 hover:bg-white/20 text-white cursor-pointer'
                     }`}
                   >
                     <span>{buttonLabel}</span>
-                    {!isDisabled && <ArrowRight className="w-3.5 h-3.5" />}
+                    <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                   <div className="text-[10px] font-mono text-zinc-400 text-center">
                     7-Day Refund - 0 successful analyses or unresolved tool issue
@@ -256,12 +295,41 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
           })}
         </div>
 
+        {/* Quick Extra AI Credit Top-Ups */}
+        <div className="mb-4 p-3 rounded-2xl bg-black/40 border border-white/10 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs font-mono text-zinc-300">
+            <Coins className="w-4 h-4 text-[#D4AF37]" />
+            <span>Need extra credits right away?</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {EXTRA_CREDIT_PACKS.map((pk) => (
+              <button
+                key={pk.id}
+                type="button"
+                disabled={buyingPackId === pk.id}
+                onClick={() => handleBuyCreditPack(pk.id)}
+                className="px-3 py-1.5 rounded-lg bg-[#D4AF37]/15 hover:bg-[#D4AF37]/25 border border-[#D4AF37]/40 text-[#D4AF37] text-[11px] font-mono font-bold cursor-pointer flex items-center gap-1"
+              >
+                {buyingPackId === pk.id ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <span>
+                    {pk.label} ({formatPrice(pk.priceUSD, currentCurrency)})
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Required Refund Policy Consent */}
-        <div className={`mb-4 p-3.5 rounded-2xl border transition ${
-          policyError
-            ? 'bg-rose-950/40 border-rose-500 text-rose-200'
-            : 'bg-white/[0.03] border-white/10 text-zinc-200'
-        }`}>
+        <div
+          className={`mb-4 p-3.5 rounded-2xl border transition ${
+            policyError
+              ? 'bg-rose-950/40 border-rose-500 text-rose-200'
+              : 'bg-white/[0.03] border-white/10 text-zinc-200'
+          }`}
+        >
           <label className="flex items-start gap-2.5 cursor-pointer select-none text-xs font-mono">
             <input
               type="checkbox"
@@ -310,17 +378,13 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
               <span className="text-amber-300 font-bold mr-2">{checkoutNotice}</span>
             )}
             <span>
-              Encrypted Paddle Checkout • Support:{' '}
-              <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
-                azzamalshmale@gmail.com
-              </a>
+              Encrypted Paddle Checkout • Enterprise Contracts ($1,499+ Launch) available on Pricing page
             </span>
           </div>
           <button onClick={onClose} className="hover:text-white underline cursor-pointer">
             Dismiss
           </button>
         </div>
-
       </div>
     </div>
   );
