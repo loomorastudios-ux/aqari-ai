@@ -87,7 +87,49 @@ import {
   CheckCircle2,
   XCircle,
 } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { PWAInstallButton } from './PWAInstallButton';
+import { Button } from './ui/button';
+import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from './ui/table';
+import {
+  Sidebar,
+  SidebarHeader,
+  SidebarContent,
+  SidebarFooter,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
+} from './ui/sidebar';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from './ui/dialog';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
+import {
+  TooltipProvider,
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from './ui/tooltip';
+import { FadeInCard, CountUpNumber } from './ui/motion-primitives';
+import {
+  IrrNoiDscrChart,
+  MarketComparisonChart,
+  mapDealsToCompareItems,
+  RiskScenarioChart,
+} from './charts/AqariRecharts';
 
 function resolveCityFromInput(rawInput: string): CityEntry | null {
   const cleaned = String(rawInput || '').trim();
@@ -3325,6 +3367,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   };
 
   return (
+    <TooltipProvider delayDuration={180}>
     <div className="min-h-screen bg-black text-slate-100 flex flex-col font-sans select-none relative">
       
       {/* Toast Notification */}
@@ -3476,268 +3519,235 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           />
         )}
 
-        {/* Left Sidebar (Desktop fixed, Mobile sliding drawer) */}
-        <aside
-          className={`fixed md:static top-16 bottom-0 left-0 z-40 w-64 md:w-64 border-r border-white/[0.08] bg-black/95 md:bg-black/60 backdrop-blur-2xl md:backdrop-blur-xl p-4 flex flex-col justify-between shrink-0 transition-transform duration-300 ease-in-out ${
-            mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-          }`}
-        >
-          
-          <div className="space-y-4">
-            
-            {/* Top Navigation: Back to Homepage */}
-            <button
-              type="button"
-              onClick={() => {
-                setMobileSidebarOpen(false);
-                onGoToHome();
-              }}
-              className="w-full flex items-center justify-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] active:bg-white/[0.12] border border-white/10 hover:border-[#D4AF37]/50 text-white font-mono text-xs font-semibold transition cursor-pointer shadow-sm group min-h-[44px]"
-            >
-              <span className="text-sm transition-transform group-hover:-translate-x-0.5">🏠</span>
-              <span>Back to Homepage</span>
-            </button>
+        {/* Left Sidebar (Desktop fixed, Mobile sliding drawer) using shadcn Sidebar primitives */}
+        <Sidebar open={mobileSidebarOpen}>
+          <SidebarContent>
+            <SidebarHeader>
+              {/* Top Navigation: Back to Homepage */}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setMobileSidebarOpen(false);
+                  onGoToHome();
+                }}
+                className="w-full min-h-[44px] group"
+              >
+                <span className="text-sm transition-transform group-hover:-translate-x-0.5">🏠</span>
+                <span>Back to Homepage</span>
+              </Button>
 
-            {/* Test Mode Badge in Sidebar if active */}
-            {isTestMode && (
-              <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono text-center leading-tight">
-                ⚠️ TEST MODE - No real money - Test card 4242 4242 4242 4242
-              </div>
-            )}
-            
-            {/* User Profile Overview */}
-            <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center gap-3">
-              {user.picture ? (
-                <img
-                  src={user.picture}
-                  alt={user.name || user.email}
-                  className="w-10 h-10 rounded-xl object-cover border border-[#D4AF37]/40 shadow-sm shrink-0"
-                />
-              ) : (
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#D4AF37] to-[#8B5CF6] flex items-center justify-center text-black font-black font-mono text-sm uppercase shadow-sm shrink-0">
-                  {user.email.charAt(0).toUpperCase()}
+              {/* Test Mode Badge in Sidebar if active */}
+              {isTestMode && (
+                <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[10px] font-mono text-center leading-tight">
+                  ⚠️ TEST MODE - No real money - Test card 4242 4242 4242 4242
                 </div>
               )}
-              <div className="truncate flex-1">
-                <div className="text-xs font-bold text-white truncate">{user.email}</div>
-                <div className="text-[10px] font-mono text-[#D4AF37] flex items-center gap-1 mt-0.5">
-                  <ShieldCheck className="w-3 h-3" />
-                  <span className="uppercase">{license.displayName} TERMINAL</span>
-                </div>
-              </div>
-            </div>
 
-            {/* Live 30-Day Licensing Countdown & Quota Progress Bar Widget */}
-            <div className="px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/[0.08] font-mono text-[11px] space-y-2">
-              <div className="text-zinc-400 uppercase text-[9px] font-bold tracking-wider flex items-center justify-between">
-                <span>LICENSING COUNTDOWN</span>
-                <span className={`w-1.5 h-1.5 rounded-full ${isPlanEnded ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`} />
-              </div>
-              {isPlanEnded ? (
-                <div className="text-rose-400 font-bold leading-tight">
-                  Licensing window expired - Renew
+              {/* User Profile Overview */}
+              <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center gap-3">
+                {user.picture ? (
+                  <img
+                    src={user.picture}
+                    alt={user.name || user.email}
+                    className="w-10 h-10 rounded-xl object-cover border border-[#D4AF37]/40 shadow-sm shrink-0"
+                  />
+                ) : (
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#D4AF37] to-[#8B5CF6] flex items-center justify-center text-black font-black font-mono text-sm uppercase shadow-sm shrink-0">
+                    {user.email.charAt(0).toUpperCase()}
+                  </div>
+                )}
+                <div className="truncate flex-1">
+                  <div className="text-xs font-bold text-white truncate">{user.email}</div>
+                  <div className="text-[10px] font-mono text-[#D4AF37] flex items-center gap-1 mt-0.5">
+                    <ShieldCheck className="w-3 h-3" />
+                    <span className="uppercase">{license.displayName} TERMINAL</span>
+                  </div>
                 </div>
-              ) : (
-                <>
-                  <div className="text-[#D4AF37] font-bold leading-snug">
-                    {isCreditsLoaded
-                      ? license.sidebarText
-                      : `LICENSING COUNTDOWN - ${license.displayName} - ${daysLeft} days left - Loading...`}
+              </div>
+
+              {/* Live 30-Day Licensing Countdown & Quota Progress Bar Widget */}
+              <div className="px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/[0.08] font-mono text-[11px] space-y-2">
+                <div className="text-zinc-400 uppercase text-[9px] font-bold tracking-wider flex items-center justify-between">
+                  <span>LICENSING COUNTDOWN</span>
+                  <span className={`w-1.5 h-1.5 rounded-full ${isPlanEnded ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`} />
+                </div>
+                {isPlanEnded ? (
+                  <div className="text-rose-400 font-bold leading-tight">
+                    Licensing window expired - Renew
                   </div>
-                  <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-[#D4AF37] to-emerald-400 transition-all duration-500 rounded-full"
-                      style={{ width: `${license.progressPct}%` }}
-                    />
-                  </div>
-                  {countdownText && license.planKey !== 'free' && (
-                    <div className="text-[10px] text-zinc-400">{countdownText}</div>
-                  )}
-                </>
-              )}
-            </div>
+                ) : (
+                  <>
+                    <div className="text-[#D4AF37] font-bold leading-snug">
+                      {isCreditsLoaded
+                        ? license.sidebarText
+                        : `LICENSING COUNTDOWN - ${license.displayName} - ${daysLeft} days left - Loading...`}
+                    </div>
+                    <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-[#D4AF37] to-emerald-400 transition-all duration-500 rounded-full"
+                        style={{ width: `${license.progressPct}%` }}
+                      />
+                    </div>
+                    {countdownText && license.planKey !== 'free' && (
+                      <div className="text-[10px] text-zinc-400">{countdownText}</div>
+                    )}
+                  </>
+                )}
+              </div>
+            </SidebarHeader>
 
             {/* Navigation Tabs */}
-            <nav className="space-y-1 text-xs font-mono">
-              <button
-                onClick={() => { setActiveTab('dashboard'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'dashboard'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <BarChart3 className="w-4 h-4" />
-                <span>My Dashboard</span>
-              </button>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'dashboard'}
+                  onClick={() => { setActiveTab('dashboard'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <BarChart3 className="w-4 h-4" />
+                    <span>My Dashboard</span>
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('analyze'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'analyze'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <Calculator className="w-4 h-4" />
-                <span>Analyze New Property</span>
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'analyze'}
+                  onClick={() => { setActiveTab('analyze'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <Calculator className="w-4 h-4" />
+                    <span>Analyze New Property</span>
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('dealfinder'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'dealfinder'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <span className="flex items-center gap-3">
-                  <Radar className="w-4 h-4" />
-                  <span>AI Deal Finder</span>
-                </span>
-                {!canDealFinder && (
-                  <Lock
-                    className={`w-3.5 h-3.5 shrink-0 ${
-                      activeTab === 'dealfinder' ? 'text-black' : 'text-[#D4AF37]'
-                    }`}
-                  />
-                )}
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'dealfinder'}
+                  onClick={() => { setActiveTab('dealfinder'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <Radar className="w-4 h-4" />
+                    <span>AI Deal Finder</span>
+                  </span>
+                  {!canDealFinder && (
+                    <Lock className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'dealfinder' ? 'text-black' : 'text-[#D4AF37]'}`} />
+                  )}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('forecast'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'forecast'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <span className="flex items-center gap-3">
-                  <TrendingUp className="w-4 h-4" />
-                <span>AI Market Forecast</span>
-                </span>
-                {!canMarketForecast && (
-                  <Lock
-                    className={`w-3.5 h-3.5 shrink-0 ${
-                      activeTab === 'forecast' ? 'text-black' : 'text-[#D4AF37]'
-                    }`}
-                  />
-                )}
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'forecast'}
+                  onClick={() => { setActiveTab('forecast'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <TrendingUp className="w-4 h-4" />
+                    <span>AI Market Forecast</span>
+                  </span>
+                  {!canMarketForecast && (
+                    <Lock className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'forecast' ? 'text-black' : 'text-[#D4AF37]'}`} />
+                  )}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('duediligence'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'duediligence'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <span className="flex items-center gap-3">
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>AI Due Diligence</span>
-                </span>
-                {!canDueDiligence && (
-                  <Lock
-                    className={`w-3.5 h-3.5 shrink-0 ${
-                      activeTab === 'duediligence' ? 'text-black' : 'text-[#D4AF37]'
-                    }`}
-                  />
-                )}
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'duediligence'}
+                  onClick={() => { setActiveTab('duediligence'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>AI Due Diligence</span>
+                  </span>
+                  {!canDueDiligence && (
+                    <Lock className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'duediligence' ? 'text-black' : 'text-[#D4AF37]'}`} />
+                  )}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('optimizer'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'optimizer'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <span className="flex items-center gap-3">
-                  <PieChart className="w-4 h-4" />
-                  <span>Global Portfolio Optimizer</span>
-                </span>
-                {!canPortfolioOptimizer && (
-                  <Lock
-                    className={`w-3.5 h-3.5 shrink-0 ${
-                      activeTab === 'optimizer' ? 'text-black' : 'text-[#D4AF37]'
-                    }`}
-                  />
-                )}
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'optimizer'}
+                  onClick={() => { setActiveTab('optimizer'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <PieChart className="w-4 h-4" />
+                    <span>Global Portfolio Optimizer</span>
+                  </span>
+                  {!canPortfolioOptimizer && (
+                    <Lock className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'optimizer' ? 'text-black' : 'text-[#D4AF37]'}`} />
+                  )}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('advisor'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'advisor'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <span className="flex items-center gap-3">
-                  <Bot className="w-4 h-4" />
-                  <span>Institutional AI Advisor</span>
-                </span>
-                {!canInstitutionalAdvisor && (
-                  <Lock
-                    className={`w-3.5 h-3.5 shrink-0 ${
-                      activeTab === 'advisor' ? 'text-black' : 'text-[#D4AF37]'
-                    }`}
-                  />
-                )}
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'advisor'}
+                  onClick={() => { setActiveTab('advisor'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <Bot className="w-4 h-4" />
+                    <span>Institutional AI Advisor</span>
+                  </span>
+                  {!canInstitutionalAdvisor && (
+                    <Lock className={`w-3.5 h-3.5 shrink-0 ${activeTab === 'advisor' ? 'text-black' : 'text-[#D4AF37]'}`} />
+                  )}
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('saved'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'saved'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <BookmarkCheck className="w-4 h-4" />
-                <span>Saved Analyses</span>
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'saved'}
+                  onClick={() => { setActiveTab('saved'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <BookmarkCheck className="w-4 h-4" />
+                    <span>Saved Analyses</span>
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('portfolio'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'portfolio'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <Briefcase className="w-4 h-4" />
-                <span>Portfolio</span>
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'portfolio'}
+                  onClick={() => { setActiveTab('portfolio'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <Briefcase className="w-4 h-4" />
+                    <span>Portfolio</span>
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('radar'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'radar'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <Globe className="w-4 h-4" />
-                <span>Market Radar</span>
-              </button>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'radar'}
+                  onClick={() => { setActiveTab('radar'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <Globe className="w-4 h-4" />
+                    <span>Market Radar</span>
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
-              <button
-                onClick={() => { setActiveTab('settings'); setMobileSidebarOpen(false); }}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition cursor-pointer min-h-[44px] ${
-                  activeTab === 'settings'
-                    ? 'bg-[#D4AF37] text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)]'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/[0.05]'
-                }`}
-              >
-                <Settings className="w-4 h-4" />
-                <span>Settings</span>
-              </button>
-            </nav>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeTab === 'settings'}
+                  onClick={() => { setActiveTab('settings'); setMobileSidebarOpen(false); }}
+                >
+                  <span className="flex items-center gap-3">
+                    <Settings className="w-4 h-4" />
+                    <span>Settings</span>
+                  </span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
 
-            {/* PART 1 & 4: Sign Out and Forget Device options in sidebar menu - ENGLISH ONLY */}
+            {/* Sign Out and Forget Device options */}
             <div className="pt-2 space-y-1.5">
               <button
                 type="button"
@@ -3764,24 +3774,23 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 Sign out and forget this device
               </button>
             </div>
+          </SidebarContent>
 
-          </div>
-
-          {/* Bottom Upgrade / Renew Button - Always Visible Gold Button (PWA Install moved exclusively to bottom page Footer) */}
-          <div className="pt-3 border-t border-white/[0.08] space-y-2">
-            <button
+          {/* Bottom Upgrade / Renew Button */}
+          <SidebarFooter>
+            <Button
+              type="button"
               onClick={onOpenRenewal}
-              className="w-full py-3 px-3 rounded-xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#D4AF37] text-black font-black text-xs font-mono uppercase tracking-wider shadow-[0_0_20px_rgba(212,175,55,0.35)] hover:brightness-110 transition flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
+              className="w-full py-3 px-3 uppercase tracking-wider shadow-[0_0_20px_rgba(212,175,55,0.35)] min-h-[44px]"
             >
               <Zap className="w-4 h-4 fill-black" />
               <span>Upgrade / Renew Plan</span>
-            </button>
+            </Button>
             <div className="text-[11px] text-center text-zinc-500 font-mono">
               30-day licensing • Secure Paddle Checkout
             </div>
-          </div>
-
-        </aside>
+          </SidebarFooter>
+        </Sidebar>
 
         {/* Main Content Area */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-8">
@@ -4304,8 +4313,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   {/* Main Action Buttons + Live Remaining Credits Counter */}
                   <div className="pt-3 space-y-2.5">
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                      <button
+                      <motion.button
                         type="button"
+                        whileHover={isAnalyzingApi || isAccountLocked ? undefined : { scale: 1.02 }}
+                        whileTap={isAnalyzingApi || isAccountLocked ? undefined : { scale: 0.99 }}
+                        transition={{ duration: 0.15 }}
                         onClick={handleRunAnalysis}
                         disabled={isAnalyzingApi || isAccountLocked}
                         className={`flex-1 py-3.5 px-4 rounded-xl text-xs font-bold font-mono tracking-wider uppercase transition flex items-center justify-center gap-2 shadow-lg ${
@@ -4325,7 +4337,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             <span>{isAnalyzingApi ? 'RUNNING ANALYSIS...' : 'RUN ANALYSIS (-1 CREDIT)'}</span>
                           </>
                         )}
-                      </button>
+                      </motion.button>
 
                       <div
                         className={`px-3.5 py-2.5 rounded-xl border text-xs font-mono font-bold text-center shrink-0 ${
@@ -4451,37 +4463,67 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   ) : (
                     <>
                       <div className="grid grid-cols-2 gap-3">
-                        <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                          <div className="text-[10px] font-mono uppercase text-zinc-400">Unlevered Cap Rate</div>
-                          <div className="text-2xl font-black font-mono text-[#D4AF37] mt-1">{runResult.capRate}%</div>
-                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">NOI: {formatPrice(runResult.netOperatingIncomeUSD, currentCurrency)}/yr</div>
-                        </div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] cursor-help">
+                              <div className="text-[10px] font-mono uppercase text-zinc-400">Unlevered Cap Rate</div>
+                              <div className="text-2xl font-black font-mono text-[#D4AF37] mt-1">
+                                <CountUpNumber value={Number(runResult.capRate) || 0} decimals={2} suffix="%" />
+                              </div>
+                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">NOI: {formatPrice(runResult.netOperatingIncomeUSD, currentCurrency)}/yr</div>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>Net Operating Income divided by Purchase Price</TooltipContent>
+                        </Tooltip>
 
-                        <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                          <div className="text-[10px] font-mono uppercase text-zinc-400">Cash-on-Cash Return</div>
-                          <div className={`text-2xl font-black font-mono mt-1 ${runResult.cashOnCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {runResult.cashOnCash}%
-                          </div>
-                          <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Equity: {formatPrice(runResult.downPaymentUSD, currentCurrency)}</div>
-                        </div>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] cursor-help">
+                              <div className="text-[10px] font-mono uppercase text-zinc-400">Cash-on-Cash Return</div>
+                              <div className={`text-2xl font-black font-mono mt-1 ${runResult.cashOnCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                <CountUpNumber value={Number(runResult.cashOnCash) || 0} decimals={2} suffix="%" />
+                              </div>
+                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Equity: {formatPrice(runResult.downPaymentUSD, currentCurrency)}</div>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>Annual pre-tax cashflow divided by initial cash equity</TooltipContent>
+                        </Tooltip>
 
                         {canSensitivity ? (
                           <>
-                            <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                              <div className="text-[10px] font-mono uppercase text-zinc-400">5-Year Equity IRR</div>
-                              <div className="text-2xl font-black font-mono text-purple-400 mt-1">
-                                {runResult.irr5Yr ?? Number((runResult.cashOnCash + 4.8).toFixed(1))}%
-                              </div>
-                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">DSCR: {runResult.dscr ?? '--'}x</div>
-                            </div>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] cursor-help">
+                                  <div className="text-[10px] font-mono uppercase text-zinc-400">5-Year Equity IRR</div>
+                                  <div className="text-2xl font-black font-mono text-purple-400 mt-1">
+                                    <CountUpNumber
+                                      value={Number(runResult.irr5Yr ?? (runResult.cashOnCash + 4.8).toFixed(1)) || 0}
+                                      decimals={1}
+                                      suffix="%"
+                                    />
+                                  </div>
+                                  <div className="text-[9px] text-zinc-500 font-mono mt-0.5">DSCR: {runResult.dscr ?? '--'}x</div>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent>Projected 5-Year Internal Rate of Return &amp; Debt Service Coverage Ratio</TooltipContent>
+                            </Tooltip>
 
-                            <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06]">
-                              <div className="text-[10px] font-mono uppercase text-zinc-400">Monthly Net Cashflow</div>
-                              <div className={`text-2xl font-black font-mono mt-1 ${(runResult.monthlyCashflowUSD ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                {formatPrice(runResult.monthlyCashflowUSD ?? 0, currentCurrency)}
-                              </div>
-                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Debt/yr: {formatPrice(runResult.annualDebtServiceUSD, currentCurrency)}</div>
-                            </div>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] cursor-help">
+                                  <div className="text-[10px] font-mono uppercase text-zinc-400">Monthly Net Cashflow</div>
+                                  <div className={`text-2xl font-black font-mono mt-1 ${(runResult.monthlyCashflowUSD ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    <CountUpNumber
+                                      value={Math.round(runResult.monthlyCashflowUSD ?? 0)}
+                                      prefix={(runResult.monthlyCashflowUSD ?? 0) < 0 ? '-$' : '$'}
+                                      formatLocale
+                                    />
+                                  </div>
+                                  <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Debt/yr: {formatPrice(runResult.annualDebtServiceUSD, currentCurrency)}</div>
+                                </div>
+                              </TooltipTrigger>
+                              <TooltipContent>Monthly Net Operating Income minus Debt Service</TooltipContent>
+                            </Tooltip>
                           </>
                         ) : (
                           <div className="col-span-2 p-3.5 rounded-xl bg-black/50 border border-amber-500/30 flex items-center justify-between text-xs font-mono">
@@ -4489,13 +4531,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               <Lock className="w-4 h-4 text-[#D4AF37] shrink-0" />
                               <span>5Y IRR, DSCR &amp; Cashflow Waterfall — Available in STARTER</span>
                             </div>
-                            <button
+                            <Button
                               type="button"
+                              size="sm"
+                              variant="solidGold"
                               onClick={onOpenRenewal}
-                              className="px-2.5 py-1 rounded bg-[#D4AF37] text-black font-bold text-[11px] cursor-pointer shrink-0 ml-2"
+                              className="shrink-0 ml-2"
                             >
                               Upgrade
-                            </button>
+                            </Button>
                           </div>
                         )}
                       </div>
@@ -4503,14 +4547,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       {/* PDF Investment Memorandum Export (Professional+) */}
                       <div className="pt-2">
                         {canPdfExport ? (
-                          <button
+                          <Button
                             type="button"
+                            variant="outline"
                             onClick={() => handleExportPDF(runResult.inputs.propertyTitle || propertyName)}
-                            className="w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold bg-white/[0.08] hover:bg-white/[0.15] text-white border border-white/10 transition flex items-center justify-center gap-2 cursor-pointer"
+                            className="w-full"
                           >
                             <Download className="w-3.5 h-3.5 text-[#D4AF37]" />
                             <span>EXPORT PDF MEMORANDUM</span>
-                          </button>
+                          </Button>
                         ) : (
                           <button
                             type="button"
@@ -4530,6 +4575,35 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
 
               </div>
+
+              {/* Feature 1 Recharts: 5-Year IRR / NOI / DSCR Chart after verified underwriting run */}
+              {hasRunAnalysis && runResult && (
+                <FadeInCard>
+                  <Card className="p-5 sm:p-6 border border-[#D4AF37]/25">
+                    <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                      <CardTitle className="flex items-center gap-2 text-[#D4AF37]">
+                        <BarChart3 className="w-4 h-4" />
+                        <span>Institutional Cashflow, IRR &amp; DSCR Trajectory</span>
+                      </CardTitle>
+                      <span className="text-[10px] font-mono text-zinc-400">
+                        {runResult.inputs?.city || city} • 5-Year Model
+                      </span>
+                    </CardHeader>
+                    <CardContent>
+                      <IrrNoiDscrChart
+                        capRate={Number(runResult.capRate) || 0}
+                        cashOnCash={Number(runResult.cashOnCash) || 0}
+                        irr5Yr={Number(runResult.irr5Yr ?? (runResult.cashOnCash + 4.8).toFixed(1)) || 0}
+                        dscr={runResult.dscr ?? 1.25}
+                        netOperatingIncomeUSD={Number(runResult.netOperatingIncomeUSD) || 0}
+                        monthlyCashflowUSD={Number(runResult.monthlyCashflowUSD) || 0}
+                        annualDebtServiceUSD={Number(runResult.annualDebtServiceUSD) || 0}
+                        currency={currentCurrency}
+                      />
+                    </CardContent>
+                  </Card>
+                </FadeInCard>
+              )}
 
               {/* REAL GATED CAPABILITY WORKSPACE (Immediate Unlock / Explicit Locked Cards) */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -4555,39 +4629,55 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           </div>
                         </div>
                       </div>
-                      <button
+                      <Button
                         type="button"
+                        variant="solidGold"
                         onClick={onOpenRenewal}
-                        className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono shrink-0 cursor-pointer"
+                        className="shrink-0"
                       >
                         Upgrade
-                      </button>
+                      </Button>
                     </div>
                   ) : runResult?.sensitivity ? (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-xs font-mono">
-                        <thead>
-                          <tr className="border-b border-white/[0.06] text-zinc-500 text-[10px] uppercase">
-                            <th className="py-2">Scenario</th>
-                            <th className="py-2">Monthly Rent</th>
-                            <th className="py-2">Cap Rate</th>
-                            <th className="py-2">CoC</th>
-                            <th className="py-2">Cashflow/mo</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-white/[0.04]">
-                          {runResult.sensitivity.map((sc) => (
-                            <tr key={sc.deltaPct} className={sc.deltaPct === 0 ? 'bg-[#D4AF37]/10 text-white font-bold' : 'text-zinc-300'}>
-                              <td className="py-2">{sc.deltaPct > 0 ? `+${sc.deltaPct}% Bull` : sc.deltaPct < 0 ? `${sc.deltaPct}% Bear` : 'Base (0%)'}</td>
-                              <td className="py-2">{formatPrice(sc.rentUSD, currentCurrency)}</td>
-                              <td className="py-2 text-[#D4AF37]">{sc.capRate}%</td>
-                              <td className="py-2 text-emerald-400">{sc.cashOnCash}%</td>
-                              <td className="py-2">{formatPrice(sc.monthlyCashflowUSD, currentCurrency)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    <Tabs defaultValue="chart" className="w-full">
+                      <TabsList>
+                        <TabsTrigger value="chart">Risk Scenario Chart</TabsTrigger>
+                        <TabsTrigger value="table">Sensitivity Table</TabsTrigger>
+                      </TabsList>
+                      <TabsContent value="chart">
+                        <RiskScenarioChart
+                          mode="sensitivity"
+                          sensitivity={runResult.sensitivity}
+                        />
+                      </TabsContent>
+                      <TabsContent value="table">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="hover:bg-transparent">
+                              <TableHead>Scenario</TableHead>
+                              <TableHead>Monthly Rent</TableHead>
+                              <TableHead>Cap Rate</TableHead>
+                              <TableHead>CoC</TableHead>
+                              <TableHead>Cashflow/mo</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {runResult.sensitivity.map((sc) => (
+                              <TableRow
+                                key={sc.deltaPct}
+                                className={sc.deltaPct === 0 ? 'bg-[#D4AF37]/10 text-white font-bold' : 'text-zinc-300'}
+                              >
+                                <TableCell className="py-2">{sc.deltaPct > 0 ? `+${sc.deltaPct}% Bull` : sc.deltaPct < 0 ? `${sc.deltaPct}% Bear` : 'Base (0%)'}</TableCell>
+                                <TableCell className="py-2">{formatPrice(sc.rentUSD, currentCurrency)}</TableCell>
+                                <TableCell className="py-2 text-[#D4AF37]">{sc.capRate}%</TableCell>
+                                <TableCell className="py-2 text-emerald-400">{sc.cashOnCash}%</TableCell>
+                                <TableCell className="py-2">{formatPrice(sc.monthlyCashflowUSD, currentCurrency)}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </TabsContent>
+                    </Tabs>
                   ) : (
                     <div className="text-xs font-mono text-zinc-400 py-3">
                       Click <strong className="text-[#D4AF37]">RUN ANALYSIS (-1 CREDIT)</strong> above to generate -10% / 0% / +10% sensitivity scenarios.
@@ -5387,8 +5477,27 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 )}
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-                  <button
+                  <motion.button
                     type="button"
+                    whileHover={
+                      !canDealFinder ||
+                      isFindingDeals ||
+                      isExpired ||
+                      !isCreditsLoaded ||
+                      (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                        ? undefined
+                        : { scale: 1.02 }
+                    }
+                    whileTap={
+                      !canDealFinder ||
+                      isFindingDeals ||
+                      isExpired ||
+                      !isCreditsLoaded ||
+                      (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                        ? undefined
+                        : { scale: 0.99 }
+                    }
+                    transition={{ duration: 0.15 }}
                     disabled={
                       !canDealFinder ||
                       isFindingDeals ||
@@ -5429,7 +5538,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <span>Find Deals (-1 CREDIT)</span>
                       </>
                     )}
-                  </button>
+                  </motion.button>
 
                   <span className="text-[11px] font-mono text-zinc-400">
                     Returns 5 ranked deals sorted by institutional score (0-100)
@@ -5437,9 +5546,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
-              {/* Deals Results Table */}
+              {/* Deals Results Table + Feature 1 Market Comparison Rechart */}
               {dfDeals.length > 0 && (
-                <div className="glass-panel p-6 space-y-4">
+                <FadeInCard className="glass-panel p-6 space-y-5">
                   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.08] pb-3">
                     <div>
                       <div className="text-[11px] font-mono text-[#D4AF37]">
@@ -5464,98 +5573,104 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </div>
                   </div>
 
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse font-mono text-xs tabular-nums">
-                      <thead>
-                        <tr className="border-b border-white/10 text-zinc-400 uppercase text-[10px]">
-                          <th className="py-3 pr-3">Deal Name</th>
-                          <th className="py-3 pr-3">City</th>
-                          <th className="py-3 pr-3">Price ($)</th>
-                          <th className="py-3 pr-3">Est. Rent ($/mo)</th>
-                          <th className="py-3 pr-3">Cap Rate (%)</th>
-                          <th className="py-3 pr-3">Cash-on-Cash (%)</th>
-                          <th className="py-3 pr-3">Score (0-100)</th>
-                          <th className="py-3 pr-3">Risk</th>
-                          <th className="py-3 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/[0.06]">
-                        {dfDeals.map((deal) => (
-                          <tr key={deal.id} className="hover:bg-white/[0.03] transition">
-                            <td className="py-3.5 pr-3">
-                              <div className="font-bold text-white">{deal.name}</div>
-                              <div className="text-[10px] text-zinc-500">{deal.propertyType}</div>
-                            </td>
-                            <td className="py-3.5 pr-3 text-zinc-300">{deal.city}</td>
-                            <td className="py-3.5 pr-3 text-white font-semibold">
-                              ${deal.price.toLocaleString('en-US')}
-                            </td>
-                            <td className="py-3.5 pr-3 text-zinc-200">
-                              ${deal.rent.toLocaleString('en-US')}/mo
-                            </td>
-                            <td className="py-3.5 pr-3 text-[#D4AF37] font-bold">
-                              {deal.capRate}%
-                            </td>
-                            <td className="py-3.5 pr-3 text-emerald-400 font-bold">
-                              {deal.cashOnCash}%
-                            </td>
-                            <td className="py-3.5 pr-3">
-                              <span className="px-2 py-0.5 rounded bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37] font-bold">
-                                {deal.score}/100
-                              </span>
-                            </td>
-                            <td className="py-3.5 pr-3">
-                              <span
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                  deal.risk === 'Low'
-                                    ? 'bg-emerald-500/20 text-emerald-300'
-                                    : deal.risk === 'High'
-                                    ? 'bg-rose-500/20 text-rose-300'
-                                    : 'bg-amber-500/20 text-amber-300'
-                                }`}
+                  {/* Recharts Deal Yield Comparison */}
+                  <MarketComparisonChart
+                    title={`Deal Yield & Cash-on-Cash Comparison (${dfResultsCity})`}
+                    subtitle="Ranked Simulated Deals"
+                    items={mapDealsToCompareItems(dfDeals)}
+                    secondarySeriesName="Cash-on-Cash (%)"
+                  />
+
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead>Deal Name</TableHead>
+                        <TableHead>City</TableHead>
+                        <TableHead>Price ($)</TableHead>
+                        <TableHead>Est. Rent ($/mo)</TableHead>
+                        <TableHead>Cap Rate (%)</TableHead>
+                        <TableHead>Cash-on-Cash (%)</TableHead>
+                        <TableHead>Score (0-100)</TableHead>
+                        <TableHead>Risk</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {dfDeals.map((deal) => (
+                        <TableRow key={deal.id}>
+                          <TableCell>
+                            <div className="font-bold text-white">{deal.name}</div>
+                            <div className="text-[10px] text-zinc-500">{deal.propertyType}</div>
+                          </TableCell>
+                          <TableCell className="text-zinc-300">{deal.city}</TableCell>
+                          <TableCell className="text-white font-semibold">
+                            ${deal.price.toLocaleString('en-US')}
+                          </TableCell>
+                          <TableCell className="text-zinc-200">
+                            ${deal.rent.toLocaleString('en-US')}/mo
+                          </TableCell>
+                          <TableCell className="text-[#D4AF37] font-bold">
+                            {deal.capRate}%
+                          </TableCell>
+                          <TableCell className="text-emerald-400 font-bold">
+                            {deal.cashOnCash}%
+                          </TableCell>
+                          <TableCell>
+                            <span className="px-2 py-0.5 rounded bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37] font-bold">
+                              {deal.score}/100
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                deal.risk === 'Low'
+                                  ? 'bg-emerald-500/20 text-emerald-300'
+                                  : deal.risk === 'High'
+                                  ? 'bg-rose-500/20 text-rose-300'
+                                  : 'bg-amber-500/20 text-amber-300'
+                              }`}
+                            >
+                              {deal.risk}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex flex-wrap items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleViewDealInAnalyze(deal)}
+                                className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-[#D4AF37] hover:text-black text-white font-bold text-[11px] cursor-pointer transition"
                               >
-                                {deal.risk}
-                              </span>
-                            </td>
-                            <td className="py-3.5 text-right">
-                              <div className="flex flex-wrap items-center justify-end gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() => handleViewDealInAnalyze(deal)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-[#D4AF37] hover:text-black text-white font-bold text-[11px] cursor-pointer transition"
-                                >
-                                  View Analysis
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={savingDealId === deal.id || isAccountLocked}
-                                  onClick={() => handleSaveDealFromFinder(deal)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-300 font-bold text-[11px] cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  {savingDealId === deal.id ? 'Saving...' : 'Save to Portfolio'}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={isAccountLocked}
-                                  onClick={() => handleExportDealPdf(deal)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-bold text-[11px] cursor-pointer transition flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  {(!canPdfExport || isAccountLocked) && <Lock className="w-3 h-3" />}
-                                  <span>Export PDF</span>
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                                View Analysis
+                              </button>
+                              <button
+                                type="button"
+                                disabled={savingDealId === deal.id || isAccountLocked}
+                                onClick={() => handleSaveDealFromFinder(deal)}
+                                className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-300 font-bold text-[11px] cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {savingDealId === deal.id ? 'Saving...' : 'Save to Portfolio'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isAccountLocked}
+                                onClick={() => handleExportDealPdf(deal)}
+                                className="px-2.5 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-bold text-[11px] cursor-pointer transition flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {(!canPdfExport || isAccountLocked) && <Lock className="w-3 h-3" />}
+                                <span>Export PDF</span>
+                              </button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
 
                   <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200">
                     {dfDisclaimer ||
                       `AI Deal Finder - Simulated deals based on market avg for ${dfResultsCity} - For illustration, verify with local agent`}
                   </div>
-                </div>
+                </FadeInCard>
               )}
             </div>
           )}
@@ -5700,8 +5815,19 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 )}
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-                  <button
+                  <motion.button
                     type="button"
+                    whileHover={
+                      !canMarketForecast || isGettingForecast || isAccountLocked || !isCreditsLoaded
+                        ? undefined
+                        : { scale: 1.02 }
+                    }
+                    whileTap={
+                      !canMarketForecast || isGettingForecast || isAccountLocked || !isCreditsLoaded
+                        ? undefined
+                        : { scale: 0.99 }
+                    }
+                    transition={{ duration: 0.15 }}
                     disabled={
                       !canMarketForecast ||
                       isGettingForecast ||
@@ -5738,7 +5864,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <span>Get Forecast (-1 CREDIT)</span>
                       </>
                     )}
-                  </button>
+                  </motion.button>
 
                   <span className="text-[11px] font-mono text-zinc-400">
                     Projects 12M / 3Y / 5Y Cap Rate, Rent Growth (2-5% YoY) &amp; Appreciation (3-7% YoY)
@@ -5746,9 +5872,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
-              {/* Forecast Results & SVG Chart */}
+              {/* Forecast Results & SVG Chart + Recharts Peer Market Comparison */}
               {fcResult && (
-                <div className="glass-panel p-6 space-y-6 border border-[#D4AF37]/30">
+                <FadeInCard className="glass-panel p-6 space-y-6 border border-[#D4AF37]/30">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.08] pb-4">
                     <div>
                       <div className="text-[11px] font-mono text-emerald-400 mb-0.5">
@@ -5796,39 +5922,49 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </div>
                   </div>
 
-                  {/* Metrics Grid */}
+                  {/* Metrics Grid with Framer Motion CountUp */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 font-mono tabular-nums">
                     <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
                       <div className="text-[10px] uppercase text-zinc-400">Current Avg Cap Rate</div>
-                      <div className="text-xl font-black text-white mt-1">{fcResult.currentAvgCapRate}%</div>
+                      <div className="text-xl font-black text-white mt-1">
+                        <CountUpNumber value={Number(fcResult.currentAvgCapRate) || 0} decimals={2} suffix="%" />
+                      </div>
                     </div>
                     <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
                       <div className="text-[10px] uppercase text-zinc-400">Forecast Cap (12M)</div>
-                      <div className="text-xl font-black text-[#D4AF37] mt-1">{fcResult.forecastCap12M}%</div>
+                      <div className="text-xl font-black text-[#D4AF37] mt-1">
+                        <CountUpNumber value={Number(fcResult.forecastCap12M) || 0} decimals={2} suffix="%" />
+                      </div>
                     </div>
                     <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
                       <div className="text-[10px] uppercase text-zinc-400">Forecast Cap (3Y)</div>
-                      <div className="text-xl font-black text-emerald-400 mt-1">{fcResult.forecastCap3Y}%</div>
+                      <div className="text-xl font-black text-emerald-400 mt-1">
+                        <CountUpNumber value={Number(fcResult.forecastCap3Y) || 0} decimals={2} suffix="%" />
+                      </div>
                     </div>
                     <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
                       <div className="text-[10px] uppercase text-zinc-400">Forecast Cap (5Y)</div>
-                      <div className="text-xl font-black text-cyan-400 mt-1">{fcResult.forecastCap5Y}%</div>
+                      <div className="text-xl font-black text-cyan-400 mt-1">
+                        <CountUpNumber value={Number(fcResult.forecastCap5Y) || 0} decimals={2} suffix="%" />
+                      </div>
                     </div>
                     <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
                       <div className="text-[10px] uppercase text-zinc-400">Rent Growth (12M / {fcResult.period})</div>
                       <div className="text-lg font-black text-emerald-300 mt-1">
-                        +{fcResult.rentGrowth12M}% <span className="text-xs text-zinc-400">(+{fcResult.rentGrowthSelected}%)</span>
+                        +<CountUpNumber value={Number(fcResult.rentGrowth12M) || 0} decimals={1} suffix="%" />{' '}
+                        <span className="text-xs text-zinc-400">(+{fcResult.rentGrowthSelected}%)</span>
                       </div>
                     </div>
                     <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
                       <div className="text-[10px] uppercase text-zinc-400">Price Growth (12M / {fcResult.period})</div>
                       <div className="text-lg font-black text-purple-300 mt-1">
-                        +{fcResult.priceGrowth12M}% <span className="text-xs text-zinc-400">(+{fcResult.priceGrowthSelected}%)</span>
+                        +<CountUpNumber value={Number(fcResult.priceGrowth12M) || 0} decimals={1} suffix="%" />{' '}
+                        <span className="text-xs text-zinc-400">(+{fcResult.priceGrowthSelected}%)</span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Forecast Curve Chart: Now -> 12M -> 3Y -> 5Y */}
+                  {/* Existing Forecast Curve Chart: Now -> 12M -> 3Y -> 5Y (Preserved) */}
                   {Array.isArray(fcResult.series) && fcResult.series.length >= 2 && (() => {
                     const pts = fcResult.series;
                     const W = 680;
@@ -5918,6 +6054,29 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     );
                   })()}
 
+                  {/* Feature 2 Recharts Companion: Cross-Market Yield & Growth Benchmark */}
+                  <MarketComparisonChart
+                    title={`${fcResult.city} Forecast vs Global Market Benchmarks`}
+                    subtitle="Cap Rate (%) vs Annual Rent Growth (%)"
+                    secondarySeriesName="Rent Growth YoY (%)"
+                    items={[
+                      {
+                        name: `${fcResult.city} (5Y)`,
+                        capRate: Number(fcResult.forecastCap5Y) || fcResult.currentAvgCapRate,
+                        secondaryMetric: Number(fcResult.rentGrowth12M) || 0,
+                      },
+                      ...CROSS_BORDER_DATA.filter(
+                        (r) => r.city.toLowerCase() !== fcResult.city.toLowerCase()
+                      )
+                        .slice(0, 5)
+                        .map((r) => ({
+                          name: r.city,
+                          capRate: r.avgGrossYield,
+                          secondaryMetric: r.rentalGrowthYoY,
+                        })),
+                    ]}
+                  />
+
                   {/* Actions & Disclaimer */}
                   <div className="flex flex-wrap items-center gap-3">
                     <button
@@ -5945,7 +6104,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     {fcResult.disclaimer ||
                       `Forecast based on market averages for ${fcResult.city} - Not financial advice, verify with local agent`}
                   </div>
-                </div>
+                </FadeInCard>
               )}
             </div>
           )}
@@ -6179,8 +6338,19 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 )}
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-                  <button
+                  <motion.button
                     type="button"
+                    whileHover={
+                      !canDueDiligence || isRunningDd || isAccountLocked || !isCreditsLoaded
+                        ? undefined
+                        : { scale: 1.02 }
+                    }
+                    whileTap={
+                      !canDueDiligence || isRunningDd || isAccountLocked || !isCreditsLoaded
+                        ? undefined
+                        : { scale: 0.99 }
+                    }
+                    transition={{ duration: 0.15 }}
                     disabled={!canDueDiligence || isRunningDd || isAccountLocked || !isCreditsLoaded}
                     onClick={handleRunDueDiligence}
                     className={`px-6 py-3.5 rounded-xl font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition min-h-[46px] ${
@@ -6210,7 +6380,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <span>Run Due Diligence (-1 CREDIT)</span>
                       </>
                     )}
-                  </button>
+                  </motion.button>
 
                   <span className="text-[11px] font-mono text-zinc-400">
                     Audits Legal Tenure, Transfer Tax, Cap Rate Spread, Rent Comp, Building Age &amp; Market Risk
@@ -6218,9 +6388,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
-              {/* Due Diligence Output */}
+              {/* Due Diligence Output + Feature 2 Risk Scenario Audit Rechart */}
               {ddResult && (
-                <div className="glass-panel p-6 space-y-6 border border-[#D4AF37]/30">
+                <FadeInCard className="glass-panel p-6 space-y-6 border border-[#D4AF37]/30">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.08] pb-4">
                     <div>
                       <div className="text-[11px] font-mono text-emerald-400 mb-0.5">
@@ -6244,7 +6414,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             : 'bg-rose-500/20 border-rose-400 text-rose-300'
                         }`}
                       >
-                        Risk Score: {ddResult.riskScore}/100
+                        Risk Score: <CountUpNumber value={Number(ddResult.riskScore) || 0} suffix="/100" />
                       </span>
                       <span
                         className={`px-3 py-1.5 rounded-lg font-bold border ${
@@ -6272,11 +6442,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 font-mono tabular-nums">
                     <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
                       <div className="text-[10px] uppercase text-zinc-400">Property Cap Rate</div>
-                      <div className="text-xl font-black text-white mt-1">{ddResult.propertyCapRate}%</div>
+                      <div className="text-xl font-black text-white mt-1">
+                        <CountUpNumber value={Number(ddResult.propertyCapRate) || 0} decimals={2} suffix="%" />
+                      </div>
                     </div>
                     <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
                       <div className="text-[10px] uppercase text-zinc-400">{ddResult.city} Avg Cap Rate</div>
-                      <div className="text-xl font-black text-[#D4AF37] mt-1">{ddResult.cityAvgCapRate}%</div>
+                      <div className="text-xl font-black text-[#D4AF37] mt-1">
+                        <CountUpNumber value={Number(ddResult.cityAvgCapRate) || 0} decimals={2} suffix="%" />
+                      </div>
                     </div>
                     <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
                       <div className="text-[10px] uppercase text-zinc-400">Rent vs Market Est.</div>
@@ -6292,52 +6466,57 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </div>
                   </div>
 
+                  {/* Recharts Risk Resilience Chart */}
+                  <RiskScenarioChart
+                    mode="risk-audit"
+                    auditItems={ddResult.checklist}
+                    overallRiskScore={ddResult.riskScore}
+                  />
+
                   {/* Checklist Table */}
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse font-mono text-xs">
-                      <thead>
-                        <tr className="border-b border-white/10 text-zinc-400 uppercase text-[10px]">
-                          <th className="py-3 pr-3">Category</th>
-                          <th className="py-3 pr-3">Audit Item</th>
-                          <th className="py-3 pr-3">Status</th>
-                          <th className="py-3">Assessment Notes</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/[0.06]">
-                        {ddResult.checklist.map((row) => (
-                          <tr key={row.id} className="hover:bg-white/[0.03] transition">
-                            <td className="py-3.5 pr-3 font-bold text-[#D4AF37] whitespace-nowrap">
-                              {row.category}
-                            </td>
-                            <td className="py-3.5 pr-3 text-white font-semibold whitespace-nowrap">
-                              {row.item}
-                            </td>
-                            <td className="py-3.5 pr-3 whitespace-nowrap">
-                              <span
-                                className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md font-bold text-[11px] ${
-                                  row.status === 'Pass'
-                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                                    : row.status === 'Warning'
-                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                                    : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                                }`}
-                              >
-                                {row.status === 'Pass' ? (
-                                  <CheckCircle2 className="w-3 h-3" />
-                                ) : row.status === 'Warning' ? (
-                                  <AlertTriangle className="w-3 h-3" />
-                                ) : (
-                                  <XCircle className="w-3 h-3" />
-                                )}
-                                <span>{row.status}</span>
-                              </span>
-                            </td>
-                            <td className="py-3.5 text-zinc-300 leading-relaxed">{row.note}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead>Category</TableHead>
+                        <TableHead>Audit Item</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Assessment Notes</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {ddResult.checklist.map((row) => (
+                        <TableRow key={row.id}>
+                          <TableCell className="font-bold text-[#D4AF37] whitespace-nowrap">
+                            {row.category}
+                          </TableCell>
+                          <TableCell className="text-white font-semibold whitespace-nowrap">
+                            {row.item}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap">
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md font-bold text-[11px] ${
+                                row.status === 'Pass'
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                  : row.status === 'Warning'
+                                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                  : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                              }`}
+                            >
+                              {row.status === 'Pass' ? (
+                                <CheckCircle2 className="w-3 h-3" />
+                              ) : row.status === 'Warning' ? (
+                                <AlertTriangle className="w-3 h-3" />
+                              ) : (
+                                <XCircle className="w-3 h-3" />
+                              )}
+                              <span>{row.status}</span>
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-zinc-300 leading-relaxed">{row.note}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
 
                   {/* Save + Export PDF */}
                   <div className="flex flex-wrap items-center gap-3">
@@ -6365,7 +6544,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200">
                     {ddResult.disclaimer}
                   </div>
-                </div>
+                </FadeInCard>
               )}
             </div>
           )}
@@ -8570,120 +8749,105 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
       </div>
 
-      {/* Report Tool Issue Modal */}
-      {isIssueModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="w-full max-w-md glass-panel p-6 rounded-3xl border border-amber-500/40 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-amber-300 font-mono font-bold text-sm uppercase">
-                <AlertTriangle className="w-4 h-4" />
-                <span>Report Tool Issue</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsIssueModalOpen(false)}
-                className="p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-xs font-mono text-zinc-300 leading-relaxed">
+      {/* Report Tool Issue Modal (Radix Dialog) */}
+      <Dialog open={isIssueModalOpen} onOpenChange={setIsIssueModalOpen}>
+        <DialogContent className="border-amber-500/40 space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-amber-300">
+              <AlertTriangle className="w-4 h-4" />
+              <span>Report Tool Issue</span>
+            </DialogTitle>
+            <DialogDescription className="pt-1">
               Experiencing a bug or calculation failure? Describe the issue below. Reported issues are logged with a timestamp and reviewed by engineering.
-            </p>
-            <form onSubmit={handleReportToolIssue} className="space-y-3">
-              <textarea
-                rows={4}
-                value={issueDescInput}
-                onChange={(e) => setIssueDescInput(e.target.value)}
-                placeholder="Describe what happened, e.g., error message, city input, or failed output..."
-                className="w-full p-3 rounded-xl bg-black/60 border border-white/15 focus:border-amber-400 text-xs font-mono text-white outline-none"
-              />
-              {issueModalError && (
-                <div className="p-2.5 rounded-xl bg-rose-950/50 border border-rose-500/40 text-xs font-mono text-rose-200">
-                  {issueModalError}
-                </div>
-              )}
-              <div className="flex items-center justify-end gap-2.5 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setIsIssueModalOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-mono text-zinc-300 cursor-pointer"
-                >
-                  Close
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmittingIssue}
-                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-black font-bold text-xs font-mono cursor-pointer disabled:opacity-60"
-                >
-                  {isSubmittingIssue ? 'Submitting...' : 'Submit Issue Report'}
-                </button>
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleReportToolIssue} className="space-y-3">
+            <textarea
+              rows={4}
+              value={issueDescInput}
+              onChange={(e) => setIssueDescInput(e.target.value)}
+              placeholder="Describe what happened, e.g., error message, city input, or failed output..."
+              className="w-full p-3 rounded-xl bg-black/60 border border-white/15 focus:border-amber-400 text-xs font-mono text-white outline-none"
+            />
+            {issueModalError && (
+              <div className="p-2.5 rounded-xl bg-rose-950/50 border border-rose-500/40 text-xs font-mono text-rose-200">
+                {issueModalError}
               </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Confirm Cancel Subscription + Refund Modal */}
-      {isCancelModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="w-full max-w-md glass-panel p-6 rounded-3xl border border-rose-500/40 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2 text-rose-400 font-mono font-bold text-sm uppercase">
-                <AlertTriangle className="w-4 h-4" />
-                <span>Confirm Subscription Cancellation</span>
-              </div>
-              <button
+            )}
+            <DialogFooter>
+              <Button
                 type="button"
-                onClick={() => setIsCancelModalOpen(false)}
-                className="p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer"
+                variant="outline"
+                onClick={() => setIsIssueModalOpen(false)}
               >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-xs font-mono text-zinc-200 leading-relaxed">
+                Close
+              </Button>
+              <Button
+                type="submit"
+                variant="solidGold"
+                disabled={isSubmittingIssue}
+              >
+                {isSubmittingIssue ? 'Submitting...' : 'Submit Issue Report'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm Cancel Subscription + Refund Modal (Radix Dialog) */}
+      <Dialog open={isCancelModalOpen} onOpenChange={setIsCancelModalOpen}>
+        <DialogContent className="border-rose-500/40 space-y-4">
+          <DialogHeader>
+            <DialogTitle className="text-rose-400">
+              <AlertTriangle className="w-4 h-4" />
+              <span>Confirm Subscription Cancellation</span>
+            </DialogTitle>
+            <DialogDescription className="pt-1 text-zinc-200">
               Cancel <strong className="text-[#D4AF37]">{license.displayName}</strong>? Your analyses will be lost,{' '}
               <strong className="text-[#D4AF37]">{license.displayName}</strong> will be deactivated, refund of{' '}
               <strong className="text-emerald-400">
                 ${localCancelEligibility.refundableAmountUSD || planPriceUSD}
               </strong>{' '}
               will be issued to original payment method in 5-10 business days. This cannot be undone.
-            </p>
-            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.04] border border-white/10 cursor-pointer select-none text-xs font-mono text-zinc-200">
-              <input
-                type="checkbox"
-                checked={cancelPolicyAck}
-                onChange={(e) => setCancelPolicyAck(e.target.checked)}
-                className="mt-0.5 w-4 h-4 accent-[#D4AF37] cursor-pointer shrink-0"
-              />
-              <span>I have read the Refund Policy above</span>
-            </label>
-            {cancelModalError && (
-              <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/50 text-xs font-mono text-rose-200">
-                {cancelModalError}
-              </div>
-            )}
-            <div className="flex flex-col sm:flex-row items-center justify-end gap-2.5 pt-2">
-              <button
-                type="button"
-                onClick={() => setIsCancelModalOpen(false)}
-                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-mono font-bold text-white cursor-pointer"
-              >
-                Keep Subscription
-              </button>
-              <button
-                type="button"
-                disabled={isCancellingSub || !cancelPolicyAck}
-                onClick={handleCancelSubscription}
-                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-mono font-bold text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isCancellingSub ? 'Processing Refund...' : 'Confirm Cancel + Refund'}
-              </button>
+            </DialogDescription>
+          </DialogHeader>
+          <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.04] border border-white/10 cursor-pointer select-none text-xs font-mono text-zinc-200">
+            <input
+              type="checkbox"
+              checked={cancelPolicyAck}
+              onChange={(e) => setCancelPolicyAck(e.target.checked)}
+              className="mt-0.5 w-4 h-4 accent-[#D4AF37] cursor-pointer shrink-0"
+            />
+            <span>I have read the Refund Policy above</span>
+          </label>
+          {cancelModalError && (
+            <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/50 text-xs font-mono text-rose-200">
+              {cancelModalError}
             </div>
-          </div>
-        </div>
-      )}
+          )}
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsCancelModalOpen(false)}
+              className="w-full sm:w-auto"
+            >
+              Keep Subscription
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={isCancellingSub || !cancelPolicyAck}
+              onClick={handleCancelSubscription}
+              className="w-full sm:w-auto"
+            >
+              {isCancellingSub ? 'Processing Refund...' : 'Confirm Cancel + Refund'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
     </div>
+    </TooltipProvider>
   );
 };

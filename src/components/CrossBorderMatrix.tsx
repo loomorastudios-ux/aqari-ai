@@ -4,6 +4,16 @@ import { FALLBACK_CROSS_BORDER_DATA } from '../constants';
 import { formatPrice } from '../utils/formatters';
 import { canUseFeature } from '../../lib/plans';
 import { Scale, Activity, Lock, Zap } from 'lucide-react';
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from './ui/table';
+import { FadeInCard } from './ui/motion-primitives';
+import { Button } from './ui/button';
 
 interface CrossBorderMatrixProps {
   currentCurrency: CurrencyCode;
@@ -64,103 +74,101 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
       </div>
 
       {/* Table Container */}
-      <div className="glass-panel overflow-hidden border border-white/[0.08] relative">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs font-mono border-collapse">
-            <thead>
-              <tr className="bg-white/[0.04] border-b border-white/[0.08] text-zinc-400 uppercase tracking-wider text-[11px]">
-                <th className="py-4 px-5 font-semibold">City & Market</th>
-                <th className="py-4 px-5 font-semibold">Price / m² ({currentCurrency})</th>
-                <th className="py-4 px-5 font-semibold">Gross Yield</th>
-                <th className="py-4 px-5 font-semibold">Transfer Tax</th>
-                <th className="py-4 px-5 font-semibold">Capital Gains Tax</th>
-                <th className="py-4 px-5 font-semibold">Golden Visa Tier</th>
-                <th className="py-4 px-5 font-semibold">Rental YoY</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/[0.05] text-zinc-300">
-              {visibleRows.map((row) => {
-                const convertedPriceSqM = formatPrice(row.basePriceSqMUSD, currentCurrency);
-                const goldenVisaDisplay = row.goldenVisaUSD
-                  ? formatPrice(row.goldenVisaUSD, currentCurrency, { compact: true })
-                  : 'N/A';
+      <FadeInCard className="glass-panel overflow-hidden border border-white/[0.08] relative">
+        <Table>
+          <TableHeader className="bg-white/[0.04] border-b border-white/[0.08]">
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="py-4 px-5 text-[11px]">City & Market</TableHead>
+              <TableHead className="py-4 px-5 text-[11px]">Price / m² ({currentCurrency})</TableHead>
+              <TableHead className="py-4 px-5 text-[11px]">Gross Yield</TableHead>
+              <TableHead className="py-4 px-5 text-[11px]">Transfer Tax</TableHead>
+              <TableHead className="py-4 px-5 text-[11px]">Capital Gains Tax</TableHead>
+              <TableHead className="py-4 px-5 text-[11px]">Golden Visa Tier</TableHead>
+              <TableHead className="py-4 px-5 text-[11px]">Rental YoY</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody className="divide-y divide-white/[0.05] text-zinc-300">
+            {visibleRows.map((row) => {
+              const convertedPriceSqM = formatPrice(row.basePriceSqMUSD, currentCurrency);
+              const goldenVisaDisplay = row.goldenVisaUSD
+                ? formatPrice(row.goldenVisaUSD, currentCurrency, { compact: true })
+                : 'N/A';
 
-                const isTaxHaven = row.capitalGainsTax.includes('0%');
+              const isTaxHaven = row.capitalGainsTax.includes('0%');
 
-                return (
-                  <tr
-                    key={row.city}
-                    className="hover:bg-white/[0.03] transition-colors duration-150 group"
-                  >
-                    <td className="py-4 px-5 whitespace-nowrap">
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-lg">{row.flag}</span>
-                        <div>
-                          <div className="font-bold text-white group-hover:text-[#D4AF37] transition">
-                            {row.city}
-                          </div>
-                          <div className="text-[10px] text-zinc-400">
-                            {row.country}
-                            {row.inflationPct != null ? ` • CPI ${row.inflationPct}%` : ''}
-                            {row.source ? ` • ${row.source}` : ''}
-                          </div>
+              return (
+                <TableRow
+                  key={row.city}
+                  className="hover:bg-white/[0.03] transition-colors duration-150 group"
+                >
+                  <TableCell className="py-4 px-5 whitespace-nowrap">
+                    <div className="flex items-center gap-2.5">
+                      <span className="text-lg">{row.flag}</span>
+                      <div>
+                        <div className="font-bold text-white group-hover:text-[#D4AF37] transition">
+                          {row.city}
+                        </div>
+                        <div className="text-[10px] text-zinc-400">
+                          {row.country}
+                          {row.inflationPct != null ? ` • CPI ${row.inflationPct}%` : ''}
+                          {row.source ? ` • ${row.source}` : ''}
                         </div>
                       </div>
-                    </td>
+                    </div>
+                  </TableCell>
 
-                    <td className="py-4 px-5 whitespace-nowrap font-bold text-white text-sm">
-                      {convertedPriceSqM}
-                    </td>
+                  <TableCell className="py-4 px-5 whitespace-nowrap font-bold text-white text-sm">
+                    {convertedPriceSqM}
+                  </TableCell>
 
-                    <td className="py-4 px-5 whitespace-nowrap">
-                      <span className="px-2 py-0.5 rounded bg-[#D4AF37]/15 text-[#D4AF37] font-bold">
-                        {row.avgGrossYield}%
+                  <TableCell className="py-4 px-5 whitespace-nowrap">
+                    <span className="px-2 py-0.5 rounded bg-[#D4AF37]/15 text-[#D4AF37] font-bold">
+                      {row.avgGrossYield}%
+                    </span>
+                  </TableCell>
+
+                  <TableCell className="py-4 px-5 whitespace-nowrap">
+                    <span className={row.transferTaxPct > 10 ? 'text-rose-400 font-bold' : 'text-zinc-300'}>
+                      {isLockedFreeUser ? '🔒 Starter' : `${row.transferTaxPct}%`}
+                    </span>
+                  </TableCell>
+
+                  <TableCell className="py-4 px-5 whitespace-nowrap">
+                    {isLockedFreeUser ? (
+                      <span className="text-zinc-500">🔒 Locked (FREE)</span>
+                    ) : isTaxHaven ? (
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
+                        0% TAX HAVEN
                       </span>
-                    </td>
+                    ) : (
+                      <span className="text-zinc-400">{row.capitalGainsTax}</span>
+                    )}
+                  </TableCell>
 
-                    <td className="py-4 px-5 whitespace-nowrap">
-                      <span className={row.transferTaxPct > 10 ? 'text-rose-400 font-bold' : 'text-zinc-300'}>
-                        {isLockedFreeUser ? '🔒 Starter' : `${row.transferTaxPct}%`}
-                      </span>
-                    </td>
+                  <TableCell className="py-4 px-5 whitespace-nowrap text-cyan-400 font-medium">
+                    {isLockedFreeUser ? '🔒 Starter+' : goldenVisaDisplay}
+                  </TableCell>
 
-                    <td className="py-4 px-5 whitespace-nowrap">
-                      {isLockedFreeUser ? (
-                        <span className="text-zinc-500">🔒 Locked (FREE)</span>
-                      ) : isTaxHaven ? (
-                        <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
-                          0% TAX HAVEN
-                        </span>
-                      ) : (
-                        <span className="text-zinc-400">{row.capitalGainsTax}</span>
-                      )}
-                    </td>
+                  <TableCell className="py-4 px-5 whitespace-nowrap text-emerald-400 font-bold">
+                    +{row.rentalGrowthYoY}%
+                  </TableCell>
+                </TableRow>
+              );
+            })}
 
-                    <td className="py-4 px-5 whitespace-nowrap text-cyan-400 font-medium">
-                      {isLockedFreeUser ? '🔒 Starter+' : goldenVisaDisplay}
-                    </td>
-
-                    <td className="py-4 px-5 whitespace-nowrap text-emerald-400 font-bold">
-                      +{row.rentalGrowthYoY}%
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {lockedRows.map((row) => (
-                <tr key={row.city} className="opacity-30 blur-[2px] select-none pointer-events-none">
-                  <td className="py-4 px-5 whitespace-nowrap">{row.flag} {row.city}</td>
-                  <td className="py-4 px-5 whitespace-nowrap">--</td>
-                  <td className="py-4 px-5 whitespace-nowrap">--%</td>
-                  <td className="py-4 px-5 whitespace-nowrap">--%</td>
-                  <td className="py-4 px-5 whitespace-nowrap">LOCKED</td>
-                  <td className="py-4 px-5 whitespace-nowrap">LOCKED</td>
-                  <td className="py-4 px-5 whitespace-nowrap">--%</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            {lockedRows.map((row) => (
+              <TableRow key={row.city} className="opacity-30 blur-[2px] select-none pointer-events-none">
+                <TableCell className="py-4 px-5 whitespace-nowrap">{row.flag} {row.city}</TableCell>
+                <TableCell className="py-4 px-5 whitespace-nowrap">--</TableCell>
+                <TableCell className="py-4 px-5 whitespace-nowrap">--%</TableCell>
+                <TableCell className="py-4 px-5 whitespace-nowrap">--%</TableCell>
+                <TableCell className="py-4 px-5 whitespace-nowrap">LOCKED</TableCell>
+                <TableCell className="py-4 px-5 whitespace-nowrap">LOCKED</TableCell>
+                <TableCell className="py-4 px-5 whitespace-nowrap">--%</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
 
         {isLockedFreeUser && (
           <div className="p-4 bg-gradient-to-r from-black/90 via-zinc-900/95 to-black/90 border-t border-[#D4AF37]/30 flex flex-col sm:flex-row items-center justify-between gap-3">
@@ -169,18 +177,19 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
               <span>Full Cross-border Tax &amp; Visa Matrix is locked on FREE plan.</span>
             </div>
             {onOpenPricing && (
-              <button
+              <Button
                 type="button"
+                variant="solidGold"
                 onClick={onOpenPricing}
-                className="px-4 py-2 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono uppercase tracking-wider flex items-center gap-1.5 cursor-pointer shrink-0"
+                className="uppercase tracking-wider shrink-0"
               >
                 <Zap className="w-3.5 h-3.5 fill-black" />
                 <span>Upgrade to Starter</span>
-              </button>
+              </Button>
             )}
           </div>
         )}
-      </div>
+      </FadeInCard>
 
     </section>
   );

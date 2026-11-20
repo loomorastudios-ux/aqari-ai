@@ -1,15 +1,27 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState } from 'react';
+import { motion } from 'framer-motion';
 import { CurrencyCode, User, RemoteConfig } from '../types';
 import { computeLicenseStatus } from '../../lib/plans';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from './ui/dropdown-menu';
+import {
+  Tooltip,
+  TooltipProvider,
+  TooltipTrigger,
+  TooltipContent,
+} from './ui/tooltip';
 import { 
   ChevronDown, 
   Sparkles, 
   LogOut, 
   Settings, 
-  ShieldCheck, 
   Flame,
   AlertTriangle,
-  RefreshCw,
   Zap,
   Menu,
   X,
@@ -39,20 +51,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenPricing,
   onGoToHome,
 }) => {
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const userMenuRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdowns on outside click
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
-        setUserMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   const isTestMode =
     import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' ||
@@ -91,6 +90,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     : `${license?.analysesLeft ?? 0} analyses left`;
 
   return (
+    <TooltipProvider delayDuration={200}>
     <header className="sticky top-0 z-50 w-full">
       {/* Test Mode Top Banner */}
       {isTestMode && (
@@ -216,38 +216,48 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Controls: User Auth & Subscription Badge (USD Display Only) */}
           <div className="flex items-center gap-3">
 
-            {/* Trial Status or Plan Badge */}
+            {/* Trial Status or Plan Badge with Radix Tooltip */}
             {user && license ? (
-              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
-                {isExpiringIn1Day ? (
-                  <button
-                    onClick={onOpenPricing}
-                    className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-0.5 rounded-lg bg-red-950/80 border border-red-500/60 text-red-300 hover:text-white transition animate-pulse cursor-pointer"
-                  >
-                    <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
-                    <span className="text-red-400 font-bold uppercase tracking-wider">
-                      {license.displayName} • {analysesLeftDisplay} • 1 days left - Renew
-                    </span>
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-1.5 text-xs font-mono">
-                    <span className={`w-2 h-2 rounded-full ${license.planKey === 'free' ? 'bg-[#D4AF37]' : 'bg-emerald-400'} animate-pulse`} />
-                    <span className={`${license.planKey === 'free' ? 'text-[#D4AF37]' : 'text-emerald-400'} font-bold uppercase tracking-wider`}>
-                      {license.displayName}
-                    </span>
-                    <span className="text-zinc-500">•</span>
-                    <span className="text-zinc-200 font-semibold">{analysesLeftDisplay}</span>
-                    <span className="text-zinc-500">•</span>
-                    <span className="text-zinc-300 font-medium">{daysLeft} days left</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
+                    {isExpiringIn1Day ? (
+                      <button
+                        onClick={onOpenPricing}
+                        className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-0.5 rounded-lg bg-red-950/80 border border-red-500/60 text-red-300 hover:text-white transition animate-pulse cursor-pointer"
+                      >
+                        <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+                        <span className="text-red-400 font-bold uppercase tracking-wider">
+                          {license.displayName} • {analysesLeftDisplay} • 1 days left - Renew
+                        </span>
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-xs font-mono">
+                        <span className={`w-2 h-2 rounded-full ${license.planKey === 'free' ? 'bg-[#D4AF37]' : 'bg-emerald-400'} animate-pulse`} />
+                        <span className={`${license.planKey === 'free' ? 'text-[#D4AF37]' : 'text-emerald-400'} font-bold uppercase tracking-wider`}>
+                          {license.displayName}
+                        </span>
+                        <span className="text-zinc-500">•</span>
+                        <span className="text-zinc-200 font-semibold">{analysesLeftDisplay}</span>
+                        <span className="text-zinc-500">•</span>
+                        <span className="text-zinc-300 font-medium">{daysLeft} days left</span>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Active 30-day terminal license • {license.displayName} ({daysLeft}d remaining)
+                </TooltipContent>
+              </Tooltip>
             ) : null}
 
-            {/* User Auth Button / User Controls */}
+            {/* User Auth Button / Radix User Dropdown Menu */}
             {!user ? (
-              <button
+              <motion.button
                 type="button"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.99 }}
+                transition={{ duration: 0.15 }}
                 onClick={onOpenAuth}
                 className="relative inline-flex items-center justify-center p-0.5 overflow-hidden rounded-xl group cursor-pointer min-h-[38px] sm:min-h-[44px] shrink-0 border border-[#D4AF37]/60 hover:border-[#D4AF37]"
                 title="Sign in to Terminal - تسجيل الدخول"
@@ -260,117 +270,99 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <span className="hidden sm:inline">Sign in to Terminal</span>
                   </span>
                 </span>
-              </button>
+              </motion.button>
             ) : (
-              <div className="flex items-center gap-2" ref={userMenuRef}>
-                {/* Avatar with dropdown trigger */}
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setUserMenuOpen(!userMenuOpen)}
-                    className="flex items-center gap-2 p-1 sm:p-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#D4AF37]/50 text-xs text-white transition cursor-pointer"
-                    title={user.email}
-                  >
-                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#D4AF37] to-[#8B5CF6] flex items-center justify-center text-black font-bold text-xs uppercase shadow-sm overflow-hidden shrink-0">
-                      {user.picture ? (
-                        <img src={user.picture} alt={user.email} className="w-full h-full object-cover" />
-                      ) : (
-                        user.email.charAt(0).toUpperCase()
-                      )}
-                    </div>
-                    <div className="text-left hidden lg:block pr-1">
-                      <div className="text-[11px] font-semibold text-white truncate max-w-[120px] leading-tight">
-                        {user.email}
+              <div className="flex items-center gap-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex items-center gap-2 p-1 sm:p-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-[#D4AF37]/50 text-xs text-white transition cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#D4AF37]/50"
+                      title={user.email}
+                    >
+                      <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#D4AF37] to-[#8B5CF6] flex items-center justify-center text-black font-bold text-xs uppercase shadow-sm overflow-hidden shrink-0">
+                        {user.picture ? (
+                          <img src={user.picture} alt={user.email} className="w-full h-full object-cover" />
+                        ) : (
+                          user.email.charAt(0).toUpperCase()
+                        )}
                       </div>
-                      <div className="text-[9px] font-mono text-[#D4AF37] uppercase font-bold">
-                        {license?.displayName || 'FREE'}
-                      </div>
-                    </div>
-                    <ChevronDown className={`w-3 h-3 text-zinc-400 transition-transform ${userMenuOpen ? 'rotate-180' : ''}`} />
-                  </button>
-
-                  {/* User Dropdown Menu */}
-                  {userMenuOpen && (
-                    <div className="absolute right-0 mt-2 w-64 rounded-2xl glass-dropdown p-2 z-50 animate-in fade-in zoom-in-95 duration-150">
-                      <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.05] mb-2">
-                        <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">
-                          Active Profile
-                        </div>
-                        <div className="text-xs font-medium text-white truncate mt-0.5">
+                      <div className="text-left hidden lg:block pr-1">
+                        <div className="text-[11px] font-semibold text-white truncate max-w-[120px] leading-tight">
                           {user.email}
                         </div>
-                        <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center justify-between text-[11px]">
-                          <span className="text-zinc-400">Plan:</span>
-                          <span className="text-[#D4AF37] font-bold uppercase font-mono">
-                            {license?.displayName} • {daysLeft} days left
-                          </span>
-                        </div>
-                        <div className="mt-1 flex items-center justify-between text-[11px] font-mono">
-                          <span className="text-zinc-400">Quota:</span>
-                          <span className="text-emerald-400 font-bold">{analysesLeftDisplay}</span>
+                        <div className="text-[9px] font-mono text-[#D4AF37] uppercase font-bold">
+                          {license?.displayName || 'FREE'}
                         </div>
                       </div>
+                      <ChevronDown className="w-3 h-3 text-zinc-400 transition-transform" />
+                    </button>
+                  </DropdownMenuTrigger>
 
-                      <button
-                        onClick={() => {
-                          setUserMenuOpen(false);
-                          onGoToTerminal();
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-black bg-[#D4AF37] hover:brightness-110 transition mb-1 cursor-pointer font-mono font-bold"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 fill-black" />
-                        <span>Enter Terminal</span>
-                      </button>
-
-                      {user.plan === 'free' && (
-                        <button
-                          onClick={() => {
-                            setUserMenuOpen(false);
-                            onOpenPricing();
-                          }}
-                          className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-white bg-white/[0.06] hover:bg-white/[0.12] transition mb-1 cursor-pointer"
-                        >
-                          <Zap className="w-3.5 h-3.5 text-[#D4AF37]" />
-                          <span>Upgrade Subscription</span>
-                        </button>
-                      )}
-
-                      <div className="border-t border-white/[0.06] my-1" />
-
-                      <button
-                        onClick={() => {
-                          setUserMenuOpen(false);
-                          onOpenAdmin();
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-zinc-300 hover:bg-white/[0.06] transition cursor-pointer"
-                      >
-                        <Settings className="w-3.5 h-3.5 text-zinc-400" />
-                        <span>Terminal Admin Config</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setUserMenuOpen(false);
-                          onSignOut(false);
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
-                      >
-                        <LogOut className="w-3.5 h-3.5" />
-                        <span>Sign Out</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setUserMenuOpen(false);
-                          onSignOut(true);
-                        }}
-                        className="w-full text-left px-3 py-1.5 text-[10px] font-mono text-zinc-500 hover:text-rose-400 transition cursor-pointer"
-                      >
-                        Sign out and forget this device
-                      </button>
+                  <DropdownMenuContent align="end" className="w-64">
+                    <div className="p-3 bg-white/[0.03] rounded-xl border border-white/[0.05] mb-2">
+                      <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">
+                        Active Profile
+                      </div>
+                      <div className="text-xs font-medium text-white truncate mt-0.5">
+                        {user.email}
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center justify-between text-[11px]">
+                        <span className="text-zinc-400">Plan:</span>
+                        <span className="text-[#D4AF37] font-bold uppercase font-mono">
+                          {license?.displayName} • {daysLeft} days left
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[11px] font-mono">
+                        <span className="text-zinc-400">Quota:</span>
+                        <span className="text-emerald-400 font-bold">{analysesLeftDisplay}</span>
+                      </div>
                     </div>
-                  )}
-                </div>
+
+                    <DropdownMenuItem
+                      onSelect={() => onGoToTerminal()}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-black bg-[#D4AF37] hover:brightness-110 focus:bg-[#F3E5AB] focus:text-black mb-1 font-mono font-bold"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 fill-black" />
+                      <span>Enter Terminal</span>
+                    </DropdownMenuItem>
+
+                    {user.plan === 'free' && (
+                      <DropdownMenuItem
+                        onSelect={() => onOpenPricing()}
+                        className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-white bg-white/[0.06] hover:bg-white/[0.12] mb-1"
+                      >
+                        <Zap className="w-3.5 h-3.5 text-[#D4AF37]" />
+                        <span>Upgrade Subscription</span>
+                      </DropdownMenuItem>
+                    )}
+
+                    <DropdownMenuSeparator />
+
+                    <DropdownMenuItem
+                      onSelect={() => onOpenAdmin()}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-zinc-300"
+                    >
+                      <Settings className="w-3.5 h-3.5 text-zinc-400" />
+                      <span>Terminal Admin Config</span>
+                    </DropdownMenuItem>
+
+                    <DropdownMenuItem
+                      onSelect={() => onSignOut(false)}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-rose-400 focus:bg-rose-500/15 focus:text-rose-300"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Sign Out</span>
+                    </DropdownMenuItem>
+
+                    <DropdownMenuItem
+                      onSelect={() => onSignOut(true)}
+                      className="w-full text-left px-3 py-1.5 text-[10px] font-mono text-zinc-500 focus:text-rose-400"
+                    >
+                      Sign out and forget this device
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             )}
 
@@ -471,5 +463,6 @@ export const Navbar: React.FC<NavbarProps> = ({
         )}
       </nav>
     </header>
+    </TooltipProvider>
   );
 };

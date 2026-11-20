@@ -1,12 +1,12 @@
 import React from 'react';
+import { motion } from 'framer-motion';
 import { CurrencyCode, PropertyListing, User } from '../types';
 import { formatPrice } from '../utils/formatters';
+import { FadeInCard } from './ui/motion-primitives';
 import { 
   Building, 
   MapPin, 
-  Percent, 
   Sparkles, 
-  Lock, 
   ShieldCheck, 
   Maximize2,
   Bed,
@@ -99,11 +99,12 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
 
       {/* Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filtered.map((property) => {
+        {filtered.map((property, idx) => {
           const priceSqM = Math.round(property.basePriceUSD / property.areaSqM);
           return (
-            <div
+            <FadeInCard
               key={property.id}
+              delay={(idx % 3) * 0.05}
               className="glass-panel group relative flex flex-col justify-between overflow-hidden transition-all duration-300 hover:-translate-y-2 hover:shadow-[0_20px_50px_rgba(212,175,55,0.15)]"
             >
               {/* Image & Badges */}
@@ -213,8 +214,11 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                 </div>
 
                 {/* ANALYZE Action Button - Opens Demo Analysis directly without login gate */}
-                <button
+                <motion.button
                   type="button"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.99 }}
+                  transition={{ duration: 0.15 }}
                   onClick={() => {
                     if (onOpenDemo) {
                       onOpenDemo(getPropertyDemoSlug(property));
@@ -227,10 +231,10 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                   <Sparkles className="w-3.5 h-3.5 text-[#D4AF37] group-hover:text-black transition" />
                   <span>ANALYZE PROPERTY</span>
                   <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                </motion.button>
 
               </div>
-            </div>
+            </FadeInCard>
           );
         })}
       </div>

@@ -1,8 +1,10 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import React, { useState, useEffect } from 'react';
+import { motion } from 'framer-motion';
 import { CurrencyCode, User } from '../types';
 import type { LiveMarketResponse } from '../utils/marketDataService';
 import { MagneticButton } from './MagneticButton';
+import { FadeInCard } from './ui/motion-primitives';
 import {
   Building2,
   ArrowUpRight,
@@ -192,33 +194,42 @@ export const Hero: React.FC<HeroProps> = ({
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3.5 pt-2">
           {user ? (
             <>
-              <button
+              <motion.button
                 type="button"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.99 }}
+                transition={{ duration: 0.15 }}
                 onClick={onGoToTerminal}
                 className="w-full sm:w-auto min-w-[210px] h-[48px] px-7 rounded-2xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#C99D28] hover:brightness-110 text-black font-bold text-sm font-mono tracking-wide transition-all duration-200 flex items-center justify-center gap-2.5 cursor-pointer shadow-[0_0_25px_rgba(212,175,55,0.35)]"
               >
                 <span>Enter App</span>
                 <ArrowRight className="w-4 h-4 text-black shrink-0" />
-              </button>
+              </motion.button>
 
-              <button
+              <motion.button
                 type="button"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.99 }}
+                transition={{ duration: 0.15 }}
                 onClick={onSignOut}
                 className="w-full sm:w-auto min-w-[180px] h-[48px] px-7 rounded-2xl bg-rose-950/60 hover:bg-rose-900/70 active:bg-rose-900 border border-rose-500/45 hover:border-rose-400 text-rose-200 font-semibold text-sm font-mono tracking-wide transition-all duration-200 flex items-center justify-center gap-2.5 cursor-pointer shadow-[0_0_15px_rgba(244,63,94,0.15)]"
               >
                 <LogOut className="w-4 h-4 text-rose-400 shrink-0" />
                 <span>Sign Out</span>
-              </button>
+              </motion.button>
             </>
           ) : (
-            <button
+            <motion.button
               type="button"
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.99 }}
+              transition={{ duration: 0.15 }}
               onClick={onOpenAuth}
               className="w-full sm:w-auto min-w-[230px] h-[48px] px-7 rounded-2xl bg-transparent hover:bg-white/[0.06] active:bg-white/[0.1] border border-[#D4AF37]/70 hover:border-[#D4AF37] text-white font-semibold text-sm font-mono tracking-wide transition-all duration-300 backdrop-blur-xl cursor-pointer flex items-center justify-center gap-2.5 shadow-[0_0_20px_rgba(212,175,55,0.2)]"
             >
               <LogIn className="w-4 h-4 text-[#D4AF37] shrink-0" />
               <span>Sign In to Terminal</span>
-            </button>
+            </motion.button>
           )}
         </div>
 
@@ -262,7 +273,7 @@ export const Hero: React.FC<HeroProps> = ({
       {/* Live Macro & Benchmark Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-10">
 
-        <div className="glass-panel p-5 relative overflow-hidden group">
+        <FadeInCard delay={0} className="glass-panel p-5 relative overflow-hidden group">
           <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between">
             <span>US 10Y Treasury (FRED)</span>
             <span className="w-2 h-2 rounded-full bg-emerald-400" />
@@ -274,9 +285,9 @@ export const Hero: React.FC<HeroProps> = ({
             <TrendingUp className="w-3 h-3" />
             <span>US 2Y: {us2y}% • Risk-Free Base</span>
           </div>
-        </div>
+        </FadeInCard>
 
-        <div className="glass-panel p-5 relative overflow-hidden group">
+        <FadeInCard delay={0.05} className="glass-panel p-5 relative overflow-hidden group">
           <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between">
             <span>Muscat vs US10Y Spread</span>
             <span className="w-2 h-2 rounded-full bg-[#D4AF37]" />
@@ -287,9 +298,9 @@ export const Hero: React.FC<HeroProps> = ({
           <div className="text-[11px] text-[#D4AF37] font-mono mt-1">
             {muscat?.gross_yield ?? 8.4}% Muscat vs {singapore?.gross_yield ?? 3.9}% SGP
           </div>
-        </div>
+        </FadeInCard>
 
-        <div className="glass-panel p-5 relative overflow-hidden group">
+        <FadeInCard delay={0.1} className="glass-panel p-5 relative overflow-hidden group">
           <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between">
             <span>Dubai DLD Index</span>
             <Shield className="w-3.5 h-3.5 text-cyan-400" />
@@ -300,9 +311,9 @@ export const Hero: React.FC<HeroProps> = ({
           <div className="text-[11px] text-cyan-400 font-mono mt-1">
             Dubai {dubai?.gross_yield ?? 8.8}% • 0% CGT (Oman/UAE)
           </div>
-        </div>
+        </FadeInCard>
 
-        <div className="glass-panel p-5 relative overflow-hidden group">
+        <FadeInCard delay={0.15} className="glass-panel p-5 relative overflow-hidden group">
           <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between">
             <span>Live FX Peg Feed</span>
             <Layers className="w-3.5 h-3.5 text-purple-400" />
@@ -313,7 +324,7 @@ export const Hero: React.FC<HeroProps> = ({
           <div className="text-[11px] text-purple-400 font-mono mt-1">
             1 USD = {fxAed} AED • Synced {syncedText}
           </div>
-        </div>
+        </FadeInCard>
 
       </div>
 
