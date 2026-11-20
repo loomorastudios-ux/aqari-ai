@@ -60,15 +60,14 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
 
         <div className="flex flex-col sm:flex-row sm:flex-wrap items-start sm:items-center gap-2.5">
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/60 border border-white/10 text-xs font-mono text-zinc-300">
-            <span className={`w-2 h-2 rounded-full ${isLive ? 'bg-emerald-400 animate-ping' : 'bg-zinc-500'}`} />
-            <Activity className="w-3.5 h-3.5 text-emerald-400" />
+            <Activity className="w-3.5 h-3.5 text-[#D4AF37]" />
             <span>
-              Data as of {lastSyncedDisplay} • Sources: World Bank / DLD / ONS / JLL
+              Updated: {lastSyncedDisplay} • Sources: World Bank / DLD / ONS / JLL
             </span>
           </div>
 
-          <div className="text-xs font-mono text-zinc-400 bg-white/[0.03] border border-white/[0.08] px-3.5 py-1.5 rounded-xl">
-            Estimated / Demo data - بيانات تقديرية • Base: <strong className="text-[#D4AF37]">{currentCurrency}</strong>
+          <div className="text-xs font-mono text-amber-300 bg-amber-500/10 border border-amber-500/30 px-3.5 py-1.5 rounded-xl">
+            Type: [Estimated] • Base: <strong className="text-[#D4AF37]">{currentCurrency}</strong>
           </div>
         </div>
       </div>
@@ -85,6 +84,7 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
               <TableHead className="py-4 px-5 text-[11px]">Capital Gains Tax</TableHead>
               <TableHead className="py-4 px-5 text-[11px]">Golden Visa Tier</TableHead>
               <TableHead className="py-4 px-5 text-[11px]">Rental YoY</TableHead>
+              <TableHead className="py-4 px-5 text-[11px]">Source &amp; Verified</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody className="divide-y divide-white/[0.05] text-zinc-300">
@@ -95,6 +95,9 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
                 : 'N/A';
 
               const isTaxHaven = row.capitalGainsTax.includes('0%');
+              const dataType = row.dataType || 'Estimated';
+              const updatedDate = row.updatedDate || '2026-04-01';
+              const taxVerified = row.taxVerifiedDate || '2026-04-01';
 
               return (
                 <TableRow
@@ -105,13 +108,15 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
                     <div className="flex items-center gap-2.5">
                       <span className="text-lg">{row.flag}</span>
                       <div>
-                        <div className="font-bold text-white group-hover:text-[#D4AF37] transition">
-                          {row.city}
+                        <div className="font-bold text-white group-hover:text-[#D4AF37] transition flex items-center gap-1.5">
+                          <span>{row.city}</span>
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[9px] font-mono">
+                            [{dataType}]
+                          </span>
                         </div>
                         <div className="text-[10px] text-zinc-400">
                           {row.country}
                           {row.inflationPct != null ? ` • CPI ${row.inflationPct}%` : ''}
-                          {row.source ? ` • ${row.source}` : ''}
                         </div>
                       </div>
                     </div>
@@ -152,6 +157,15 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
                   <TableCell className="py-4 px-5 whitespace-nowrap text-emerald-400 font-bold">
                     +{row.rentalGrowthYoY}%
                   </TableCell>
+
+                  <TableCell className="py-4 px-5 text-[10px] font-mono text-zinc-400 max-w-[220px]">
+                    <div className="truncate text-zinc-300" title={row.taxSource || row.source}>
+                      {row.taxSource || row.source || 'Official Registry'}
+                    </div>
+                    <div className="text-zinc-500">
+                      Updated: {updatedDate} • Tax verified: {taxVerified}
+                    </div>
+                  </TableCell>
                 </TableRow>
               );
             })}
@@ -165,10 +179,20 @@ export const CrossBorderMatrix: React.FC<CrossBorderMatrixProps> = ({
                 <TableCell className="py-4 px-5 whitespace-nowrap">LOCKED</TableCell>
                 <TableCell className="py-4 px-5 whitespace-nowrap">LOCKED</TableCell>
                 <TableCell className="py-4 px-5 whitespace-nowrap">--%</TableCell>
+                <TableCell className="py-4 px-5 whitespace-nowrap">LOCKED</TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
+
+        <div className="px-5 py-3 bg-amber-500/[0.06] border-t border-amber-500/20 text-[11px] font-mono text-amber-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <span>
+            Official Tax/Visa Sources: Oman MoHUP, Dubai DLD/FTA, Saudi REGA/ZATCA, IRS/Florida/NYS, UK HMRC, Singapore IRAS (Verified 2026-04-01).
+          </span>
+          <span className="font-bold text-amber-300 shrink-0">
+            Not legal/tax advice. Verify rates with licensed local counsel.
+          </span>
+        </div>
 
         {isLockedFreeUser && (
           <div className="p-4 bg-gradient-to-r from-black/90 via-zinc-900/95 to-black/90 border-t border-[#D4AF37]/30 flex flex-col sm:flex-row items-center justify-between gap-3">

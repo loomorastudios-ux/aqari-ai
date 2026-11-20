@@ -139,7 +139,7 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
       yieldSensitivity: true,
       crossBorderMatrixFull: true,
       saveProperty: true,
-      monteCarlo: false,
+      monteCarlo: true,
       pdfExport: false,
       portfolioAggregation: false,
       apiAccess: false,

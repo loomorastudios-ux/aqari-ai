@@ -61,62 +61,149 @@ const TooltipShell: React.FC<{
 };
 
 /* -------------------------------------------------------------------------- */
-/* 1. IRR / NOI / DSCR Projection Chart (Feature 1 Underwriting)               */
+/* 1A & 1B. Split Recharts: NOI + Cashflow ($) AND IRR (%) + DSCR (x)         */
 /* -------------------------------------------------------------------------- */
-interface IrrNoiDscrChartProps {
+export interface YearProjectionChartRow {
+  year: number;
+  noiUSD: number;
+  netCashflowUSD: number;
+  dscr: number | null;
+  cumulativeIrrPct: number | null;
+}
+
+interface SplitUnderwritingChartProps {
   capRate: number;
   cashOnCash: number;
-  irr5Yr: number;
-  dscr: number | string;
+  irr5Yr: number | null;
+  irrError?: string | null;
+  dscr: number | string | null;
   netOperatingIncomeUSD: number;
   monthlyCashflowUSD: number;
   annualDebtServiceUSD: number;
+  yearByYear?: YearProjectionChartRow[];
   currency: CurrencyCode;
 }
 
-export const IrrNoiDscrChart: React.FC<IrrNoiDscrChartProps> = ({
-  irr5Yr,
-  dscr,
-  netOperatingIncomeUSD,
-  monthlyCashflowUSD,
-  annualDebtServiceUSD,
-  currency,
-}) => {
-  const numericDscr = Number(dscr) || 1.25;
+function buildChartRows(props: SplitUnderwritingChartProps) {
+  if (Array.isArray(props.yearByYear) && props.yearByYear.length > 0) {
+    return props.yearByYear.map((r) => ({
+      year: `Year ${r.year}`,
+      noi: Math.round(r.noiUSD),
+      cashflow: Math.round(r.netCashflowUSD),
+      irr: r.cumulativeIrrPct !== null && Number.isFinite(r.cumulativeIrrPct) ? Number(r.cumulativeIrrPct) : null,
+      dscr: r.dscr !== null && Number.isFinite(r.dscr) ? Number(r.dscr) : null,
+    }));
+  }
 
-  const data = useMemo(() => {
-    const baseNoi = Math.max(0, Math.round(netOperatingIncomeUSD));
-    const baseDebt = Math.max(0, Math.round(annualDebtServiceUSD));
-    const baseCf = Math.round(monthlyCashflowUSD * 12);
+  const baseNoi = Math.round(props.netOperatingIncomeUSD);
+  const baseDebt = Math.max(0, Math.round(props.annualDebtServiceUSD));
+  const numericDscr = props.dscr && props.dscr !== '∞' ? Number(props.dscr) : null;
 
-    return [1, 2, 3, 4, 5].map((yr) => {
-      const growthFactor = Math.pow(1.032, yr - 1);
-      const yrNoi = Math.round(baseNoi * growthFactor);
-      const yrCf = Math.round(yrNoi - baseDebt || baseCf * growthFactor);
-      const yrIrr = Number((irr5Yr * (0.62 + yr * 0.076)).toFixed(2));
-      const yrDscr = Number((numericDscr * Math.pow(1.028, yr - 1)).toFixed(2));
-      return {
-        year: `Year ${yr}`,
-        noi: yrNoi,
-        cashflow: yrCf,
-        irr: yrIrr,
-        dscr: yrDscr,
-      };
-    });
-  }, [netOperatingIncomeUSD, annualDebtServiceUSD, monthlyCashflowUSD, irr5Yr, numericDscr]);
+  return [1, 2, 3, 4, 5].map((yr) => {
+    const growthFactor = Math.pow(1.03, yr - 1);
+    const yrNoi = Math.round(baseNoi * growthFactor);
+    const yrCf = Math.round(yrNoi - baseDebt);
+    const yrIrr =
+      props.irr5Yr !== null && Number.isFinite(props.irr5Yr)
+        ? Number((props.irr5Yr * (0.72 + yr * 0.056)).toFixed(1))
+        : null;
+    const yrDscr =
+      numericDscr !== null && Number.isFinite(numericDscr)
+        ? Number((numericDscr * Math.pow(1.03, yr - 1)).toFixed(2))
+        : null;
+    return {
+      year: `Year ${yr}`,
+      noi: yrNoi,
+      cashflow: yrCf,
+      irr: yrIrr,
+      dscr: yrDscr,
+    };
+  });
+}
+
+export const NoiCashflowChart: React.FC<SplitUnderwritingChartProps> = (props) => {
+  const data = useMemo(() => buildChartRows(props), [props]);
 
   return (
     <ChartReveal className="rounded-2xl border border-white/10 bg-black/50 p-4 space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
         <span className="font-bold uppercase text-white">
-          5-Year IRR, NOI &amp; DSCR Projection
+          Chart 1: 5-Year NOI &amp; Net Cashflow
         </span>
         <span className="text-[10px] text-[#D4AF37]">
-          NOI / Cashflow ({currency}) • IRR (%) • DSCR (x)
+          NOI ({props.currency}) • Net Cashflow ({props.currency})
         </span>
       </div>
-      <div className="h-[220px] w-full" dir="ltr">
-        <ResponsiveContainer width="100%" height="100%" minWidth={240}>
+      <div className="h-[225px] w-full" dir="ltr">
+        <ResponsiveContainer width="100%" height="100%" minWidth={220}>
+          <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
+            <XAxis
+              dataKey="year"
+              stroke="#a1a1aa"
+              tick={{ fill: '#a1a1aa', fontSize: 11, fontFamily: 'monospace' }}
+            />
+            <YAxis
+              stroke="#a1a1aa"
+              tick={{ fill: '#a1a1aa', fontSize: 10, fontFamily: 'monospace' }}
+              tickFormatter={(v) =>
+                Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
+              }
+              width={52}
+            />
+            <RechartsTooltip
+              content={
+                <TooltipShell
+                  formatter={(_, val) => formatPrice(Number(val) || 0, props.currency)}
+                />
+              }
+            />
+            <Legend
+              wrapperStyle={{ fontSize: '11px', fontFamily: 'monospace', color: '#d4d4d8' }}
+            />
+            <Bar
+              dataKey="noi"
+              name="Annual NOI ($)"
+              fill={GOLD}
+              radius={[6, 6, 0, 0]}
+              animationDuration={550}
+            />
+            <Bar
+              dataKey="cashflow"
+              name="Net Cashflow ($)"
+              fill={EMERALD}
+              radius={[6, 6, 0, 0]}
+              animationDuration={650}
+            />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </ChartReveal>
+  );
+};
+
+export const IrrDscrChart: React.FC<SplitUnderwritingChartProps> = (props) => {
+  const data = useMemo(() => buildChartRows(props), [props]);
+  const hasAnyIrr = data.some((d) => d.irr !== null && Number.isFinite(d.irr));
+  const hasAnyDscr = data.some((d) => d.dscr !== null && Number.isFinite(d.dscr));
+
+  return (
+    <ChartReveal className="rounded-2xl border border-white/10 bg-black/50 p-4 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+        <span className="font-bold uppercase text-white">
+          Chart 2: Cumulative IRR (%) &amp; DSCR (x)
+        </span>
+        <span className="text-[10px] text-cyan-300">
+          {hasAnyIrr ? 'Left Axis: IRR (%)' : 'IRR Unavailable'} • Right Axis: DSCR (x)
+        </span>
+      </div>
+      {!hasAnyIrr && props.irrError && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-[10px] font-mono text-amber-200">
+          IRR Note: {props.irrError}
+        </div>
+      )}
+      <div className="h-[225px] w-full" dir="ltr">
+        <ResponsiveContainer width="100%" height="100%" minWidth={220}>
           <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
             <XAxis
@@ -125,29 +212,27 @@ export const IrrNoiDscrChart: React.FC<IrrNoiDscrChartProps> = ({
               tick={{ fill: '#a1a1aa', fontSize: 11, fontFamily: 'monospace' }}
             />
             <YAxis
-              yAxisId="usd"
-              stroke="#a1a1aa"
-              tick={{ fill: '#a1a1aa', fontSize: 10, fontFamily: 'monospace' }}
-              tickFormatter={(v) =>
-                Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`
-              }
-              width={48}
-            />
-            <YAxis
-              yAxisId="pct"
-              orientation="right"
+              yAxisId="irr"
               stroke={PURPLE}
               tick={{ fill: '#c084fc', fontSize: 10, fontFamily: 'monospace' }}
               tickFormatter={(v) => `${v}%`}
-              width={40}
+              width={46}
+            />
+            <YAxis
+              yAxisId="dscr"
+              orientation="right"
+              stroke={CYAN}
+              tick={{ fill: '#67e8f9', fontSize: 10, fontFamily: 'monospace' }}
+              tickFormatter={(v) => `${Number(v).toFixed(2)}x`}
+              width={48}
             />
             <RechartsTooltip
               content={
                 <TooltipShell
                   formatter={(name, val) => {
-                    if (name.includes('IRR')) return `${val}%`;
-                    if (name.includes('DSCR')) return `${val}x`;
-                    return formatPrice(Number(val) || 0, currency);
+                    if (val === null || val === undefined) return 'N/A';
+                    if (name.includes('DSCR')) return `${Number(val).toFixed(2)}x`;
+                    return `${Number(val).toFixed(1)}%`;
                   }}
                 />
               }
@@ -155,47 +240,45 @@ export const IrrNoiDscrChart: React.FC<IrrNoiDscrChartProps> = ({
             <Legend
               wrapperStyle={{ fontSize: '11px', fontFamily: 'monospace', color: '#d4d4d8' }}
             />
-            <Bar
-              yAxisId="usd"
-              dataKey="noi"
-              name="Annual NOI"
-              fill={GOLD}
-              radius={[6, 6, 0, 0]}
-              animationDuration={550}
-            />
-            <Bar
-              yAxisId="usd"
-              dataKey="cashflow"
-              name="Net Cashflow"
-              fill={EMERALD}
-              radius={[6, 6, 0, 0]}
-              animationDuration={650}
-            />
-            <Line
-              yAxisId="pct"
-              type="monotone"
-              dataKey="irr"
-              name="Equity IRR (%)"
-              stroke={PURPLE}
-              strokeWidth={2.5}
-              dot={{ r: 3.5, fill: PURPLE, stroke: '#000', strokeWidth: 1.5 }}
-              animationDuration={700}
-            />
-            <Line
-              yAxisId="pct"
-              type="monotone"
-              dataKey="dscr"
-              name="DSCR (x)"
-              stroke={CYAN}
-              strokeWidth={2}
-              strokeDasharray="4 3"
-              dot={{ r: 3, fill: CYAN }}
-              animationDuration={700}
-            />
+            {hasAnyIrr && (
+              <Line
+                yAxisId="irr"
+                type="monotone"
+                dataKey="irr"
+                name="Equity IRR (%)"
+                stroke={PURPLE}
+                strokeWidth={2.5}
+                connectNulls={false}
+                dot={{ r: 3.5, fill: PURPLE, stroke: '#000', strokeWidth: 1.5 }}
+                animationDuration={650}
+              />
+            )}
+            {hasAnyDscr && (
+              <Line
+                yAxisId="dscr"
+                type="monotone"
+                dataKey="dscr"
+                name="DSCR (x)"
+                stroke={CYAN}
+                strokeWidth={2.5}
+                connectNulls={false}
+                dot={{ r: 3.5, fill: CYAN, stroke: '#000', strokeWidth: 1.5 }}
+                animationDuration={700}
+              />
+            )}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
     </ChartReveal>
+  );
+};
+
+export const IrrNoiDscrChart: React.FC<SplitUnderwritingChartProps> = (props) => {
+  return (
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+      <NoiCashflowChart {...props} />
+      <IrrDscrChart {...props} />
+    </div>
   );
 };
 

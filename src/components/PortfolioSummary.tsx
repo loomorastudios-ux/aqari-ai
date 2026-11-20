@@ -73,7 +73,7 @@ export const PortfolioSummary: React.FC<PortfolioSummaryProps> = ({
           <div className="space-y-4 max-w-xl">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-xs font-mono text-[#D4AF37]">
               <Briefcase className="w-3.5 h-3.5" />
-              <span>REFERENCE 3-CITY BENCHMARK • SYNCED {syncedDisplay.toUpperCase()}</span>
+              <span>REFERENCE 3-CITY BENCHMARK • [DEMO] • UPDATED {syncedDisplay.toUpperCase()}</span>
             </div>
 
             <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-white">
@@ -81,7 +81,7 @@ export const PortfolioSummary: React.FC<PortfolioSummaryProps> = ({
             </h2>
 
             <p className="text-zinc-400 text-sm leading-relaxed">
-              Model cross-border allocations dynamically computed from live DLD, ONS, and regional valuation benchmarks with real-time FX conversion and tax-shield indexing.
+              Model cross-border allocations computed from daily-synced DLD, ONS, and regional valuation benchmarks [Estimated] with FX conversion and tax-shield indexing.
             </p>
 
             <div className="pt-2">
@@ -98,14 +98,14 @@ export const PortfolioSummary: React.FC<PortfolioSummaryProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full lg:w-auto shrink-0">
             <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/[0.08] min-w-[200px]">
               <div className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider">
-                Reference Model Value
+                Reference Model Value [Demo]
               </div>
               <div className="text-2xl sm:text-3xl font-black font-mono text-white mt-1">
                 {formatPrice(totalBenchmarkUSD, currentCurrency)}
               </div>
-              <div className="text-[10px] text-emerald-400 font-mono mt-1 flex items-center gap-1">
+              <div className="text-[10px] text-amber-300 font-mono mt-1 flex items-center gap-1">
                 <TrendingUp className="w-3 h-3" />
-                <span>Computed from /api/market/live</span>
+                <span>Source: NCSI / DLD / ONS • {syncedDisplay}</span>
               </div>
             </div>
 
@@ -117,16 +117,16 @@ export const PortfolioSummary: React.FC<PortfolioSummaryProps> = ({
                 {formatPrice(monthlyCashflowUSD, currentCurrency)}/mo
               </div>
               <div className="text-[10px] text-zinc-400 font-mono mt-1">
-                Weighted Gross Yield: <strong className="text-white">{netWeightedYield}%</strong>
+                Weighted Gross Yield [Estimated]: <strong className="text-white">{netWeightedYield}%</strong>
               </div>
             </div>
           </div>
         </div>
 
         <div className="mt-8 pt-8 border-t border-white/[0.06] space-y-4">
-          <div className="flex items-center justify-between text-xs font-mono text-zinc-400">
-            <span>Jurisdiction Diversification Breakdown</span>
-            <span>Sources: World Bank • DLD • ONS</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-zinc-400">
+            <span>Jurisdiction Diversification Breakdown [Demo Benchmark]</span>
+            <span>Sources: World Bank • DLD • ONS • Updated {syncedDisplay}</span>
           </div>
 
           <div className="w-full h-3 bg-zinc-900 rounded-full overflow-hidden flex p-0.5 gap-1">

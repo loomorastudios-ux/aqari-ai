@@ -270,59 +270,59 @@ export const Hero: React.FC<HeroProps> = ({
         </div>
       </div>
 
-      {/* Live Macro & Benchmark Summary Cards */}
+      {/* Macro & Benchmark Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-10">
 
         <FadeInCard delay={0} className="glass-panel p-5 relative overflow-hidden group">
-          <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between">
-            <span>US 10Y Treasury (FRED)</span>
-            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between gap-1">
+            <span>US 10Y Treasury</span>
+            <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[9px] font-bold">[Actual]</span>
           </div>
           <div className="text-xl sm:text-2xl font-bold font-mono text-white">
             {us10y}%
           </div>
           <div className="text-[11px] text-emerald-400 font-mono mt-1 flex items-center gap-1">
-            <TrendingUp className="w-3 h-3" />
-            <span>US 2Y: {us2y}% • Risk-Free Base</span>
+            <TrendingUp className="w-3 h-3 shrink-0" />
+            <span>US 2Y: {us2y}% • FRED • {syncedText}</span>
           </div>
         </FadeInCard>
 
         <FadeInCard delay={0.05} className="glass-panel p-5 relative overflow-hidden group">
-          <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between">
+          <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between gap-1">
             <span>Muscat vs US10Y Spread</span>
-            <span className="w-2 h-2 rounded-full bg-[#D4AF37]" />
+            <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[9px] font-bold">[Estimated]</span>
           </div>
           <div className="text-xl sm:text-2xl font-bold font-mono text-white">
             +{muscatSpreadBps} bps
           </div>
           <div className="text-[11px] text-[#D4AF37] font-mono mt-1">
-            {muscat?.gross_yield ?? 8.4}% Muscat vs {singapore?.gross_yield ?? 3.9}% SGP
+            {muscat?.gross_yield ?? 8.4}% MCT vs {singapore?.gross_yield ?? 3.9}% SGP • NCSI/FRED
           </div>
         </FadeInCard>
 
         <FadeInCard delay={0.1} className="glass-panel p-5 relative overflow-hidden group">
-          <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between">
+          <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between gap-1">
             <span>Dubai DLD Index</span>
-            <Shield className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[9px] font-bold">[Estimated]</span>
           </div>
           <div className="text-xl sm:text-2xl font-bold font-mono text-white">
             {dubaiDld} pts
           </div>
           <div className="text-[11px] text-cyan-400 font-mono mt-1">
-            Dubai {dubai?.gross_yield ?? 8.8}% • 0% CGT (Oman/UAE)
+            DLD Benchmark ({dubai?.gross_yield ?? 8.8}%) • {syncedText}
           </div>
         </FadeInCard>
 
         <FadeInCard delay={0.15} className="glass-panel p-5 relative overflow-hidden group">
-          <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between">
-            <span>Live FX Peg Feed</span>
-            <Layers className="w-3.5 h-3.5 text-purple-400" />
+          <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 mb-1 flex items-center justify-between gap-1">
+            <span>FX Reference Feed</span>
+            <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[9px] font-bold">[Actual]</span>
           </div>
           <div className="text-xl sm:text-2xl font-bold font-mono text-white">
             {fxOmr} OMR
           </div>
           <div className="text-[11px] text-purple-400 font-mono mt-1">
-            1 USD = {fxAed} AED • Synced {syncedText}
+            1 USD = {fxAed} AED • ER-API • {syncedText}
           </div>
         </FadeInCard>
 

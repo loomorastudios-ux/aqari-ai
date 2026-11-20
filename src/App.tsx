@@ -469,6 +469,7 @@ export default function App() {
           : serverSavedList.length,
       savedAnalyses: serverSavedList,
       apiKey: meData?.api_key ?? null,
+      apiKeyLast4: meData?.api_key_last4 ?? existing?.apiKeyLast4 ?? null,
       subscriptionPlan: verifiedPlan,
       subscriptionStatus: 'active',
       subscriptionStartAt: licenseStartVal,
@@ -806,6 +807,7 @@ export default function App() {
               ? data.user.custom_cities
               : [],
             apiKey: data.api_key ?? data.user?.api_key ?? null,
+            apiKeyLast4: data.api_key_last4 ?? data.user?.api_key_last4 ?? null,
             subscriptionPlan: serverPlan,
             subscriptionStatus: serverStatus === 'expired' || serverStatus === 'exhausted' ? 'expired' : serverPlan === 'free' ? 'free' : 'active',
             subscriptionStartAt: data.license_start ?? data.user.license_start ?? undefined,
@@ -963,6 +965,7 @@ export default function App() {
           maxSaved: serverMaxSaved,
           savedCount: serverSavedList.length,
           apiKey: serverApiKey,
+          apiKeyLast4: typeof data.api_key_last4 === 'string' ? data.api_key_last4 : null,
           subscriptionExpiry: serverEnd,
           analysesUsed: serverUsed,
           analysesTotal: serverTotal,
@@ -1044,6 +1047,7 @@ export default function App() {
                 : serverSavedList.length,
             savedAnalyses: serverSavedList,
             apiKey: serverApiKey,
+            apiKeyLast4: typeof data.api_key_last4 === 'string' ? data.api_key_last4 : baseUser.apiKeyLast4 ?? null,
             subscriptionPlan: serverPlan,
             subscriptionStatus:
               serverStatus === 'expired' || serverStatus === 'exhausted'
@@ -1218,8 +1222,8 @@ export default function App() {
 
   const lastSyncDisplay = marketLive?.last_synced_display || 'Synced Daily';
   const liveAnnouncementText = marketLive
-    ? `LIVE MACRO SYNC (${lastSyncDisplay}): US 10Y ${marketLive.macro.us_10y_yield}% (FRED) • Muscat vs US10Y +${marketLive.metrics.muscat_vs_us10y_bps} bps • Dubai DLD Index ${marketLive.metrics.dubai_dld_index} pts`
-    : 'AQARI TERMINAL • Syncing World Bank, FRED, DLD, ONS & JLL Market Feeds...';
+    ? `MACRO SYNC (${lastSyncDisplay}): US 10Y ${marketLive.macro.us_10y_yield}% (FRED [Actual]) • Muscat vs US10Y +${marketLive.metrics.muscat_vs_us10y_bps} bps [Estimated] • Dubai DLD Index ${marketLive.metrics.dubai_dld_index} pts [Estimated]`
+    : 'AQARI TERMINAL • Syncing World Bank, FRED, DLD, ONS & JLL Market Benchmarks...';
 
   // Reusable Legal Footer across public views
   const renderLegalFooter = () => (
@@ -1725,7 +1729,7 @@ export default function App() {
                 <div>
                   <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-[#D4AF37] mb-1">
                     <Newspaper className="w-4 h-4" />
-                    <span>LIVE REAL ESTATE WIRE • GOOGLE NEWS RSS</span>
+                    <span>REAL ESTATE WIRE • GOOGLE NEWS RSS FEED</span>
                   </div>
                   <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
                     Global Property Market Headlines

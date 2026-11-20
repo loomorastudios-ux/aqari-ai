@@ -415,11 +415,11 @@ export const DemoAnalysisView: React.FC<DemoAnalysisViewProps> = ({
                 <div className="text-xs font-mono text-[#D4AF37] uppercase font-bold">Annual Cash Flow Waterfall</div>
                 <div className="space-y-2 border-t border-white/[0.06] pt-3">
                   <div className="flex justify-between text-zinc-300">
-                    <span>Gross Scheduled Rent</span>
+                    <span>Gross Scheduled Rent [Demo]</span>
                     <span className="font-bold text-white">{formatPrice(demo.rentMonthlyUSD * 12, currentCurrency)}</span>
                   </div>
                   <div className="flex justify-between text-rose-400">
-                    <span>Vacancy Allowance (5%)</span>
+                    <span>Vacancy Allowance (5% assumed in demo)</span>
                     <span>-{formatPrice(demo.rentMonthlyUSD * 12 * 0.05, currentCurrency)}</span>
                   </div>
                   <div className="flex justify-between text-zinc-300">
@@ -427,11 +427,11 @@ export const DemoAnalysisView: React.FC<DemoAnalysisViewProps> = ({
                     <span className="font-bold text-white">{formatPrice(demo.rentMonthlyUSD * 12 * 0.95, currentCurrency)}</span>
                   </div>
                   <div className="flex justify-between text-rose-400">
-                    <span>Operating Expenses (OPEX ~15%)</span>
+                    <span>Operating Expenses &amp; HOA (15% OPEX on EGI)</span>
                     <span>-{formatPrice(demo.rentMonthlyUSD * 12 * 0.95 * 0.15, currentCurrency)}</span>
                   </div>
                   <div className="flex justify-between text-emerald-400 font-bold border-t border-white/10 pt-2 text-sm">
-                    <span>Net Operating Income (NOI)</span>
+                    <span>Net Operating Income (NOI) [Demo]</span>
                     <span>{formatPrice(demo.noiAnnualUSD, currentCurrency)}</span>
                   </div>
                   <div className="flex justify-between text-rose-400">
@@ -453,7 +453,7 @@ export const DemoAnalysisView: React.FC<DemoAnalysisViewProps> = ({
               {demo.monteCarlo ? (
                 <div className="p-5 rounded-2xl bg-white/[0.03] border border-[#D4AF37]/30 space-y-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-[#D4AF37] font-bold uppercase text-sm">Monte Carlo Stochastic Analysis</span>
+                    <span className="text-[#D4AF37] font-bold uppercase text-sm">Monte Carlo Stochastic Analysis [Demo]</span>
                     <span className="text-emerald-400 font-bold">{demo.monteCarlo.simulationsCount} Iterations</span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -471,15 +471,15 @@ export const DemoAnalysisView: React.FC<DemoAnalysisViewProps> = ({
                     </div>
                   </div>
                   <div className="text-zinc-400 text-[11px] leading-relaxed">
-                    Stochastic simulation accounts for 10-year historical interest rate shocks, vacancy spikes up to 15%, and sovereign tax regime shifts.
+                    Stochastic simulation accounts for historical interest rate shocks, vacancy spikes up to 15%, and sovereign tax regime shifts.
                   </div>
                 </div>
               ) : (
                 <div className="p-6 rounded-2xl bg-white/[0.02] border border-white/10 text-center space-y-3">
                   <Lock className="w-6 h-6 text-[#D4AF37] mx-auto" />
-                  <div className="text-sm font-bold text-white">Monte Carlo Stress Testing is a Pro / Agency Feature</div>
+                  <div className="text-sm font-bold text-white">Monte Carlo Stress Testing is a Starter / Pro / Sovereign Feature</div>
                   <p className="text-zinc-400 max-w-md mx-auto text-xs">
-                    This {demo.tier} tier sample demonstrates basic yield analysis. Upgrade to Pro or Agency to run full 200-iteration stochastic simulations.
+                    This {demo.tier} tier sample demonstrates basic yield analysis. Upgrade to run 1,000 to 10,000-cycle stochastic simulations.
                   </p>
                   <button
                     onClick={onOpenAuth}
@@ -504,8 +504,16 @@ export const DemoAnalysisView: React.FC<DemoAnalysisViewProps> = ({
                   {demo.taxStructure}
                 </div>
                 <div className="p-3 rounded-lg bg-white/[0.02] border border-white/5 flex items-center justify-between">
-                  <span className="text-zinc-400">Residency & Investor Visa Pathway:</span>
+                  <span className="text-zinc-400">Residency &amp; Investor Visa Pathway:</span>
                   <span className="text-[#D4AF37] font-bold">{demo.goldenVisa}</span>
+                </div>
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-200 space-y-1">
+                  <div>
+                    Source: Official {demo.country} Land Registry &amp; Tax Authority • Verified: 2026-04-01 • [Estimated / Demo]
+                  </div>
+                  <div className="font-bold text-amber-300">
+                    Not legal/tax advice. Consult a qualified attorney and tax advisor before acquiring property.
+                  </div>
                 </div>
               </div>
             </div>

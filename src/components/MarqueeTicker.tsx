@@ -26,16 +26,16 @@ export const MarqueeTicker: React.FC<MarqueeTickerProps> = ({ marketLive }) => {
   const syncedText = marketLive?.last_synced_display || 'Syncing...';
 
   const items = [
-    { label: 'US 10Y TREASURY (FRED)', value: `${us10y}%`, change: 'Benchmark', up: true },
-    { label: 'MUSCAT VS US 10Y SPREAD', value: `+${muscatSpread} bps`, change: `${muscat?.gross_yield ?? 8.4}% Yield`, up: true },
-    { label: 'USD / OMR FX', value: `${fxOmr} OMR`, change: 'Pegged', up: true },
-    { label: 'USD / GBP FX', value: `${fxGbp} GBP`, change: 'Live FX', up: true },
-    { label: 'DUBAI DLD INDEX', value: `${dldIdx} pts`, change: `${dubai?.gross_yield ?? 8.8}% Gross`, up: true },
-    { label: 'LONDON PRIME P/E (ONS)', value: london?.benchmark_label || '20.8x P/E', change: `${london?.gross_yield ?? 4.8}% Gross`, up: false },
-    { label: 'RIYADH KAFD SPREAD (JLL)', value: riyadh?.benchmark_label || '+380 bps vs Sov', change: `+${riyadh?.rental_yoy ?? 14.8}% YoY`, up: true },
-    { label: 'SINGAPORE ABSD (IRAS)', value: `${singapore?.transfer_tax ?? 60}%`, change: `${singapore?.gross_yield ?? 3.9}% Gross`, up: false },
-    { label: 'MIAMI MARKET VELOCITY', value: miami?.benchmark_label || '26 DOM', change: `${miami?.gross_yield ?? 6.7}% Gross`, up: true },
-    { label: 'NYC CORE YIELD (STREETEASY)', value: `${nyc?.gross_yield ?? 4.6}%`, change: `+${nyc?.rental_yoy ?? 4.9}% YoY`, up: true },
+    { label: 'US 10Y TREASURY (FRED)', value: `${us10y}%`, change: '[Actual]', up: true },
+    { label: 'MUSCAT VS US 10Y SPREAD', value: `+${muscatSpread} bps`, change: `${muscat?.gross_yield ?? 8.4}% [Estimated]`, up: true },
+    { label: 'USD / OMR FX', value: `${fxOmr} OMR`, change: 'Pegged [Actual]', up: true },
+    { label: 'USD / GBP FX', value: `${fxGbp} GBP`, change: 'Daily FX [Actual]', up: true },
+    { label: 'DUBAI DLD INDEX', value: `${dldIdx} pts`, change: `${dubai?.gross_yield ?? 8.8}% [Estimated]`, up: true },
+    { label: 'LONDON PRIME P/E (ONS)', value: london?.benchmark_label || '20.8x P/E', change: `${london?.gross_yield ?? 4.8}% [Estimated]`, up: false },
+    { label: 'RIYADH KAFD SPREAD (JLL)', value: riyadh?.benchmark_label || '+380 bps vs Sov', change: `+${riyadh?.rental_yoy ?? 14.8}% [Estimated]`, up: true },
+    { label: 'SINGAPORE ABSD (IRAS)', value: `${singapore?.transfer_tax ?? 60}%`, change: `${singapore?.gross_yield ?? 3.9}% [Estimated]`, up: false },
+    { label: 'MIAMI MARKET VELOCITY', value: miami?.benchmark_label || '26 DOM', change: `${miami?.gross_yield ?? 6.7}% [Estimated]`, up: true },
+    { label: 'NYC CORE YIELD (STREETEASY)', value: `${nyc?.gross_yield ?? 4.6}%`, change: `+${nyc?.rental_yoy ?? 4.9}% [Estimated]`, up: true },
   ];
 
   return (
@@ -43,12 +43,11 @@ export const MarqueeTicker: React.FC<MarqueeTickerProps> = ({ marketLive }) => {
       <div className="flex items-center">
         {/* Market Feed Sync Badge */}
         <div className="flex items-center gap-2 px-3 py-1 bg-[#D4AF37]/10 border border-[#D4AF37]/30 rounded-full text-[10px] font-mono uppercase tracking-wider text-[#D4AF37] shrink-0 ml-4 mr-3">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-          <Activity className="w-3 h-3 text-emerald-400" />
-          <span>MARKET FEED</span>
+          <Activity className="w-3 h-3 text-[#D4AF37]" />
+          <span>BENCHMARK FEED</span>
           <span className="text-zinc-500">•</span>
           <span className="text-[9px] text-zinc-300 font-normal">
-            LAST SYNCED: {syncedText.toUpperCase()} • SOURCES: WORLD BANK / FRED / DLD / ONS / JLL
+            UPDATED: {syncedText.toUpperCase()} • [ACTUAL] FRED/FX • [ESTIMATED] CITY YIELDS
           </span>
         </div>
 
@@ -101,9 +100,9 @@ export const TerminalSubTicker: React.FC<TerminalSubTickerProps> = ({ user, curr
     `LICENSE: ${planLabel}`,
     `ANALYSES REMAINING: ${analysesCount}`,
     `ACTIVE BASE: ${currency}`,
-    `LIVE FX FEED (USD/OMR/AED/GBP)`,
-    `SOVEREIGN ARBITRAGE ACTIVE`,
-    `WORLD BANK / FRED / DLD SYNCED`,
+    `FX FEED (USD/OMR/AED/GBP)`,
+    `SOVEREIGN ARBITRAGE TERMINAL`,
+    `WORLD BANK / FRED / DLD BENCHMARKS`,
     `30-DAY ENCRYPTED LICENSING`,
   ];
 

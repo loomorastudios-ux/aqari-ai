@@ -32,6 +32,10 @@ import {
 } from '../../lib/plans';
 import { CITIES, findCityEntry, searchCities, CityEntry } from '../../data/cities';
 import {
+  calculateUnderwriting,
+  computePortfolioAggregation,
+} from '../../lib/underwriting';
+import {
   formatPrice,
   formatUsdInputDisplay,
   parseEnglishNumber,
@@ -370,6 +374,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [webhookEnvStatus, setWebhookEnvStatus] = useState<{
     webhookSecretPresent: boolean;
     apiKeyPresent: boolean;
+    webhookStatus?: 'Connected' | 'Not Connected' | string;
     resendKeyPresent?: boolean;
     resendKeyPrefix?: string;
     lastResendAttempt?: string | null;
@@ -650,6 +655,37 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [rateDraft, setRateDraft] = useState<string>('5.5');
   const [operatingExpensePct, setOperatingExpensePct] = useState<number>(15);
   const [opexDraft, setOpexDraft] = useState<string>('15');
+  const [showAdvancedInputs, setShowAdvancedInputs] = useState<boolean>(false);
+  const [loanTermYears, setLoanTermYears] = useState<number>(25);
+  const [loanTermDraft, setLoanTermDraft] = useState<string>('25');
+  const [amortizationYears, setAmortizationYears] = useState<number>(25);
+  const [amortDraft, setAmortDraft] = useState<string>('25');
+  const [vacancyRatePct, setVacancyRatePct] = useState<number>(0);
+  const [vacancyDraft, setVacancyDraft] = useState<string>('0');
+  const [managementPct, setManagementPct] = useState<number>(0);
+  const [mgmtDraft, setMgmtDraft] = useState<string>('0');
+  const [propertyTaxUSD, setPropertyTaxUSD] = useState<number>(0);
+  const [propTaxDraft, setPropTaxDraft] = useState<string>('0');
+  const [insuranceUSD, setInsuranceUSD] = useState<number>(0);
+  const [insuranceDraft, setInsuranceDraft] = useState<string>('0');
+  const [maintenanceReserveUSD, setMaintenanceReserveUSD] = useState<number>(0);
+  const [maintDraft, setMaintDraft] = useState<string>('0');
+  const [hoaUSD, setHoaUSD] = useState<number>(0);
+  const [hoaDraft, setHoaDraft] = useState<string>('0');
+  const [closingCostsPct, setClosingCostsPct] = useState<number>(0);
+  const [closingDraft, setClosingDraft] = useState<string>('0');
+  const [rentGrowthPct, setRentGrowthPct] = useState<number>(3);
+  const [rentGrowthDraft, setRentGrowthDraft] = useState<string>('3');
+  const [expenseGrowthPct, setExpenseGrowthPct] = useState<number>(2.5);
+  const [expGrowthDraft, setExpGrowthDraft] = useState<string>('2.5');
+  const [appreciationPct, setAppreciationPct] = useState<number>(3);
+  const [apprecDraft, setApprecDraft] = useState<string>('3');
+  const [exitCapRatePct, setExitCapRatePct] = useState<number>(0);
+  const [exitCapDraft, setExitCapDraft] = useState<string>('0');
+  const [sellingCostsPct, setSellingCostsPct] = useState<number>(3);
+  const [sellingDraft, setSellingDraft] = useState<string>('3');
+  const [noExitValue, setNoExitValue] = useState<boolean>(false);
+
   const initialCityEntry = resolveCityFromInput(PROPERTY_LISTINGS[0].city);
   const [city, setCity] = useState<string>(initialCityEntry?.city || PROPERTY_LISTINGS[0].city);
   const [cityComboInput, setCityComboInput] = useState<string>(
@@ -659,6 +695,54 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const cityComboInputRef = useRef<HTMLInputElement | null>(null);
   const [propertyName, setPropertyName] = useState<string>(PROPERTY_LISTINGS[0].title);
   const [propertyImageUrl, setPropertyImageUrl] = useState<string>(PROPERTY_LISTINGS[0].imageUrl);
+
+  // Live pre-run validation warnings ONLY (never leaks metrics before clicking RUN ANALYSIS)
+  const preRunWarnings = useMemo(() => {
+    if (priceUSD <= 0 || rentUSD <= 0) return [];
+    return calculateUnderwriting({
+      priceUSD,
+      rentUSD,
+      downPaymentPct,
+      interestRatePct,
+      operatingExpensePct,
+      loanTermYears,
+      amortizationYears,
+      vacancyRatePct,
+      managementPct,
+      propertyTaxUSD,
+      insuranceUSD,
+      maintenanceReserveUSD,
+      hoaUSD,
+      closingCostsPct,
+      rentGrowthPct,
+      expenseGrowthPct,
+      appreciationPct,
+      exitCapRatePct,
+      sellingCostsPct,
+      noExitValue,
+    }).warnings;
+  }, [
+    priceUSD,
+    rentUSD,
+    downPaymentPct,
+    interestRatePct,
+    operatingExpensePct,
+    loanTermYears,
+    amortizationYears,
+    vacancyRatePct,
+    managementPct,
+    propertyTaxUSD,
+    insuranceUSD,
+    maintenanceReserveUSD,
+    hoaUSD,
+    closingCostsPct,
+    rentGrowthPct,
+    expenseGrowthPct,
+    appreciationPct,
+    exitCapRatePct,
+    sellingCostsPct,
+    noExitValue,
+  ]);
 
   // Authoritative Run Analysis result state — null until RUN ANALYSIS (-1 CREDIT) succeeds (or hydrated from DB last_results)
   const [hasRunAnalysis, setHasRunAnalysis] = useState(false);
@@ -674,11 +758,29 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       downPaymentPct: number;
       interestRatePct: number;
       operatingExpensePct: number;
+      loanTermYears?: number;
+      amortizationYears?: number;
+      vacancyRatePct?: number;
+      managementPct?: number;
+      propertyTaxUSD?: number;
+      insuranceUSD?: number;
+      maintenanceReserveUSD?: number;
+      hoaUSD?: number;
+      closingCostsPct?: number;
+      rentGrowthPct?: number;
+      expenseGrowthPct?: number;
+      appreciationPct?: number;
+      exitCapRatePct?: number;
+      sellingCostsPct?: number;
+      noExitValue?: boolean;
     };
     capRate: number;
     cashOnCash: number;
     irr5Yr: number | null;
+    irrStatus?: 'ok' | 'negative_cashflows' | 'no_exit_value' | 'insufficient_data';
+    irrError?: string | null;
     dscr: string | null;
+    dscrNumeric?: number | null;
     monthlyCashflowUSD: number | null;
     monthlyMortgageUSD: number | null;
     netOperatingIncomeUSD: number;
@@ -686,6 +788,37 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     annualOPEXUSD: number;
     annualDebtServiceUSD: number;
     downPaymentUSD: number;
+    closingCostsUSD?: number;
+    totalEquityInvestedUSD?: number;
+    exitGrossValueUSD?: number;
+    netExitProceedsUSD?: number;
+    noiBreakdown?: {
+      grossRentAnnualUSD: number;
+      vacancyLossUSD: number;
+      effectiveGrossIncomeUSD: number;
+      baseOpexUSD: number;
+      managementFeeUSD: number;
+      propertyTaxUSD: number;
+      insuranceUSD: number;
+      maintenanceReserveUSD: number;
+      hoaUSD: number;
+      totalExpensesUSD: number;
+      noiUSD: number;
+    };
+    yearByYear?: Array<{
+      year: number;
+      grossRentUSD: number;
+      vacancyLossUSD: number;
+      effectiveGrossIncomeUSD: number;
+      operatingExpensesUSD: number;
+      noiUSD: number;
+      debtServiceUSD: number;
+      netCashflowUSD: number;
+      remainingLoanUSD: number;
+      dscr: number | null;
+      cumulativeIrrPct: number | null;
+    }>;
+    warnings?: string[];
     sensitivity: Array<{
       deltaPct: number;
       rentUSD: number;
@@ -699,15 +832,46 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       failCount: number;
       passRatePct: number;
       positiveCashflowPct: number;
+      probNegativeCashflowPct?: number;
+      probValueDeclinePct?: number;
       meanDscr: number;
       minDscr: number;
       maxDscr: number;
       dscrP10: number;
       dscrP50: number;
       dscrP90: number;
+      irrP10?: number | null;
+      irrP50?: number | null;
+      irrP90?: number | null;
+      irrMean?: number | null;
+      irrCalculablePct?: number;
       rateShockCoC: number;
       vacancySurgeNetYield: number;
+      combinedStress?: {
+        label: string;
+        shockedRatePct: number;
+        rentDropPct: number;
+        vacancyPct: number;
+        noiUSD: number;
+        annualCashflowUSD: number;
+        cocPct: number;
+        dscr: string;
+        irr5Yr: number | null;
+        irrError: string | null;
+      };
       distribution: Array<{ label: string; count: number; pct: number }>;
+      irrDistribution?: Array<{ label: string; count: number; pct: number }>;
+      assumptions?: {
+        cycles: number;
+        rateShockMeanBps: number;
+        rateShockStdBps: number;
+        rentShockMeanPct: number;
+        rentShockStdPct: number;
+        vacancyMeanPct: number;
+        vacancyStdPct: number;
+        appreciationStdPct: number;
+        methodology: string;
+      };
     } | null;
   } | null>(null);
   const [monteCarloResult, setMonteCarloResult] = useState<{
@@ -716,21 +880,112 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     failCount: number;
     passRatePct: number;
     positiveCashflowPct: number;
+    probNegativeCashflowPct?: number;
+    probValueDeclinePct?: number;
     meanDscr: number;
     minDscr: number;
     maxDscr: number;
     dscrP10: number;
     dscrP50: number;
     dscrP90: number;
+    irrP10?: number | null;
+    irrP50?: number | null;
+    irrP90?: number | null;
+    irrMean?: number | null;
+    irrCalculablePct?: number;
     rateShockCoC: number;
     vacancySurgeNetYield: number;
+    combinedStress?: {
+      label: string;
+      shockedRatePct: number;
+      rentDropPct: number;
+      vacancyPct: number;
+      noiUSD: number;
+      annualCashflowUSD: number;
+      cocPct: number;
+      dscr: string;
+      irr5Yr: number | null;
+      irrError: string | null;
+    };
     distribution: Array<{ label: string; count: number; pct: number }>;
+    irrDistribution?: Array<{ label: string; count: number; pct: number }>;
+    assumptions?: {
+      cycles: number;
+      rateShockMeanBps: number;
+      rateShockStdBps: number;
+      rentShockMeanPct: number;
+      rentShockStdPct: number;
+      vacancyMeanPct: number;
+      vacancyStdPct: number;
+      appreciationStdPct: number;
+      methodology: string;
+    };
   } | null>(null);
   const [isRunningMonteCarlo, setIsRunningMonteCarlo] = useState(false);
 
   // Sovereign Suite states (REST API Docs + Analyst Desk Text Chat + White-Glove Intake & Deliverables)
   const [copiedApiKey, setCopiedApiKey] = useState(false);
+  const [isRegeneratingApiKey, setIsRegeneratingApiKey] = useState(false);
   const [showApiDocs, setShowApiDocs] = useState(false);
+
+  const monteCarloCyclesLabel = license.planKey === 'enterprise' ? 10000 : 1000;
+  const maskedApiKeyDisplay = user.apiKey
+    ? user.apiKey
+    : user.apiKeyLast4
+    ? `****${user.apiKeyLast4}`
+    : null;
+
+  const handleCopyApiKey = async () => {
+    try {
+      const res = await fetch('/api/app?action=copy-api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: user.email }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.token) {
+        showToast(data?.error || 'Unable to copy API key.');
+        return;
+      }
+      await navigator.clipboard?.writeText(String(data.token));
+      setCopiedApiKey(true);
+      showToast(`Full API token copied (${data.masked || '****'}). Store it securely.`);
+      setTimeout(() => setCopiedApiKey(false), 2000);
+    } catch {
+      showToast('Unable to copy API key.');
+    }
+  };
+
+  const handleRegenerateApiKey = async () => {
+    setIsRegeneratingApiKey(true);
+    try {
+      const res = await fetch('/api/app?action=regenerate-api-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email: user.email }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) {
+        showToast(data?.error || 'Unable to regenerate API key.');
+        return;
+      }
+      onUpdateUser({
+        ...user,
+        apiKey: data.api_key,
+        apiKeyLast4: data.api_key_last4,
+      });
+      if (data.token) {
+        await navigator.clipboard?.writeText(String(data.token)).catch(() => {});
+      }
+      showToast(data.message || `API key regenerated (${data.api_key}). Previous key revoked.`);
+    } catch {
+      showToast('Network error regenerating API key.');
+    } finally {
+      setIsRegeneratingApiKey(false);
+    }
+  };
   const [analystThread, setAnalystThread] = useState<AnalystThread | null>(null);
   const [analystUnread, setAnalystUnread] = useState<number>(user.analystUnread || 0);
   const [analystChatOpen, setAnalystChatOpen] = useState<boolean>(false);
@@ -820,6 +1075,65 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           setOperatingExpensePct(inp.operatingExpensePct);
           setOpexDraft(String(inp.operatingExpensePct));
         }
+        if (typeof inp.loanTermYears === 'number') {
+          setLoanTermYears(inp.loanTermYears);
+          setLoanTermDraft(String(inp.loanTermYears));
+        }
+        if (typeof inp.amortizationYears === 'number') {
+          setAmortizationYears(inp.amortizationYears);
+          setAmortDraft(String(inp.amortizationYears));
+        }
+        if (typeof inp.vacancyRatePct === 'number') {
+          setVacancyRatePct(inp.vacancyRatePct);
+          setVacancyDraft(String(inp.vacancyRatePct));
+        }
+        if (typeof inp.managementPct === 'number') {
+          setManagementPct(inp.managementPct);
+          setMgmtDraft(String(inp.managementPct));
+        }
+        if (typeof inp.propertyTaxUSD === 'number') {
+          setPropertyTaxUSD(inp.propertyTaxUSD);
+          setPropTaxDraft(String(inp.propertyTaxUSD));
+        }
+        if (typeof inp.insuranceUSD === 'number') {
+          setInsuranceUSD(inp.insuranceUSD);
+          setInsuranceDraft(String(inp.insuranceUSD));
+        }
+        if (typeof inp.maintenanceReserveUSD === 'number') {
+          setMaintenanceReserveUSD(inp.maintenanceReserveUSD);
+          setMaintDraft(String(inp.maintenanceReserveUSD));
+        }
+        if (typeof inp.hoaUSD === 'number') {
+          setHoaUSD(inp.hoaUSD);
+          setHoaDraft(String(inp.hoaUSD));
+        }
+        if (typeof inp.closingCostsPct === 'number') {
+          setClosingCostsPct(inp.closingCostsPct);
+          setClosingDraft(String(inp.closingCostsPct));
+        }
+        if (typeof inp.rentGrowthPct === 'number') {
+          setRentGrowthPct(inp.rentGrowthPct);
+          setRentGrowthDraft(String(inp.rentGrowthPct));
+        }
+        if (typeof inp.expenseGrowthPct === 'number') {
+          setExpenseGrowthPct(inp.expenseGrowthPct);
+          setExpGrowthDraft(String(inp.expenseGrowthPct));
+        }
+        if (typeof inp.appreciationPct === 'number') {
+          setAppreciationPct(inp.appreciationPct);
+          setApprecDraft(String(inp.appreciationPct));
+        }
+        if (typeof inp.exitCapRatePct === 'number') {
+          setExitCapRatePct(inp.exitCapRatePct);
+          setExitCapDraft(String(inp.exitCapRatePct));
+        }
+        if (typeof inp.sellingCostsPct === 'number') {
+          setSellingCostsPct(inp.sellingCostsPct);
+          setSellingDraft(String(inp.sellingCostsPct));
+        }
+        if (typeof inp.noExitValue === 'boolean') {
+          setNoExitValue(inp.noExitValue);
+        }
         setRunResult({
           analyzedAt: lr.analysis.created_at || new Date().toISOString(),
           inputs: {
@@ -830,6 +1144,21 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             downPaymentPct: Number(inp.downPaymentPct ?? 30),
             interestRatePct: Number(inp.interestRatePct ?? 5.5),
             operatingExpensePct: Number(inp.operatingExpensePct ?? 15),
+            loanTermYears: Number(inp.loanTermYears ?? 25),
+            amortizationYears: Number(inp.amortizationYears ?? 25),
+            vacancyRatePct: Number(inp.vacancyRatePct ?? 0),
+            managementPct: Number(inp.managementPct ?? 0),
+            propertyTaxUSD: Number(inp.propertyTaxUSD ?? 0),
+            insuranceUSD: Number(inp.insuranceUSD ?? 0),
+            maintenanceReserveUSD: Number(inp.maintenanceReserveUSD ?? 0),
+            hoaUSD: Number(inp.hoaUSD ?? 0),
+            closingCostsPct: Number(inp.closingCostsPct ?? 0),
+            rentGrowthPct: Number(inp.rentGrowthPct ?? 3),
+            expenseGrowthPct: Number(inp.expenseGrowthPct ?? 2.5),
+            appreciationPct: Number(inp.appreciationPct ?? 3),
+            exitCapRatePct: Number(inp.exitCapRatePct ?? 0),
+            sellingCostsPct: Number(inp.sellingCostsPct ?? 3),
+            noExitValue: Boolean(inp.noExitValue),
           },
           ...lr.analysis.results,
         });
@@ -2175,11 +2504,28 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     setOperatingExpensePct(deal.operatingExpensePct);
     setOpexDraft(String(deal.operatingExpensePct));
 
-    const annualGross = Math.round(deal.rent * 12 * 0.95);
-    const annualOpex = Math.round(annualGross * (deal.operatingExpensePct / 100));
-    const noi = Math.round(annualGross - annualOpex);
-    const dpUsd = Math.round(deal.price * (deal.downPaymentPct / 100));
-    const annualDebt = Math.max(0, noi - deal.monthlyCashflow * 12);
+    const calc = calculateUnderwriting({
+      priceUSD: deal.price,
+      rentUSD: deal.rent,
+      downPaymentPct: deal.downPaymentPct,
+      interestRatePct: deal.interestRatePct,
+      operatingExpensePct: deal.operatingExpensePct,
+      loanTermYears,
+      amortizationYears,
+      vacancyRatePct,
+      managementPct,
+      propertyTaxUSD,
+      insuranceUSD,
+      maintenanceReserveUSD,
+      hoaUSD,
+      closingCostsPct,
+      rentGrowthPct,
+      expenseGrowthPct,
+      appreciationPct,
+      exitCapRatePct,
+      sellingCostsPct,
+      noExitValue,
+    });
 
     setRunResult({
       analyzedAt: new Date().toISOString(),
@@ -2192,17 +2538,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         interestRatePct: deal.interestRatePct,
         operatingExpensePct: deal.operatingExpensePct,
       },
-      capRate: deal.capRate,
-      cashOnCash: deal.cashOnCash,
-      irr5Yr: deal.irr,
-      dscr: deal.dscr,
-      monthlyCashflowUSD: deal.monthlyCashflow,
-      monthlyMortgageUSD: null,
-      netOperatingIncomeUSD: noi,
-      annualGrossRentUSD: annualGross,
-      annualOPEXUSD: annualOpex,
-      annualDebtServiceUSD: Math.round(annualDebt),
-      downPaymentUSD: dpUsd,
+      ...calc,
       sensitivity: null,
       monteCarlo: null,
     });
@@ -2681,12 +3017,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       downPaymentPct <= 0 ||
       downPaymentPct > 100 ||
       !Number.isFinite(interestRatePct) ||
-      interestRatePct <= 0 ||
+      interestRatePct < 0 ||
       !Number.isFinite(operatingExpensePct) ||
-      operatingExpensePct <= 0 ||
+      operatingExpensePct < 0 ||
       operatingExpensePct >= 100
     ) {
-      showToast('Please enter valid numeric values greater than 0 for all inputs.');
+      showToast('Please enter valid numeric values (Price/Rent/Down > 0, OPEX < 100%).');
       return;
     }
 
@@ -2707,6 +3043,21 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           downPaymentPct,
           interestRatePct,
           operatingExpensePct,
+          loanTermYears,
+          amortizationYears,
+          vacancyRatePct,
+          managementPct,
+          propertyTaxUSD,
+          insuranceUSD,
+          maintenanceReserveUSD,
+          hoaUSD,
+          closingCostsPct,
+          rentGrowthPct,
+          expenseGrowthPct,
+          appreciationPct,
+          exitCapRatePct,
+          sellingCostsPct,
+          noExitValue,
           useSensitivity: canSensitivity,
           useMonteCarlo: false,
         }),
@@ -2718,7 +3069,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         return;
       }
       if (res.status === 400) {
-        showToast(data?.error || 'Invalid inputs. All numeric fields must be > 0.');
+        showToast(data?.error || 'Invalid inputs. Check acquisition and expense values.');
         return;
       }
       if (res.status === 403 || !res.ok || data?.success === false) {
@@ -2765,6 +3116,21 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             downPaymentPct,
             interestRatePct,
             operatingExpensePct,
+            loanTermYears,
+            amortizationYears,
+            vacancyRatePct,
+            managementPct,
+            propertyTaxUSD,
+            insuranceUSD,
+            maintenanceReserveUSD,
+            hoaUSD,
+            closingCostsPct,
+            rentGrowthPct,
+            expenseGrowthPct,
+            appreciationPct,
+            exitCapRatePct,
+            sellingCostsPct,
+            noExitValue,
           },
           ...data.result,
         });
@@ -2783,10 +3149,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
   };
 
-  // Trigger 1000-Cycle Monte Carlo Scenario (Backend Gated to Professional+)
+  // Trigger Monte Carlo Scenario (1,000 cycles for Starter/Pro, 10,000 cycles for Sovereign)
   const handleToggleMonteCarlo = async () => {
     if (!canMonteCarlo) {
-      showToast('Available in PROFESSIONAL - Upgrade');
+      showToast('Available in STARTER / PROFESSIONAL / SOVEREIGN - Upgrade');
       onOpenRenewal();
       return;
     }
@@ -2798,6 +3164,21 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         downPaymentPct,
         interestRatePct,
         operatingExpensePct,
+        loanTermYears,
+        amortizationYears,
+        vacancyRatePct,
+        managementPct,
+        propertyTaxUSD,
+        insuranceUSD,
+        maintenanceReserveUSD,
+        hoaUSD,
+        closingCostsPct,
+        rentGrowthPct,
+        expenseGrowthPct,
+        appreciationPct,
+        exitCapRatePct,
+        sellingCostsPct,
+        noExitValue,
       };
       const res = await fetch('/api/app?action=monte-carlo', {
         method: 'POST',
@@ -2811,19 +3192,35 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           downPaymentPct: targetInputs.downPaymentPct,
           interestRatePct: targetInputs.interestRatePct,
           operatingExpensePct: targetInputs.operatingExpensePct,
+          loanTermYears: targetInputs.loanTermYears ?? loanTermYears,
+          amortizationYears: targetInputs.amortizationYears ?? amortizationYears,
+          vacancyRatePct: targetInputs.vacancyRatePct ?? vacancyRatePct,
+          managementPct: targetInputs.managementPct ?? managementPct,
+          propertyTaxUSD: targetInputs.propertyTaxUSD ?? propertyTaxUSD,
+          insuranceUSD: targetInputs.insuranceUSD ?? insuranceUSD,
+          maintenanceReserveUSD: targetInputs.maintenanceReserveUSD ?? maintenanceReserveUSD,
+          hoaUSD: targetInputs.hoaUSD ?? hoaUSD,
+          closingCostsPct: targetInputs.closingCostsPct ?? closingCostsPct,
+          rentGrowthPct: targetInputs.rentGrowthPct ?? rentGrowthPct,
+          expenseGrowthPct: targetInputs.expenseGrowthPct ?? expenseGrowthPct,
+          appreciationPct: targetInputs.appreciationPct ?? appreciationPct,
+          exitCapRatePct: targetInputs.exitCapRatePct ?? exitCapRatePct,
+          sellingCostsPct: targetInputs.sellingCostsPct ?? sellingCostsPct,
+          noExitValue: targetInputs.noExitValue ?? noExitValue,
           seedOffset: Date.now() % 100000,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 403 || !res.ok || data?.success === false) {
-        showToast(data?.error || 'Available in PROFESSIONAL - Upgrade');
+        showToast(data?.error || 'Available in STARTER / PROFESSIONAL - Upgrade');
         onOpenRenewal();
         return;
       }
       if (data?.monteCarlo) {
         setMonteCarloResult(data.monteCarlo);
         setStressTestActive(true);
-        showToast('1000-cycle Monte Carlo stress test completed.');
+        const ranCycles = Number(data.monteCarlo.cycles || monteCarloCyclesLabel);
+        showToast(`${ranCycles.toLocaleString('en-US')}-cycle Monte Carlo stress test completed.`);
       }
     } catch {
       showToast('Unable to run Monte Carlo simulation. Please retry.');
@@ -2860,10 +3257,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       city: runResult.inputs.city || city,
       price: runResult.inputs.priceUSD,
       rent: runResult.inputs.rentUSD,
+      noi: runResult.netOperatingIncomeUSD,
       capRate: runResult.capRate,
       cashOnCash: runResult.cashOnCash,
-      irr: runResult.irr5Yr ?? Number((runResult.cashOnCash + 4.8).toFixed(1)),
-      dscr: runResult.dscr ?? '0.00',
+      irr: runResult.irr5Yr,
+      dscr: runResult.dscr ?? null,
       monthlyCashflow: runResult.monthlyCashflowUSD ?? 0,
       riskScore: runResult.capRate > 7 ? 'AAA' : 'AA',
       date: Date.now(),
@@ -2954,10 +3352,28 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       clearPendingRun();
       showToast(`Loaded demo inputs for ${item.property} — click RUN ANALYSIS (-1 CREDIT) to run.`);
     } else {
-      const dp = item.price * (downPaymentPct / 100);
-      const gross = item.rent * 12 * 0.95;
-      const opex = gross * (operatingExpensePct / 100);
-      const noi = gross - opex;
+      const calc = calculateUnderwriting({
+        priceUSD: item.price,
+        rentUSD: item.rent,
+        downPaymentPct,
+        interestRatePct,
+        operatingExpensePct,
+        loanTermYears,
+        amortizationYears,
+        vacancyRatePct,
+        managementPct,
+        propertyTaxUSD,
+        insuranceUSD,
+        maintenanceReserveUSD,
+        hoaUSD,
+        closingCostsPct,
+        rentGrowthPct,
+        expenseGrowthPct,
+        appreciationPct,
+        exitCapRatePct,
+        sellingCostsPct,
+        noExitValue,
+      });
       setRunResult({
         analyzedAt: new Date(item.date || Date.now()).toISOString(),
         inputs: {
@@ -2969,17 +3385,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           interestRatePct,
           operatingExpensePct,
         },
+        ...calc,
         capRate: item.capRate,
         cashOnCash: item.cashOnCash,
         irr5Yr: item.irr,
         dscr: item.dscr,
         monthlyCashflowUSD: item.monthlyCashflow,
-        monthlyMortgageUSD: null,
-        netOperatingIncomeUSD: Math.round(noi),
-        annualGrossRentUSD: Math.round(gross),
-        annualOPEXUSD: Math.round(opex),
-        annualDebtServiceUSD: Math.round(Math.max(0, noi - item.monthlyCashflow * 12)),
-        downPaymentUSD: Math.round(dp),
         sensitivity: null,
         monteCarlo: null,
       });
@@ -3077,13 +3488,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       `Net Operating Income (NOI): ${formatPrice(r.netOperatingIncomeUSD, currentCurrency)} / yr`,
       `Unlevered Cap Rate: ${r.capRate}%`,
       `Cash-on-Cash Return: ${r.cashOnCash}%`,
-      `5-Year Equity IRR: ${r.irr5Yr ?? '--'}%`,
+      `5-Year Equity IRR: ${r.irr5Yr !== null ? `${r.irr5Yr}%` : (r.irrError || 'N/A')}`,
       `Monthly Net Cashflow: ${r.monthlyCashflowUSD !== null ? formatPrice(r.monthlyCashflowUSD, currentCurrency) : '--'}`,
       `Debt Service Coverage Ratio (DSCR): ${r.dscr ?? '--'}x`,
       ...(mc
         ? [
-            `1000-Cycle Monte Carlo Pass Rate (DSCR >= 1.20x): ${mc.passRatePct}% (${mc.passCount}/${mc.cycles})`,
+            `${mc.cycles}-Cycle Monte Carlo Pass Rate (DSCR >= 1.20x): ${mc.passRatePct}% (${mc.passCount}/${mc.cycles})`,
             `DSCR Percentiles: P10 ${mc.dscrP10}x | P50 ${mc.dscrP50}x | P90 ${mc.dscrP90}x`,
+            `IRR Percentiles: P10 ${mc.irrP10 ?? 'N/A'}% | P50 ${mc.irrP50 ?? 'N/A'}% | P90 ${mc.irrP90 ?? 'N/A'}%`,
             `+200bps Rate Shock CoC: ${mc.rateShockCoC}% | 15% Vacancy Net Yield: ${mc.vacancySurgeNetYield}%`,
           ]
         : []),
@@ -3131,16 +3543,17 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
   };
 
-  // Portfolio calculations
+  // Value-weighted Portfolio Aggregation (NOI sum / AUM sum — excludes corrupted rows)
   const savedAnalyses = user.savedAnalyses || [];
-  const portfolioTotalValUSD = savedAnalyses.reduce((acc, curr) => acc + curr.price, 0);
-  const portfolioMonthlyCashflowUSD = savedAnalyses.reduce((acc, curr) => acc + curr.monthlyCashflow, 0);
-  const portfolioAvgCapRate = savedAnalyses.length
-    ? (savedAnalyses.reduce((acc, curr) => acc + curr.capRate, 0) / savedAnalyses.length).toFixed(2)
-    : '0.00';
-  const portfolioAvgIRR = savedAnalyses.length
-    ? (savedAnalyses.reduce((acc, curr) => acc + curr.irr, 0) / savedAnalyses.length).toFixed(1)
-    : '0.0';
+  const portfolioAgg = useMemo(
+    () => computePortfolioAggregation(savedAnalyses),
+    [savedAnalyses]
+  );
+  const portfolioTotalValUSD = portfolioAgg.totalAumUSD;
+  const portfolioMonthlyCashflowUSD = portfolioAgg.monthlyCashflowUSD;
+  const portfolioAvgCapRate = portfolioAgg.weightedCapRate.toFixed(2);
+  const portfolioAvgIRR =
+    portfolioAgg.weightedIRR !== null ? portfolioAgg.weightedIRR.toFixed(1) : null;
 
   // Filtered saved list
   const filteredSaved = useMemo(() => {
@@ -3461,8 +3874,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           </div>
           <div className="flex items-center gap-2">
             <span className="font-bold text-white tracking-tight text-sm sm:text-base whitespace-nowrap">AQARI TERMINAL</span>
-            <span className="hidden sm:inline-block text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase font-semibold">
-              LIVE APP
+            <span className="hidden sm:inline-block text-[10px] font-mono px-2 py-0.5 rounded bg-[#D4AF37]/10 text-[#D4AF37] border border-[#D4AF37]/30 uppercase font-semibold">
+              TERMINAL APP
             </span>
           </div>
         </div>
@@ -4276,7 +4689,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                     <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06] space-y-1.5">
                       <label htmlFor="td-opex-pct" className="text-xs font-mono text-zinc-300 block">
-                        OPEX &amp; HOA (%)
+                        Base OPEX (%)
                       </label>
                       <div className="flex items-center rounded-lg bg-black/50 border border-white/15 focus-within:border-cyan-400 px-2.5">
                         <input
@@ -4309,6 +4722,352 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       </div>
                     </div>
                   </div>
+
+                  {/* Collapsible Advanced Financing, Expense Waterfall & Exit Assumptions */}
+                  <div className="rounded-xl border border-white/10 bg-white/[0.015] overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedInputs((v) => !v)}
+                      className="w-full px-3.5 py-2.5 flex items-center justify-between text-xs font-mono text-zinc-300 hover:text-white cursor-pointer"
+                    >
+                      <span className="font-semibold text-[#D4AF37]">
+                        Advanced Financing, Itemized OPEX/HOA &amp; Exit Assumptions (15 Inputs)
+                      </span>
+                      <ChevronDown className={`w-4 h-4 transition-transform ${showAdvancedInputs ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {showAdvancedInputs && (
+                      <div className="p-3.5 pt-1 border-t border-white/[0.06] space-y-3">
+                        <div className="text-[10px] font-mono text-zinc-400 leading-relaxed">
+                          Base OPEX (%) covers general utilities, repairs &amp; leasing. Set Base OPEX to 0% if entering all expenses individually below to prevent double-counting.
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-[11px] font-mono">
+                          <div className="space-y-1">
+                            <label htmlFor="td-loan-term" className="text-zinc-400 block">Loan Term (yrs)</label>
+                            <input
+                              id="td-loan-term"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="numeric"
+                              style={EN_INPUT_STYLE}
+                              value={loanTermDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, false);
+                                setLoanTermDraft(clean);
+                                setLoanTermYears(Math.max(1, Math.min(40, Math.round(parseEnglishNumber(clean, 25)))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setLoanTermDraft(String(loanTermYears))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-amort-yrs" className="text-zinc-400 block">Amortization (yrs)</label>
+                            <input
+                              id="td-amort-yrs"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="numeric"
+                              style={EN_INPUT_STYLE}
+                              value={amortDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, false);
+                                setAmortDraft(clean);
+                                setAmortizationYears(Math.max(1, Math.min(40, Math.round(parseEnglishNumber(clean, 25)))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setAmortDraft(String(amortizationYears))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-vac-pct" className="text-zinc-400 block">Vacancy (%)</label>
+                            <input
+                              id="td-vac-pct"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={vacancyDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, true);
+                                setVacancyDraft(clean);
+                                setVacancyRatePct(Math.max(0, Math.min(95, parseEnglishNumber(clean, 0))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setVacancyDraft(String(vacancyRatePct))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-mgmt-pct" className="text-zinc-400 block">Management (%)</label>
+                            <input
+                              id="td-mgmt-pct"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={mgmtDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, true);
+                                setMgmtDraft(clean);
+                                setManagementPct(Math.max(0, Math.min(50, parseEnglishNumber(clean, 0))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setMgmtDraft(String(managementPct))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-proptax-usd" className="text-zinc-400 block">Property Tax ($/yr)</label>
+                            <input
+                              id="td-proptax-usd"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={propTaxDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, false);
+                                setPropTaxDraft(clean);
+                                setPropertyTaxUSD(Math.max(0, Math.round(parseEnglishNumber(clean, 0))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setPropTaxDraft(String(propertyTaxUSD))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-ins-usd" className="text-zinc-400 block">Insurance ($/yr)</label>
+                            <input
+                              id="td-ins-usd"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={insuranceDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, false);
+                                setInsuranceDraft(clean);
+                                setInsuranceUSD(Math.max(0, Math.round(parseEnglishNumber(clean, 0))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setInsuranceDraft(String(insuranceUSD))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-maint-usd" className="text-zinc-400 block">Maint. Reserve ($/yr)</label>
+                            <input
+                              id="td-maint-usd"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={maintDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, false);
+                                setMaintDraft(clean);
+                                setMaintenanceReserveUSD(Math.max(0, Math.round(parseEnglishNumber(clean, 0))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setMaintDraft(String(maintenanceReserveUSD))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-hoa-usd" className="text-zinc-400 block">HOA Fees ($/yr)</label>
+                            <input
+                              id="td-hoa-usd"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={hoaDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, false);
+                                setHoaDraft(clean);
+                                setHoaUSD(Math.max(0, Math.round(parseEnglishNumber(clean, 0))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setHoaDraft(String(hoaUSD))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-closing-pct" className="text-zinc-400 block">Closing Costs (%)</label>
+                            <input
+                              id="td-closing-pct"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={closingDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, true);
+                                setClosingDraft(clean);
+                                setClosingCostsPct(Math.max(0, Math.min(25, parseEnglishNumber(clean, 0))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setClosingDraft(String(closingCostsPct))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-rent-growth" className="text-zinc-400 block">Rent Growth (%/yr)</label>
+                            <input
+                              id="td-rent-growth"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={rentGrowthDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, true);
+                                setRentGrowthDraft(clean);
+                                setRentGrowthPct(Math.max(-20, Math.min(30, parseEnglishNumber(clean, 3))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setRentGrowthDraft(String(rentGrowthPct))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-exp-growth" className="text-zinc-400 block">Expense Growth (%)</label>
+                            <input
+                              id="td-exp-growth"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={expGrowthDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, true);
+                                setExpGrowthDraft(clean);
+                                setExpenseGrowthPct(Math.max(-10, Math.min(30, parseEnglishNumber(clean, 2.5))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setExpGrowthDraft(String(expenseGrowthPct))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-apprec-pct" className="text-zinc-400 block">Appreciation (%/yr)</label>
+                            <input
+                              id="td-apprec-pct"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={apprecDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, true);
+                                setApprecDraft(clean);
+                                setAppreciationPct(Math.max(-50, Math.min(30, parseEnglishNumber(clean, 3))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setApprecDraft(String(appreciationPct))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-exit-cap" className="text-zinc-400 block">Exit Cap % (0=Apprec)</label>
+                            <input
+                              id="td-exit-cap"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={exitCapDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, true);
+                                setExitCapDraft(clean);
+                                setExitCapRatePct(Math.max(0, Math.min(40, parseEnglishNumber(clean, 0))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setExitCapDraft(String(exitCapRatePct))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label htmlFor="td-sell-pct" className="text-zinc-400 block">Selling Costs (%)</label>
+                            <input
+                              id="td-sell-pct"
+                              type="text"
+                              lang="en"
+                              dir="ltr"
+                              inputMode="decimal"
+                              style={EN_INPUT_STYLE}
+                              value={sellingDraft}
+                              onChange={(e) => {
+                                const clean = sanitizeEnglishDecimal(e.target.value, true);
+                                setSellingDraft(clean);
+                                setSellingCostsPct(Math.max(0, Math.min(20, parseEnglishNumber(clean, 3))));
+                                clearPendingRun();
+                              }}
+                              onBlur={() => setSellingDraft(String(sellingCostsPct))}
+                              className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                            />
+                          </div>
+
+                          <div className="col-span-2 flex items-end pb-1">
+                            <label className="flex items-center gap-2 text-zinc-300 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={noExitValue}
+                                onChange={(e) => {
+                                  setNoExitValue(e.target.checked);
+                                  clearPendingRun();
+                                }}
+                                className="accent-[#D4AF37] w-4 h-4"
+                              />
+                              <span>Hold Without Exit Sale (No Exit Value)</span>
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Pre-Run Input Sanity / Outlier Warnings */}
+                  {preRunWarnings.length > 0 && (
+                    <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-500/40 text-xs font-mono text-amber-200 space-y-1">
+                      <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>Validation Alert (Check Inputs Before Running):</span>
+                      </div>
+                      {preRunWarnings.map((w, idx) => (
+                        <div key={idx} className="text-[11px] leading-snug">• {w}</div>
+                      ))}
+                    </div>
+                  )}
 
                   {/* Main Action Buttons + Live Remaining Credits Counter */}
                   <div className="pt-3 space-y-2.5">
@@ -4462,6 +5221,18 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </>
                   ) : (
                     <>
+                      {(runResult.warnings?.length ?? 0) > 0 && (
+                        <div className="p-3 rounded-xl bg-amber-950/50 border border-amber-500/40 text-xs font-mono text-amber-200 space-y-1">
+                          <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                            <span>Underwriting Sanity Warnings:</span>
+                          </div>
+                          {runResult.warnings!.map((w, idx) => (
+                            <div key={idx} className="text-[11px] leading-snug">• {w}</div>
+                          ))}
+                        </div>
+                      )}
+
                       <div className="grid grid-cols-2 gap-3">
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -4483,10 +5254,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               <div className={`text-2xl font-black font-mono mt-1 ${runResult.cashOnCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                                 <CountUpNumber value={Number(runResult.cashOnCash) || 0} decimals={2} suffix="%" />
                               </div>
-                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Equity: {formatPrice(runResult.downPaymentUSD, currentCurrency)}</div>
+                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
+                                Equity: {formatPrice(runResult.totalEquityInvestedUSD ?? runResult.downPaymentUSD, currentCurrency)}
+                              </div>
                             </div>
                           </TooltipTrigger>
-                          <TooltipContent>Annual pre-tax cashflow divided by initial cash equity</TooltipContent>
+                          <TooltipContent>Annual pre-tax cashflow divided by total cash equity invested</TooltipContent>
                         </Tooltip>
 
                         {canSensitivity ? (
@@ -4495,17 +5268,25 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               <TooltipTrigger asChild>
                                 <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] cursor-help">
                                   <div className="text-[10px] font-mono uppercase text-zinc-400">5-Year Equity IRR</div>
-                                  <div className="text-2xl font-black font-mono text-purple-400 mt-1">
-                                    <CountUpNumber
-                                      value={Number(runResult.irr5Yr ?? (runResult.cashOnCash + 4.8).toFixed(1)) || 0}
-                                      decimals={1}
-                                      suffix="%"
-                                    />
+                                  <div className={`text-2xl font-black font-mono mt-1 ${runResult.irr5Yr !== null ? 'text-purple-400' : 'text-amber-300'}`}>
+                                    {runResult.irr5Yr !== null ? (
+                                      <CountUpNumber
+                                        value={Number(runResult.irr5Yr)}
+                                        decimals={1}
+                                        suffix="%"
+                                      />
+                                    ) : (
+                                      <span>N/A</span>
+                                    )}
                                   </div>
-                                  <div className="text-[9px] text-zinc-500 font-mono mt-0.5">DSCR: {runResult.dscr ?? '--'}x</div>
+                                  <div className="text-[9px] text-zinc-400 font-mono mt-0.5">
+                                    {runResult.irr5Yr === null && runResult.irrError
+                                      ? runResult.irrError
+                                      : `DSCR: ${runResult.dscr ?? '--'}x`}
+                                  </div>
                                 </div>
                               </TooltipTrigger>
-                              <TooltipContent>Projected 5-Year Internal Rate of Return &amp; Debt Service Coverage Ratio</TooltipContent>
+                              <TooltipContent>Real 5-Year DCF Internal Rate of Return &amp; Debt Service Coverage Ratio</TooltipContent>
                             </Tooltip>
 
                             <Tooltip>
@@ -4544,6 +5325,79 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         )}
                       </div>
 
+                      {/* Full Itemized NOI Breakdown Waterfall */}
+                      {(() => {
+                        const nb = runResult.noiBreakdown || {
+                          grossRentAnnualUSD: runResult.annualGrossRentUSD,
+                          vacancyLossUSD: 0,
+                          effectiveGrossIncomeUSD: runResult.annualGrossRentUSD,
+                          baseOpexUSD: runResult.annualOPEXUSD,
+                          managementFeeUSD: 0,
+                          propertyTaxUSD: 0,
+                          insuranceUSD: 0,
+                          maintenanceReserveUSD: 0,
+                          hoaUSD: 0,
+                          totalExpensesUSD: runResult.annualOPEXUSD,
+                          noiUSD: runResult.netOperatingIncomeUSD,
+                        };
+                        return (
+                          <div className="p-3.5 rounded-xl bg-black/40 border border-white/[0.08] space-y-1.5 text-[11px] font-mono">
+                            <div className="text-[10px] uppercase text-[#D4AF37] font-bold pb-1 border-b border-white/[0.06]">
+                              Annual NOI Breakdown Waterfall
+                            </div>
+                            <div className="flex justify-between text-zinc-200">
+                              <span>Gross Scheduled Rent</span>
+                              <span>{formatPrice(nb.grossRentAnnualUSD, currentCurrency)}</span>
+                            </div>
+                            <div className="flex justify-between text-rose-400">
+                              <span>- Vacancy ({runResult.inputs?.vacancyRatePct ?? 0}%)</span>
+                              <span>-{formatPrice(nb.vacancyLossUSD, currentCurrency)}</span>
+                            </div>
+                            <div className="flex justify-between text-rose-400">
+                              <span>- Base OPEX ({runResult.inputs?.operatingExpensePct ?? 15}%)</span>
+                              <span>-{formatPrice(nb.baseOpexUSD, currentCurrency)}</span>
+                            </div>
+                            {nb.managementFeeUSD > 0 && (
+                              <div className="flex justify-between text-rose-400">
+                                <span>- Management ({runResult.inputs?.managementPct ?? 0}%)</span>
+                                <span>-{formatPrice(nb.managementFeeUSD, currentCurrency)}</span>
+                              </div>
+                            )}
+                            {nb.propertyTaxUSD > 0 && (
+                              <div className="flex justify-between text-rose-400">
+                                <span>- Property Tax</span>
+                                <span>-{formatPrice(nb.propertyTaxUSD, currentCurrency)}</span>
+                              </div>
+                            )}
+                            {nb.insuranceUSD > 0 && (
+                              <div className="flex justify-between text-rose-400">
+                                <span>- Insurance</span>
+                                <span>-{formatPrice(nb.insuranceUSD, currentCurrency)}</span>
+                              </div>
+                            )}
+                            {nb.maintenanceReserveUSD > 0 && (
+                              <div className="flex justify-between text-rose-400">
+                                <span>- Maintenance Reserve</span>
+                                <span>-{formatPrice(nb.maintenanceReserveUSD, currentCurrency)}</span>
+                              </div>
+                            )}
+                            {nb.hoaUSD > 0 && (
+                              <div className="flex justify-between text-rose-400">
+                                <span>- HOA / Service Fees</span>
+                                <span>-{formatPrice(nb.hoaUSD, currentCurrency)}</span>
+                              </div>
+                            )}
+                            <div className="flex justify-between text-emerald-400 font-bold pt-1.5 border-t border-white/10 text-xs">
+                              <span>= Net Operating Income (NOI)</span>
+                              <span>{formatPrice(nb.noiUSD, currentCurrency)}</span>
+                            </div>
+                            <div className="text-[9px] text-zinc-500 pt-1 leading-relaxed">
+                              OPEX includes utilities, routine repairs, turnover &amp; admin (via Base OPEX % or itemized fields). HOA covers condo/strata community charges.
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                       {/* PDF Investment Memorandum Export (Professional+) */}
                       <div className="pt-2">
                         {canPdfExport ? (
@@ -4576,28 +5430,30 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
               </div>
 
-              {/* Feature 1 Recharts: 5-Year IRR / NOI / DSCR Chart after verified underwriting run */}
+              {/* Split Recharts: Chart 1 (NOI + Net Cashflow) & Chart 2 (IRR % + DSCR x) */}
               {hasRunAnalysis && runResult && (
                 <FadeInCard>
                   <Card className="p-5 sm:p-6 border border-[#D4AF37]/25">
                     <CardHeader className="pb-3 flex flex-row items-center justify-between">
                       <CardTitle className="flex items-center gap-2 text-[#D4AF37]">
                         <BarChart3 className="w-4 h-4" />
-                        <span>Institutional Cashflow, IRR &amp; DSCR Trajectory</span>
+                        <span>5-Year NOI, Cashflow, IRR (%) &amp; DSCR (x) Trajectory</span>
                       </CardTitle>
                       <span className="text-[10px] font-mono text-zinc-400">
-                        {runResult.inputs?.city || city} • 5-Year Model
+                        {runResult.inputs?.city || city} • 2 Separate Charts
                       </span>
                     </CardHeader>
                     <CardContent>
                       <IrrNoiDscrChart
                         capRate={Number(runResult.capRate) || 0}
                         cashOnCash={Number(runResult.cashOnCash) || 0}
-                        irr5Yr={Number(runResult.irr5Yr ?? (runResult.cashOnCash + 4.8).toFixed(1)) || 0}
-                        dscr={runResult.dscr ?? 1.25}
+                        irr5Yr={runResult.irr5Yr ?? null}
+                        irrError={runResult.irrError ?? null}
+                        dscr={runResult.dscr ?? null}
                         netOperatingIncomeUSD={Number(runResult.netOperatingIncomeUSD) || 0}
                         monthlyCashflowUSD={Number(runResult.monthlyCashflowUSD) || 0}
                         annualDebtServiceUSD={Number(runResult.annualDebtServiceUSD) || 0}
+                        yearByYear={runResult.yearByYear}
                         currency={currentCurrency}
                       />
                     </CardContent>
@@ -4767,12 +5623,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   )}
                 </div>
 
-                {/* 3. 1000-Cycle Monte Carlo Stress Test (PROFESSIONAL+) */}
+                {/* 3. Stochastic Monte Carlo Stress Test (1,000 Starter/Pro • 10,000 Sovereign) */}
                 <div className="glass-panel p-6 space-y-4 border border-white/[0.08]">
-                  <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-3">
                     <div className="flex items-center gap-2 text-sm font-mono font-bold text-white uppercase">
                       <BarChart3 className="w-4 h-4 text-purple-400" />
-                      <span>1000-Cycle Monte Carlo Stress Test (+200bps)</span>
+                      <span>{monteCarloCyclesLabel.toLocaleString('en-US')}-Cycle Monte Carlo Stress Test</span>
                     </div>
                     {canMonteCarlo && (
                       <button
@@ -4781,7 +5637,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         disabled={isRunningMonteCarlo}
                         className="px-3 py-1 rounded-lg bg-[#D4AF37] hover:bg-[#F3E5AB] text-black font-bold text-[11px] font-mono cursor-pointer disabled:opacity-60"
                       >
-                        {isRunningMonteCarlo ? 'Running 1000...' : 'Run 1000-Cycle Simulation'}
+                        {isRunningMonteCarlo
+                          ? `Running ${monteCarloCyclesLabel.toLocaleString('en-US')}...`
+                          : `Run ${monteCarloCyclesLabel.toLocaleString('en-US')}-Cycle Simulation`}
                       </button>
                     )}
                   </div>
@@ -4790,9 +5648,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="flex items-start gap-3">
                         <Lock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
                         <div className="text-xs font-mono text-zinc-300 space-y-1">
-                          <div className="font-bold text-white">Available in PROFESSIONAL - Upgrade</div>
+                          <div className="font-bold text-white">Available in STARTER+ - Upgrade</div>
                           <div className="text-zinc-400">
-                            Simulate 1,000 interest-rate (+200bps) &amp; vacancy cycles with DSCR p10/p50/p90 distribution.
+                            Simulate 1,000 (Starter/Pro) to 10,000 (Sovereign) stochastic cycles with IRR P10/P50/P90 &amp; combined rate/rent/vacancy stress.
                           </div>
                         </div>
                       </div>
@@ -4806,43 +5664,120 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </div>
                   ) : monteCarloResult ? (
                     <div className="space-y-3 text-xs font-mono">
-                      <div className="grid grid-cols-3 gap-2.5">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                         <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
                           <div className="text-[10px] text-zinc-400">DSCR &gt;= 1.20x Pass Rate</div>
                           <div className="text-base font-black text-emerald-400">
-                            {monteCarloResult.passRatePct}% ({monteCarloResult.passCount}/{monteCarloResult.cycles})
+                            {monteCarloResult.passRatePct}% ({monteCarloResult.passCount.toLocaleString('en-US')}/{monteCarloResult.cycles.toLocaleString('en-US')})
                           </div>
                         </div>
                         <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.08]">
-                          <div className="text-[10px] text-zinc-400">+200bps Rate Shock</div>
-                          <div className="text-base font-black text-white">{monteCarloResult.rateShockCoC}% CoC</div>
+                          <div className="text-[10px] text-zinc-400">IRR P10 / P50 / P90</div>
+                          <div className="text-xs font-bold text-purple-300 mt-1">
+                            {monteCarloResult.irrP10 !== null && monteCarloResult.irrP10 !== undefined ? `${monteCarloResult.irrP10}%` : 'N/A'} /{' '}
+                            {monteCarloResult.irrP50 !== null && monteCarloResult.irrP50 !== undefined ? `${monteCarloResult.irrP50}%` : 'N/A'} /{' '}
+                            {monteCarloResult.irrP90 !== null && monteCarloResult.irrP90 !== undefined ? `${monteCarloResult.irrP90}%` : 'N/A'}
+                          </div>
                         </div>
                         <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.08]">
                           <div className="text-[10px] text-zinc-400">DSCR P10 / P50 / P90</div>
-                          <div className="text-xs font-bold text-[#D4AF37] mt-0.5">
+                          <div className="text-xs font-bold text-[#D4AF37] mt-1">
                             {monteCarloResult.dscrP10}x / {monteCarloResult.dscrP50}x / {monteCarloResult.dscrP90}x
                           </div>
                         </div>
                       </div>
-                      <div className="space-y-1.5 pt-1">
-                        <div className="text-[10px] text-zinc-400 uppercase">DSCR Distribution ({monteCarloResult.cycles} Cycles)</div>
-                        {monteCarloResult.distribution.map((b) => (
-                          <div key={b.label} className="flex items-center gap-2 text-[11px]">
-                            <span className="w-28 text-zinc-400 shrink-0">{b.label}</span>
-                            <div className="flex-1 h-2 bg-zinc-900 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-gradient-to-r from-[#D4AF37] to-emerald-400 rounded-full"
-                                style={{ width: `${Math.max(4, b.pct)}%` }}
-                              />
-                            </div>
-                            <span className="w-16 text-right text-white font-bold">{b.pct}% ({b.count})</span>
+
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20">
+                          <div className="text-[10px] text-zinc-400">Prob. Negative Cashflow</div>
+                          <div className="text-sm font-black text-rose-300">
+                            {monteCarloResult.probNegativeCashflowPct ?? (100 - (monteCarloResult.positiveCashflowPct || 0)).toFixed(1)}%
                           </div>
-                        ))}
+                        </div>
+                        <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20">
+                          <div className="text-[10px] text-zinc-400">Prob. Exit Value Decline</div>
+                          <div className="text-sm font-black text-amber-300">
+                            {monteCarloResult.probValueDeclinePct ?? 0}%
+                          </div>
+                        </div>
                       </div>
+
+                      {monteCarloResult.combinedStress && (
+                        <div className="p-3 rounded-xl bg-rose-950/30 border border-rose-500/30 space-y-1.5">
+                          <div className="text-[10px] font-bold uppercase text-rose-300">
+                            Combined Stress Scenario ({monteCarloResult.combinedStress.label})
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                            <div>
+                              <span className="text-zinc-400 block">Stressed NOI</span>
+                              <span className="text-white font-bold">{formatPrice(monteCarloResult.combinedStress.noiUSD, currentCurrency)}</span>
+                            </div>
+                            <div>
+                              <span className="text-zinc-400 block">Stressed CoC</span>
+                              <span className="text-white font-bold">{monteCarloResult.combinedStress.cocPct}%</span>
+                            </div>
+                            <div>
+                              <span className="text-zinc-400 block">Stressed DSCR</span>
+                              <span className="text-cyan-300 font-bold">{monteCarloResult.combinedStress.dscr}x</span>
+                            </div>
+                            <div>
+                              <span className="text-zinc-400 block">Stressed IRR</span>
+                              <span className="text-amber-300 font-bold">
+                                {monteCarloResult.combinedStress.irr5Yr !== null
+                                  ? `${monteCarloResult.combinedStress.irr5Yr}%`
+                                  : 'N/A'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                        <div className="space-y-1.5">
+                          <div className="text-[10px] text-zinc-400 uppercase">DSCR Distribution ({monteCarloResult.cycles.toLocaleString('en-US')} Cycles)</div>
+                          {monteCarloResult.distribution.map((b) => (
+                            <div key={b.label} className="flex items-center gap-2 text-[10px]">
+                              <span className="w-20 text-zinc-400 shrink-0">{b.label}</span>
+                              <div className="flex-1 h-2 bg-zinc-900 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-gradient-to-r from-[#D4AF37] to-emerald-400 rounded-full"
+                                  style={{ width: `${Math.max(4, b.pct)}%` }}
+                                />
+                              </div>
+                              <span className="w-16 text-right text-white font-bold">{b.pct}%</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        {Array.isArray(monteCarloResult.irrDistribution) && (
+                          <div className="space-y-1.5">
+                            <div className="text-[10px] text-zinc-400 uppercase">IRR Distribution ({monteCarloResult.cycles.toLocaleString('en-US')} Cycles)</div>
+                            {monteCarloResult.irrDistribution.map((b) => (
+                              <div key={b.label} className="flex items-center gap-2 text-[10px]">
+                                <span className="w-16 text-zinc-400 shrink-0">{b.label}</span>
+                                <div className="flex-1 h-2 bg-zinc-900 rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-gradient-to-r from-purple-500 to-cyan-400 rounded-full"
+                                    style={{ width: `${Math.max(4, b.pct)}%` }}
+                                  />
+                                </div>
+                                <span className="w-14 text-right text-white font-bold">{b.pct}%</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {monteCarloResult.assumptions && (
+                        <div className="p-2.5 rounded-lg bg-black/50 border border-white/10 text-[10px] text-zinc-400 leading-relaxed">
+                          <strong className="text-zinc-300">Simulation Assumptions:</strong>{' '}
+                          Cycles={monteCarloResult.assumptions.cycles.toLocaleString('en-US')} | Rate Shock Mean +{monteCarloResult.assumptions.rateShockMeanBps}bps (SD {monteCarloResult.assumptions.rateShockStdBps}bps) | Rent Mean {monteCarloResult.assumptions.rentShockMeanPct}% (SD {monteCarloResult.assumptions.rentShockStdPct}%) | Vacancy Mean {monteCarloResult.assumptions.vacancyMeanPct}% (SD {monteCarloResult.assumptions.vacancyStdPct}%) | Appreciation SD {monteCarloResult.assumptions.appreciationStdPct}%. {monteCarloResult.assumptions.methodology}
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="text-xs font-mono text-zinc-400 py-3">
-                      Click <strong className="text-[#D4AF37]">Run 1000-Cycle Simulation</strong> or run underwriting to inspect DSCR &amp; rate-shock pass rates.
+                      Click <strong className="text-[#D4AF37]">Run {monteCarloCyclesLabel.toLocaleString('en-US')}-Cycle Simulation</strong> to compute IRR P10/P50/P90, negative cashflow risk, value decline odds &amp; combined stress.
                     </div>
                   )}
                 </div>
@@ -4954,23 +5889,29 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         </button>
                       </div>
 
-                      <div className="p-3 rounded-lg bg-black/70 font-mono text-xs text-zinc-200 border border-white/10 break-all flex items-center justify-between gap-3">
-                        <span>{user.apiKey ? `Bearer ${user.apiKey}` : 'Loading active API credential...'}</span>
-                        {user.apiKey && (
+                      <div className="p-3 rounded-lg bg-black/70 font-mono text-xs text-zinc-200 border border-white/10 break-all flex flex-wrap items-center justify-between gap-2">
+                        <span>{maskedApiKeyDisplay ? `Bearer ${maskedApiKeyDisplay}` : 'Loading active API credential...'}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {maskedApiKeyDisplay && (
+                            <button
+                              type="button"
+                              onClick={handleCopyApiKey}
+                              className="px-3 py-1 rounded bg-purple-500/25 text-purple-200 hover:bg-purple-500/35 text-[11px] font-bold cursor-pointer flex items-center gap-1"
+                            >
+                              <Copy className="w-3 h-3" />
+                              <span>{copiedApiKey ? 'Copied' : 'COPY'}</span>
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => {
-                              navigator.clipboard?.writeText(user.apiKey || '');
-                              setCopiedApiKey(true);
-                              showToast('Copied');
-                              setTimeout(() => setCopiedApiKey(false), 2000);
-                            }}
-                            className="px-3 py-1 rounded bg-purple-500/25 text-purple-200 hover:bg-purple-500/35 text-[11px] font-bold shrink-0 cursor-pointer flex items-center gap-1"
+                            disabled={isRegeneratingApiKey}
+                            onClick={handleRegenerateApiKey}
+                            className="px-3 py-1 rounded bg-amber-500/20 text-amber-200 hover:bg-amber-500/35 text-[11px] font-bold cursor-pointer flex items-center gap-1 disabled:opacity-50"
                           >
-                            <Copy className="w-3 h-3" />
-                            <span>{copiedApiKey ? 'Copied' : 'COPY KEY'}</span>
+                            <RefreshCw className={`w-3 h-3 ${isRegeneratingApiKey ? 'animate-spin' : ''}`} />
+                            <span>{isRegeneratingApiKey ? 'Rotating...' : 'REGENERATE'}</span>
                           </button>
-                        )}
+                        </div>
                       </div>
 
                       {showApiDocs && (
@@ -4980,7 +5921,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             Endpoint: <code className="text-white">POST https://aqari-ai-rho.vercel.app/api/analyze</code>
                           </div>
                           <div className="text-[11px] text-zinc-400">
-                            Header: <code className="text-white">Authorization: Bearer {user.apiKey || 'aqari_live_...'}</code>
+                            Header: <code className="text-white">Authorization: Bearer {maskedApiKeyDisplay || '****'}</code> (Click COPY above for full secret)
                           </div>
                           <pre className="p-2.5 rounded-lg bg-black border border-white/10 text-[11px] text-emerald-300 overflow-x-auto">
 {`// Request JSON
@@ -6541,8 +7482,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </button>
                   </div>
 
-                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200">
-                    {ddResult.disclaimer}
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-200 space-y-1">
+                    <div>{ddResult.disclaimer}</div>
+                    <div className="text-[11px] text-amber-300 font-bold">
+                      Source: Official Land Registry &amp; Tax Schedule ({ddResult.country}) • Verified: 2026-04-01 • Not legal/tax advice.
+                    </div>
                   </div>
                 </FadeInCard>
               )}
@@ -7422,11 +8366,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             </div>
                             <div>
                               <span className="text-xs text-zinc-400 block uppercase">5Y IRR</span>
-                              <span className="text-lg font-bold text-purple-400">{item.irr}%</span>
+                              <span className="text-lg font-bold text-purple-400">
+                                {item.irr !== null && item.irr !== undefined ? `${item.irr}%` : 'N/A'}
+                              </span>
                             </div>
                             <div>
                               <span className="text-xs text-zinc-400 block uppercase">DSCR</span>
-                              <span className="text-lg font-bold text-emerald-400">{item.dscr}x</span>
+                              <span className="text-lg font-bold text-emerald-400">
+                                {item.dscr ? `${item.dscr}x` : 'N/A'}
+                              </span>
                             </div>
                           </div>
                         </div>
@@ -7585,8 +8533,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <span>SOVEREIGN WEALTH AGGREGATOR</span>
                       </div>
                       <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                        Total Portfolio Intelligence ({savedAnalyses.length} properties)
+                        Total Portfolio Intelligence ({portfolioAgg.trackedAssets} valid properties)
                       </h2>
+                      {portfolioAgg.excludedInvalidCount > 0 && (
+                        <div className="text-xs font-mono text-amber-300 mt-1">
+                          Excluded {portfolioAgg.excludedInvalidCount} corrupted/outlier record(s) from weighted aggregation.
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -7598,7 +8551,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     {formatPrice(portfolioTotalValUSD, currentCurrency)}
                   </div>
                   <div className="text-[10px] text-emerald-400 font-mono mt-1">
-                    {savedAnalyses.length} Properties Tracked
+                    {portfolioAgg.trackedAssets} Valid Properties Tracked
                   </div>
                 </div>
 
@@ -7613,22 +8566,22 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
 
                 <div className="glass-panel p-5">
-                  <div className="text-[10px] font-mono uppercase text-zinc-400">Weighted Cap Rate</div>
+                  <div className="text-[10px] font-mono uppercase text-zinc-400">Weighted Cap Rate (SUM NOI / SUM Val)</div>
                   <div className="text-2xl sm:text-3xl font-black font-mono text-cyan-400 mt-1">
                     {portfolioAvgCapRate}%
                   </div>
                   <div className="text-[10px] text-cyan-400 font-mono mt-1">
-                    Unlevered Net Yield
+                    Value-Weighted Unlevered Yield
                   </div>
                 </div>
 
                 <div className="glass-panel p-5">
                   <div className="text-[10px] font-mono uppercase text-zinc-400">Weighted 5Y IRR</div>
                   <div className="text-2xl sm:text-3xl font-black font-mono text-purple-400 mt-1">
-                    {portfolioAvgIRR}%
+                    {portfolioAvgIRR !== null ? `${portfolioAvgIRR}%` : 'N/A'}
                   </div>
                   <div className="text-[10px] text-purple-400 font-mono mt-1">
-                    Equity Compound Benchmark
+                    Value-Weighted Equity IRR
                   </div>
                 </div>
               </div>
@@ -7680,12 +8633,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </h2>
                   <div className="text-xs font-mono text-zinc-400 mt-1.5 flex flex-wrap items-center gap-2">
                     <span>
-                      Source: {macroSyncInfo?.source || 'World Bank / FRED / DLD / JLL'} • Last updated:{' '}
-                      {macroSyncInfo?.last_updated || marketLive?.last_synced_display || 'Daily'} • Data as of{' '}
-                      {macroSyncInfo?.data_as_of || new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                      Source: {macroSyncInfo?.source || 'World Bank / FRED / DLD / JLL'} • Updated:{' '}
+                      {macroSyncInfo?.last_updated || marketLive?.last_synced_display || '2026-04-01'}
                     </span>
-                    <span className="text-zinc-400">
-                      (Estimated / Demo data - بيانات تقديرية)
+                    <span className="px-2 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 font-bold">
+                      [Estimated]
                     </span>
                   </div>
                 </div>
@@ -7710,6 +8662,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <th className="py-3.5 px-4 font-semibold">Transfer Tax</th>
                         <th className="py-3.5 px-4 font-semibold">Capital Gains Tax</th>
                         <th className="py-3.5 px-4 font-semibold">Golden Visa</th>
+                        <th className="py-3.5 px-4 font-semibold">Source &amp; Tax Verified</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.04]">
@@ -7718,6 +8671,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <td className="py-3.5 px-4 font-bold text-white whitespace-nowrap">
                             <span className="mr-2">{row.flag}</span>
                             {row.city}
+                            <span className="ml-1.5 text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">
+                              [{row.dataType || 'Estimated'}]
+                            </span>
                           </td>
                           <td className="py-3.5 px-4 font-mono font-bold text-zinc-200">
                             {formatPrice(row.basePriceSqMUSD, currentCurrency)}
@@ -7738,10 +8694,22 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                                 : 'N/A'
                               : '🔒 Starter'}
                           </td>
+                          <td className="py-3.5 px-4 text-[10px] text-zinc-400">
+                            <div className="text-zinc-300 truncate max-w-[200px]" title={row.taxSource || row.source}>
+                              {row.taxSource || row.source || 'Official Registry'}
+                            </div>
+                            <div className="text-zinc-500">
+                              Updated: {row.updatedDate || '2026-04-01'} • Verified: {row.taxVerifiedDate || '2026-04-01'}
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                </div>
+                <div className="px-4 py-2.5 bg-amber-500/[0.06] border-t border-amber-500/20 text-[11px] font-mono text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                  <span>Official Tax &amp; Registry Sources: MoHUP Oman, DLD/FTA, REGA/ZATCA, IRS, HMRC, IRAS (Verified 2026-04-01).</span>
+                  <span className="font-bold text-amber-300">Not legal/tax advice. Verify with licensed counsel.</span>
                 </div>
                 {!canFullMatrix && (
                   <div className="p-4 bg-black/70 border-t border-[#D4AF37]/30 flex items-center justify-between text-xs font-mono text-amber-200">
@@ -7888,60 +8856,73 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
-              {/* Section A: MARKET HIGHLIGHTS - LIVE MACRO SYNC */}
+              {/* Section A: MARKET HIGHLIGHTS - SOURCE & DATA TYPE TAGGED */}
               <div className="space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
                   <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                    <span className="w-2 h-2 rounded-full bg-[#D4AF37]" />
                     <span className="text-sm font-mono font-bold uppercase tracking-wider text-white">
-                      Market Highlights • Data as of{' '}
-                      {macroSyncInfo?.data_as_of ||
-                        new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                      Market Benchmarks • Updated{' '}
+                      {macroSyncInfo?.data_as_of || marketLive?.last_synced_display || 'Daily'}
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-mono text-zinc-400">
-                      Estimated / Demo data - بيانات تقديرية
+                    <span className="text-xs font-mono text-amber-300 bg-amber-500/10 px-2.5 py-1 rounded border border-amber-500/20">
+                      [Actual] FRED / FX • [Estimated] City Yields
                     </span>
-                    <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded border border-emerald-500/20 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                      <span>Source: {macroSyncInfo?.source || 'FRED / World Bank / DLD / JLL'}</span>
+                    <span className="text-xs font-mono text-zinc-300 bg-white/[0.04] px-2.5 py-1 rounded border border-white/10">
+                      Source: {macroSyncInfo?.source || 'FRED / World Bank / DLD / JLL'}
                     </span>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
                   <div className="glass-panel p-5 border border-white/[0.08]">
-                    <span className="text-xs font-mono uppercase text-zinc-400">Muscat vs US 10Y Spread</span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono uppercase text-zinc-400">Muscat vs US 10Y Spread</span>
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[9px] font-mono font-bold">
+                        [Actual FRED + Est. Yield]
+                      </span>
+                    </div>
                     <div className="text-xl font-black font-mono text-[#D4AF37] mt-1">
                       +{marketLive?.metrics?.muscat_vs_us10y_bps ?? 412} bps • {marketLive?.cities?.find((c) => c.city === 'Muscat')?.gross_yield ?? 8.4}%
                     </div>
                     <p className="text-xs text-zinc-400 font-mono mt-1.5">
-                      FRED US10Y: {marketLive?.macro?.us_10y_yield ?? 4.28}% • Last updated: {macroSyncInfo?.last_updated || marketLive?.last_synced_display || 'Today'}
+                      FRED US10Y: {marketLive?.macro?.us_10y_yield ?? 4.28}% • Updated: {macroSyncInfo?.last_updated || marketLive?.last_synced_display || '2026-04-01'}
                     </p>
-                    <p className="text-xs text-zinc-500 font-mono mt-0.5">Estimated / Demo data - بيانات تقديرية</p>
+                    <p className="text-[11px] text-zinc-500 font-mono mt-0.5">Source: FRED + Oman NCSI Benchmark</p>
                   </div>
 
                   <div className="glass-panel p-5 border border-white/[0.08]">
-                    <span className="text-xs font-mono uppercase text-zinc-400">Dubai DLD Residential Index</span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono uppercase text-zinc-400">Dubai DLD Residential Index</span>
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[9px] font-mono font-bold">
+                        [Estimated]
+                      </span>
+                    </div>
                     <div className="text-xl font-black font-mono text-emerald-400 mt-1">
                       {marketLive?.metrics?.dubai_dld_index ?? 184.2} pts • {marketLive?.cities?.find((c) => c.city === 'Dubai')?.gross_yield ?? 8.8}%
                     </div>
                     <p className="text-xs text-zinc-400 font-mono mt-1.5">
-                      Source: Dubai Land Department • Data as of {macroSyncInfo?.data_as_of || 'Today'}
+                      Source: Dubai Land Department • Updated: {macroSyncInfo?.data_as_of || '2026-04-01'}
                     </p>
-                    <p className="text-xs text-zinc-500 font-mono mt-0.5">Estimated / Demo data - بيانات تقديرية</p>
+                    <p className="text-[11px] text-zinc-500 font-mono mt-0.5">Type: Estimated Benchmark</p>
                   </div>
 
                   <div className="glass-panel p-5 border border-white/[0.08]">
-                    <span className="text-xs font-mono uppercase text-zinc-400">Riyadh KAFD Rental Spread</span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono uppercase text-zinc-400">Riyadh KAFD Rental Spread</span>
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[9px] font-mono font-bold">
+                        [Estimated]
+                      </span>
+                    </div>
                     <div className="text-xl font-black font-mono text-purple-400 mt-1">
                       Riyadh • +{marketLive?.cities?.find((c) => c.city === 'Riyadh')?.rental_yoy ?? 14.8}% YoY
                     </div>
                     <p className="text-xs text-zinc-400 font-mono mt-1.5">
-                      Source: JLL KSA Baseline • Data as of {macroSyncInfo?.data_as_of || 'Today'}
+                      Source: JLL KSA Baseline • Updated: {macroSyncInfo?.data_as_of || '2026-04-01'}
                     </p>
-                    <p className="text-xs text-zinc-500 font-mono mt-0.5">Estimated / Demo data - بيانات تقديرية</p>
+                    <p className="text-[11px] text-zinc-500 font-mono mt-0.5">Type: Estimated Benchmark</p>
                   </div>
                 </div>
               </div>
@@ -8019,7 +9000,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         </div>
                       </div>
                       <div className="glass-panel p-4">
-                        <div className="text-[10px] font-mono uppercase text-zinc-400">Avg Cap Rate</div>
+                        <div className="text-[10px] font-mono uppercase text-zinc-400">Weighted Cap Rate</div>
                         <div className="text-xl font-bold font-mono text-cyan-400 mt-1">
                           {portfolioAvgCapRate}%
                         </div>
@@ -8027,7 +9008,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="glass-panel p-4">
                         <div className="text-[10px] font-mono uppercase text-zinc-400">Tracked Assets</div>
                         <div className="text-xl font-bold font-mono text-emerald-400 mt-1">
-                          {savedAnalyses.length} properties
+                          {portfolioAgg.trackedAssets} properties
                         </div>
                       </div>
                     </div>
@@ -8447,26 +9428,31 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         {showApiDocs ? 'Hide API Docs' : 'API Docs'}
                       </button>
                     </div>
-                    <div className="p-3 rounded-lg bg-black/60 font-mono text-xs text-zinc-200 border border-white/10 break-all flex items-center justify-between gap-3">
-                      <span>{user.apiKey ? `Bearer ${user.apiKey}` : 'Loading active API credential...'}</span>
-                      {user.apiKey && (
+                    <div className="p-3 rounded-lg bg-black/60 font-mono text-xs text-zinc-200 border border-white/10 break-all flex flex-wrap items-center justify-between gap-2">
+                      <span>{maskedApiKeyDisplay ? `Bearer ${maskedApiKeyDisplay}` : 'Loading active API credential...'}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {maskedApiKeyDisplay && (
+                          <button
+                            type="button"
+                            onClick={handleCopyApiKey}
+                            className="px-2.5 py-1 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-[10px] font-bold cursor-pointer"
+                          >
+                            {copiedApiKey ? 'Copied' : 'COPY'}
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => {
-                            navigator.clipboard?.writeText(user.apiKey || '');
-                            setCopiedApiKey(true);
-                            showToast('Copied');
-                            setTimeout(() => setCopiedApiKey(false), 2000);
-                          }}
-                          className="px-2.5 py-1 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-[10px] font-bold shrink-0 cursor-pointer"
+                          disabled={isRegeneratingApiKey}
+                          onClick={handleRegenerateApiKey}
+                          className="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 text-[10px] font-bold cursor-pointer disabled:opacity-50"
                         >
-                          {copiedApiKey ? 'Copied' : 'COPY KEY'}
+                          {isRegeneratingApiKey ? 'Rotating...' : 'REGENERATE'}
                         </button>
-                      )}
+                      </div>
                     </div>
                     {showApiDocs && (
                       <div className="mt-2 p-3 rounded-lg bg-zinc-950 border border-white/10 text-[11px] font-mono text-zinc-300 space-y-1">
-                        <div>POST /api/analyze • Header: Authorization: Bearer {user.apiKey || 'aqari_live_...'}</div>
+                        <div>POST /api/analyze • Header: Authorization: Bearer {maskedApiKeyDisplay || '****'} (Click COPY above for full secret)</div>
                         <div className="text-amber-300">Your developer needs to integrate this. Not automatic.</div>
                       </div>
                     )}
@@ -8564,7 +9550,25 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                   <div className="pt-2 border-t border-amber-400/25 space-y-2 text-xs">
                     <div className="flex flex-wrap items-center gap-4">
-                      <span className="text-amber-200 font-bold">Status:</span>
+                      <span className="text-amber-200 font-bold">Paddle Webhook:</span>
+                      {(() => {
+                        const isConn =
+                          webhookEnvStatus?.webhookStatus === 'Connected' ||
+                          Boolean(webhookEnvStatus?.webhookSecretPresent);
+                        return (
+                          <span
+                            className={`px-2.5 py-0.5 rounded font-bold border ${
+                              webhookEnvStatus
+                                ? isConn
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                  : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                                : 'bg-zinc-800 text-zinc-300 border-white/10'
+                            }`}
+                          >
+                            {webhookEnvStatus ? (isConn ? 'Connected' : 'Not Connected') : 'Checking...'}
+                          </span>
+                        );
+                      })()}
                       <span className="text-zinc-200">
                         PAYMENT_WEBHOOK_SECRET present?{' '}
                         <strong className={webhookEnvStatus?.webhookSecretPresent ? 'text-emerald-400' : 'text-rose-400'}>

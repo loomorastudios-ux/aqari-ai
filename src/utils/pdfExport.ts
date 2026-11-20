@@ -134,7 +134,8 @@ export function downloadWhiteGlovePdf(params: {
     const rt = p.ratePct ?? p.interestRatePct ?? 5.5;
     const opx = p.opexPct ?? p.operatingExpensePct ?? 15;
     const pCcy = String(p.currency || ccy).toUpperCase();
-    const annualRent = rent * 12 * 0.95;
+    const vacPct = Number(p.vacancyPct ?? p.vacancyRatePct ?? 0);
+    const annualRent = rent * 12 * (1 - vacPct / 100);
     const noi = annualRent * (1 - Number(opx) / 100);
     const estCap = val > 0 ? ((noi / val) * 100).toFixed(2) : '0.00';
 

@@ -74,7 +74,7 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
             Institutional Prime Listings
           </h2>
           <p className="text-zinc-400 text-sm mt-1 max-w-xl">
-            Pre-audited sovereign assets with verified occupancy, gross yields up to 8.8%, and cross-border tax incentives.
+            Illustrative benchmark listings [Demo] • Source: AQARI Case Studies • Updated 2026-04-01.
           </p>
         </div>
 
@@ -124,6 +124,9 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                   <span className="px-2.5 py-1 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 text-[10px] font-mono font-bold text-white uppercase tracking-wider">
                     {property.city}
                   </span>
+                  <span className="px-2 py-1 rounded-lg bg-black/70 backdrop-blur-md border border-amber-500/40 text-[10px] font-mono font-bold text-amber-300 uppercase">
+                    [Demo]
+                  </span>
                   {property.featuredTag && (
                     <span className="px-2.5 py-1 rounded-lg bg-[#D4AF37] text-black text-[10px] font-mono font-extrabold uppercase tracking-wider shadow-sm">
                       {property.featuredTag}
@@ -141,14 +144,14 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                 <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between">
                   <div>
                     <div className="text-[10px] font-mono text-zinc-300 uppercase tracking-wider">
-                      Acquisition Price
+                      Acquisition Price [Demo]
                     </div>
                     <div className="text-2xl font-bold font-mono text-white tracking-tight drop-shadow-md">
                       {formatPrice(property.basePriceUSD, currentCurrency)}
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-[10px] font-mono text-zinc-400">Monthly Est. Rent</div>
+                    <div className="text-[10px] font-mono text-zinc-400">Est. Monthly Rent</div>
                     <div className="text-sm font-semibold font-mono text-emerald-400">
                       {formatPrice(property.baseRentMonthlyUSD, currentCurrency)}/mo
                     </div>
@@ -206,10 +209,16 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                     </div>
                   </div>
 
-                  {/* Tax Advantage */}
-                  <div className="text-[11px] font-mono text-zinc-300 flex items-center justify-between mb-4">
-                    <span className="text-zinc-500">Tax Structure:</span>
-                    <span className="text-cyan-400 truncate max-w-[180px]">{property.taxAdvantage}</span>
+                  {/* Tax Advantage + Legal Note */}
+                  <div className="text-[11px] font-mono text-zinc-300 space-y-1 mb-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-zinc-500">Tax Structure:</span>
+                      <span className="text-cyan-400 truncate max-w-[180px]">{property.taxAdvantage}</span>
+                    </div>
+                    <div className="text-[9px] text-zinc-500 flex items-center justify-between">
+                      <span>Source: Local Registry (2026-04-01)</span>
+                      <span>Not legal/tax advice</span>
+                    </div>
                   </div>
                 </div>
 

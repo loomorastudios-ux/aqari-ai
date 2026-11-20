@@ -359,7 +359,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const r = ratePct / 100 / 12;
       const n = 25 * 12;
       const monthlyDebt = loan > 0 && r > 0 ? (loan * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1) : 0;
-      const annGross = rent * 12 * 0.95;
+      const annGross = rent * 12;
       const annNoi = annGross * (1 - opexPct / 100);
       totalValuation += val;
       totalMonthlyRent += rent;
@@ -371,7 +371,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const annualCf = totalAnnualNOI - totalAnnualDebt;
     const blendedCoC = totalEquity > 0 ? Number(((annualCf / totalEquity) * 100).toFixed(2)) : 0;
     const dscr = totalAnnualDebt > 0 ? Number((totalAnnualNOI / totalAnnualDebt).toFixed(2)) : 4.0;
-    const irr5Yr = Number((blendedCoC + 4.8).toFixed(1));
+    const irr5Yr = annualCf <= 0 ? null : Number((blendedCoC + 3.0).toFixed(1));
     return {
       totalValuation: Math.round(totalValuation),
       totalMonthlyRent: Math.round(totalMonthlyRent),

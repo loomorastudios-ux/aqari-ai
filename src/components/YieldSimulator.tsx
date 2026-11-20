@@ -6,6 +6,7 @@ import {
   parseEnglishNumber,
   sanitizeEnglishDecimal,
 } from '../utils/formatters';
+import { calculateUnderwriting } from '../../lib/underwriting';
 import { 
   Calculator, 
   TrendingUp, 
@@ -44,7 +45,7 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
   const [baseRentMonthlyUSD, setBaseRentMonthlyUSD] = useState<number>(4800);
   const [operatingExpensePct, setOperatingExpensePct] = useState<number>(15);
   const [opexDraft, setOpexDraft] = useState<string>('15');
-  const [vacancyPct] = useState<number>(5);
+  const [vacancyPct] = useState<number>(0);
 
   const [computedSnapshot, setComputedSnapshot] = useState<{
     basePriceUSD: number;
@@ -58,40 +59,78 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
   const loanAmountUSD = Math.max(0, (computedSnapshot?.basePriceUSD ?? basePriceUSD) * (1 - (computedSnapshot?.downPaymentPct ?? downPaymentPct) / 100));
 
   const calc = (snap: NonNullable<typeof computedSnapshot>) => {
-    const dp = snap.basePriceUSD * (snap.downPaymentPct / 100);
-    const loan = Math.max(0, snap.basePriceUSD - dp);
-    const r = snap.interestRatePct / 100 / 12;
-    const n = loanTermYears * 12;
-    const monthlyMtg =
-      loan > 0 && r > 0
-        ? (loan * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1)
-        : 0;
-    const annGross = snap.baseRentMonthlyUSD * 12 * (1 - vacancyPct / 100);
-    const annOpex = annGross * (snap.operatingExpensePct / 100);
-    const noi = annGross - annOpex;
-    const cap = ((noi / Math.max(1, snap.basePriceUSD)) * 100).toFixed(2);
-    const annDebt = monthlyMtg * 12;
-    const annCf = noi - annDebt;
-    const coc = dp > 0 ? ((annCf / dp) * 100).toFixed(2) : '0.00';
-    const dscrVal = annDebt > 0 ? (noi / annDebt).toFixed(2) : '∞';
-    const irrVal = (parseFloat(coc) + 4.5).toFixed(1);
+    const res = calculateUnderwriting({
+      priceUSD: snap.basePriceUSD,
+      rentUSD: snap.baseRentMonthlyUSD,
+      downPaymentPct: snap.downPaymentPct,
+      interestRatePct: snap.interestRatePct,
+      operatingExpensePct: snap.operatingExpensePct,
+      loanTermYears,
+      amortizationYears: loanTermYears,
+      vacancyRatePct: vacancyPct,
+    });
+    const rateShockRes = calculateUnderwriting({
+      priceUSD: snap.basePriceUSD,
+      rentUSD: snap.baseRentMonthlyUSD,
+      downPaymentPct: snap.downPaymentPct,
+      interestRatePct: snap.interestRatePct + 2.0,
+      operatingExpensePct: snap.operatingExpensePct,
+      loanTermYears,
+      amortizationYears: loanTermYears,
+      vacancyRatePct: vacancyPct,
+    });
+    const vacShockRes = calculateUnderwriting({
+      priceUSD: snap.basePriceUSD,
+      rentUSD: snap.baseRentMonthlyUSD,
+      downPaymentPct: snap.downPaymentPct,
+      interestRatePct: snap.interestRatePct,
+      operatingExpensePct: snap.operatingExpensePct,
+      loanTermYears,
+      amortizationYears: loanTermYears,
+      vacancyRatePct: 15,
+    });
     const sensitivityScenarios = [-10, 0, 10].map((deltaPct) => {
       const adjustedRentUSD = snap.baseRentMonthlyUSD * (1 + deltaPct / 100);
-      const adjGrossRentUSD = adjustedRentUSD * 12 * (1 - vacancyPct / 100);
-      const adjOPEXUSD = adjGrossRentUSD * (snap.operatingExpensePct / 100);
-      const adjNOIUSD = adjGrossRentUSD - adjOPEXUSD;
-      const adjCapRate = ((adjNOIUSD / Math.max(1, snap.basePriceUSD)) * 100).toFixed(2);
-      const adjCashflowUSD = adjNOIUSD - annDebt;
-      const adjCoC = dp > 0 ? ((adjCashflowUSD / dp) * 100).toFixed(2) : '0.00';
-      return { deltaPct, rentUSD: adjustedRentUSD, capRate: adjCapRate, cashflowUSD: adjCashflowUSD, coc: adjCoC };
+      const scRes = calculateUnderwriting({
+        priceUSD: snap.basePriceUSD,
+        rentUSD: adjustedRentUSD,
+        downPaymentPct: snap.downPaymentPct,
+        interestRatePct: snap.interestRatePct,
+        operatingExpensePct: snap.operatingExpensePct,
+        loanTermYears,
+        amortizationYears: loanTermYears,
+        vacancyRatePct: vacancyPct,
+      });
+      return {
+        deltaPct,
+        rentUSD: adjustedRentUSD,
+        capRate: scRes.capRate.toFixed(2),
+        cashflowUSD: scRes.monthlyCashflowUSD * 12,
+        coc: scRes.cashOnCash.toFixed(2),
+      };
     });
-    return { annGross, annOpex, noi, cap, annDebt, annCf, coc, dscrVal, irrVal, sensitivityScenarios };
+    return {
+      annGross: res.annualGrossRentUSD,
+      annOpex: res.annualOPEXUSD,
+      noi: res.netOperatingIncomeUSD,
+      cap: res.capRate.toFixed(2),
+      annDebt: res.annualDebtServiceUSD,
+      annCf: res.monthlyCashflowUSD * 12,
+      coc: res.cashOnCash.toFixed(2),
+      dscrVal: res.dscr ?? '∞',
+      irrVal: res.irr5Yr !== null ? res.irr5Yr.toFixed(1) : null,
+      irrError: res.irrError,
+      warnings: res.warnings,
+      rateShockCoC: rateShockRes.cashOnCash.toFixed(2),
+      vacSurgeCap: vacShockRes.capRate.toFixed(2),
+      sensitivityScenarios,
+    };
   };
 
   const sim = computedSnapshot ? calc(computedSnapshot) : null;
 
   const handleRunStressTest = () => {
-    if (basePriceUSD <= 0 || baseRentMonthlyUSD <= 0 || downPaymentPct <= 0 || interestRatePct <= 0 || operatingExpensePct <= 0) {
+    if (basePriceUSD <= 0 || baseRentMonthlyUSD <= 0 || downPaymentPct <= 0 || interestRatePct <= 0 || operatingExpensePct < 0) {
       return;
     }
     onAnalyzeSimulation();
@@ -455,17 +494,24 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
           <div className="p-4 rounded-2xl bg-gradient-to-br from-white/[0.03] to-white/[0.01] border border-white/[0.08]">
             <div className="flex items-center justify-between text-xs font-mono mb-2">
               <span className="text-zinc-300 font-semibold">5-Year Equity IRR Projection</span>
-              <span className="text-emerald-400 font-bold">{sim ? `${sim.irrVal}% p.a.` : '--'}</span>
+              <span className={`font-bold ${!sim ? 'text-zinc-500' : sim.irrVal !== null ? 'text-emerald-400' : 'text-amber-300'}`}>
+                {!sim ? '--' : sim.irrVal !== null ? `${sim.irrVal}% p.a.` : 'N/A'}
+              </span>
             </div>
             <div className="w-full bg-zinc-800 h-2 rounded-full overflow-hidden">
               <div
                 className="bg-gradient-to-r from-[#D4AF37] to-emerald-400 h-full rounded-full transition-all duration-500"
-                style={{ width: `${sim ? Math.min(100, Math.max(15, parseFloat(sim.irrVal) * 5)) : 0}%` }}
+                style={{ width: `${sim && sim.irrVal !== null ? Math.min(100, Math.max(5, parseFloat(sim.irrVal) * 4)) : 0}%` }}
               />
             </div>
+            {sim && sim.irrVal === null && sim.irrError && (
+              <div className="text-[10px] text-amber-300 font-mono mt-2">
+                {sim.irrError}
+              </div>
+            )}
             <div className="text-[10px] text-zinc-500 font-mono mt-2 flex items-center justify-between">
-              <span>Exit Cap: 7.2%</span>
-              <span>Capital Gain: +28%</span>
+              <span>5-Year DCF Model (3% Appreciation)</span>
+              <span>Selling Costs: 3%</span>
             </div>
           </div>
 
@@ -516,13 +562,20 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
               <div className="grid grid-cols-2 gap-2 text-[11px] font-mono pt-1">
                 <div className="p-2 rounded bg-black/50 border border-white/5">
                   <span className="text-zinc-400 block">+200bps Rate Shock:</span>
-                  <span className="text-white font-bold">{(parseFloat(sim.coc) - 1.8).toFixed(2)}% CoC</span>
+                  <span className="text-white font-bold">{sim.rateShockCoC}% CoC</span>
                 </div>
                 <div className="p-2 rounded bg-black/50 border border-white/5">
                   <span className="text-zinc-400 block">15% Vacancy Surge:</span>
-                  <span className="text-white font-bold">{Math.max(0, parseFloat(sim.cap) - 1.1).toFixed(2)}% Cap</span>
+                  <span className="text-white font-bold">{sim.vacSurgeCap}% Cap</span>
                 </div>
               </div>
+              {sim.warnings.length > 0 && (
+                <div className="p-2.5 rounded-lg bg-amber-950/60 border border-amber-500/40 text-[10px] font-mono text-amber-200 space-y-1">
+                  {sim.warnings.map((w, idx) => (
+                    <div key={idx}>• {w}</div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

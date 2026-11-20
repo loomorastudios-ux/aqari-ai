@@ -6,10 +6,11 @@ export interface SavedAnalysis {
   city: string;
   price: number;
   rent: number;
+  noi?: number;
   capRate: number;
   cashOnCash: number;
-  irr: number;
-  dscr: string;
+  irr: number | null;
+  dscr: string | null;
   monthlyCashflow: number;
   riskScore: string;
   date: number;
@@ -179,6 +180,7 @@ export interface User {
   maxSaved?: number;
   savedCount?: number;
   apiKey?: string | null;
+  apiKeyLast4?: string | null;
   customCities?: CustomCityCard[];
   analystUnread?: number;
   whiteGloveRequests?: WhiteGloveRequest[];
@@ -217,13 +219,31 @@ export interface LastResultsData {
       downPaymentPct: number;
       interestRatePct: number;
       operatingExpensePct: number;
+      loanTermYears?: number;
+      amortizationYears?: number;
+      vacancyRatePct?: number;
+      managementPct?: number;
+      propertyTaxUSD?: number;
+      insuranceUSD?: number;
+      maintenanceReserveUSD?: number;
+      hoaUSD?: number;
+      closingCostsPct?: number;
+      rentGrowthPct?: number;
+      expenseGrowthPct?: number;
+      appreciationPct?: number;
+      exitCapRatePct?: number;
+      sellingCostsPct?: number;
+      noExitValue?: boolean;
     };
     cityData?: any;
     results: {
       capRate: number;
       cashOnCash: number;
       irr5Yr: number | null;
+      irrStatus?: 'ok' | 'negative_cashflows' | 'no_exit_value' | 'insufficient_data';
+      irrError?: string | null;
       dscr: string | null;
+      dscrNumeric?: number | null;
       monthlyCashflowUSD: number | null;
       monthlyMortgageUSD: number | null;
       netOperatingIncomeUSD: number;
@@ -231,6 +251,40 @@ export interface LastResultsData {
       annualOPEXUSD: number;
       annualDebtServiceUSD: number;
       downPaymentUSD: number;
+      closingCostsUSD?: number;
+      totalEquityInvestedUSD?: number;
+      loanAmountUSD?: number;
+      exitGrossValueUSD?: number;
+      sellingCostsUSD?: number;
+      remainingLoanYr5USD?: number;
+      netExitProceedsUSD?: number;
+      noiBreakdown?: {
+        grossRentAnnualUSD: number;
+        vacancyLossUSD: number;
+        effectiveGrossIncomeUSD: number;
+        baseOpexUSD: number;
+        managementFeeUSD: number;
+        propertyTaxUSD: number;
+        insuranceUSD: number;
+        maintenanceReserveUSD: number;
+        hoaUSD: number;
+        totalExpensesUSD: number;
+        noiUSD: number;
+      };
+      yearByYear?: Array<{
+        year: number;
+        grossRentUSD: number;
+        vacancyLossUSD: number;
+        effectiveGrossIncomeUSD: number;
+        operatingExpensesUSD: number;
+        noiUSD: number;
+        debtServiceUSD: number;
+        netCashflowUSD: number;
+        remainingLoanUSD: number;
+        dscr: number | null;
+        cumulativeIrrPct: number | null;
+      }>;
+      warnings?: string[];
       sensitivity: any[] | null;
       monteCarlo: any | null;
     };
@@ -375,6 +429,10 @@ export interface MarketMatrixRow {
   inflationPct?: number | null;
   benchmarkLabel?: string;
   source?: string;
+  updatedDate?: string;
+  dataType?: 'Actual' | 'Estimated' | 'Demo';
+  taxSource?: string;
+  taxVerifiedDate?: string;
 }
 
 export interface DealFinderDeal {

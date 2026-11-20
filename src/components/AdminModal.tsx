@@ -188,7 +188,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
             <div className="border-b border-white/[0.08] pb-4">
               <div className="flex items-center gap-2 text-xs font-mono text-[#D4AF37]">
                 <Settings className="w-4 h-4 text-[#D4AF37]" />
-                <span>LIVE REMOTE CONFIG CONTROLLER</span>
+                <span>REMOTE CONFIG CONTROLLER</span>
               </div>
               <h3 className="text-2xl font-bold text-white tracking-tight mt-1">
                 Aqari Global Config
