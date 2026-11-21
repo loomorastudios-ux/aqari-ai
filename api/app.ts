@@ -12,7 +12,7 @@ const PLANS = {
   STARTER: { price: 75, analyses: 30, name: 'STARTER' },
   PROFESSIONAL: { price: 199, analyses: 150, name: 'PROFESSIONAL' },
   SOVEREIGN: { price: 599, analyses: 500, name: 'SOVEREIGN' },
-  ENTERPRISE: { price: 1499, analyses: 1000, name: 'ENTERPRISE' },
+  ENTERPRISE: { price: 1499, analyses: 0, name: 'ENTERPRISE' },
 } as const;
 
 function planFromAmount(amount: any) {
@@ -196,8 +196,9 @@ const EXTRA_CREDIT_PACKS = [
   },
 ] as const;
 
-const PRICING_SCHEMA_VERSION = 3;
+const PRICING_SCHEMA_VERSION = 4;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const DEFAULT_LAUNCH_END_DATE_MS = new Date('2026-11-28T23:59:59Z').getTime();
 const DEFAULT_LAUNCH_BADGE = 'LAUNCH OFFER - First 30 institutional seats';
 
 const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
@@ -472,39 +473,48 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
   institutional: {
     key: 'institutional',
     displayName: 'ENTERPRISE',
-    tierTag: 'CONTRACT PRICING — NO UNLIMITED PROMISE',
+    tierTag: 'CUSTOM SLA & CONTRACT PRICING',
     originalPrice: 2499,
     launchPrice: PLANS.ENTERPRISE.price,
     priceUSD: PLANS.ENTERPRISE.price,
-    analysesLimit: PLANS.ENTERPRISE.analyses,
-    savedLimit: 1000,
+    analysesLimit: 0,
+    savedLimit: 0,
     isFairUseSaved: false,
-    imagePdfLimit: 250,
-    aiListingLimit: 250,
-    investmentPdfLimit: 250,
-    portfolioAssetsLimit: 1000,
+    imagePdfLimit: 0,
+    aiListingLimit: 0,
+    investmentPdfLimit: 0,
+    portfolioAssetsLimit: 0,
     compareLimit: 50,
-    teamUsersLimit: 50,
-    apiDailyLimit: 10000,
+    teamUsersLimit: 0,
+    apiDailyLimit: 0,
     monteCarloMaxCycles: 10000,
     whiteLabelMode: 'full',
     licensingDays: 30,
     isContractPricing: true,
     features: [
-      '1,000 analyses / mo (per contract)',
-      '250 Image / PDF / mo • 250 AI Listings / mo • 250 PDFs / mo',
-      'Portfolio 1,000 assets (per contract) • Save 1,000 (not unlimited)',
-      'Compare up to 50 scenarios',
-      'Multi-team + multi-user (up to 50 seats per contract)',
-      'Enterprise AI Due Diligence & Market Intelligence',
-      'Institutional Portfolio Optimization & Custom Risk Models',
-      'Full White Label for Platform + Custom Reports',
-      'Custom Investment Memorandum & Monte Carlo Models',
-      'Custom API Integration + Independent REST keys/permissions',
-      'Connect to company ERP/CRM & External data integrations',
-      'Advanced permissions + Audit Trail + Custom org dashboards',
-      'Custom data/markets, capacity & SLA per written contract',
-      'Dedicated onboarding + Custom training + Direct institutional support',
+      'Custom analyses/month per contract',
+      'Custom Image/PDF extraction limits per contract',
+      'Custom AI Listings & Report limits per contract',
+      'Custom Portfolio Asset tracking limits per contract',
+      'Multi-team & multi-user seats per contract',
+      'Role-Based Access Control (Analyst / Manager / Admin)',
+      'Full Audit Trail logs & Enterprise security controls',
+      'Private Dedicated Organization Workspaces',
+      'Enterprise AI Due Diligence (Multi-Document Contradiction Audit)',
+      'Enterprise AI Market Intelligence (Custom Markets)',
+      'Institutional Portfolio Optimization',
+      'Custom Risk Models (Custom Cap Rate / Yield / Risk Rules)',
+      'Custom Underwriting Models & Exit Scenarios',
+      'Custom Monte Carlo & Stress Testing',
+      'White Label Platform (Custom Brand, Logo & Domain Option)',
+      'White Label Institutional Memorandums & Reports',
+      'Custom REST API Access & Independent API Keys',
+      'ERP / CRM Integration Support',
+      'External Data Source Integrations (Per Contract)',
+      'Custom Org Dashboards',
+      'Custom SLA (Uptime & Response Guarantee per Contract)',
+      'Dedicated Onboarding & Team Training',
+      'Dedicated Account Manager & Direct Support',
     ],
     hiddenFeatures: [],
     capabilities: {
@@ -1333,8 +1343,10 @@ function computeLicenseStatus(params: {
 
   const effectivePlanKey: PlanKey = rawPlanKey;
   const planCfg = PLAN_DEFINITIONS[effectivePlanKey];
+  const isEnterprise = effectivePlanKey === 'institutional';
   const effectiveAnalysesLimit =
-    typeof params.analysesLimitOverride === 'number' && params.analysesLimitOverride > 0
+    typeof params.analysesLimitOverride === 'number' &&
+    (isEnterprise ? params.analysesLimitOverride >= 0 : params.analysesLimitOverride > 0)
       ? params.analysesLimitOverride
       : planCfg.analysesLimit;
   const effectiveSavedLimit =
@@ -1373,7 +1385,9 @@ function computeLicenseStatus(params: {
     ? Math.min(100, Math.max(0, Math.round((daysLeft / 30) * 100)))
     : isUnlimitedAnalyses
     ? 100
-    : Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)));
+    : effectiveAnalysesLimit > 0
+    ? Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)))
+    : 0;
 
   const leftStr = isUnlimitedAnalyses ? 'Unlimited credits left' : `${analysesLeft} credits left`;
   const sidebarText = isExpired
@@ -1839,6 +1853,16 @@ interface ServerUserRecord {
     logoUrl?: string;
     accentColor?: string;
   } | null;
+  custom_analyses_limit?: number | null;
+  custom_image_pdf_limit?: number | null;
+  custom_listings_limit?: number | null;
+  custom_portfolio_limit?: number | null;
+  custom_seats?: number | null;
+  custom_storage_gb?: number | null;
+  sla_level?: string | null;
+  contract_end_date?: string | null;
+  white_label_enabled?: boolean;
+  custom_api_enabled?: boolean;
 }
 
 interface WebhookLogEntry {
@@ -1959,7 +1983,7 @@ function createDefaultPricingConfig(): StoredPricingConfig {
     schemaVersion: PRICING_SCHEMA_VERSION,
     launchDiscountActive: true,
     launchBadgeText: DEFAULT_LAUNCH_BADGE,
-    launchEndsAt: now + 7 * 24 * 60 * 60 * 1000,
+    launchEndsAt: DEFAULT_LAUNCH_END_DATE_MS,
     updatedAt: now,
     plans: {
       free: buildStoredPlanEntry('free'),
@@ -2010,15 +2034,106 @@ function normalizeOrderId(raw: string): string {
   return String(raw || '').replace(/^#/, '').trim();
 }
 
+function parseOptionalPositiveInt(val: any): number | null {
+  if (val === null || val === undefined || val === '') return null;
+  const num = Number(val);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return Math.round(num);
+}
+
+function normalizeIsoDateOrNull(val: any): string | null {
+  if (typeof val !== 'string') return null;
+  const trimmed = val.trim();
+  if (!trimmed) return null;
+  const parsed = Date.parse(trimmed);
+  if (!Number.isFinite(parsed)) return null;
+  return trimmed;
+}
+
+function resolveEffectiveQuotas(user: Partial<ServerUserRecord> & { plan?: PlanKey | string }) {
+  const planKey = normalizePlanKey(user?.plan);
+  const planCfg = PLAN_DEFINITIONS[planKey];
+  if (planKey !== 'institutional') {
+    return {
+      planKey,
+      displayName: planCfg.displayName,
+      isEnterprise: false,
+      analysesLimit: planCfg.analysesLimit,
+      imagePdfLimit: planCfg.imagePdfLimit,
+      aiListingLimit: planCfg.aiListingLimit,
+      investmentPdfLimit: planCfg.investmentPdfLimit,
+      portfolioAssetsLimit: planCfg.portfolioAssetsLimit,
+      savedLimit: planCfg.savedLimit,
+      teamUsersLimit: planCfg.teamUsersLimit,
+      compareLimit: planCfg.compareLimit,
+      apiDailyLimit: planCfg.apiDailyLimit,
+      storageGb: null as number | null,
+      slaLevel: null as string | null,
+      contractEndDate: null as string | null,
+      contractEndMs: null as number | null,
+      contractExpired: false,
+      whiteLabelEnabled: canUseFeature(planKey, 'whiteLabelReports'),
+      whiteLabelPlatformEnabled: canUseFeature(planKey, 'whiteLabelPlatform'),
+      customApiEnabled: canUseFeature(planKey, 'apiAccess'),
+    };
+  }
+  const customAnalyses = parseOptionalPositiveInt(user?.custom_analyses_limit);
+  const customImgPdf = parseOptionalPositiveInt(user?.custom_image_pdf_limit);
+  const customListings = parseOptionalPositiveInt(user?.custom_listings_limit);
+  const customPortfolio = parseOptionalPositiveInt(user?.custom_portfolio_limit);
+  const customSeats = parseOptionalPositiveInt(user?.custom_seats);
+  const customStorageGb = parseOptionalPositiveInt(user?.custom_storage_gb);
+  const contractEndDate = normalizeIsoDateOrNull(user?.contract_end_date);
+  const parsedEnd = contractEndDate ? Date.parse(contractEndDate) : NaN;
+  const contractEndMs = Number.isFinite(parsedEnd) ? parsedEnd : null;
+  const contractExpired = Boolean(contractEndMs !== null && Date.now() > contractEndMs);
+  const customApiEnabled = Boolean(user?.custom_api_enabled);
+  const whiteLabelEnabled = Boolean(user?.white_label_enabled);
+  return {
+    planKey,
+    displayName: planCfg.displayName,
+    isEnterprise: true,
+    analysesLimit: customAnalyses,
+    imagePdfLimit: customImgPdf,
+    aiListingLimit: customListings,
+    investmentPdfLimit: customListings,
+    portfolioAssetsLimit: customPortfolio,
+    savedLimit: customPortfolio,
+    teamUsersLimit: customSeats,
+    compareLimit: customPortfolio ? Math.min(50, Math.max(1, customPortfolio)) : 50,
+    apiDailyLimit: customApiEnabled ? 10000 : 0,
+    storageGb: customStorageGb,
+    slaLevel: typeof user?.sla_level === 'string' && user.sla_level.trim() ? user.sla_level.trim() : null,
+    contractEndDate,
+    contractEndMs,
+    contractExpired,
+    whiteLabelEnabled,
+    whiteLabelPlatformEnabled: whiteLabelEnabled,
+    customApiEnabled,
+  };
+}
+
 function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
   const now = Date.now();
   const plan = normalizePlanKey(raw?.plan);
   const planCfg = PLAN_DEFINITIONS[plan];
   const extraCredits = Math.max(0, Number(raw?.extra_credits || 0));
-  const analysesTotal = Math.max(
-    1,
-    Number(raw?.analyses_total ?? planCfg.analysesLimit + extraCredits)
-  );
+  const customAnalysesLimit = parseOptionalPositiveInt(raw?.custom_analyses_limit);
+  const customImagePdfLimit = parseOptionalPositiveInt(raw?.custom_image_pdf_limit);
+  const customListingsLimit = parseOptionalPositiveInt(raw?.custom_listings_limit);
+  const customPortfolioLimit = parseOptionalPositiveInt(raw?.custom_portfolio_limit);
+  const customSeats = parseOptionalPositiveInt(raw?.custom_seats);
+  const customStorageGb = parseOptionalPositiveInt(raw?.custom_storage_gb);
+  const slaLevel = typeof raw?.sla_level === 'string' && raw.sla_level.trim() ? raw.sla_level.trim().slice(0, 120) : null;
+  const contractEndDate = normalizeIsoDateOrNull(raw?.contract_end_date);
+  const whiteLabelEnabled = Boolean(raw?.white_label_enabled);
+  const customApiEnabled = Boolean(raw?.custom_api_enabled);
+
+  const basePlanAnalyses = plan === 'institutional' ? (customAnalysesLimit ?? 0) : planCfg.analysesLimit;
+  const analysesTotal =
+    plan === 'institutional'
+      ? Math.max(0, Number(raw?.analyses_total ?? basePlanAnalyses + extraCredits))
+      : Math.max(1, Number(raw?.analyses_total ?? basePlanAnalyses + extraCredits));
   const rawUsedNum = raw?.analyses_used !== undefined && raw?.analyses_used !== null ? Number(raw.analyses_used) : NaN;
   const rawLeftNum = raw?.analyses_left !== undefined && raw?.analyses_left !== null ? Number(raw.analyses_left) : NaN;
   let analysesUsed = Number.isFinite(rawUsedNum) ? Math.max(0, rawUsedNum) : 0;
@@ -2030,10 +2145,13 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     analysesUsed = Math.max(0, analysesTotal - analysesLeft);
   }
   const savedList = Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [];
+  const defaultSavedCap = plan === 'institutional' ? (customPortfolioLimit ?? 0) : planCfg.savedLimit;
   const maxSaved =
-    Number.isFinite(Number(raw?.max_saved)) && Number(raw?.max_saved) > 0
-      ? Math.max(Number(raw.max_saved), planCfg.savedLimit)
-      : planCfg.savedLimit;
+    plan === 'institutional'
+      ? customPortfolioLimit ?? 0
+      : Number.isFinite(Number(raw?.max_saved)) && Number(raw?.max_saved) > 0
+      ? Math.max(Number(raw.max_saved), defaultSavedCap)
+      : defaultSavedCap;
   const savedCount = savedList.length > 0 ? savedList.length : Math.max(0, Number(raw?.saved_count ?? 0));
 
   const licenseStartVal =
@@ -2045,8 +2163,12 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
       ? raw.license_end
       : licenseStartVal + THIRTY_DAYS_MS;
 
+  const contractEndParsed = contractEndDate ? Date.parse(contractEndDate) : NaN;
+  const effectiveEnd =
+    plan === 'institutional' && Number.isFinite(contractEndParsed) ? contractEndParsed : licenseEndVal;
+
   const hydratedStatus: 'active' | 'expired' | 'exhausted' =
-    licenseEndVal && now > licenseEndVal
+    effectiveEnd && now > effectiveEnd
       ? 'expired'
       : analysesLeft <= 0
       ? 'exhausted'
@@ -2132,6 +2254,16 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
               typeof raw.branding.accentColor === 'string' ? raw.branding.accentColor.slice(0, 24) : undefined,
           }
         : null,
+    custom_analyses_limit: customAnalysesLimit,
+    custom_image_pdf_limit: customImagePdfLimit,
+    custom_listings_limit: customListingsLimit,
+    custom_portfolio_limit: customPortfolioLimit,
+    custom_seats: customSeats,
+    custom_storage_gb: customStorageGb,
+    sla_level: slaLevel,
+    contract_end_date: contractEndDate,
+    white_label_enabled: whiteLabelEnabled,
+    custom_api_enabled: customApiEnabled,
   };
 }
 
@@ -2145,7 +2277,8 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
     const r = raw.plans?.[k];
     if (r && typeof r === 'object') {
       const analysesLimit =
-        Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0
+        Number.isFinite(Number(r.analysesLimit)) &&
+        (k === 'institutional' ? Number(r.analysesLimit) >= 0 : Number(r.analysesLimit) > 0)
           ? Number(r.analysesLimit)
           : def.plans[k].analysesLimit;
       const rawFeatures: string[] =
@@ -2349,7 +2482,8 @@ function getPricingPublicPayload(): PricingPublicPayload {
 }
 
 function evaluateLockState(
-  user: Pick<ServerUserRecord, 'plan' | 'analyses_left' | 'analyses_total' | 'analyses_used' | 'license_end'>,
+  user: Partial<ServerUserRecord> &
+    Pick<ServerUserRecord, 'plan' | 'analyses_left' | 'analyses_total' | 'analyses_used' | 'license_end'>,
   now = Date.now()
 ): {
   locked: boolean;
@@ -2357,17 +2491,23 @@ function evaluateLockState(
   status: 'active' | 'expired' | 'exhausted';
   error: string | null;
   analysesLeft: number;
+  enterpriseUnconfigured?: boolean;
 } {
-  const planKey = normalizePlanKey(user.plan);
-  const planDisplay = PLAN_DEFINITIONS[planKey].displayName;
-  const total = Math.max(1, Number(user.analyses_total || PLAN_DEFINITIONS[planKey].analysesLimit));
+  const quotas = resolveEffectiveQuotas(user);
+  const planKey = quotas.planKey;
+  const planDisplay = quotas.displayName;
+  const baseLimit = quotas.isEnterprise ? (quotas.analysesLimit ?? 0) : PLAN_DEFINITIONS[planKey].analysesLimit;
+  const total = Math.max(0, Number(user.analyses_total ?? baseLimit));
   const rawLeft =
     typeof user.analyses_left === 'number' && Number.isFinite(user.analyses_left)
       ? Math.max(0, user.analyses_left)
       : Math.max(0, total - Math.max(0, Number(user.analyses_used || 0)));
 
-  if (user.license_end && now > user.license_end) {
-    const formattedDate = new Date(user.license_end).toLocaleDateString('en-US', {
+  const effectiveEnd =
+    quotas.isEnterprise && quotas.contractEndMs !== null ? quotas.contractEndMs : user.license_end;
+
+  if (effectiveEnd && now > effectiveEnd) {
+    const formattedDate = new Date(effectiveEnd).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -2376,7 +2516,19 @@ function evaluateLockState(
       locked: true,
       reason: 'expired',
       status: 'expired',
-      error: `Your ${planDisplay} license expired on ${formattedDate}. Renew to continue.`,
+      error: `Your ${planDisplay} ${quotas.isEnterprise ? 'contract' : 'license'} expired on ${formattedDate}. Renew to continue.`,
+      analysesLeft: 0,
+    };
+  }
+
+  if (quotas.isEnterprise && (quotas.analysesLimit === null || quotas.analysesLimit <= 0)) {
+    return {
+      locked: true,
+      reason: 'exhausted',
+      status: 'exhausted',
+      enterpriseUnconfigured: true,
+      error:
+        'Enterprise contract quotas (custom_analyses_limit) are not configured yet. Ask your Admin to configure contract limits in Admin Dashboard.',
       analysesLeft: 0,
     };
   }
@@ -2413,7 +2565,11 @@ function ensureCreditsForAction(user: ServerUserRecord, cost: number) {
         reason: lock.reason,
         status: lock.status,
         error: lock.error || 'No AI credits remaining or license expired.',
-        code: lock.reason === 'expired' ? 'LICENSE_EXPIRED' : 'NO_ANALYSES_LEFT',
+        code: lock.enterpriseUnconfigured
+          ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET'
+          : lock.reason === 'expired'
+          ? 'LICENSE_EXPIRED'
+          : 'NO_ANALYSES_LEFT',
         analyses_left: 0,
         analysesLeft: 0,
         requiredCredits: cost,
@@ -2444,33 +2600,36 @@ function ensureCreditsForAction(user: ServerUserRecord, cost: number) {
 }
 
 function checkAndConsumeApiDailyQuota(user: ServerUserRecord) {
-  const planKey = normalizePlanKey(user.plan);
+  const quotas = resolveEffectiveQuotas(user);
+  const planKey = quotas.planKey;
   const planCfg = PLAN_DEFINITIONS[planKey];
   const todayUtc = new Date().toISOString().slice(0, 10);
   const callsToday = user.api_calls_day === todayUtc ? Math.max(0, Number(user.api_calls_today || 0)) : 0;
 
-  if (!canUseFeature(planKey, 'apiAccess') || planCfg.apiDailyLimit <= 0) {
+  if (!quotas.customApiEnabled || quotas.apiDailyLimit <= 0) {
     return {
       ok: false as const,
       status: 403,
       payload: {
         success: false,
-        error: 'REST API access requires PROFESSIONAL (100/day), SOVEREIGN (2,000/day), or ENTERPRISE (10,000/day).',
-        code: 'FEATURE_LOCKED',
+        error: quotas.isEnterprise
+          ? 'Enterprise custom_api_enabled is currently false. Admin must enable Custom API Access for this contract.'
+          : 'REST API access requires PROFESSIONAL (100/day), SOVEREIGN (2,000/day), or ENTERPRISE with custom_api_enabled.',
+        code: quotas.isEnterprise ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET' : 'FEATURE_LOCKED',
         feature: 'apiAccess',
-        requiredPlan: 'pro',
+        requiredPlan: quotas.isEnterprise ? 'institutional' : 'pro',
       },
     };
   }
-  if (callsToday >= planCfg.apiDailyLimit) {
+  if (callsToday >= quotas.apiDailyLimit) {
     return {
       ok: false as const,
       status: 429,
       payload: {
         success: false,
-        error: `Daily REST API quota exceeded (${callsToday}/${planCfg.apiDailyLimit} req/day for ${planCfg.displayName}). Resets at 00:00 UTC.`,
+        error: `Daily REST API quota exceeded (${callsToday}/${quotas.apiDailyLimit} req/day for ${planCfg.displayName}). Resets at 00:00 UTC.`,
         code: 'API_DAILY_LIMIT_REACHED',
-        apiDailyLimit: planCfg.apiDailyLimit,
+        apiDailyLimit: quotas.apiDailyLimit,
         apiCallsToday: callsToday,
       },
     };
@@ -2479,7 +2638,7 @@ function checkAndConsumeApiDailyQuota(user: ServerUserRecord) {
     ok: true as const,
     api_calls_day: todayUtc,
     api_calls_today: callsToday + 1,
-    apiDailyLimit: planCfg.apiDailyLimit,
+    apiDailyLimit: quotas.apiDailyLimit,
   };
 }
 
@@ -2567,13 +2726,16 @@ function updateServerUser(email: string, patch: Partial<ServerUserRecord>): Serv
     email: norm,
   };
   const planKey = normalizePlanKey(merged.plan);
+  const quotas = resolveEffectiveQuotas(merged as ServerUserRecord);
   const planCfg = PLAN_DEFINITIONS[planKey];
+  const extraCredits = Math.max(0, Number(merged.extra_credits || 0));
+  const basePlanAnalyses = quotas.isEnterprise ? (quotas.analysesLimit ?? 0) : planCfg.analysesLimit;
   const analyses_total =
-    typeof patch.analyses_total === 'number' && patch.analyses_total > 0
+    typeof patch.analyses_total === 'number' && patch.analyses_total >= 0
       ? patch.analyses_total
       : planKey === existing.plan && existing.analyses_total > 0
       ? existing.analyses_total
-      : planCfg.analysesLimit;
+      : basePlanAnalyses + extraCredits;
   const analyses_used =
     typeof patch.analyses_used === 'number'
       ? Math.max(0, patch.analyses_used)
@@ -2583,9 +2745,9 @@ function updateServerUser(email: string, patch: Partial<ServerUserRecord>): Serv
       ? Math.max(0, patch.analyses_left)
       : Math.max(0, analyses_total - analyses_used);
   const max_saved =
-    typeof patch.max_saved === 'number' && patch.max_saved > 0
+    typeof patch.max_saved === 'number' && patch.max_saved >= 0
       ? patch.max_saved
-      : planCfg.savedLimit;
+      : quotas.savedLimit ?? 0;
   const saved_count =
     typeof patch.saved_count === 'number'
       ? Math.max(0, patch.saved_count)
@@ -2711,6 +2873,16 @@ function activatePaidPlanOnServer(params: {
         ...existing.timeline,
       ];
 
+  const preservedExtra = Math.max(0, Number(existing.extra_credits || 0));
+  const baseLimit =
+    params.plan === 'institutional'
+      ? Math.max(0, Number(existing.custom_analyses_limit || 0))
+      : planCfg.analysesLimit;
+  const baseSaved =
+    params.plan === 'institutional'
+      ? Math.max(0, Number(existing.custom_portfolio_limit || 0))
+      : planCfg.savedLimit;
+
   return updateServerUser(params.email, {
     name: params.name || existing.name,
     plan: params.plan,
@@ -2718,10 +2890,10 @@ function activatePaidPlanOnServer(params: {
     license_start: licenseStart,
     license_end: licenseEnd,
     analyses_used: 0,
-    analyses_left: planCfg.analysesLimit,
-    analyses_total: planCfg.analysesLimit,
-    max_saved: planCfg.savedLimit,
-    extra_credits: 0,
+    analyses_left: baseLimit + preservedExtra,
+    analyses_total: baseLimit + preservedExtra,
+    max_saved: baseSaved,
+    extra_credits: preservedExtra,
     image_pdf_used: 0,
     ai_listings_used: 0,
     pdfs_used: 0,
@@ -2769,6 +2941,71 @@ export async function activateLicense(
   });
   await saveUserToDb(activated);
   return activated;
+}
+
+async function applyCreditPackToUser(params: {
+  email: string;
+  pack: (typeof EXTRA_CREDIT_PACKS)[number];
+  orderId: string;
+  isTestMode: boolean;
+}): Promise<ServerUserRecord> {
+  const email = normalizeEmail(params.email);
+  const { user: hydratedDb } = await readUserFromDbStatus(email);
+  const userRecord = hydratedDb || getOrCreateServerUser(email);
+  const now = Date.now();
+  const iso = new Date(now).toISOString();
+  const quotas = resolveEffectiveQuotas(userRecord);
+  const baseLimit = quotas.isEnterprise ? (quotas.analysesLimit ?? 0) : PLAN_DEFINITIONS[quotas.planKey].analysesLimit;
+  const nextExtra = Math.max(0, Number(userRecord.extra_credits || 0)) + params.pack.credits;
+  const nextLeft = Math.max(0, Number(userRecord.analyses_left || 0)) + params.pack.credits;
+  const currentTotal = Number(userRecord.analyses_total || 0);
+  const nextTotal = Math.max(currentTotal, baseLimit) + params.pack.credits;
+
+  const updatedUser = updateServerUser(email, {
+    status:
+      (userRecord.license_end && now > userRecord.license_end) || quotas.contractExpired
+        ? 'expired'
+        : 'active',
+    extra_credits: nextExtra,
+    analyses_left: nextLeft,
+    analyses_total: nextTotal,
+    total_paid_usd: Math.max(0, Number(userRecord.total_paid_usd || 0)) + params.pack.priceUSD,
+    payments: [
+      {
+        id: `pay_${now}_${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: iso,
+        order_id: params.orderId,
+        plan: `${normalizePlanKey(userRecord.plan)}+${params.pack.id}`,
+        amount: params.pack.priceUSD,
+        currency: 'USD',
+        test_mode: params.isTestMode,
+      },
+      ...(userRecord.payments || []),
+    ],
+    timeline: [
+      {
+        id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: iso,
+        type: 'purchase' as const,
+        message: `Purchased ${params.pack.label} ($${params.pack.priceUSD}) -> +${params.pack.credits} non-expiring AI credits (Ref #${params.orderId})`,
+        actor: email,
+      },
+      ...(userRecord.timeline || []),
+    ].slice(0, 200),
+  });
+  await saveUserToDb(updatedUser);
+  await markOrderUsedInDb({
+    order_id: params.orderId,
+    login_email: email,
+    payment_email: email,
+    plan: normalizePlanKey(userRecord.plan),
+    plan_display: params.pack.label,
+    analyses: params.pack.credits,
+    amount: params.pack.priceUSD,
+    test_mode: params.isTestMode,
+    used_at: now,
+  }).catch(() => {});
+  return updatedUser;
 }
 
 function evaluateCancelRefundEligibility(user: ServerUserRecord, now = Date.now()) {
@@ -2945,11 +3182,13 @@ function recordUserAnalysis(
   }
   const now = Date.now();
   const iso = new Date(now).toISOString();
-  const planCfg = PLAN_DEFINITIONS[normalizePlanKey(user.plan)];
+  const quotas = resolveEffectiveQuotas(user);
+  const planCfg = PLAN_DEFINITIONS[quotas.planKey];
+  const baseLimit = quotas.isEnterprise ? (quotas.analysesLimit ?? 0) : planCfg.analysesLimit;
   const extraCredits = Math.max(0, Number(user.extra_credits || 0));
   const analysesTotal = Math.max(
-    user.analyses_total > 0 ? user.analyses_total : planCfg.analysesLimit,
-    planCfg.analysesLimit + extraCredits
+    user.analyses_total > 0 ? user.analyses_total : baseLimit,
+    baseLimit + extraCredits
   );
   const currentUsed = Math.max(0, Number(user.analyses_used || 0));
   const currentLeft =
@@ -3012,20 +3251,30 @@ function recordUserPdfDownload(
 
 function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStatus {
   const pricing = getPricingPublicPayload();
-  const planKey = normalizePlanKey(user.plan);
+  const quotas = resolveEffectiveQuotas(user);
+  const planKey = quotas.planKey;
   const dynamicPlan = pricing.plansMap?.[planKey];
-  const explicitTotal =
-    typeof user.analyses_total === 'number' && user.analyses_total > 0
+  const explicitTotal = quotas.isEnterprise
+    ? typeof user.analyses_total === 'number' && user.analyses_total >= 0
       ? user.analyses_total
-      : dynamicPlan?.analysesLimit;
+      : quotas.analysesLimit ?? 0
+    : typeof user.analyses_total === 'number' && user.analyses_total > 0
+    ? user.analyses_total
+    : dynamicPlan?.analysesLimit;
+  const effectiveEnd =
+    quotas.isEnterprise && quotas.contractEndMs !== null ? quotas.contractEndMs : user.license_end;
   return computeLicenseStatus({
     plan: user.plan,
     licenseStart: user.license_start,
-    licenseEnd: user.license_end,
+    licenseEnd: effectiveEnd,
     analysesUsed: user.analyses_used,
     analysesLeft: user.analyses_left,
     analysesLimitOverride: explicitTotal,
-    savedLimitOverride: dynamicPlan?.savedLimit === null ? Infinity : dynamicPlan?.savedLimit,
+    savedLimitOverride: quotas.isEnterprise
+      ? quotas.savedLimit ?? 0
+      : dynamicPlan?.savedLimit === null
+      ? Infinity
+      : dynamicPlan?.savedLimit,
   });
 }
 
@@ -5441,6 +5690,7 @@ export default async function handler(req: any, res: any) {
 
         const lockState = evaluateLockState(dbUser);
         const license = computeServerLicenseStatus(dbUser);
+        const quotas = resolveEffectiveQuotas(dbUser);
         const pricing = getPricingPublicPayload();
         const dynamicPlan = findPlanPricing(pricing, license.planKey);
         const features = dynamicPlan?.features || PLAN_DEFINITIONS[license.planKey].features;
@@ -5449,12 +5699,12 @@ export default async function handler(req: any, res: any) {
             ? 0
             : dynamicPlan?.activePrice ?? PLAN_DEFINITIONS[license.planKey].priceUSD;
         const planCfg = PLAN_DEFINITIONS[license.planKey];
-        const maxSaved = planCfg.savedLimit;
+        const maxSaved = quotas.savedLimit ?? 0;
         const savedCount = Array.isArray(dbUser.saved_analyses)
           ? dbUser.saved_analyses.length
           : dbUser.saved_count || 0;
         const hasApiAccess =
-          canUseFeature(license.planKey, 'apiAccess') &&
+          quotas.customApiEnabled &&
           !lockState.locked &&
           sessionEmail === dbUser.email;
         let maskedApiKey: string | null = null;
@@ -5494,18 +5744,28 @@ export default async function handler(req: any, res: any) {
         const quotaEnvelope = {
           extra_credits: Math.max(0, Number(dbUser.extra_credits || 0)),
           image_pdf_used: Math.max(0, Number(dbUser.image_pdf_used || 0)),
-          image_pdf_limit: planCfg.imagePdfLimit,
+          image_pdf_limit: quotas.imagePdfLimit ?? 0,
           ai_listings_used: Math.max(0, Number(dbUser.ai_listings_used || 0)),
-          ai_listing_limit: planCfg.aiListingLimit,
+          ai_listing_limit: quotas.aiListingLimit ?? 0,
           pdfs_used: Math.max(0, Number(dbUser.pdfs_used || 0)),
-          investment_pdf_limit: planCfg.investmentPdfLimit,
-          portfolio_assets_limit: planCfg.portfolioAssetsLimit,
-          compare_limit: planCfg.compareLimit,
-          team_users_limit: planCfg.teamUsersLimit,
-          api_daily_limit: planCfg.apiDailyLimit,
+          investment_pdf_limit: quotas.investmentPdfLimit ?? 0,
+          portfolio_assets_limit: quotas.portfolioAssetsLimit ?? 0,
+          compare_limit: quotas.compareLimit,
+          team_users_limit: quotas.teamUsersLimit ?? 0,
+          api_daily_limit: quotas.apiDailyLimit,
           api_calls_today: apiCallsToday,
           monte_carlo_max_cycles: planCfg.monteCarloMaxCycles,
-          white_label_mode: planCfg.whiteLabelMode,
+          white_label_mode: quotas.whiteLabelEnabled ? planCfg.whiteLabelMode : 'none',
+          white_label_enabled: quotas.whiteLabelEnabled,
+          custom_api_enabled: quotas.customApiEnabled,
+          custom_analyses_limit: dbUser.custom_analyses_limit ?? null,
+          custom_image_pdf_limit: dbUser.custom_image_pdf_limit ?? null,
+          custom_listings_limit: dbUser.custom_listings_limit ?? null,
+          custom_portfolio_limit: dbUser.custom_portfolio_limit ?? null,
+          custom_seats: dbUser.custom_seats ?? null,
+          custom_storage_gb: dbUser.custom_storage_gb ?? null,
+          sla_level: dbUser.sla_level ?? null,
+          contract_end_date: dbUser.contract_end_date ?? null,
           branding: dbUser.branding || null,
         };
 
@@ -5560,7 +5820,12 @@ export default async function handler(req: any, res: any) {
           locked_launch_price: dbUser.locked_launch_price ?? null,
           custom_cities: dbUser.custom_cities || [],
           features,
-          capabilities: planCfg.capabilities,
+          capabilities: {
+            ...planCfg.capabilities,
+            whiteLabelReports: quotas.whiteLabelEnabled,
+            whiteLabelPlatform: quotas.whiteLabelPlatformEnabled,
+            apiAccess: quotas.customApiEnabled,
+          },
           analyst_unread: Number(analystThread?.unreadForClient || 0),
           analyst_thread: analystThread,
           whiteglove_requests: userWhiteGlove,
@@ -8035,6 +8300,7 @@ export default async function handler(req: any, res: any) {
           getOrCreateServerUser(email, { name: body.name });
         const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
+        const quotas = resolveEffectiveQuotas(userRecord);
 
         if (lockState.locked) {
           return res.status(403).json({
@@ -8044,11 +8310,25 @@ export default async function handler(req: any, res: any) {
             status: lockState.status,
             error: lockState.error,
             analyses_left: 0,
-            code: lockState.reason === 'expired' ? 'LICENSE_EXPIRED' : 'NO_ANALYSES_LEFT',
+            code: lockState.enterpriseUnconfigured
+              ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET'
+              : lockState.reason === 'expired'
+              ? 'LICENSE_EXPIRED'
+              : 'NO_ANALYSES_LEFT',
           });
         }
 
-        const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
+        if (quotas.isEnterprise && (quotas.savedLimit === null || quotas.savedLimit <= 0)) {
+          return res.status(403).json({
+            success: false,
+            error: 'Enterprise contract custom_portfolio_limit is not configured yet. Ask your Admin to set contract save/portfolio limits.',
+            code: 'ENTERPRISE_CONTRACT_LIMIT_UNSET',
+            plan: license.displayName,
+            planKey: license.planKey,
+          });
+        }
+
+        const maxSaved = quotas.savedLimit ?? 0;
         const currentSavedCount = Math.max(
           userRecord.saved_analyses.length,
           Number(body.currentSavedCount ?? body.savedCount ?? 0)
@@ -8057,9 +8337,9 @@ export default async function handler(req: any, res: any) {
         if (currentSavedCount >= maxSaved) {
           const nextPlanHint =
             license.planKey === 'institutional'
-              ? ' Contract maximum reached (1,000 saves).'
+              ? ' Contract save capacity reached — contact your Admin to adjust custom_portfolio_limit.'
               : license.planKey === 'enterprise'
-              ? ' Upgrade to ENTERPRISE (1,000 saves per contract) for more capacity.'
+              ? ' Upgrade to ENTERPRISE (custom contract capacity) for more capacity.'
               : license.planKey === 'pro'
               ? ' Upgrade to SOVEREIGN for more capacity.'
               : ' Upgrade to PROFESSIONAL for more saved capacity.';
@@ -8362,6 +8642,7 @@ export default async function handler(req: any, res: any) {
           (await getUserFromDb(email).catch(() => null)) ||
           getOrCreateServerUser(email, { name: body.name });
         const license = computeServerLicenseStatus(userRecord);
+        const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
 
         if (license.isExpired) {
@@ -8375,13 +8656,15 @@ export default async function handler(req: any, res: any) {
         const format = String(body.format || 'pdf').toLowerCase();
         const docType = String(body.docType || 'pdf').toLowerCase();
         if (format === 'api') {
-          if (!canUseFeature(license.planKey, 'apiAccess')) {
+          if (!quotas.customApiEnabled) {
             return res.status(403).json({
               success: false,
-              error: getUpgradeMessage('apiAccess'),
-              code: 'FEATURE_LOCKED',
+              error: quotas.isEnterprise
+                ? 'Enterprise custom_api_enabled is currently false. Admin must enable Custom API Access.'
+                : getUpgradeMessage('apiAccess'),
+              code: quotas.isEnterprise ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET' : 'FEATURE_LOCKED',
               feature: 'apiAccess',
-              requiredPlan: 'pro',
+              requiredPlan: quotas.isEnterprise ? 'institutional' : 'pro',
             });
           }
         } else {
@@ -8403,14 +8686,22 @@ export default async function handler(req: any, res: any) {
               requiredPlan: 'pro',
             });
           }
-          const currentPdfsUsed = Math.max(0, Number(userRecord.pdfs_used || 0));
-          if (currentPdfsUsed >= planCfg.investmentPdfLimit) {
+          if (quotas.isEnterprise && (quotas.investmentPdfLimit === null || quotas.investmentPdfLimit <= 0)) {
             return res.status(403).json({
               success: false,
-              error: `Monthly PDF export limit reached (${currentPdfsUsed}/${planCfg.investmentPdfLimit} for ${planCfg.displayName}). Upgrade your plan for additional PDF exports.`,
+              error: 'Enterprise contract custom_listings_limit is not configured yet. Ask your Admin to set report/PDF limits.',
+              code: 'ENTERPRISE_CONTRACT_LIMIT_UNSET',
+            });
+          }
+          const pdfQuota = quotas.investmentPdfLimit ?? 0;
+          const currentPdfsUsed = Math.max(0, Number(userRecord.pdfs_used || 0));
+          if (currentPdfsUsed >= pdfQuota) {
+            return res.status(403).json({
+              success: false,
+              error: `Monthly PDF export limit reached (${currentPdfsUsed}/${pdfQuota} for ${planCfg.displayName}). Upgrade your plan for additional PDF exports.`,
               code: 'PDF_QUOTA_EXCEEDED',
               pdfs_used: currentPdfsUsed,
-              investment_pdf_limit: planCfg.investmentPdfLimit,
+              investment_pdf_limit: pdfQuota,
             });
           }
         }
@@ -8429,7 +8720,7 @@ export default async function handler(req: any, res: any) {
         const safeName = propertyTitle.replace(/[^a-z0-9_-]+/gi, '_');
         const dateStr = new Date().toISOString().slice(0, 10);
         const isWatermarked = license.planKey === 'free';
-        const branding = canUseFeature(license.planKey, 'whiteLabelReports')
+        const branding = quotas.whiteLabelEnabled
           ? userRecord.branding || null
           : null;
         const watermark = isWatermarked
@@ -8682,7 +8973,8 @@ export default async function handler(req: any, res: any) {
           const license = computeServerLicenseStatus(user);
           const pricing = getPricingPublicPayload();
           const cancellationEligibility = evaluateCancelRefundEligibility(user);
-          const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
+          const sessionQuotas = resolveEffectiveQuotas(user);
+          const maxSaved = sessionQuotas.savedLimit ?? 0;
 
           return res.status(200).json({
             success: true,
@@ -8795,12 +9087,15 @@ export default async function handler(req: any, res: any) {
           (await getUserFromDb(sessionEmail).catch(() => null)) || getOrCreateServerUser(sessionEmail);
         const lockState = evaluateLockState(dbUser);
         const license = computeServerLicenseStatus(dbUser);
-        if (!canUseFeature(license.planKey, 'apiAccess') || lockState.locked) {
+        const quotas = resolveEffectiveQuotas(dbUser);
+        if (!quotas.customApiEnabled || lockState.locked) {
           return res.status(403).json({
             success: false,
-            error: 'Active PROFESSIONAL (100 req/day), SOVEREIGN (2,000 req/day), or ENTERPRISE (10,000 req/day) license required for REST API access.',
-            code: 'FEATURE_LOCKED',
-            requiredPlan: 'pro',
+            error: quotas.isEnterprise && !quotas.customApiEnabled
+              ? 'Enterprise custom_api_enabled is currently false. Admin must enable Custom API Access.'
+              : 'Active PROFESSIONAL (100 req/day), SOVEREIGN (2,000 req/day), or ENTERPRISE with custom_api_enabled required for REST API access.',
+            code: quotas.isEnterprise && !quotas.customApiEnabled ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET' : 'FEATURE_LOCKED',
+            requiredPlan: quotas.isEnterprise ? 'institutional' : 'pro',
           });
         }
         const minted = getOrMintApiKeyForUser(dbUser);
@@ -8817,7 +9112,7 @@ export default async function handler(req: any, res: any) {
           token: minted.rawToken,
           masked: minted.masked,
           last4: minted.last4,
-          api_daily_limit: PLAN_DEFINITIONS[license.planKey].apiDailyLimit,
+          api_daily_limit: quotas.apiDailyLimit,
         });
       }
 
@@ -8833,12 +9128,15 @@ export default async function handler(req: any, res: any) {
           (await getUserFromDb(sessionEmail).catch(() => null)) || getOrCreateServerUser(sessionEmail);
         const lockState = evaluateLockState(dbUser);
         const license = computeServerLicenseStatus(dbUser);
-        if (!canUseFeature(license.planKey, 'apiAccess') || lockState.locked) {
+        const quotas = resolveEffectiveQuotas(dbUser);
+        if (!quotas.customApiEnabled || lockState.locked) {
           return res.status(403).json({
             success: false,
-            error: 'Active PROFESSIONAL (100 req/day), SOVEREIGN (2,000 req/day), or ENTERPRISE (10,000 req/day) license required for REST API access.',
-            code: 'FEATURE_LOCKED',
-            requiredPlan: 'pro',
+            error: quotas.isEnterprise && !quotas.customApiEnabled
+              ? 'Enterprise custom_api_enabled is currently false. Admin must enable Custom API Access.'
+              : 'Active PROFESSIONAL (100 req/day), SOVEREIGN (2,000 req/day), or ENTERPRISE with custom_api_enabled required for REST API access.',
+            code: quotas.isEnterprise && !quotas.customApiEnabled ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET' : 'FEATURE_LOCKED',
+            requiredPlan: quotas.isEnterprise ? 'institutional' : 'pro',
           });
         }
 
@@ -8863,7 +9161,7 @@ export default async function handler(req: any, res: any) {
           api_key: newMasked,
           api_key_last4: newLast4,
           token: newToken,
-          api_daily_limit: PLAN_DEFINITIONS[license.planKey].apiDailyLimit,
+          api_daily_limit: quotas.apiDailyLimit,
           message: `API key regenerated (${newMasked}). Previous token revoked.`,
         });
       }
@@ -8943,6 +9241,37 @@ export default async function handler(req: any, res: any) {
         );
         const amountUSD =
           totalMinorOrUsd > 1000 ? Number((totalMinorOrUsd / 100).toFixed(2)) : totalMinorOrUsd;
+
+        const credit25Price = cleanEnvValue(
+          getEnv('PADDLE_CREDIT_25_PRICE') || getEnv('VITE_PADDLE_CREDIT_25_PRICE')
+        );
+        const credit100Price = cleanEnvValue(
+          getEnv('PADDLE_CREDIT_100_PRICE') || getEnv('VITE_PADDLE_CREDIT_100_PRICE')
+        );
+        const credit500Price = cleanEnvValue(
+          getEnv('PADDLE_CREDIT_500_PRICE') || getEnv('VITE_PADDLE_CREDIT_500_PRICE')
+        );
+        const customPackId = String(
+          dataObj?.custom_data?.packId || dataObj?.custom_data?.pack_id || ''
+        ).trim();
+        const isCreditPurchaseFlag =
+          String(dataObj?.custom_data?.purchase_type || '').toLowerCase() === 'credit_pack';
+        let matchedCreditPack =
+          credit25Price && firstPriceId === credit25Price
+            ? EXTRA_CREDIT_PACKS[0]
+            : credit100Price && firstPriceId === credit100Price
+            ? EXTRA_CREDIT_PACKS[1]
+            : credit500Price && firstPriceId === credit500Price
+            ? EXTRA_CREDIT_PACKS[2]
+            : customPackId
+            ? EXTRA_CREDIT_PACKS.find((p) => p.id === customPackId)
+            : undefined;
+        if (!matchedCreditPack && isCreditPurchaseFlag) {
+          const roundedAmt = Math.round(amountUSD);
+          matchedCreditPack = EXTRA_CREDIT_PACKS.find((p) => p.priceUSD === roundedAmt);
+        }
+        const isCreditPackPurchase = Boolean(matchedCreditPack || isCreditPurchaseFlag);
+
         const resolvedPlan =
           firstPriceId === 'pri_01m7tgj4pp767gacchp49k2qev'
             ? 'enterprise'
@@ -8955,18 +9284,22 @@ export default async function handler(req: any, res: any) {
                 'pro'
               );
 
+        const isTestEnv =
+          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox' ||
+          getEnv('PAYMENT_TEST_MODE') === 'true';
+
         await appendWebhookLogToDb({
           order_id: orderId,
           event: eventName,
           event_name: eventName,
-          plan: resolvedPlan,
+          plan: isCreditPackPurchase
+            ? (normalizeEmail(dataObj?.custom_data?.currentPlan) as PlanKey) || resolvedPlan
+            : resolvedPlan,
           email: customerEmail || 'unassigned@paddle-webhook',
           payment_email: customerEmail || undefined,
           amount: Number.isFinite(amountUSD) ? amountUSD : 0,
           currency: String(dataObj?.currency_code || 'USD').toUpperCase(),
-          test_mode:
-            cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox' ||
-            getEnv('PAYMENT_TEST_MODE') === 'true',
+          test_mode: isTestEnv,
           signature_valid: signatureValid,
           error: signatureValid ? undefined : verifyError,
           raw_error: signatureValid ? undefined : verifyError,
@@ -8981,28 +9314,49 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        let creditsAdded = 0;
         if (
           (eventName === 'transaction.completed' || eventName === 'transaction.paid') &&
           customerEmail &&
           customerEmail.includes('@')
         ) {
-          const existingDb = await getUserFromDb(customerEmail).catch(() => null);
-          const alreadyActivated = Boolean(
-            existingDb?.payments?.some(
-              (p: any) => normalizeOrderId(p?.order_id) === normalizeOrderId(orderId)
-            )
-          );
-          if (!alreadyActivated) {
-            const activated = activatePaidPlanOnServer({
-              email: customerEmail,
-              plan: resolvedPlan,
-              orderId,
-              amountUSD: amountUSD > 0 ? amountUSD : undefined,
-              paymentCustomerEmail: customerEmail,
-              paymentProvider: 'paddle',
-              paymentIntentId: orderId,
-            });
-            await saveUserToDb(activated).catch(() => {});
+          if (isCreditPackPurchase && matchedCreditPack) {
+            const usedRec = await getUsedOrderFromDb(orderId).catch(() => null);
+            const existingDb = await getUserFromDb(customerEmail).catch(() => null);
+            const alreadyApplied = Boolean(
+              usedRec ||
+                existingDb?.payments?.some(
+                  (p: any) => normalizeOrderId(p?.order_id) === normalizeOrderId(orderId)
+                )
+            );
+            if (!alreadyApplied) {
+              await applyCreditPackToUser({
+                email: customerEmail,
+                pack: matchedCreditPack,
+                orderId,
+                isTestMode: isTestEnv,
+              });
+              creditsAdded = matchedCreditPack.credits;
+            }
+          } else {
+            const existingDb = await getUserFromDb(customerEmail).catch(() => null);
+            const alreadyActivated = Boolean(
+              existingDb?.payments?.some(
+                (p: any) => normalizeOrderId(p?.order_id) === normalizeOrderId(orderId)
+              )
+            );
+            if (!alreadyActivated) {
+              const activated = activatePaidPlanOnServer({
+                email: customerEmail,
+                plan: resolvedPlan,
+                orderId,
+                amountUSD: amountUSD > 0 ? amountUSD : undefined,
+                paymentCustomerEmail: customerEmail,
+                paymentProvider: 'paddle',
+                paymentIntentId: orderId,
+              });
+              await saveUserToDb(activated).catch(() => {});
+            }
           }
         }
 
@@ -9012,7 +9366,13 @@ export default async function handler(req: any, res: any) {
           verified: true,
           event_type: eventName,
           order_id: orderId,
-          plan: resolvedPlan,
+          ...(isCreditPackPurchase && matchedCreditPack
+            ? {
+                purchase_type: 'credit_pack',
+                packId: matchedCreditPack.id,
+                creditsAdded,
+              }
+            : { plan: resolvedPlan }),
         });
       }
 
@@ -9797,15 +10157,24 @@ export default async function handler(req: any, res: any) {
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
+        const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
-        const currentImagePdfUsed = Math.max(0, Number(userRecord.image_pdf_used || 0));
-        if (currentImagePdfUsed >= planCfg.imagePdfLimit) {
+        if (quotas.isEnterprise && (quotas.imagePdfLimit === null || quotas.imagePdfLimit <= 0)) {
           return res.status(403).json({
             success: false,
-            error: `Monthly Image/PDF extraction limit reached (${currentImagePdfUsed}/${planCfg.imagePdfLimit} for ${planCfg.displayName}). Upgrade your plan for additional extractions.`,
+            error: 'Enterprise contract custom_image_pdf_limit is not configured yet. Ask your Admin to configure File/OCR limits.',
+            code: 'ENTERPRISE_CONTRACT_LIMIT_UNSET',
+          });
+        }
+        const imagePdfQuota = quotas.imagePdfLimit ?? 0;
+        const currentImagePdfUsed = Math.max(0, Number(userRecord.image_pdf_used || 0));
+        if (currentImagePdfUsed >= imagePdfQuota) {
+          return res.status(403).json({
+            success: false,
+            error: `Monthly Image/PDF extraction limit reached (${currentImagePdfUsed}/${imagePdfQuota} for ${planCfg.displayName}). Upgrade your plan for additional extractions.`,
             code: 'IMAGE_PDF_QUOTA_EXCEEDED',
             image_pdf_used: currentImagePdfUsed,
-            image_pdf_limit: planCfg.imagePdfLimit,
+            image_pdf_limit: imagePdfQuota,
           });
         }
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['extract-from-file']);
@@ -10024,7 +10393,7 @@ export default async function handler(req: any, res: any) {
           analyses_used: nextLicense.analysesUsed,
           analyses_total: nextLicense.analysesLimit,
           image_pdf_used: nextImagePdfUsed,
-          image_pdf_limit: planCfg.imagePdfLimit,
+          image_pdf_limit: imagePdfQuota,
         });
       }
 
@@ -10046,20 +10415,29 @@ export default async function handler(req: any, res: any) {
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
+        const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
+        if (quotas.isEnterprise && (quotas.imagePdfLimit === null || quotas.imagePdfLimit <= 0)) {
+          return res.status(403).json({
+            success: false,
+            error: 'Enterprise contract custom_image_pdf_limit is not configured yet. Ask your Admin to configure File/OCR limits.',
+            code: 'ENTERPRISE_CONTRACT_LIMIT_UNSET',
+          });
+        }
+        const imagePdfQuota = quotas.imagePdfLimit ?? 0;
         const currentImagePdfUsed = Math.max(0, Number(userRecord.image_pdf_used || 0));
         const alreadyCountedExtraction = Boolean(
           body.extractionId &&
             userRecord.last_extraction_id &&
             String(body.extractionId) === String(userRecord.last_extraction_id)
         );
-        if (!alreadyCountedExtraction && currentImagePdfUsed >= planCfg.imagePdfLimit) {
+        if (!alreadyCountedExtraction && currentImagePdfUsed >= imagePdfQuota) {
           return res.status(403).json({
             success: false,
-            error: `Monthly Image/PDF analysis limit reached (${currentImagePdfUsed}/${planCfg.imagePdfLimit} for ${planCfg.displayName}). Upgrade your plan to analyze more files.`,
+            error: `Monthly Image/PDF analysis limit reached (${currentImagePdfUsed}/${imagePdfQuota} for ${planCfg.displayName}). Upgrade your plan to analyze more files.`,
             code: 'IMAGE_PDF_QUOTA_EXCEEDED',
             image_pdf_used: currentImagePdfUsed,
-            image_pdf_limit: planCfg.imagePdfLimit,
+            image_pdf_limit: imagePdfQuota,
           });
         }
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['run-file-analysis']);
@@ -10222,7 +10600,7 @@ export default async function handler(req: any, res: any) {
           analyses_used: nextLicense.analysesUsed,
           analyses_total: nextLicense.analysesLimit,
           image_pdf_used: nextImagePdfUsed,
-          image_pdf_limit: planCfg.imagePdfLimit,
+          image_pdf_limit: imagePdfQuota,
         });
       }
 
@@ -10241,6 +10619,7 @@ export default async function handler(req: any, res: any) {
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
+        const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
 
         const isVirtual = body.isVirtual !== false;
@@ -10254,14 +10633,22 @@ export default async function handler(req: any, res: any) {
             requiredPlan: 'pro',
           });
         }
-        const currentAiListingsUsed = Math.max(0, Number(userRecord.ai_listings_used || 0));
-        if (currentAiListingsUsed >= planCfg.aiListingLimit) {
+        if (quotas.isEnterprise && (quotas.aiListingLimit === null || quotas.aiListingLimit <= 0)) {
           return res.status(403).json({
             success: false,
-            error: `Monthly AI Property Studio limit reached (${currentAiListingsUsed}/${planCfg.aiListingLimit} for ${planCfg.displayName}). Upgrade your plan to generate more listings.`,
+            error: 'Enterprise contract custom_listings_limit is not configured yet. Ask your Admin to configure AI Listings/Report limits.',
+            code: 'ENTERPRISE_CONTRACT_LIMIT_UNSET',
+          });
+        }
+        const aiListingQuota = quotas.aiListingLimit ?? 0;
+        const currentAiListingsUsed = Math.max(0, Number(userRecord.ai_listings_used || 0));
+        if (currentAiListingsUsed >= aiListingQuota) {
+          return res.status(403).json({
+            success: false,
+            error: `Monthly AI Property Studio limit reached (${currentAiListingsUsed}/${aiListingQuota} for ${planCfg.displayName}). Upgrade your plan to generate more listings.`,
             code: 'AI_LISTING_QUOTA_EXCEEDED',
             ai_listings_used: currentAiListingsUsed,
-            ai_listing_limit: planCfg.aiListingLimit,
+            ai_listing_limit: aiListingQuota,
           });
         }
         const studioCreditCost = body.useAiEnhance !== false ? CREDIT_COSTS['studio-generate'] : 1;
@@ -10441,7 +10828,7 @@ STRICT GUARDRAILS:
           analyses_used: nextLicense.analysesUsed,
           analyses_total: nextLicense.analysesLimit,
           ai_listings_used: nextAiListingsUsed,
-          ai_listing_limit: planCfg.aiListingLimit,
+          ai_listing_limit: aiListingQuota,
         });
       }
 
@@ -10459,6 +10846,7 @@ STRICT GUARDRAILS:
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
+        const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
         let assets: any[] = Array.isArray(userRecord.portfolio_assets)
           ? [...userRecord.portfolio_assets]
@@ -10477,21 +10865,29 @@ STRICT GUARDRAILS:
             }
             assets[idx] = computePostPurchaseAssetRecord({ ...assets[idx], ...body.asset }, targetId);
           } else if (subAction === 'seed-from-saved') {
+            if (quotas.isEnterprise && (quotas.portfolioAssetsLimit === null || quotas.portfolioAssetsLimit <= 0)) {
+              return res.status(403).json({
+                success: false,
+                error: 'Enterprise contract custom_portfolio_limit is not configured yet. Ask your Admin to configure portfolio capacity.',
+                code: 'ENTERPRISE_CONTRACT_LIMIT_UNSET',
+              });
+            }
+            const portfolioQuota = quotas.portfolioAssetsLimit ?? 0;
             const existingNames = new Set(assets.map((a) => `${a.property}|${a.city}`));
             const candidates = (userRecord.saved_analyses || []).filter(
               (s: any) => !existingNames.has(`${s.property}|${s.city}`)
             );
-            if (candidates.length > 0 && assets.length >= planCfg.portfolioAssetsLimit) {
+            if (candidates.length > 0 && assets.length >= portfolioQuota) {
               return res.status(403).json({
                 success: false,
-                error: `Portfolio asset limit reached (${assets.length}/${planCfg.portfolioAssetsLimit} assets for ${planCfg.displayName}). Upgrade to expand portfolio tracking capacity.`,
+                error: `Portfolio asset limit reached (${assets.length}/${portfolioQuota} assets for ${planCfg.displayName}). Upgrade to expand portfolio tracking capacity.`,
                 code: 'PORTFOLIO_ASSET_LIMIT_REACHED',
-                portfolioAssetsLimit: planCfg.portfolioAssetsLimit,
+                portfolioAssetsLimit: portfolioQuota,
                 assetCount: assets.length,
               });
             }
             for (const s of candidates) {
-              if (assets.length >= planCfg.portfolioAssetsLimit) break;
+              if (assets.length >= portfolioQuota) break;
               assets.unshift(
                 computePostPurchaseAssetRecord({
                   property: s.property,
@@ -10504,12 +10900,20 @@ STRICT GUARDRAILS:
               );
             }
           } else {
-            if (assets.length >= planCfg.portfolioAssetsLimit) {
+            if (quotas.isEnterprise && (quotas.portfolioAssetsLimit === null || quotas.portfolioAssetsLimit <= 0)) {
               return res.status(403).json({
                 success: false,
-                error: `Portfolio asset limit reached (${assets.length}/${planCfg.portfolioAssetsLimit} assets for ${planCfg.displayName}). Upgrade to add more post-purchase assets.`,
+                error: 'Enterprise contract custom_portfolio_limit is not configured yet. Ask your Admin to configure portfolio capacity.',
+                code: 'ENTERPRISE_CONTRACT_LIMIT_UNSET',
+              });
+            }
+            const portfolioQuota = quotas.portfolioAssetsLimit ?? 0;
+            if (assets.length >= portfolioQuota) {
+              return res.status(403).json({
+                success: false,
+                error: `Portfolio asset limit reached (${assets.length}/${portfolioQuota} assets for ${planCfg.displayName}). Upgrade to add more post-purchase assets.`,
                 code: 'PORTFOLIO_ASSET_LIMIT_REACHED',
-                portfolioAssetsLimit: planCfg.portfolioAssetsLimit,
+                portfolioAssetsLimit: portfolioQuota,
                 assetCount: assets.length,
               });
             }
@@ -10517,11 +10921,12 @@ STRICT GUARDRAILS:
             assets.unshift(record);
           }
 
+          const sliceCap = quotas.portfolioAssetsLimit ?? assets.length;
           const store = loadStore();
           store.users[email] = userRecord;
           persistStore(store);
           const updated = updateServerUser(email, {
-            portfolio_assets: assets.slice(0, planCfg.portfolioAssetsLimit),
+            portfolio_assets: assets.slice(0, sliceCap),
           });
           await saveUserToDb(updated);
           assets = updated.portfolio_assets || [];
@@ -10573,7 +10978,7 @@ STRICT GUARDRAILS:
         return res.status(200).json({
           success: true,
           planKey: license.planKey,
-          portfolioAssetsLimit: planCfg.portfolioAssetsLimit,
+          portfolioAssetsLimit: quotas.portfolioAssetsLimit ?? 0,
           assets,
           summary: {
             assetCount: assets.length,
@@ -10815,24 +11220,26 @@ Return JSON with:
         const { user: hydratedDb } = await readUserFromDbStatus(email);
         const userRecord = hydratedDb || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
+        const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
+        const effectiveCompareLimit = quotas.compareLimit ?? planCfg.compareLimit;
 
         const defaultScenarios = [
           { id: 'sc-1', label: 'Muscat ITC Prime', city: 'Muscat', priceUSD: 650000, monthlyRentUSD: 4550, downPaymentPct: 30, interestRatePct: 5.65, operatingExpensePct: 14 },
           { id: 'sc-2', label: 'Dubai Marina Core', city: 'Dubai', priceUSD: 950000, monthlyRentUSD: 6950, downPaymentPct: 30, interestRatePct: 4.85, operatingExpensePct: 18 },
           { id: 'sc-3', label: 'Riyadh Al Olaya Yield', city: 'Riyadh', priceUSD: 820000, monthlyRentUSD: 6010, downPaymentPct: 30, interestRatePct: 5.5, operatingExpensePct: 15 },
         ];
-        if (Array.isArray(body.scenarios) && body.scenarios.length > planCfg.compareLimit) {
+        if (Array.isArray(body.scenarios) && body.scenarios.length > effectiveCompareLimit) {
           return res.status(403).json({
             success: false,
-            error: `Scenario compare limit is ${planCfg.compareLimit} scenario${planCfg.compareLimit === 1 ? '' : 's'} on ${planCfg.displayName}. Upgrade to compare more scenarios side-by-side.`,
+            error: `Scenario compare limit is ${effectiveCompareLimit} scenario${effectiveCompareLimit === 1 ? '' : 's'} on ${planCfg.displayName}. Upgrade to compare more scenarios side-by-side.`,
             code: 'COMPARE_LIMIT_EXCEEDED',
-            compareLimit: planCfg.compareLimit,
+            compareLimit: effectiveCompareLimit,
           });
         }
         const rawScenarios = Array.isArray(body.scenarios) && body.scenarios.length > 0
-          ? body.scenarios.slice(0, planCfg.compareLimit)
-          : defaultScenarios.slice(0, planCfg.compareLimit);
+          ? body.scenarios.slice(0, effectiveCompareLimit)
+          : defaultScenarios.slice(0, effectiveCompareLimit);
 
         const computed = rawScenarios.map((sc: any, idx: number) => {
           const cityEntry = findInlinedCity(String(sc.city || 'Muscat')) || findInlinedCity('Muscat')!;
@@ -10902,7 +11309,7 @@ Return JSON with:
 
         return res.status(200).json({
           success: true,
-          compareLimit: planCfg.compareLimit,
+          compareLimit: effectiveCompareLimit,
           ...payload,
           last_results: updated.last_results || {},
         });
@@ -10919,6 +11326,7 @@ Return JSON with:
         const { user: hydratedDb } = await readUserFromDbStatus(email);
         const userRecord = hydratedDb || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
+        const quotas = resolveEffectiveQuotas(userRecord);
 
         let orgIds = await getUserOrgIdsDb(email);
         if (orgIds.length === 0) {
@@ -10967,7 +11375,7 @@ Return JSON with:
           return res.status(200).json({
             success: true,
             planKey: license.planKey,
-            teamUsersLimit: PLAN_DEFINITIONS[license.planKey].teamUsersLimit,
+            teamUsersLimit: quotas.teamUsersLimit ?? 0,
             orgs,
             activeOrg,
             myRole: myMember?.role || 'Analyst',
@@ -11060,7 +11468,14 @@ Return JSON with:
               org.members[existingIdx].role = role;
               pushAudit('ROLE_UPDATED', memberEmail, `Changed ${memberEmail} role to ${role}`);
             } else {
-              const teamUsersLimit = PLAN_DEFINITIONS[license.planKey].teamUsersLimit;
+              if (quotas.isEnterprise && (quotas.teamUsersLimit === null || quotas.teamUsersLimit <= 0)) {
+                return res.status(403).json({
+                  success: false,
+                  error: 'Enterprise contract custom_seats is not configured yet. Ask your Admin to configure team seat capacity.',
+                  code: 'ENTERPRISE_CONTRACT_LIMIT_UNSET',
+                });
+              }
+              const teamUsersLimit = quotas.teamUsersLimit ?? 0;
               if (org.members.length >= teamUsersLimit) {
                 return res.status(403).json({
                   success: false,
@@ -11187,7 +11602,7 @@ Return JSON with:
             success: true,
             activeOrg: org,
             myRole: actorRole,
-            teamUsersLimit: PLAN_DEFINITIONS[license.planKey].teamUsersLimit,
+            teamUsersLimit: quotas.teamUsersLimit ?? 0,
           });
         }
 
@@ -11302,81 +11717,29 @@ Return JSON with:
             requiresPayment: true,
             code: 'PAYMENT_REQUIRED_FOR_CREDITS',
             pack,
-            error: `Extra credit pack (${pack.label}, $${pack.priceUSD}) requires a verified Paddle transaction ID in production or a contract invoice top-up.`,
+            error: `Extra credit pack (${pack.label}, $${pack.priceUSD}) must be purchased through one-time Paddle Checkout.`,
           });
         }
 
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
         const now = Date.now();
-        const iso = new Date(now).toISOString();
         const txId = rawOrderId || `cr_${pack.id}_${now}_${Math.random().toString(36).slice(2, 6)}`;
-
-        const nextExtra = Math.max(0, Number(userRecord.extra_credits || 0)) + pack.credits;
-        const nextLeft = Math.max(0, Number(userRecord.analyses_left || 0)) + pack.credits;
-        const planCfg = PLAN_DEFINITIONS[normalizePlanKey(userRecord.plan)];
-        const nextTotal = Math.max(Number(userRecord.analyses_total || planCfg.analysesLimit), planCfg.analysesLimit) + pack.credits;
-
-        const updatedUser = updateServerUser(email, {
-          status: userRecord.license_end && now > userRecord.license_end ? 'expired' : 'active',
-          extra_credits: nextExtra,
-          analyses_left: nextLeft,
-          analyses_total: nextTotal,
-          total_paid_usd: Math.max(0, Number(userRecord.total_paid_usd || 0)) + pack.priceUSD,
-          payments: [
-            {
-              id: `pay_${now}_${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: iso,
-              order_id: txId,
-              plan: `${normalizePlanKey(userRecord.plan)}+${pack.id}`,
-              amount: pack.priceUSD,
-              currency: 'USD',
-              test_mode: !isStrictProd,
-            },
-            ...(userRecord.payments || []),
-          ],
-          timeline: [
-            {
-              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: iso,
-              type: 'purchase' as const,
-              message: `Purchased ${pack.label} ($${pack.priceUSD}) -> +${pack.credits} AI credits (Ref #${txId})`,
-              actor: email,
-            },
-            ...(userRecord.timeline || []),
-          ].slice(0, 200),
+        const updatedUser = await applyCreditPackToUser({
+          email,
+          pack,
+          orderId: txId,
+          isTestMode: !isStrictProd,
         });
-        await saveUserToDb(updatedUser);
-        if (rawOrderId) {
-          await markOrderUsedInDb({
-            order_id: rawOrderId,
-            login_email: email,
-            payment_email: email,
-            plan: normalizePlanKey(userRecord.plan),
-            plan_display: pack.label,
-            analyses: pack.credits,
-            amount: pack.priceUSD,
-            test_mode: !isStrictProd,
-            used_at: now,
-          }).catch(() => {});
-        }
         const nextLicense = computeServerLicenseStatus(updatedUser);
 
         return res.status(200).json({
           success: true,
-          message: `Added +${pack.credits} AI credits (${pack.label}) to your balance.`,
+          message: `Added +${pack.credits} non-expiring AI credits (${pack.label}) to your balance.`,
           pack,
           transaction_id: txId,
           analyses_left: nextLicense.analysesLeft,
           analyses_used: nextLicense.analysesUsed,
           analyses_total: nextLicense.analysesLimit,
-          extra_credits: updatedUser.extra_credits || nextExtra,
+          extra_credits: updatedUser.extra_credits || pack.credits,
           license: nextLicense,
         });
       }
@@ -11396,13 +11759,16 @@ Return JSON with:
         }
         const userRecord = hydratedDb || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
-        if (license.isExpired || !canUseFeature(license.planKey, 'whiteLabelReports')) {
+        const quotas = resolveEffectiveQuotas(userRecord);
+        if (license.isExpired || !quotas.whiteLabelEnabled) {
           return res.status(403).json({
             success: false,
-            error: getUpgradeMessage('whiteLabelReports'),
-            code: 'FEATURE_LOCKED',
+            error: quotas.isEnterprise
+              ? 'Enterprise white_label_enabled is currently false. Admin must enable White Label for this contract.'
+              : getUpgradeMessage('whiteLabelReports'),
+            code: quotas.isEnterprise ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET' : 'FEATURE_LOCKED',
             feature: 'whiteLabelReports',
-            requiredPlan: 'enterprise',
+            requiredPlan: quotas.isEnterprise ? 'institutional' : 'enterprise',
           });
         }
 
@@ -11493,7 +11859,7 @@ Return JSON with:
         await dispatchEmailAlert({
           to: getAdminEmail(),
           subject: `AQARI ENTERPRISE Contract Inquiry (${inquiry.id}) - ${companyName}`,
-          text: `Organization: ${companyName}\nEmail: ${contactEmail}\nRequested Seats (Contract Baseline 50): ${seats}\nPortfolio Assets (Contract Baseline 1,000): ${assetsCount}\nNotes:\n${notes || 'N/A'}\nSubmitted: ${inquiry.createdAt}`,
+          text: `Organization: ${companyName}\nEmail: ${contactEmail}\nRequested Seats (Custom per contract): ${seats}\nPortfolio Assets Scope (Custom per contract): ${assetsCount}\nNotes:\n${notes || 'N/A'}\nSubmitted: ${inquiry.createdAt}`,
           eventType: 'enterprise_inquiry',
         }).catch(() => {});
 

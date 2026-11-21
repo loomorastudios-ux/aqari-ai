@@ -155,6 +155,7 @@ export default function App() {
 
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isLimitOpen, setIsLimitOpen] = useState(false);
+  const [limitModalMode, setLimitModalMode] = useState<'quota' | 'enterprise_showcase'>('quota');
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isRenewalOpen, setIsRenewalOpen] = useState(false);
   const [activePropertyAnalysis, setActivePropertyAnalysis] = useState<PropertyListing | null>(null);
@@ -521,6 +522,26 @@ export default function App() {
         : Array.isArray(data?.user?.portfolio_assets)
         ? data.user.portfolio_assets
         : existing?.portfolioAssets || [],
+      whiteLabelEnabled:
+        typeof meData?.white_label_enabled === 'boolean'
+          ? meData.white_label_enabled
+          : typeof data?.user?.white_label_enabled === 'boolean'
+          ? data.user.white_label_enabled
+          : existing?.whiteLabelEnabled,
+      customApiEnabled:
+        typeof meData?.custom_api_enabled === 'boolean'
+          ? meData.custom_api_enabled
+          : typeof data?.user?.custom_api_enabled === 'boolean'
+          ? data.user.custom_api_enabled
+          : existing?.customApiEnabled,
+      customAnalysesLimit: meData?.custom_analyses_limit ?? data?.user?.custom_analyses_limit ?? existing?.customAnalysesLimit ?? null,
+      customImagePdfLimit: meData?.custom_image_pdf_limit ?? data?.user?.custom_image_pdf_limit ?? existing?.customImagePdfLimit ?? null,
+      customListingsLimit: meData?.custom_listings_limit ?? data?.user?.custom_listings_limit ?? existing?.customListingsLimit ?? null,
+      customPortfolioLimit: meData?.custom_portfolio_limit ?? data?.user?.custom_portfolio_limit ?? existing?.customPortfolioLimit ?? null,
+      customSeats: meData?.custom_seats ?? data?.user?.custom_seats ?? existing?.customSeats ?? null,
+      customStorageGb: meData?.custom_storage_gb ?? data?.user?.custom_storage_gb ?? existing?.customStorageGb ?? null,
+      slaLevel: meData?.sla_level ?? data?.user?.sla_level ?? existing?.slaLevel ?? null,
+      contractEndDate: meData?.contract_end_date ?? data?.user?.contract_end_date ?? existing?.contractEndDate ?? null,
       cancellationEligibility: meData?.cancellationEligibility ?? data?.cancellationEligibility ?? null,
       expiryEmailSent: false,
     };
@@ -922,6 +943,22 @@ export default function App() {
               : Array.isArray(data.user?.portfolio_assets)
               ? data.user.portfolio_assets
               : [],
+            whiteLabelEnabled:
+              typeof data.white_label_enabled === 'boolean'
+                ? data.white_label_enabled
+                : data.user?.white_label_enabled,
+            customApiEnabled:
+              typeof data.custom_api_enabled === 'boolean'
+                ? data.custom_api_enabled
+                : data.user?.custom_api_enabled,
+            customAnalysesLimit: data.custom_analyses_limit ?? data.user?.custom_analyses_limit ?? null,
+            customImagePdfLimit: data.custom_image_pdf_limit ?? data.user?.custom_image_pdf_limit ?? null,
+            customListingsLimit: data.custom_listings_limit ?? data.user?.custom_listings_limit ?? null,
+            customPortfolioLimit: data.custom_portfolio_limit ?? data.user?.custom_portfolio_limit ?? null,
+            customSeats: data.custom_seats ?? data.user?.custom_seats ?? null,
+            customStorageGb: data.custom_storage_gb ?? data.user?.custom_storage_gb ?? null,
+            slaLevel: data.sla_level ?? data.user?.sla_level ?? null,
+            contractEndDate: data.contract_end_date ?? data.user?.contract_end_date ?? null,
           };
           handleSaveUser(syncedUser);
           resolvedUser = syncedUser;
@@ -1098,6 +1135,23 @@ export default function App() {
         const serverApiCallsToday = Number(data.api_calls_today ?? 0);
         const serverBranding = data.branding ?? data.user?.branding ?? null;
 
+        const serverWhiteLabelEnabled =
+          typeof data.white_label_enabled === 'boolean'
+            ? data.white_label_enabled
+            : data.user?.white_label_enabled;
+        const serverCustomApiEnabled =
+          typeof data.custom_api_enabled === 'boolean'
+            ? data.custom_api_enabled
+            : data.user?.custom_api_enabled;
+        const serverCustomAnalysesLimit = data.custom_analyses_limit ?? data.user?.custom_analyses_limit ?? null;
+        const serverCustomImagePdfLimit = data.custom_image_pdf_limit ?? data.user?.custom_image_pdf_limit ?? null;
+        const serverCustomListingsLimit = data.custom_listings_limit ?? data.user?.custom_listings_limit ?? null;
+        const serverCustomPortfolioLimit = data.custom_portfolio_limit ?? data.user?.custom_portfolio_limit ?? null;
+        const serverCustomSeats = data.custom_seats ?? data.user?.custom_seats ?? null;
+        const serverCustomStorageGb = data.custom_storage_gb ?? data.user?.custom_storage_gb ?? null;
+        const serverSlaLevel = data.sla_level ?? data.user?.sla_level ?? null;
+        const serverContractEndDate = data.contract_end_date ?? data.user?.contract_end_date ?? null;
+
         const changed =
           !user ||
           typeof user.analysesLeft !== 'number' ||
@@ -1122,6 +1176,16 @@ export default function App() {
           (user.teamUsersLimit ?? -1) !== serverTeamUsersLimit ||
           (user.apiDailyLimit ?? -1) !== serverApiDailyLimit ||
           (user.apiCallsToday ?? -1) !== serverApiCallsToday ||
+          Boolean(user.whiteLabelEnabled) !== Boolean(serverWhiteLabelEnabled) ||
+          Boolean(user.customApiEnabled) !== Boolean(serverCustomApiEnabled) ||
+          (user.customAnalysesLimit ?? null) !== serverCustomAnalysesLimit ||
+          (user.customImagePdfLimit ?? null) !== serverCustomImagePdfLimit ||
+          (user.customListingsLimit ?? null) !== serverCustomListingsLimit ||
+          (user.customPortfolioLimit ?? null) !== serverCustomPortfolioLimit ||
+          (user.customSeats ?? null) !== serverCustomSeats ||
+          (user.customStorageGb ?? null) !== serverCustomStorageGb ||
+          (user.slaLevel ?? null) !== serverSlaLevel ||
+          (user.contractEndDate ?? null) !== serverContractEndDate ||
           JSON.stringify(user.branding || null) !== JSON.stringify(serverBranding) ||
           (user.successfulAnalyses ?? -1) !== serverSuccessfulAnalyses ||
           Boolean(user.hasReportedIssue) !== serverHasReportedIssue ||
@@ -1190,6 +1254,16 @@ export default function App() {
             teamUsersLimit: serverTeamUsersLimit,
             apiDailyLimit: serverApiDailyLimit,
             apiCallsToday: serverApiCallsToday,
+            whiteLabelEnabled: serverWhiteLabelEnabled,
+            customApiEnabled: serverCustomApiEnabled,
+            customAnalysesLimit: serverCustomAnalysesLimit,
+            customImagePdfLimit: serverCustomImagePdfLimit,
+            customListingsLimit: serverCustomListingsLimit,
+            customPortfolioLimit: serverCustomPortfolioLimit,
+            customSeats: serverCustomSeats,
+            customStorageGb: serverCustomStorageGb,
+            slaLevel: serverSlaLevel,
+            contractEndDate: serverContractEndDate,
             branding: serverBranding,
             lockedLaunchPrice: serverLockedLaunch,
             customCities: serverCustomCities,
@@ -1826,6 +1900,10 @@ export default function App() {
               setRoute('demo');
               window.history.pushState({}, '', `/demo/${slug}`);
             }}
+            onEnterpriseShowcaseLock={() => {
+              setLimitModalMode('enterprise_showcase');
+              setIsLimitOpen(true);
+            }}
           />
 
           <YieldSimulator
@@ -1948,7 +2026,11 @@ export default function App() {
 
       <LimitModal
         isOpen={isLimitOpen}
-        onClose={() => setIsLimitOpen(false)}
+        mode={limitModalMode}
+        onClose={() => {
+          setIsLimitOpen(false);
+          setLimitModalMode('quota');
+        }}
         user={user}
         config={config}
         pricingData={pricingData}
@@ -1957,6 +2039,13 @@ export default function App() {
         onOpenPricing={() => {
           const el = document.getElementById('pricing');
           el?.scrollIntoView({ behavior: 'smooth' });
+        }}
+        onRequestEnterpriseDemo={() => {
+          const el = document.getElementById('pricing');
+          el?.scrollIntoView({ behavior: 'smooth' });
+          setTimeout(() => {
+            window.dispatchEvent(new Event('aqari:open-enterprise-modal'));
+          }, 250);
         }}
       />
 

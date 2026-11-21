@@ -7,10 +7,16 @@ import {
   DEFAULT_LAUNCH_BADGE,
   EXTRA_CREDIT_PACKS,
   CREDIT_COSTS,
+  DEFAULT_LAUNCH_END_DATE_MS,
   findPlanPricing,
 } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
-import { openPaddleCheckout, PADDLE_PRO_SUCCESS_MESSAGE } from '../utils/paddleClient';
+import {
+  openPaddleCheckout,
+  openPaddleCreditPackCheckout,
+  CreditPackId,
+  PADDLE_PRO_SUCCESS_MESSAGE,
+} from '../utils/paddleClient';
 import {
   Check,
   CheckCircle2,
@@ -76,10 +82,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   const [entNotes, setEntNotes] = useState<string>('');
   const [entSubmitting, setEntSubmitting] = useState<boolean>(false);
 
-  // Production credit pack txn input modal state
-  const [pendingCreditPack, setPendingCreditPack] = useState<(typeof EXTRA_CREDIT_PACKS)[number] | null>(null);
-  const [creditTxnId, setCreditTxnId] = useState<string>('');
-
   const isTestMode =
     typeof window !== 'undefined' &&
     (import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' ||
@@ -113,11 +115,14 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     refreshPricing();
     const onUpdated = () => refreshPricing();
     const onFocus = () => refreshPricing();
+    const onOpenEnterprise = () => setShowEnterpriseModal(true);
     window.addEventListener('aqari:pricing-updated', onUpdated);
     window.addEventListener('focus', onFocus);
+    window.addEventListener('aqari:open-enterprise-modal', onOpenEnterprise);
     return () => {
       window.removeEventListener('aqari:pricing-updated', onUpdated);
       window.removeEventListener('focus', onFocus);
+      window.removeEventListener('aqari:open-enterprise-modal', onOpenEnterprise);
     };
   }, []);
 
@@ -135,7 +140,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   const launchActive = livePricing?.launchDiscountActive ?? true;
   const launchBadgeText = livePricing?.launchBadgeText || DEFAULT_LAUNCH_BADGE;
   const daysRemaining = livePricing?.daysRemaining ?? 7;
-  const launchEndsAt = livePricing?.launchEndsAt || Date.now() + 7 * 86_400_000;
+  const launchEndsAt = livePricing?.launchEndsAt || DEFAULT_LAUNCH_END_DATE_MS;
   const launchEndDateStr = new Date(launchEndsAt).toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
@@ -260,43 +265,39 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     await handlePayPaddle(planId);
   };
 
-  const handleBuyCreditPack = async (packId: string, transactionId?: string) => {
+  const handleBuyCreditPack = async (packId: CreditPackId) => {
     if (!user) {
       onOpenAuth();
       return;
     }
     setBuyingPackId(packId);
+    setErrorToast(null);
+    setSuccessToast(null);
     try {
-      const res = await fetch('/api/app?action=buy-credits', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          packId,
-          email: user.email,
-          transaction_id: transactionId || undefined,
-        }),
+      await openPaddleCreditPackCheckout({
+        packId,
+        email: user.email,
+        userId: user.id || user.googleId,
+        refundAcceptedAt: new Date().toISOString(),
+        onVerified: (data) => {
+          setBuyingPackId(null);
+          showSuccess(
+            data?.message || `Added extra AI credits. Current balance: ${data?.analyses_left ?? ''} credits.`
+          );
+        },
+        onError: (msg) => {
+          console.error('[Paddle] Credit pack checkout failed in PricingSection:', msg);
+          setBuyingPackId(null);
+          showError(msg);
+        },
+        onClose: () => {
+          setBuyingPackId(null);
+        },
       });
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 402 && data?.requiresPayment) {
-        const packObj = EXTRA_CREDIT_PACKS.find((p) => p.id === packId) || null;
-        setPendingCreditPack(packObj);
-        setCreditTxnId('');
-        return;
-      }
-      if (!res.ok || !data?.success) {
-        showError(data?.error || 'Unable to process credit pack purchase.');
-        return;
-      }
-      setPendingCreditPack(null);
-      showSuccess(
-        data?.message || `Added extra AI credits. Current balance: ${data.analyses_left} credits.`
-      );
-      window.dispatchEvent(new CustomEvent('aqari:user-updated', { detail: data }));
     } catch (err: any) {
-      showError(err?.message || 'Network error while purchasing credit pack.');
-    } finally {
+      console.error('[Paddle] Credit pack checkout exception in PricingSection:', err);
       setBuyingPackId(null);
+      showError(err?.message || 'Unable to launch Paddle Checkout for credit pack.');
     }
   };
 
@@ -458,10 +459,10 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       originalPrice: institutional.originalPrice,
       launchPrice: institutional.launchPrice,
       activePrice: institutional.activePrice,
-      analysesLimitText: `${institutional.analysesLimit.toLocaleString('en-US')} Analyses / mo`,
+      analysesLimitText: 'Custom limits per contract',
       icon: <Briefcase className="w-5 h-5 text-sky-400" />,
       features: institutional.features,
-      ctaLabel: `Request Contract (${formatPrice(institutional.activePrice, currentCurrency)}+)`,
+      ctaLabel: 'Contact Sales / Request Contract',
     },
   ];
 
@@ -625,7 +626,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     <div className="mt-1.5 text-[10px] font-mono text-amber-200/90 leading-snug">
                       {tier.contractOnly ? (
                         <span>
-                          Renews at {formatPrice(tier.originalPrice, currentCurrency)}/mo standard contract rate (Launch ends {launchEndDateStr})
+                          Renews at {formatPrice(tier.originalPrice, currentCurrency)}/mo standard, Launch ends {launchEndDateStr} - Price is STARTING price, final price per contract
                         </span>
                       ) : (
                         <span>
@@ -742,7 +743,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   key={pack.id}
                   type="button"
                   disabled={isBuying}
-                  onClick={() => handleBuyCreditPack(pack.id)}
+                  onClick={() => handleBuyCreditPack(pack.id as CreditPackId)}
                   className="p-3.5 rounded-xl bg-black/50 hover:bg-[#D4AF37]/15 border border-white/10 hover:border-[#D4AF37]/60 transition text-left cursor-pointer group"
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -752,7 +753,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     </span>
                   </div>
                   <div className="text-[10px] font-mono text-zinc-400 mt-1 group-hover:text-zinc-200 flex items-center justify-between">
-                    <span>{pack.badge || 'Instant top-up'}</span>
+                    <span>{pack.badge || 'One-time Paddle checkout • Never expires'}</span>
                     {isBuying ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRight className="w-3 h-3" />}
                   </div>
                 </button>
@@ -842,9 +843,9 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
             </div>
             <h3 className="text-xl font-bold text-white">Request Enterprise Contract</h3>
             <p className="text-xs text-zinc-400 mt-1">
-              Standard Contract: <strong className="text-zinc-300 line-through">$2,499/mo</strong>{' '}
-              <strong className="text-sky-300">$1,499/mo Launch Rate</strong> (until {launchEndDateStr}).
-              Includes 1,000 analyses/mo, 1,000 portfolio assets, 1,000 saves, 50 seats, 10,000 API req/day &amp; SLA.
+              Starting price: <strong className="text-zinc-300 line-through">$2,499/mo</strong>{' '}
+              <strong className="text-sky-300">$1,499/mo Launch Starting Rate</strong> (Launch ends {launchEndDateStr}).
+              Final pricing, analysis quotas, team seats, portfolio caps, API limits &amp; SLA are defined per written contract.
             </p>
             <form onSubmit={handleSubmitEnterpriseInquiry} className="mt-5 space-y-3.5">
               <div>
@@ -871,7 +872,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] font-mono text-zinc-300 mb-1">Team Seats (Contract: 50)</label>
+                  <label className="block text-[11px] font-mono text-zinc-300 mb-1">Requested Team Seats</label>
                   <input
                     type="number"
                     min={1}
@@ -882,7 +883,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-mono text-zinc-300 mb-1">Assets Scope (Baseline: 1,000)</label>
+                  <label className="block text-[11px] font-mono text-zinc-300 mb-1">Requested Portfolio Assets</label>
                   <input
                     type="number"
                     min={1}
@@ -912,62 +913,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                 <span>Submit Enterprise Contract Request</span>
               </button>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Production Credit Pack Transaction / Invoice Modal */}
-      {pendingCreditPack && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-xl">
-          <div className="relative w-full max-w-md rounded-3xl bg-zinc-950 border border-[#D4AF37]/40 p-6 shadow-2xl">
-            <button
-              type="button"
-              onClick={() => setPendingCreditPack(null)}
-              className="absolute top-4 right-4 p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10"
-            >
-              <X className="w-5 h-5" />
-            </button>
-            <div className="flex items-center gap-2 text-xs font-mono text-[#D4AF37] font-bold mb-1">
-              <Coins className="w-4 h-4" />
-              <span>ACTIVATE EXTRA CREDIT PACK</span>
-            </div>
-            <h3 className="text-lg font-bold text-white">
-              {pendingCreditPack.label} ({formatPrice(pendingCreditPack.priceUSD, currentCurrency)})
-            </h3>
-            <p className="text-xs text-zinc-400 mt-1">
-              Enter your completed Paddle Transaction ID (<code className="text-zinc-200">txn_...</code>) to apply credits immediately, or request a billing invoice top-up.
-            </p>
-            <div className="mt-4 space-y-3">
-              <input
-                type="text"
-                value={creditTxnId}
-                onChange={(e) => setCreditTxnId(e.target.value)}
-                placeholder="txn_01..."
-                className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/15 text-sm font-mono text-white focus:border-[#D4AF37] outline-none"
-              />
-              <button
-                type="button"
-                disabled={!creditTxnId.trim() || buyingPackId === pendingCreditPack.id}
-                onClick={() => handleBuyCreditPack(pendingCreditPack.id, creditTxnId.trim())}
-                className="w-full py-2.5 rounded-xl bg-[#D4AF37] text-black font-mono font-bold text-xs uppercase cursor-pointer disabled:opacity-50"
-              >
-                Verify Paddle Transaction &amp; Add Credits
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const p = pendingCreditPack;
-                  setPendingCreditPack(null);
-                  setEntCompany(user?.name || 'Credit Top-Up');
-                  setEntEmail(user?.email || '');
-                  setEntNotes(`Extra Credit Pack Request: ${p.label} ($${p.priceUSD} USD)`);
-                  setShowEnterpriseModal(true);
-                }}
-                className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-mono text-xs cursor-pointer"
-              >
-                Request Invoice / Account Top-Up Link
-              </button>
-            </div>
           </div>
         </div>
       )}

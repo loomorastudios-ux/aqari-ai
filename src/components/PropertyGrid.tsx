@@ -1,17 +1,19 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { CurrencyCode, PropertyListing, User } from '../types';
+import { normalizePlanKey } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
 import { FadeInCard } from './ui/motion-primitives';
-import { 
-  Building, 
-  MapPin, 
-  Sparkles, 
-  ShieldCheck, 
+import {
+  Building,
+  MapPin,
+  Sparkles,
+  ShieldCheck,
   Maximize2,
   Bed,
   Bath,
-  ArrowRight
+  ArrowRight,
+  Crown,
 } from 'lucide-react';
 
 interface PropertyGridProps {
@@ -22,9 +24,20 @@ interface PropertyGridProps {
   onAnalyze: (property: PropertyListing) => void;
   onOpenPricing: () => void;
   onOpenDemo?: (slug: string) => void;
+  onEnterpriseShowcaseLock?: () => void;
 }
 
+const ENTERPRISE_CAPABILITY_PILLS = [
+  'Enterprise AI Due Diligence',
+  'Enterprise AI Market Intelligence',
+  'Institutional Portfolio Optimization',
+  'Custom Risk Models',
+  'White Label Platform',
+  'Custom API + Audit Trail',
+];
+
 export const getPropertyDemoSlug = (p: PropertyListing): string => {
+  if (p.id === 'prop-mct-ent-06') return 'muscat-enterprise-villa';
   if (p.id === 'prop-nyc-01') return 'tribeca';
   if (p.id === 'prop-dxb-02') return 'dubai-marina';
   if (p.id === 'prop-mct-03') return 'muscat-wave';
@@ -47,10 +60,14 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
   onAnalyze,
   onOpenPricing,
   onOpenDemo,
+  onEnterpriseShowcaseLock,
 }) => {
-  const filtered = selectedCity === 'All'
-    ? properties
-    : properties.filter((p) => p.city.toLowerCase() === selectedCity.toLowerCase());
+  const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+
+  const filtered =
+    selectedCity === 'All'
+      ? properties
+      : properties.filter((p) => p.city.toLowerCase() === selectedCity.toLowerCase());
 
   const rawServerLeft = user
     ? user.analysesLeft ?? user.freeAnalysesLeft ?? user.freeAnalyses
@@ -58,11 +75,15 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
   const isCreditsLoaded = typeof rawServerLeft === 'number';
   const analysesRemaining = isCreditsLoaded ? rawServerLeft : 0;
 
-  const isLockedForFree = Boolean(user && user.plan === 'free' && isCreditsLoaded && analysesRemaining <= 0);
+  const isActiveEnterprise = Boolean(
+    user &&
+      normalizePlanKey(user.plan) === 'institutional' &&
+      user.subscriptionStatus !== 'expired' &&
+      !user.locked
+  );
 
   return (
     <section id="properties" className="py-16 px-4 lg:px-8 max-w-7xl mx-auto relative z-10">
-      
       {/* Section Header */}
       <div className="flex flex-col md:flex-row md:items-end justify-between mb-10 gap-4">
         <div>
@@ -82,7 +103,11 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
         {user && user.plan === 'free' && (
           <div className="flex items-center gap-3 px-4 py-2 rounded-xl bg-white/[0.04] border border-white/[0.08] text-xs">
             <span className="text-zinc-400">Analysis credits:</span>
-            <span className={`font-mono font-bold ${!isCreditsLoaded || analysesRemaining > 0 ? 'text-[#D4AF37]' : 'text-rose-400'}`}>
+            <span
+              className={`font-mono font-bold ${
+                !isCreditsLoaded || analysesRemaining > 0 ? 'text-[#D4AF37]' : 'text-rose-400'
+              }`}
+            >
               {isCreditsLoaded ? `${analysesRemaining}/3 left` : 'Loading...'}
             </span>
             {isCreditsLoaded && analysesRemaining <= 0 && (
@@ -100,31 +125,52 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
       {/* Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {filtered.map((property, idx) => {
-          const priceSqM = Math.round(property.basePriceUSD / property.areaSqM);
+          const priceSqM =
+            typeof property.pricePerSqMUSD === 'number' && property.pricePerSqMUSD > 0
+              ? property.pricePerSqMUSD
+              : Math.round(property.basePriceUSD / property.areaSqM);
+          const hasImageFailed = Boolean(failedImages[property.id]);
+          const isShowcaseCard = Boolean(property.isEnterpriseShowcase);
+
           return (
             <FadeInCard
               key={property.id}
               delay={(idx % 3) * 0.05}
-              className="glass-panel group relative flex flex-col justify-between overflow-hidden transition-all duration-300 hover:-translate-y-2 hover:shadow-[0_20px_50px_rgba(212,175,55,0.15)]"
+              className={`glass-panel group relative flex flex-col justify-between overflow-hidden transition-all duration-300 hover:-translate-y-2 hover:shadow-[0_20px_50px_rgba(212,175,55,0.15)] ${
+                isShowcaseCard ? 'border-[#D4AF37]/50 bg-gradient-to-b from-[#D4AF37]/[0.05] to-black' : ''
+              }`}
             >
               {/* Image & Badges */}
-              <div className="relative h-56 w-full overflow-hidden rounded-t-[27px]">
-                <img
-                  src={property.imageUrl}
-                  alt={property.title}
-                  className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-                  loading="lazy"
-                />
-                
+              <div className="relative h-56 w-full overflow-hidden rounded-t-[27px] bg-gradient-to-br from-zinc-900 via-black to-[#D4AF37]/20">
+                {!hasImageFailed && property.imageUrl ? (
+                  <img
+                    src={property.imageUrl}
+                    alt={property.title}
+                    referrerPolicy="no-referrer"
+                    onError={() =>
+                      setFailedImages((prev) => ({
+                        ...prev,
+                        [property.id]: true,
+                      }))
+                    }
+                    className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+                    loading="lazy"
+                  />
+                ) : (
+                  <div className="w-full h-full bg-gradient-to-br from-zinc-900 via-black to-[#D4AF37]/25 flex items-center justify-center">
+                    <Crown className="w-10 h-10 text-[#D4AF37]/40" />
+                  </div>
+                )}
+
                 {/* Gradient vignette */}
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent" />
 
                 {/* Top Tags */}
-                <div className="absolute top-3 left-3 flex flex-wrap gap-1.5">
-                  <span className="px-2.5 py-1 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 text-[10px] font-mono font-bold text-white uppercase tracking-wider">
+                <div className="absolute top-3 left-3 flex flex-wrap gap-1.5 pr-16">
+                  <span className="px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md border border-white/10 text-[10px] font-mono font-bold text-white uppercase tracking-wider">
                     {property.city}
                   </span>
-                  <span className="px-2 py-1 rounded-lg bg-black/70 backdrop-blur-md border border-amber-500/40 text-[10px] font-mono font-bold text-amber-300 uppercase">
+                  <span className="px-2 py-1 rounded-lg bg-black/75 backdrop-blur-md border border-amber-500/40 text-[10px] font-mono font-bold text-amber-300 uppercase">
                     [Demo]
                   </span>
                   {property.featuredTag && (
@@ -135,7 +181,7 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                 </div>
 
                 {/* Rating badge */}
-                <div className="absolute top-3 right-3 px-2 py-1 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 text-[11px] font-mono text-emerald-400 flex items-center gap-1">
+                <div className="absolute top-3 right-3 px-2 py-1 rounded-lg bg-black/75 backdrop-blur-md border border-white/10 text-[11px] font-mono text-emerald-400 flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3 text-emerald-400" />
                   <span>{property.tenantRiskScore}</span>
                 </div>
@@ -165,7 +211,7 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                   <h3 className="text-base font-bold text-white group-hover:text-[#D4AF37] transition leading-snug">
                     {property.title}
                   </h3>
-                  
+
                   <div className="flex items-center gap-1 text-xs text-zinc-400 mt-1 mb-4">
                     <MapPin className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                     <span className="truncate">{property.location}</span>
@@ -176,13 +222,13 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                     <div>
                       <div className="text-[10px] font-mono text-zinc-400 uppercase">Gross Yield</div>
                       <div className="text-sm font-bold font-mono text-[#D4AF37]">
-                        {property.grossYield}%
+                        {property.grossYield.toFixed(1)}%
                       </div>
                     </div>
                     <div className="border-x border-white/[0.06]">
                       <div className="text-[10px] font-mono text-zinc-400 uppercase">Net Cap Rate</div>
                       <div className="text-sm font-bold font-mono text-emerald-400">
-                        {property.capRate}%
+                        {property.capRate.toFixed(1)}%
                       </div>
                     </div>
                     <div>
@@ -211,9 +257,9 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
 
                   {/* Tax Advantage + Legal Note */}
                   <div className="text-[11px] font-mono text-zinc-300 space-y-1 mb-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-500">Tax Structure:</span>
-                      <span className="text-cyan-400 truncate max-w-[180px]">{property.taxAdvantage}</span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-500">Tax:</span>
+                      <span className="text-cyan-400 truncate max-w-[200px]">{property.taxAdvantage}</span>
                     </div>
                     <div className="text-[9px] text-zinc-500 flex items-center justify-between">
                       <span>Source: Local Registry (2026-04-01)</span>
@@ -222,13 +268,21 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                   </div>
                 </div>
 
-                {/* ANALYZE Action Button - Opens Demo Analysis directly without login gate */}
+                {/* ANALYZE Action Button */}
                 <motion.button
                   type="button"
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.99 }}
                   transition={{ duration: 0.15 }}
                   onClick={() => {
+                    if (isShowcaseCard && !isActiveEnterprise) {
+                      if (onEnterpriseShowcaseLock) {
+                        onEnterpriseShowcaseLock();
+                        return;
+                      }
+                      onOpenPricing();
+                      return;
+                    }
                     if (onOpenDemo) {
                       onOpenDemo(getPropertyDemoSlug(property));
                     } else {
@@ -241,13 +295,38 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                   <span>ANALYZE PROPERTY</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </motion.button>
-
               </div>
             </FadeInCard>
           );
         })}
       </div>
 
+      {/* Enterprise Institutional Capabilities Bar */}
+      <div className="mt-8 pt-6 border-t border-white/[0.08] flex flex-col items-center gap-3">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-[#D4AF37] flex items-center gap-1.5">
+          <Crown className="w-3.5 h-3.5" />
+          <span>ENTERPRISE CONTRACT CAPABILITIES SHOWCASE</span>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-2.5">
+          {ENTERPRISE_CAPABILITY_PILLS.map((label) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => {
+                if (!isActiveEnterprise && onEnterpriseShowcaseLock) {
+                  onEnterpriseShowcaseLock();
+                } else {
+                  onOpenPricing();
+                }
+              }}
+              className="px-3.5 py-1.5 rounded-lg bg-black border border-[#D4AF37]/35 hover:border-[#D4AF37] text-[11px] font-mono text-zinc-200 hover:text-[#D4AF37] transition cursor-pointer shadow-sm"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
     </section>
   );
 };
+

@@ -1,3 +1,5 @@
+import muscatEnterpriseVillaImg from '../assets/images/muscat_al_mouj_villa_1795257355401.jpg';
+
 export interface DemoAnalysisItem {
   slug: string;
   tier: 'Free' | 'Standard' | 'Pro' | 'Agency';
@@ -313,5 +315,44 @@ export const DEMO_ANALYSES: Record<string, DemoAnalysisItem> = {
       { asset: 'Singapore Marina Bay Preservation Core', city: 'Singapore', allocationPct: 40, valueUSD: 512000, yieldPct: 3.9 },
     ],
     watermarkNote: 'SAMPLE AGENCY TIER ANALYSIS • SOVEREIGN GROWTH & WEALTH PRESERVATION PAIR',
+  },
+
+  'muscat-enterprise-villa': {
+    slug: 'muscat-enterprise-villa',
+    tier: 'Agency',
+    title: 'Muscat Al Mouj - Marina View Villa',
+    subtitle: 'Al Mouj, Muscat, OM • Enterprise Portfolio Optimization Showcase',
+    city: 'Muscat',
+    country: 'Oman',
+    flag: '🇴🇲',
+    propertyType: 'Enterprise Waterfront Marina Villa',
+    imageUrl: muscatEnterpriseVillaImg,
+    priceUSD: 1250000,
+    rentMonthlyUSD: 8400,
+    areaSqM: 303,
+    grossYield: 8.0,
+    netYield: 7.4,
+    capRate: 7.4,
+    cashOnCash: 11.2,
+    irr5Yr: 14.8,
+    monthlyCashflowUSD: 8400,
+    noiAnnualUSD: 92500,
+    dscr: '1.86',
+    downPaymentPct: 30,
+    interestRatePct: 5.2,
+    taxStructure: 'Oman Zero Income Tax Structure',
+    goldenVisa: 'Oman 10-Year Residency Eligible (ITC Freehold)',
+    occupancyRate: 97,
+    tenantRisk: 'AAA',
+    liquidityScore: 95,
+    featuresUnlocked: [
+      'Enterprise AI Due Diligence & Document Contradiction Audit',
+      'Enterprise AI Market Intelligence & Custom GCC Benchmarks',
+      'Institutional Portfolio Optimization (+11.2% Portfolio Yield)',
+      'Custom Risk Models & 10,000-Cycle Monte Carlo',
+      'White Label Platform + Custom API + Full Audit Trail',
+    ],
+    featuresLocked: [],
+    watermarkNote: 'ENTERPRISE CONTRACT SHOWCASE • PORTFOLIO OPTIMIZATION + CUSTOM RISK MODELS',
   },
 };

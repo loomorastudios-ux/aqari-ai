@@ -181,6 +181,16 @@ export interface User {
   apiDailyLimit?: number;
   apiCallsToday?: number;
   whiteLabelMode?: 'none' | 'reports' | 'full';
+  whiteLabelEnabled?: boolean;
+  customApiEnabled?: boolean;
+  customAnalysesLimit?: number | null;
+  customImagePdfLimit?: number | null;
+  customListingsLimit?: number | null;
+  customPortfolioLimit?: number | null;
+  customSeats?: number | null;
+  customStorageGb?: number | null;
+  slaLevel?: string | null;
+  contractEndDate?: string | null;
   branding?: {
     firmName?: string;
     logoUrl?: string;
@@ -448,6 +458,8 @@ export interface PropertyListing {
   managementPct: number;
   managementUSD: number;
   microLocationText: string;
+  isEnterpriseShowcase?: boolean;
+  pricePerSqMUSD?: number;
 }
 
 export interface MarketMatrixRow {

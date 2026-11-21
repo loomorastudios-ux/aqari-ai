@@ -1,6 +1,7 @@
 import { initializePaddle, Paddle, PaddleEventData } from '@paddle/paddle-js';
 
 export type PaidPlanId = 'starter' | 'pro' | 'enterprise';
+export type CreditPackId = 'pack_25' | 'pack_100' | 'pack_500';
 
 export const LIVE_PADDLE_PRICE_IDS: Record<PaidPlanId, string> = {
   starter: 'pri_01m7tgfvteegdih2mx4hgyz1c',
@@ -14,10 +15,34 @@ export const PADDLE_PRICE_ENV_KEYS: Record<PaidPlanId, string> = {
   enterprise: 'VITE_PADDLE_SOVEREIGN_PRICE',
 };
 
+export const PADDLE_CREDIT_PACK_ENV_KEYS: Record<CreditPackId, string> = {
+  pack_25: 'VITE_PADDLE_CREDIT_25_PRICE',
+  pack_100: 'VITE_PADDLE_CREDIT_100_PRICE',
+  pack_500: 'VITE_PADDLE_CREDIT_500_PRICE',
+};
+
+export const CREDIT_PACK_CREDITS: Record<CreditPackId, number> = {
+  pack_25: 25,
+  pack_100: 100,
+  pack_500: 500,
+};
+
 const LEGACY_SANDBOX_PRICE_ID = 'pri_01m7qwqceh520nd4we9pg90f8m';
 
 export interface PaddleCheckoutHandlers {
-  plan: PaidPlanId;
+  plan?: PaidPlanId;
+  purchaseType?: 'subscription' | 'credit_pack';
+  packId?: CreditPackId;
+  email?: string;
+  userId?: string;
+  refundAcceptedAt?: string;
+  onVerified?: (verifyData: any, meData?: any) => void;
+  onError?: (message: string) => void;
+  onClose?: () => void;
+}
+
+export interface PaddleCreditCheckoutHandlers {
+  packId: CreditPackId;
   email?: string;
   userId?: string;
   refundAcceptedAt?: string;
@@ -135,6 +160,34 @@ export function getPaddleProPriceId(): string {
   return getPaddlePriceId('pro');
 }
 
+export function getPaddleCreditPriceId(packId: CreditPackId): string {
+  let proc25 = '';
+  let proc100 = '';
+  let proc500 = '';
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      proc25 = cleanEnvStr(process.env.VITE_PADDLE_CREDIT_25_PRICE);
+      proc100 = cleanEnvStr(process.env.VITE_PADDLE_CREDIT_100_PRICE);
+      proc500 = cleanEnvStr(process.env.VITE_PADDLE_CREDIT_500_PRICE);
+    }
+  } catch {}
+
+  const candidates =
+    packId === 'pack_25'
+      ? [cleanEnvStr(import.meta.env?.VITE_PADDLE_CREDIT_25_PRICE), proc25]
+      : packId === 'pack_100'
+      ? [cleanEnvStr(import.meta.env?.VITE_PADDLE_CREDIT_100_PRICE), proc100]
+      : [cleanEnvStr(import.meta.env?.VITE_PADDLE_CREDIT_500_PRICE), proc500];
+
+  for (const raw of candidates) {
+    const cleaned = cleanEnvStr(raw);
+    if (cleaned && cleaned !== LEGACY_SANDBOX_PRICE_ID && cleaned.startsWith('pri_')) {
+      return cleaned;
+    }
+  }
+  return '';
+}
+
 async function handlePaddleEvent(event: PaddleEventData) {
   if (!event || !event.name) return;
 
@@ -159,13 +212,66 @@ async function handlePaddleEvent(event: PaddleEventData) {
     isVerifyingTransaction = true;
     const handlers = activeHandlers;
     const transactionId = String(event.data?.transaction_id || '').trim();
+    const eventCustomData = ((event.data as any)?.custom_data || {}) as Record<string, any>;
     const customerEmail = String(
-      handlers?.email || event.data?.customer?.email || ''
+      handlers?.email || event.data?.customer?.email || eventCustomData?.email || ''
     )
       .trim()
       .toLowerCase();
 
+    const isCreditPack =
+      handlers?.purchaseType === 'credit_pack' ||
+      eventCustomData?.purchase_type === 'credit_pack' ||
+      Boolean(handlers?.packId || eventCustomData?.packId);
+
     try {
+      if (isCreditPack) {
+        const packId = (handlers?.packId || eventCustomData?.packId || 'pack_25') as CreditPackId;
+        const creditRes = await fetch('/api/app?action=buy-credits', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            packId,
+            transaction_id: transactionId,
+            order_id: transactionId,
+            email: customerEmail,
+            login_email: customerEmail,
+          }),
+        });
+        const creditData = await creditRes.json().catch(() => null);
+        if (!creditRes.ok || !creditData?.success) {
+          const msg = creditData?.error || 'Unable to verify Paddle credit pack transaction.';
+          console.error('[Paddle] Credit pack verification error:', {
+            status: creditRes.status,
+            creditData,
+          });
+          handlers?.onError?.(msg);
+          return;
+        }
+
+        let meData: any = null;
+        try {
+          const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {
+            credentials: 'include',
+            cache: 'no-store',
+          });
+          if (meRes.ok) {
+            meData = await meRes.json().catch(() => null);
+          }
+        } catch {}
+
+        try {
+          cachedPaddleInstance?.Checkout.close();
+        } catch {}
+
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('aqari:user-updated', { detail: creditData }));
+        }
+        handlers?.onVerified?.(creditData, meData);
+        return;
+      }
+
       const verifyRes = await fetch('/api/app?action=verify-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -271,7 +377,8 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
 }
 
 export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Promise<void> {
-  activeHandlers = handlers;
+  const targetPlan = handlers.plan || 'pro';
+  activeHandlers = { ...handlers, plan: targetPlan, purchaseType: 'subscription' };
 
   const token = getPaddleClientToken();
   if (!token) {
@@ -280,11 +387,11 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
     throw new Error(msg);
   }
 
-  const expectedPriceKey = PADDLE_PRICE_ENV_KEYS[handlers.plan] || 'VITE_PADDLE_PRICE_ID';
-  const priceId = getPaddlePriceId(handlers.plan);
+  const expectedPriceKey = PADDLE_PRICE_ENV_KEYS[targetPlan] || 'VITE_PADDLE_PRICE_ID';
+  const priceId = getPaddlePriceId(targetPlan);
   if (!priceId || !priceId.startsWith('pri_')) {
-    const msg = `Missing ${expectedPriceKey}: Paddle Price ID for ${handlers.plan} is not configured.`;
-    console.error('[Paddle]', msg, { plan: handlers.plan, priceId });
+    const msg = `Missing ${expectedPriceKey}: Paddle Price ID for ${targetPlan} is not configured.`;
+    console.error('[Paddle]', msg, { plan: targetPlan, priceId });
     throw new Error(msg);
   }
 
@@ -307,7 +414,7 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     body: JSON.stringify({
-      plan: handlers.plan,
+      plan: targetPlan,
       email: handlers.email || '',
       userId: handlers.userId || 'guest',
       refundAcceptedAt: handlers.refundAcceptedAt || new Date().toISOString(),
@@ -321,7 +428,7 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
       items: [{ priceId, quantity: 1 }],
       ...(handlers.email ? { customer: { email: handlers.email } } : {}),
       customData: {
-        plan: handlers.plan,
+        plan: targetPlan,
         ...(handlers.email ? { email: handlers.email, login_email: handlers.email } : {}),
       },
       settings: {
@@ -331,6 +438,63 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
     });
   } catch (openErr: any) {
     console.error('[Paddle] Paddle.Checkout.open failed:', openErr);
+    throw openErr;
+  }
+}
+
+export async function openPaddleCreditPackCheckout(
+  handlers: PaddleCreditCheckoutHandlers
+): Promise<void> {
+  activeHandlers = {
+    purchaseType: 'credit_pack',
+    packId: handlers.packId,
+    email: handlers.email,
+    userId: handlers.userId,
+    refundAcceptedAt: handlers.refundAcceptedAt,
+    onVerified: handlers.onVerified,
+    onError: handlers.onError,
+    onClose: handlers.onClose,
+  };
+
+  const token = getPaddleClientToken();
+  if (!token) {
+    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN';
+    console.error('[Paddle]', msg);
+    throw new Error(msg);
+  }
+
+  const expectedKey = PADDLE_CREDIT_PACK_ENV_KEYS[handlers.packId];
+  const priceId = getPaddleCreditPriceId(handlers.packId);
+  if (!priceId || !priceId.startsWith('pri_')) {
+    const msg = `Missing ${expectedKey}: One-time Paddle Price ID for ${handlers.packId} is not configured.`;
+    console.error('[Paddle]', msg, { packId: handlers.packId });
+    throw new Error(msg);
+  }
+
+  const paddle = await getPaddleClient();
+  if (!paddle) {
+    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN or Paddle failed to initialize.';
+    console.error('[Paddle]', msg);
+    throw new Error(msg);
+  }
+
+  try {
+    paddle.Checkout.open({
+      items: [{ priceId, quantity: 1 }],
+      ...(handlers.email ? { customer: { email: handlers.email } } : {}),
+      customData: {
+        purchase_type: 'credit_pack',
+        packId: handlers.packId,
+        credits: CREDIT_PACK_CREDITS[handlers.packId],
+        ...(handlers.email ? { email: handlers.email, login_email: handlers.email } : {}),
+      },
+      settings: {
+        displayMode: 'overlay',
+        theme: 'dark',
+      },
+    });
+  } catch (openErr: any) {
+    console.error('[Paddle] Credit pack Checkout.open failed:', openErr);
     throw openErr;
   }
 }

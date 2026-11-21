@@ -49,6 +49,7 @@ export const DemoAnalysisView: React.FC<DemoAnalysisViewProps> = ({
     { slug: 'london-mayfair', label: 'London Mayfair', tier: 'Pro', flag: '🇬🇧' },
     { slug: 'cross-border-portfolio', label: 'GCC & UK Portfolio', tier: 'Agency', flag: '🌐' },
     { slug: 'riyadh-singapore-portfolio', label: 'Riyadh & SGP Pair', tier: 'Agency', flag: '🇸🇦 🇸🇬' },
+    { slug: 'muscat-enterprise-villa', label: 'Muscat Marina Villa', tier: 'Agency', flag: '🇴🇲' },
   ];
 
   const getTierColor = (tier: string) => {

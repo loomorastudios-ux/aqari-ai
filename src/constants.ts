@@ -1,4 +1,5 @@
 import { CurrencyCode, PropertyListing, RemoteConfig, MarketMatrixRow, PlanFeatureConfig } from './types';
+import muscatEnterpriseVillaImg from './assets/images/muscat_al_mouj_villa_1795257355401.jpg';
 
 export const CONFIG_URL = "https://raw.githubusercontent.com/azzam-shmale/aqari-config/main/config.json";
 export const MARKET_DATA_URL = "https://raw.githubusercontent.com/azzam-shmale/aqari-config/main/market.json";
@@ -327,6 +328,38 @@ export const PROPERTY_LISTINGS: PropertyListing[] = [
     managementPct: 6,
     managementUSD: 6840,
     microLocationText: 'Prestigious address in prime Central London, adjacent to Berkeley Square and Green Park. A generational wealth preservation asset supported by ultra-high-net-worth international tenancy and high sovereign legal protection.',
+  },
+  {
+    id: 'prop-mct-ent-06',
+    title: 'Muscat Al Mouj - Marina View Villa',
+    location: 'Al Mouj, Muscat, OM',
+    city: 'Muscat',
+    basePriceUSD: 1250000,
+    baseRentMonthlyUSD: 8400, // $100,800 annual gross (~8.0% gross yield)
+    areaSqM: 303,
+    pricePerSqMUSD: 4120,
+    grossYield: 8.0,
+    netYield: 7.4,
+    occupancyRate: 97,
+    bedrooms: 4,
+    bathrooms: 4,
+    propertyType: 'Enterprise Waterfront Marina Villa',
+    taxAdvantage: 'Oman Zero Income Tax Structure',
+    residencyEligible: true,
+    imageUrl: muscatEnterpriseVillaImg,
+    featuredTag: '+11.2% PORTFOLIO YIELD',
+    capRate: 7.4,
+    capitalGrowthForecast: 11.2,
+    tenantRiskScore: 'AAA',
+    liquidityScore: 95,
+    noiUSD: 92500,
+    vacancyPct: 2,
+    vacancyUSD: 2016,
+    hoaUSD: 4268,
+    managementPct: 2,
+    managementUSD: 2016,
+    microLocationText: 'Enterprise institutional showcase villa overlooking Al Mouj Marina, Muscat. Configured with multi-asset portfolio correlation stress testing, custom GCC zero-income-tax yield optimization, and full audit-trail underwriting governance.',
+    isEnterpriseShowcase: true,
   },
 ];
 

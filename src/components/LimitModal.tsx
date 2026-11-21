@@ -8,7 +8,12 @@ import {
   normalizePlanKey,
 } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
-import { openPaddleCheckout, PADDLE_PRO_SUCCESS_MESSAGE } from '../utils/paddleClient';
+import {
+  openPaddleCheckout,
+  openPaddleCreditPackCheckout,
+  CreditPackId,
+  PADDLE_PRO_SUCCESS_MESSAGE,
+} from '../utils/paddleClient';
 import {
   X,
   Lock,
@@ -16,6 +21,7 @@ import {
   ArrowRight,
   Coins,
   Loader2,
+  Crown,
 } from 'lucide-react';
 
 interface LimitModalProps {
@@ -27,6 +33,8 @@ interface LimitModalProps {
   currentCurrency: CurrencyCode;
   onTestUnlock: (plan: 'starter' | 'pro' | 'enterprise') => void;
   onOpenPricing: () => void;
+  mode?: 'quota' | 'enterprise_showcase';
+  onRequestEnterpriseDemo?: () => void;
 }
 
 export const LimitModal: React.FC<LimitModalProps> = ({
@@ -36,6 +44,8 @@ export const LimitModal: React.FC<LimitModalProps> = ({
   pricingData,
   currentCurrency,
   onOpenPricing,
+  mode = 'quota',
+  onRequestEnterpriseDemo,
 }) => {
   const [refundAccepted, setRefundAccepted] = useState(false);
   const [policyError, setPolicyError] = useState(false);
@@ -46,17 +56,81 @@ export const LimitModal: React.FC<LimitModalProps> = ({
   if (!isOpen) return null;
 
   const launchActive = pricingData?.launchDiscountActive ?? true;
-  const launchEndsAt = pricingData?.launchEndsAt || Date.now() + 7 * 86_400_000;
+  const launchEndsAt = pricingData?.launchEndsAt || new Date('2026-11-28T23:59:59Z').getTime();
   const launchEndDateStr = new Date(launchEndsAt).toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
   });
 
+  if (mode === 'enterprise_showcase') {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-2xl animate-in fade-in duration-200 overflow-y-auto">
+        <div className="relative w-full max-w-xl rounded-[32px] glass-dropdown p-7 sm:p-10 border border-[#D4AF37]/50 shadow-[0_30px_90px_rgba(0,0,0,0.9)] overflow-hidden my-auto">
+          <div className="absolute top-0 right-1/4 w-64 h-64 bg-[#D4AF37]/15 rounded-full blur-3xl pointer-events-none" />
+          <button
+            onClick={onClose}
+            className="absolute top-5 right-5 p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10 transition cursor-pointer"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+
+          <div className="text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-[#D4AF37]/15 border border-[#D4AF37]/40 mx-auto flex items-center justify-center shadow-[0_0_25px_rgba(212,175,55,0.25)]">
+              <Crown className="w-7 h-7 text-[#D4AF37]" />
+            </div>
+            <span className="inline-block px-3 py-1 rounded-full bg-[#D4AF37]/15 border border-[#D4AF37]/30 text-[#D4AF37] text-[11px] font-mono font-bold uppercase tracking-wider">
+              ENTERPRISE CONTRACT SHOWCASE
+            </span>
+            <h3 className="text-2xl font-bold tracking-tight text-white">
+              Enterprise Contract Access Required
+            </h3>
+            <p className="text-sm text-zinc-200 font-mono leading-relaxed max-w-md mx-auto">
+              Enterprise showcase. Upgrade to Enterprise to unlock Portfolio Optimization + Custom Risk Models.
+            </p>
+            <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 text-xs font-mono text-zinc-400">
+              Custom limits, ERP/CRM integrations, White Label platform, and dedicated SLA configured per contract ($1,499/mo launch starting price).
+            </div>
+
+            <div className="pt-2 flex flex-col sm:flex-row gap-3 justify-center">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  if (onRequestEnterpriseDemo) {
+                    onRequestEnterpriseDemo();
+                  } else {
+                    onOpenPricing();
+                    window.dispatchEvent(new Event('aqari:open-enterprise-modal'));
+                  }
+                }}
+                className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-bold text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shadow-lg"
+              >
+                <span>Request Enterprise Demo</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenPricing();
+                }}
+                className="px-5 py-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-mono text-xs cursor-pointer"
+              >
+                Compare All Plans
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const planKey = normalizePlanKey(user?.plan || 'free');
   const planDisplay = PLANS[planKey].displayName;
   const creditsLeft = Math.max(0, Number(user?.analysesLeft ?? 0));
-  const creditsTotal = Math.max(1, Number(user?.analysesTotal ?? PLANS[planKey].analysesLimit));
+  const creditsTotal = Math.max(1, Number(user?.analysesTotal ?? (PLANS[planKey].analysesLimit || creditsLeft || 1)));
 
   const starterPlan = findPlanPricing(pricingData, 'starter');
   const proPlan = findPlanPricing(pricingData, 'pro');
@@ -96,31 +170,32 @@ export const LimitModal: React.FC<LimitModalProps> = ({
     }
   };
 
-  const handleBuyCreditPack = async (packId: string) => {
+  const handleBuyCreditPack = async (packId: CreditPackId) => {
     if (!user?.email) return;
     setBuyingPackId(packId);
     setCheckoutNotice(null);
     setCheckoutSuccess(null);
     try {
-      const res = await fetch('/api/app?action=buy-credits', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ packId, email: user.email }),
+      await openPaddleCreditPackCheckout({
+        packId,
+        email: user.email,
+        userId: user.id || user.googleId,
+        refundAcceptedAt: new Date().toISOString(),
+        onVerified: (data) => {
+          setBuyingPackId(null);
+          setCheckoutSuccess(data?.message || `Added extra AI credits (${data?.analyses_left ?? ''} left).`);
+        },
+        onError: (msg) => {
+          setBuyingPackId(null);
+          setCheckoutNotice(msg);
+        },
+        onClose: () => {
+          setBuyingPackId(null);
+        },
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.success) {
-        setCheckoutNotice(
-          data?.error || 'Visit Pricing to apply a credit pack transaction or upgrade your tier.'
-        );
-        return;
-      }
-      setCheckoutSuccess(data.message || `Added extra AI credits (${data.analyses_left} left).`);
-      window.dispatchEvent(new CustomEvent('aqari:user-updated', { detail: data }));
     } catch (err: any) {
-      setCheckoutNotice(err?.message || 'Unable to buy extra credits.');
-    } finally {
       setBuyingPackId(null);
+      setCheckoutNotice(err?.message || 'Unable to launch Paddle Checkout for credit pack.');
     }
   };
 

@@ -4,10 +4,16 @@ import {
   PLANS,
   PricingPublicPayload,
   EXTRA_CREDIT_PACKS,
+  DEFAULT_LAUNCH_END_DATE_MS,
   findPlanPricing,
 } from '../../lib/plans';
 import { formatPrice, getDaysRemaining } from '../utils/formatters';
-import { openPaddleCheckout, PADDLE_PRO_SUCCESS_MESSAGE } from '../utils/paddleClient';
+import {
+  openPaddleCheckout,
+  openPaddleCreditPackCheckout,
+  CreditPackId,
+  PADDLE_PRO_SUCCESS_MESSAGE,
+} from '../utils/paddleClient';
 import {
   X,
   Sparkles,
@@ -49,7 +55,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
   if (!isOpen) return null;
 
   const launchActive = pricingData?.launchDiscountActive ?? true;
-  const launchEndsAt = pricingData?.launchEndsAt || Date.now() + 7 * 86_400_000;
+  const launchEndsAt = pricingData?.launchEndsAt || DEFAULT_LAUNCH_END_DATE_MS;
   const launchEndDateStr = new Date(launchEndsAt).toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
@@ -88,31 +94,32 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
     }
   };
 
-  const handleBuyCreditPack = async (packId: string) => {
+  const handleBuyCreditPack = async (packId: CreditPackId) => {
     if (!user?.email) return;
     setBuyingPackId(packId);
     setCheckoutNotice(null);
     setCheckoutSuccess(null);
     try {
-      const res = await fetch('/api/app?action=buy-credits', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ packId, email: user.email }),
+      await openPaddleCreditPackCheckout({
+        packId,
+        email: user.email,
+        userId: user.id || user.googleId,
+        refundAcceptedAt: new Date().toISOString(),
+        onVerified: (data) => {
+          setBuyingPackId(null);
+          setCheckoutSuccess(data?.message || `Added credits. Balance: ${data?.analyses_left ?? ''} credits.`);
+        },
+        onError: (msg) => {
+          setBuyingPackId(null);
+          setCheckoutNotice(msg);
+        },
+        onClose: () => {
+          setBuyingPackId(null);
+        },
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data?.success) {
-        setCheckoutNotice(
-          data?.error || 'Complete checkout on the Pricing page to apply extra credit packs.'
-        );
-        return;
-      }
-      setCheckoutSuccess(data.message || `Added credits. Balance: ${data.analyses_left} credits.`);
-      window.dispatchEvent(new CustomEvent('aqari:user-updated', { detail: data }));
     } catch (err: any) {
-      setCheckoutNotice(err?.message || 'Unable to purchase credit pack.');
-    } finally {
       setBuyingPackId(null);
+      setCheckoutNotice(err?.message || 'Unable to launch Paddle Checkout for credit pack.');
     }
   };
 
