@@ -460,8 +460,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     freeAnalysesLeft: user.freeAnalysesLeft ?? user.freeAnalyses,
     analysesLeft: user.analysesLeft,
     analysesLimitOverride: user.analysesTotal ?? dynamicPlanPricing?.analysesLimit,
-    savedLimitOverride:
-      dynamicPlanPricing?.savedLimit === null ? Infinity : dynamicPlanPricing?.savedLimit,
+    savedLimitOverride: dynamicPlanPricing?.savedLimit ?? undefined,
   });
 
   const planInfo = PLAN_LIMITS[license.planKey] || PLAN_LIMITS.free;
@@ -471,17 +470,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const isEndingIn24h = Boolean(license.planKey !== 'free' && endsAt && msRemaining > 0 && msRemaining <= 24 * 60 * 60 * 1000);
   const countdownText = endsAt ? formatTimeLeft(msRemaining) : null;
 
-  const analysesRemaining = !isCreditsLoaded
-    ? 0
-    : license.isUnlimitedAnalyses
-    ? 9999
-    : license.analysesLeft;
+  const analysesRemaining = !isCreditsLoaded ? 0 : license.analysesLeft;
   const isAccountLocked = Boolean(
     user.locked ||
       user.status === 'expired' ||
       user.status === 'exhausted' ||
       isExpired ||
-      (isCreditsLoaded && !license.isUnlimitedAnalyses && analysesRemaining <= 0)
+      (isCreditsLoaded && analysesRemaining <= 0)
   );
   const lockReasonKind: 'expired' | 'exhausted' | null = isAccountLocked
     ? user.lockReason === 'expired' || user.status === 'expired' || isExpired
@@ -490,9 +485,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     : null;
   const analysesLeftStr = !isCreditsLoaded
     ? 'Loading...'
-    : license.isUnlimitedAnalyses
-    ? 'Unlimited analyses left'
-    : `${license.analysesLeft} analyses left`;
+    : `${license.analysesLeft} credits left`;
 
   const meFeatures: string[] = useMemo(() => {
     if (Array.isArray(user.features) && user.features.length > 0) {
@@ -509,10 +502,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       return user.maxSaved;
     }
     const parsedSaveFeature = meFeatures
-      .map((f) => /^save\s+(\d+)$/i.exec(f.trim()))
+      .map((f) => /^save\s+(?:up\s+to\s+)?(\d[\d,]*)$/i.exec(f.trim()))
       .find((m) => Boolean(m));
-    if (parsedSaveFeature) return Number(parsedSaveFeature[1]);
-    if (meFeatures.some((f) => /^unlimited\s+saved$/i.test(f.trim()))) return 400;
+    if (parsedSaveFeature) return Number(parsedSaveFeature[1].replace(/,/g, ''));
+    if (meFeatures.some((f) => /^unlimited\s+saved$/i.test(f.trim()))) {
+      return PLANS[license.planKey].savedLimit;
+    }
     return PLANS[license.planKey].savedLimit;
   }, [user.maxSaved, meFeatures, license.planKey]);
 
@@ -555,6 +550,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const canPdfExport =
     !isAccountLocked &&
     (meFeatures.includes('PDF Memorandum Export') || canUseFeature(license.planKey, 'pdfExport'));
+  const canMemorandumPdf =
+    !isAccountLocked && canUseFeature(license.planKey, 'memorandumPdf');
+  const canWhiteLabelReports =
+    !isAccountLocked && canUseFeature(license.planKey, 'whiteLabelReports');
   const canPortfolioAgg =
     !isAccountLocked &&
     (meFeatures.includes('Multi-asset Portfolio Aggregation') || canUseFeature(license.planKey, 'portfolioAggregation'));
@@ -571,13 +570,17 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     !isAccountLocked &&
     (meFeatures.includes('White-glove Custom Underwriting') || canUseFeature(license.planKey, 'customUnderwriting'));
   const canDealFinder =
-    !isAccountLocked && (license.planKey === 'pro' || license.planKey === 'enterprise');
+    !isAccountLocked && canUseFeature(license.planKey, 'dealFinder');
   const canMarketForecast =
-    !isAccountLocked && (license.planKey === 'pro' || license.planKey === 'enterprise');
+    !isAccountLocked && canUseFeature(license.planKey, 'forecastBasic');
+  const canForecastAdvanced =
+    !isAccountLocked && canUseFeature(license.planKey, 'forecastAdvanced');
   const canDueDiligence =
-    !isAccountLocked && (license.planKey === 'pro' || license.planKey === 'enterprise');
-  const canPortfolioOptimizer = !isAccountLocked && license.planKey === 'enterprise';
-  const canInstitutionalAdvisor = !isAccountLocked && license.planKey === 'enterprise';
+    !isAccountLocked && canUseFeature(license.planKey, 'dueDiligence');
+  const canPortfolioOptimizer =
+    !isAccountLocked && canUseFeature(license.planKey, 'globalOptimizer');
+  const canInstitutionalAdvisor =
+    !isAccountLocked && canUseFeature(license.planKey, 'institutionalAdvisor');
   const canSaveProperty = !isAccountLocked && maxSaved > 0;
 
   const loadWebhookLogs = async () => {
@@ -942,12 +945,65 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   } | null>(null);
   const [isRunningMonteCarlo, setIsRunningMonteCarlo] = useState(false);
 
-  // Sovereign Suite states (REST API Docs + Analyst Desk Text Chat + White-Glove Intake & Deliverables)
+  // White-label branding editor & Sovereign Suite states
+  const [brandingFirmDraft, setBrandingFirmDraft] = useState<string>(user.branding?.firmName || '');
+  const [brandingColorDraft, setBrandingColorDraft] = useState<string>(user.branding?.accentColor || '#D4AF37');
+  const [brandingLogoDraft, setBrandingLogoDraft] = useState<string>(user.branding?.logoUrl || '');
+  const [isSavingBranding, setIsSavingBranding] = useState(false);
+
+  useEffect(() => {
+    setBrandingFirmDraft(user.branding?.firmName || '');
+    setBrandingColorDraft(user.branding?.accentColor || '#D4AF37');
+    setBrandingLogoDraft(user.branding?.logoUrl || '');
+  }, [user.branding?.firmName, user.branding?.accentColor, user.branding?.logoUrl]);
+
+  const handleSaveBranding = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canWhiteLabelReports) {
+      showToast('White-Label branding is available in SOVEREIGN & ENTERPRISE.');
+      onOpenRenewal();
+      return;
+    }
+    setIsSavingBranding(true);
+    try {
+      const res = await fetch('/api/app?action=update-branding', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: user.email,
+          login_email: user.email,
+          firmName: brandingFirmDraft.trim(),
+          accentColor: brandingColorDraft.trim() || '#D4AF37',
+          logoUrl: brandingLogoDraft.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        showToast(data?.error || 'Unable to save white-label branding.');
+        return;
+      }
+      onUpdateUser({
+        ...user,
+        branding: data.branding || {
+          firmName: brandingFirmDraft.trim(),
+          accentColor: brandingColorDraft.trim() || '#D4AF37',
+          logoUrl: brandingLogoDraft.trim(),
+        },
+      });
+      showToast('White-Label branding saved for Institutional PDFs.');
+    } catch {
+      showToast('Network error saving branding.');
+    } finally {
+      setIsSavingBranding(false);
+    }
+  };
+
   const [copiedApiKey, setCopiedApiKey] = useState(false);
   const [isRegeneratingApiKey, setIsRegeneratingApiKey] = useState(false);
   const [showApiDocs, setShowApiDocs] = useState(false);
 
-  const monteCarloCyclesLabel = license.planKey === 'enterprise' ? 10000 : 1000;
+  const monteCarloCyclesLabel = PLANS[license.planKey].monteCarloMaxCycles || 1000;
   const maskedApiKeyDisplay = user.apiKey
     ? user.apiKey
     : user.apiKeyLast4
@@ -1755,17 +1811,27 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           email: user.email,
           login_email: user.email,
           format: 'pdf',
+          docType: canMemorandumPdf ? 'memorandum' : 'pdf',
           propertyTitle: title,
         }),
       });
       if (res.status === 403) {
         const err = await res.json().catch(() => ({}));
         if (err?.locked) applyServerLockFromResponse(err);
-        showToast(err?.error || 'Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        showToast(err?.error || 'PDF quota or tier upgrade required');
         onOpenRenewal();
         return;
       }
       const data = await res.json().catch(() => ({}));
+      const nextLeft = typeof data?.analyses_left === 'number' ? data.analyses_left : user.analysesLeft;
+      onUpdateUser({
+        ...user,
+        ...(typeof nextLeft === 'number'
+          ? { analysesLeft: nextLeft, freeAnalyses: nextLeft, freeAnalysesLeft: nextLeft }
+          : {}),
+        ...(typeof data?.analyses_used === 'number' ? { analysesUsed: data.analyses_used } : {}),
+        ...(typeof data?.pdfs_used === 'number' ? { pdfsUsed: data.pdfs_used } : {}),
+      });
       const filename = downloadMemorandumPdf({
         title,
         city: fcResult.city,
@@ -1774,6 +1840,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         metricsLines,
         notes: fcResult.disclaimer,
         watermarkText: data?.watermark,
+        isWatermarked: Boolean(data?.isWatermarked ?? license.planKey === 'free'),
+        branding: data?.branding || (canWhiteLabelReports ? user.branding || null : null),
       });
       showToast(`Exported PDF: ${filename}`);
     } catch {
@@ -1784,6 +1852,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         planDisplay: license.displayName,
         metricsLines,
         notes: fcResult.disclaimer,
+        isWatermarked: license.planKey === 'free',
+        branding: canWhiteLabelReports ? user.branding || null : null,
       });
       showToast(`Exported PDF: ${filename}`);
     }
@@ -1866,13 +1936,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         return;
       }
 
-      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
+      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 2));
       const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
       const ddCreated = String(data.created_at || data.result?.generatedAt || new Date().toISOString());
       lastHydratedSigRef.current.due_diligence = `${ddCreated}|${data.result.city}|${data.result.riskScore}`;
       onUpdateUser({
         ...user,
-        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
+        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 2),
         analysesTotal: nextTotal,
         analysesLeft: nextLeft,
         freeAnalyses: nextLeft,
@@ -1884,7 +1954,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
       setDdResult(data.result as DueDiligenceResult);
       setDdCreatedAt(ddCreated);
-      showToast(`Due Diligence ready for ${data.result.city}: Score ${data.result.riskScore}/100 (-1 credit, ${nextLeft} left).`);
+      showToast(`Due Diligence ready for ${data.result.city}: Score ${data.result.riskScore}/100 (-2 credits, ${nextLeft} left).`);
     } catch {
       setDdError('Network error connecting to AI Due Diligence.');
     } finally {
@@ -1995,16 +2065,26 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           email: user.email,
           login_email: user.email,
           format: 'pdf',
+          docType: canMemorandumPdf ? 'memorandum' : 'pdf',
           propertyTitle: title,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 403) {
         if (data?.locked) applyServerLockFromResponse(data);
-        showToast(data?.error || 'Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        showToast(data?.error || 'PDF quota or tier upgrade required');
         onOpenRenewal();
         return;
       }
+      const nextLeft = typeof data?.analyses_left === 'number' ? data.analyses_left : user.analysesLeft;
+      onUpdateUser({
+        ...user,
+        ...(typeof nextLeft === 'number'
+          ? { analysesLeft: nextLeft, freeAnalyses: nextLeft, freeAnalysesLeft: nextLeft }
+          : {}),
+        ...(typeof data?.analyses_used === 'number' ? { analysesUsed: data.analyses_used } : {}),
+        ...(typeof data?.pdfs_used === 'number' ? { pdfsUsed: data.pdfs_used } : {}),
+      });
       const filename = downloadMemorandumPdf({
         title,
         city: ddResult.city,
@@ -2013,6 +2093,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         metricsLines,
         notes: ddResult.disclaimer,
         watermarkText: data?.watermark,
+        isWatermarked: Boolean(data?.isWatermarked ?? license.planKey === 'free'),
+        branding: data?.branding || (canWhiteLabelReports ? user.branding || null : null),
       });
       showToast(`Exported PDF: ${filename}`);
     } catch {
@@ -2023,6 +2105,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         planDisplay: license.displayName,
         metricsLines,
         notes: ddResult.disclaimer,
+        isWatermarked: license.planKey === 'free',
+        branding: canWhiteLabelReports ? user.branding || null : null,
       });
       showToast(`Exported PDF: ${filename}`);
     }
@@ -2066,7 +2150,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       return;
     }
     if (!canPortfolioOptimizer) {
-      const msg = 'Global Portfolio Optimizer available in SOVEREIGN only - Upgrade to SOVEREIGN';
+      const msg = 'Global Portfolio Optimizer available in PROFESSIONAL / SOVEREIGN - Upgrade';
       setOptError(msg);
       showToast(msg);
       onOpenRenewal();
@@ -2106,8 +2190,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       const data = await res.json().catch(() => ({}));
       if (res.status === 403) {
         applyServerLockFromResponse(data);
-        setOptError(data?.error || 'Global Portfolio Optimizer available in SOVEREIGN only - Upgrade to SOVEREIGN');
-        showToast(data?.error || 'Upgrade to SOVEREIGN required');
+        setOptError(data?.error || 'Global Portfolio Optimizer available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        showToast(data?.error || 'Upgrade required');
         onOpenRenewal();
         return;
       }
@@ -2116,13 +2200,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         return;
       }
 
-      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
+      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 2));
       const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
       const optCreated = String(data.created_at || data.result?.generatedAt || new Date().toISOString());
       lastHydratedSigRef.current.portfolio_optimizer = `${optCreated}|${(data.result.cities || []).join(',')}|${data.result.totalCapital}`;
       onUpdateUser({
         ...user,
-        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
+        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 2),
         analysesTotal: nextTotal,
         analysesLeft: nextLeft,
         freeAnalyses: nextLeft,
@@ -2134,7 +2218,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
       setOptResult(data.result as PortfolioOptimizerResult);
       setOptCreatedAt(optCreated);
-      showToast(`Portfolio optimized (${data.result.blendedCapRate}% blended cap) (-1 credit, ${nextLeft} left).`);
+      showToast(`Portfolio optimized (${data.result.blendedCapRate}% blended cap) (-2 credits, ${nextLeft} left).`);
     } catch {
       setOptError('Network error connecting to Global Portfolio Optimizer.');
     } finally {
@@ -2242,6 +2326,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           email: user.email,
           login_email: user.email,
           format: 'pdf',
+          docType: canMemorandumPdf ? 'memorandum' : 'pdf',
           propertyTitle: title,
         }),
       });
@@ -2252,6 +2337,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         onOpenRenewal();
         return;
       }
+      const nextLeft = typeof data?.analyses_left === 'number' ? data.analyses_left : user.analysesLeft;
+      onUpdateUser({
+        ...user,
+        ...(typeof nextLeft === 'number'
+          ? { analysesLeft: nextLeft, freeAnalyses: nextLeft, freeAnalysesLeft: nextLeft }
+          : {}),
+        ...(typeof data?.analyses_used === 'number' ? { analysesUsed: data.analyses_used } : {}),
+        ...(typeof data?.pdfs_used === 'number' ? { pdfsUsed: data.pdfs_used } : {}),
+      });
       const filename = downloadMemorandumPdf({
         title,
         city: optResult.cities.join(', '),
@@ -2260,6 +2354,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         metricsLines,
         notes: optResult.disclaimer,
         watermarkText: data?.watermark,
+        isWatermarked: Boolean(data?.isWatermarked ?? license.planKey === 'free'),
+        branding: data?.branding || (canWhiteLabelReports ? user.branding || null : null),
       });
       showToast(`Exported PDF: ${filename}`);
     } catch {
@@ -2270,6 +2366,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         planDisplay: license.displayName,
         metricsLines,
         notes: optResult.disclaimer,
+        isWatermarked: license.planKey === 'free',
+        branding: canWhiteLabelReports ? user.branding || null : null,
       });
       showToast(`Exported PDF: ${filename}`);
     }
@@ -2297,7 +2395,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       return;
     }
     if (!canInstitutionalAdvisor) {
-      const msg = 'Institutional AI Advisor available in SOVEREIGN only - Upgrade to SOVEREIGN';
+      const msg = 'Institutional AI Advisor available in PROFESSIONAL / SOVEREIGN - Upgrade';
       setAdvError(msg);
       showToast(msg);
       onOpenRenewal();
@@ -2343,8 +2441,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       const data = await res.json().catch(() => ({}));
       if (res.status === 403) {
         applyServerLockFromResponse(data);
-        setAdvError(data?.error || 'Institutional AI Advisor available in SOVEREIGN only - Upgrade to SOVEREIGN');
-        showToast(data?.error || 'Upgrade to SOVEREIGN required');
+        setAdvError(data?.error || 'Institutional AI Advisor available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        showToast(data?.error || 'Upgrade required');
         onOpenRenewal();
         return;
       }
@@ -2353,13 +2451,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         return;
       }
 
-      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 1));
+      const nextLeft = Number(data.analyses_left ?? Math.max(0, analysesRemaining - 2));
       const nextTotal = Number(data.analyses_total ?? user.analysesTotal ?? license.analysesLimit);
       const advCreated = String(data.created_at || data.result?.generatedAt || new Date().toISOString());
       lastHydratedSigRef.current.advisor = `${advCreated}|${data.result.city}|${data.result.budget}`;
       onUpdateUser({
         ...user,
-        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 1),
+        analysesUsed: Number(data.analyses_used ?? (user.analysesUsed || 0) + 2),
         analysesTotal: nextTotal,
         analysesLeft: nextLeft,
         freeAnalyses: nextLeft,
@@ -2371,7 +2469,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
       setAdvResult(data.result as AdvisorResult);
       setAdvCreatedAt(advCreated);
-      showToast(`Advisor memo ready for ${data.result.city} (-1 credit, ${nextLeft} left).`);
+      showToast(`Advisor memo ready for ${data.result.city} (-2 credits, ${nextLeft} left).`);
     } catch {
       setAdvError('Network error connecting to Institutional AI Advisor.');
     } finally {
@@ -2478,6 +2576,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           email: user.email,
           login_email: user.email,
           format: 'pdf',
+          docType: canMemorandumPdf ? 'memorandum' : 'pdf',
           propertyTitle: title,
         }),
       });
@@ -2488,6 +2587,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         onOpenRenewal();
         return;
       }
+      const nextLeft = typeof data?.analyses_left === 'number' ? data.analyses_left : user.analysesLeft;
+      onUpdateUser({
+        ...user,
+        ...(typeof nextLeft === 'number'
+          ? { analysesLeft: nextLeft, freeAnalyses: nextLeft, freeAnalysesLeft: nextLeft }
+          : {}),
+        ...(typeof data?.analyses_used === 'number' ? { analysesUsed: data.analyses_used } : {}),
+        ...(typeof data?.pdfs_used === 'number' ? { pdfsUsed: data.pdfs_used } : {}),
+      });
       const filename = downloadMemorandumPdf({
         title,
         city: advResult.city,
@@ -2496,6 +2604,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         metricsLines,
         notes: advResult.disclaimer,
         watermarkText: data?.watermark,
+        isWatermarked: Boolean(data?.isWatermarked ?? license.planKey === 'free'),
+        branding: data?.branding || (canWhiteLabelReports ? user.branding || null : null),
       });
       showToast(`Exported PDF: ${filename}`);
     } catch {
@@ -2506,6 +2616,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         planDisplay: license.displayName,
         metricsLines,
         notes: advResult.disclaimer,
+        isWatermarked: license.planKey === 'free',
+        branding: canWhiteLabelReports ? user.branding || null : null,
       });
       showToast(`Exported PDF: ${filename}`);
     }
@@ -2662,16 +2774,26 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           email: user.email,
           login_email: user.email,
           format: 'pdf',
+          docType: canMemorandumPdf ? 'memorandum' : 'pdf',
           propertyTitle: deal.name,
         }),
       });
       if (res.status === 403) {
         const err = await res.json().catch(() => ({}));
-        showToast(err?.error || 'Available in PROFESSIONAL / SOVEREIGN - Upgrade');
+        showToast(err?.error || 'PDF quota or tier upgrade required');
         onOpenRenewal();
         return;
       }
       const data = await res.json().catch(() => ({}));
+      const nextLeft = typeof data?.analyses_left === 'number' ? data.analyses_left : user.analysesLeft;
+      onUpdateUser({
+        ...user,
+        ...(typeof nextLeft === 'number'
+          ? { analysesLeft: nextLeft, freeAnalyses: nextLeft, freeAnalysesLeft: nextLeft }
+          : {}),
+        ...(typeof data?.analyses_used === 'number' ? { analysesUsed: data.analyses_used } : {}),
+        ...(typeof data?.pdfs_used === 'number' ? { pdfsUsed: data.pdfs_used } : {}),
+      });
       const filename = downloadMemorandumPdf({
         title: deal.name,
         city: deal.city,
@@ -2680,6 +2802,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         metricsLines,
         notes: 'AI Deal Finder Simulated Memorandum',
         watermarkText: data?.watermark,
+        isWatermarked: Boolean(data?.isWatermarked ?? license.planKey === 'free'),
+        branding: data?.branding || (canWhiteLabelReports ? user.branding || null : null),
       });
       showToast(`Exported PDF: ${filename}`);
     } catch {
@@ -2690,6 +2814,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         planDisplay: license.displayName,
         metricsLines,
         notes: 'AI Deal Finder Simulated Memorandum',
+        isWatermarked: license.planKey === 'free',
+        branding: canWhiteLabelReports ? user.branding || null : null,
       });
       showToast(`Exported PDF: ${filename}`);
     }
@@ -3611,20 +3737,39 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         body: JSON.stringify({
           email: user.email,
           format: 'pdf',
+          docType: canMemorandumPdf ? 'memorandum' : 'pdf',
           propertyTitle: title,
         }),
       });
       if (res.status === 403) {
         const err = await res.json().catch(() => ({}));
-        showToast(err?.error || 'Available in PROFESSIONAL - Upgrade');
+        if (err?.locked) applyServerLockFromResponse(err);
+        showToast(err?.error || 'PDF quota or plan upgrade required');
         onOpenRenewal();
         return;
       }
-      await res.json().catch(() => ({}));
-      const filename = downloadInstitutionalMemorandumPdf(memoPayload);
+      const data = await res.json().catch(() => ({}));
+      const nextLeft = typeof data?.analyses_left === 'number' ? data.analyses_left : user.analysesLeft;
+      onUpdateUser({
+        ...user,
+        ...(typeof nextLeft === 'number'
+          ? { analysesLeft: nextLeft, freeAnalyses: nextLeft, freeAnalysesLeft: nextLeft }
+          : {}),
+        ...(typeof data?.analyses_used === 'number' ? { analysesUsed: data.analyses_used } : {}),
+        ...(typeof data?.pdfs_used === 'number' ? { pdfsUsed: data.pdfs_used } : {}),
+      });
+      const filename = downloadInstitutionalMemorandumPdf({
+        ...memoPayload,
+        isWatermarked: Boolean(data?.isWatermarked ?? license.planKey === 'free'),
+        branding: data?.branding || (canWhiteLabelReports ? user.branding || null : null),
+      });
       showToast(`Downloaded Institutional Memorandum PDF: ${filename}`);
     } catch {
-      const filename = downloadInstitutionalMemorandumPdf(memoPayload);
+      const filename = downloadInstitutionalMemorandumPdf({
+        ...memoPayload,
+        isWatermarked: license.planKey === 'free',
+        branding: canWhiteLabelReports ? user.branding || null : null,
+      });
       showToast(`Downloaded Institutional Memorandum PDF: ${filename}`);
     }
   };
@@ -3992,7 +4137,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
           {/* Analyses Left Badge */}
           <div className={`hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-xl border text-xs font-mono ${
-            !license.isUnlimitedAnalyses && analysesRemaining <= 0
+            analysesRemaining <= 0
               ? 'bg-rose-950/40 border-rose-500/30 text-rose-300'
               : 'bg-[#D4AF37]/10 border-[#D4AF37]/30 text-[#D4AF37]'
           }`}>
@@ -5532,7 +5677,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         );
                       })()}
 
-                      {/* PDF Investment Memorandum Export (Professional+) */}
+                      {/* PDF Memorandum / Watermarked Report Export */}
                       <div className="pt-2">
                         {canPdfExport ? (
                           <Button
@@ -5542,19 +5687,25 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             className="w-full"
                           >
                             <Download className="w-3.5 h-3.5 text-[#D4AF37]" />
-                            <span>EXPORT PDF MEMORANDUM</span>
+                            <span>
+                              {canMemorandumPdf
+                                ? 'EXPORT MEMORANDUM PDF (-1 CREDIT)'
+                                : license.planKey === 'free'
+                                ? 'EXPORT WATERMARKED PDF (-1 CREDIT)'
+                                : 'EXPORT INVESTMENT PDF (-1 CREDIT)'}
+                            </span>
                           </Button>
                         ) : (
                           <button
                             type="button"
                             onClick={() => {
-                              showToast('PDF Export available in PROFESSIONAL / SOVEREIGN - Upgrade');
+                              showToast('PDF Export upgrade required');
                               onOpenRenewal();
                             }}
                             className="w-full py-2.5 px-4 rounded-xl text-xs font-mono font-semibold bg-white/[0.03] text-amber-300 border border-amber-500/30 hover:border-amber-400/60 transition flex items-center justify-center gap-2 cursor-pointer"
                           >
                             <Lock className="w-3.5 h-3.5 text-amber-400" />
-                            <span>PDF Export available in PROFESSIONAL / SOVEREIGN - Upgrade</span>
+                            <span>PDF Export - Upgrade Plan</span>
                           </button>
                         )}
                       </div>
@@ -6363,7 +6514,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 <div>
                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-xs font-mono text-[#D4AF37] mb-2">
                     <Radar className="w-3.5 h-3.5" />
-                    <span>AI DEAL FINDER • PROFESSIONAL / SOVEREIGN</span>
+                    <span>AI DEAL FINDER • {license.planKey === 'free' ? 'LIMITED PREVIEW (2 DEALS)' : 'FULL SCAN (5 DEALS)'}</span>
                   </div>
                   <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
                     AI Deal Finder
@@ -6374,16 +6525,28 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
+              {license.planKey === 'free' && (
+                <div className="p-4 rounded-2xl bg-amber-950/30 border border-[#D4AF37]/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="text-xs font-mono text-zinc-200">
+                    <strong className="text-[#D4AF37]">FREE Tier Preview:</strong> Deal Finder returns up to 2 sample ranked deals. Upgrade to STARTER ($75) or PROFESSIONAL ($199) for full 5-deal scans.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenRenewal}
+                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono uppercase cursor-pointer shrink-0"
+                  >
+                    Upgrade Plan
+                  </button>
+                </div>
+              )}
+
               {!canDealFinder && (
                 <div className="p-5 rounded-2xl bg-amber-950/35 border border-[#D4AF37]/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                   <div className="flex items-start gap-3">
                     <Lock className="w-5 h-5 text-[#D4AF37] shrink-0 mt-0.5" />
                     <div className="space-y-1">
                       <div className="text-sm font-mono font-bold text-[#D4AF37]">
-                        AI Deal Finder available in PROFESSIONAL / SOVEREIGN - Upgrade
-                      </div>
-                      <div className="text-xs font-mono text-zinc-300">
-                        FREE and STARTER accounts cannot scan deals. Upgrade to unlock 5 ranked simulated deals per scan.
+                        {lockBannerMessage}
                       </div>
                     </div>
                   </div>
@@ -6392,7 +6555,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     onClick={onOpenRenewal}
                     className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono uppercase tracking-wider cursor-pointer shrink-0"
                   >
-                    Upgrade Plan
+                    Upgrade / Renew
                   </button>
                 </div>
               )}
@@ -6559,7 +6722,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       isFindingDeals ||
                       isExpired ||
                       !isCreditsLoaded ||
-                      (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                      analysesRemaining <= 0
                         ? undefined
                         : { scale: 1.02 }
                     }
@@ -6568,7 +6731,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       isFindingDeals ||
                       isExpired ||
                       !isCreditsLoaded ||
-                      (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                      analysesRemaining <= 0
                         ? undefined
                         : { scale: 0.99 }
                     }
@@ -6578,14 +6741,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       isFindingDeals ||
                       isExpired ||
                       !isCreditsLoaded ||
-                      (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                      analysesRemaining <= 0
                     }
                     onClick={handleFindDeals}
                     className={`px-6 py-3.5 rounded-xl font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition min-h-[46px] ${
                       !canDealFinder ||
                       isExpired ||
                       !isCreditsLoaded ||
-                      (!license.isUnlimitedAnalyses && analysesRemaining <= 0)
+                      analysesRemaining <= 0
                         ? 'bg-zinc-800 text-zinc-500 border border-white/10 cursor-not-allowed'
                         : 'bg-[#D4AF37] hover:bg-[#F3E5AB] text-black cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.3)]'
                     }`}
@@ -6602,10 +6765,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       </>
                     ) : !isCreditsLoaded ? (
                       <span>Loading...</span>
-                    ) : !license.isUnlimitedAnalyses && analysesRemaining <= 0 ? (
+                    ) : analysesRemaining <= 0 ? (
                       <>
                         <Lock className="w-4 h-4 text-rose-400" />
-                        <span>No analyses left</span>
+                        <span>No credits left</span>
                       </>
                     ) : (
                       <>
@@ -6616,7 +6779,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </motion.button>
 
                   <span className="text-[11px] font-mono text-zinc-400">
-                    Returns 5 ranked deals sorted by institutional score (0-100)
+                    {license.planKey === 'free'
+                      ? 'Free tier returns 2 preview deals (STARTER+ returns 5 ranked deals)'
+                      : 'Returns 5 ranked deals sorted by institutional score (0-100)'}
                   </span>
                 </div>
               </div>
@@ -6867,18 +7032,31 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   {/* Period */}
                   <div className="space-y-1.5">
                     <label htmlFor="fc-period" className="text-xs font-mono text-zinc-300 block">
-                      Forecast Period
+                      Forecast Period {!canForecastAdvanced && <span className="text-amber-300">(12M Starter • 3Y/5Y Pro+)</span>}
                     </label>
                     <select
                       id="fc-period"
                       disabled={!canMarketForecast}
-                      value={fcPeriod}
-                      onChange={(e) => setFcPeriod(e.target.value as '12 months' | '3 years' | '5 years')}
+                      value={!canForecastAdvanced ? '12 months' : fcPeriod}
+                      onChange={(e) => {
+                        const val = e.target.value as '12 months' | '3 years' | '5 years';
+                        if (!canForecastAdvanced && val !== '12 months') {
+                          showToast('3-Year & 5-Year Forecasts unlock in PROFESSIONAL ($199)+');
+                          onOpenRenewal();
+                          setFcPeriod('12 months');
+                          return;
+                        }
+                        setFcPeriod(val);
+                      }}
                       className="w-full px-3 py-2.5 rounded-xl bg-black/70 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
                     >
                       <option value="12 months">12 months</option>
-                      <option value="3 years">3 years</option>
-                      <option value="5 years">5 years</option>
+                      <option value="3 years" disabled={!canForecastAdvanced}>
+                        3 years{!canForecastAdvanced ? ' (PRO+)' : ''}
+                      </option>
+                      <option value="5 years" disabled={!canForecastAdvanced}>
+                        5 years{!canForecastAdvanced ? ' (PRO+)' : ''}
+                      </option>
                     </select>
                   </div>
                 </div>
@@ -7442,7 +7620,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     ) : !canDueDiligence ? (
                       <>
                         <Lock className="w-4 h-4" />
-                        <span>Run Due Diligence (-1 CREDIT)</span>
+                        <span>Run Due Diligence (-2 CREDITS)</span>
                       </>
                     ) : isRunningDd ? (
                       <>
@@ -7452,7 +7630,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     ) : (
                       <>
                         <ShieldCheck className="w-4 h-4" />
-                        <span>Run Due Diligence (-1 CREDIT)</span>
+                        <span>Run Due Diligence (-2 CREDITS)</span>
                       </>
                     )}
                   </motion.button>
@@ -7669,14 +7847,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 <div>
                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/25 text-xs font-mono text-purple-300 mb-2">
                     <PieChart className="w-3.5 h-3.5" />
-                    <span>GLOBAL PORTFOLIO OPTIMIZER • SOVEREIGN ONLY</span>
+                    <span>GLOBAL PORTFOLIO OPTIMIZER • PRO / SOVEREIGN / ENTERPRISE</span>
                   </div>
                   <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
                     Global Portfolio Optimizer
                   </h2>
                 </div>
                 <div className="text-xs font-mono text-zinc-400">
-                  Credits Remaining: <strong className="text-[#D4AF37]">{isAccountLocked ? '0 analyses left' : analysesLeftStr}</strong>
+                  Credits Remaining: <strong className="text-[#D4AF37]">{isAccountLocked ? '0 credits left' : analysesLeftStr}</strong>
                 </div>
               </div>
 
@@ -7688,12 +7866,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="text-sm font-mono font-bold text-[#D4AF37]">
                         {isAccountLocked
                           ? lockBannerMessage
-                          : 'Global Portfolio Optimizer available in SOVEREIGN only - Upgrade to SOVEREIGN'}
+                          : 'Global Portfolio Optimizer available in PROFESSIONAL / SOVEREIGN - Upgrade'}
                       </div>
                       <div className="text-xs font-mono text-zinc-300">
                         {isAccountLocked
-                          ? 'Renew or upgrade your SOVEREIGN plan to allocate capital across global markets.'
-                          : 'Multi-city capital allocation optimization is exclusively available on the SOVEREIGN institutional tier.'}
+                          ? 'Renew or upgrade your plan to allocate capital across global markets.'
+                          : 'Multi-city capital allocation optimization unlocks in PROFESSIONAL ($199) and above.'}
                       </div>
                     </div>
                   </div>
@@ -7702,7 +7880,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     onClick={onOpenRenewal}
                     className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono uppercase tracking-wider cursor-pointer shrink-0"
                   >
-                    {isAccountLocked ? 'Upgrade / Renew' : 'Upgrade to SOVEREIGN'}
+                    {isAccountLocked ? 'Upgrade / Renew' : 'Upgrade Plan'}
                   </button>
                 </div>
               )}
@@ -7869,7 +8047,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     ) : !canPortfolioOptimizer ? (
                       <>
                         <Lock className="w-4 h-4" />
-                        <span>Optimize Portfolio (-1 CREDIT)</span>
+                        <span>Optimize Portfolio (-2 CREDITS)</span>
                       </>
                     ) : isRunningOpt ? (
                       <>
@@ -7879,7 +8057,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     ) : (
                       <>
                         <PieChart className="w-4 h-4" />
-                        <span>Optimize Portfolio (-1 CREDIT)</span>
+                        <span>Optimize Portfolio (-2 CREDITS)</span>
                       </>
                     )}
                   </button>
@@ -8060,14 +8238,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 <div>
                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/25 text-xs font-mono text-purple-300 mb-2">
                     <Bot className="w-3.5 h-3.5" />
-                    <span>INSTITUTIONAL AI ADVISOR • SOVEREIGN ONLY</span>
+                    <span>INSTITUTIONAL AI ADVISOR • PRO / SOVEREIGN / ENTERPRISE</span>
                   </div>
                   <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
                     Institutional AI Advisor
                   </h2>
                 </div>
                 <div className="text-xs font-mono text-zinc-400">
-                  Credits Remaining: <strong className="text-[#D4AF37]">{isAccountLocked ? '0 analyses left' : analysesLeftStr}</strong>
+                  Credits Remaining: <strong className="text-[#D4AF37]">{isAccountLocked ? '0 credits left' : analysesLeftStr}</strong>
                 </div>
               </div>
 
@@ -8079,12 +8257,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="text-sm font-mono font-bold text-[#D4AF37]">
                         {isAccountLocked
                           ? lockBannerMessage
-                          : 'Institutional AI Advisor available in SOVEREIGN only - Upgrade to SOVEREIGN'}
+                          : 'Institutional AI Advisor available in PROFESSIONAL / SOVEREIGN - Upgrade'}
                       </div>
                       <div className="text-xs font-mono text-zinc-300">
                         {isAccountLocked
-                          ? 'Renew or upgrade your SOVEREIGN plan to consult the Institutional AI Advisor.'
-                          : 'Bespoke investment memos comparing global cap rates, tax regimes, and capital budgets are exclusive to SOVEREIGN.'}
+                          ? 'Renew or upgrade your plan to consult the Institutional AI Advisor.'
+                          : 'Bespoke investment memos comparing global cap rates, tax regimes, and capital budgets unlock in PROFESSIONAL ($199)+.'}
                       </div>
                     </div>
                   </div>
@@ -8093,7 +8271,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     onClick={onOpenRenewal}
                     className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] text-black font-bold text-xs font-mono uppercase tracking-wider cursor-pointer shrink-0"
                   >
-                    {isAccountLocked ? 'Upgrade / Renew' : 'Upgrade to SOVEREIGN'}
+                    {isAccountLocked ? 'Upgrade / Renew' : 'Upgrade Plan'}
                   </button>
                 </div>
               )}
@@ -8223,7 +8401,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     ) : !canInstitutionalAdvisor ? (
                       <>
                         <Lock className="w-4 h-4" />
-                        <span>Ask Advisor (-1 CREDIT)</span>
+                        <span>Ask Advisor (-2 CREDITS)</span>
                       </>
                     ) : isAskingAdvisor ? (
                       <>
@@ -8233,7 +8411,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     ) : (
                       <>
                         <Bot className="w-4 h-4" />
-                        <span>Ask Advisor (-1 CREDIT)</span>
+                        <span>Ask Advisor (-2 CREDITS)</span>
                       </>
                     )}
                   </button>
@@ -8393,6 +8571,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 lockBannerMessage={lockBannerMessage}
                 analysesLeftStr={analysesLeftStr}
                 canPdfExport={canPdfExport}
+                canMemorandumPdf={canMemorandumPdf}
+                imagePdfUsed={user.imagePdfUsed ?? 0}
+                imagePdfLimit={user.imagePdfLimit ?? PLANS[license.planKey].imagePdfLimit}
+                isFreeTier={license.planKey === 'free'}
+                branding={canWhiteLabelReports ? user.branding || null : null}
                 persistedReport={user.lastResults?.file_analysis || null}
                 onReportCreated={(report, billingPatch) => {
                   onUpdateUser({
@@ -8406,6 +8589,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       : {}),
                     ...(typeof billingPatch?.analysesUsed === 'number'
                       ? { analysesUsed: billingPatch.analysesUsed }
+                      : {}),
+                    ...(typeof billingPatch?.imagePdfUsed === 'number'
+                      ? { imagePdfUsed: billingPatch.imagePdfUsed }
+                      : {}),
+                    ...(typeof billingPatch?.pdfsUsed === 'number'
+                      ? { pdfsUsed: billingPatch.pdfsUsed }
                       : {}),
                     lastResults: {
                       ...(user.lastResults || {}),
@@ -8448,10 +8637,51 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
               <PropertyStudioTab
                 userEmail={user.email}
                 userName={user.name}
+                aiListingsUsed={user.aiListingsUsed ?? 0}
+                aiListingLimit={user.aiListingLimit ?? PLANS[license.planKey].aiListingLimit}
+                isAccountLocked={isAccountLocked}
+                isFreeTier={license.planKey === 'free'}
+                canMemorandumPdf={canMemorandumPdf}
+                branding={canWhiteLabelReports ? user.branding || null : null}
                 persistedDraft={user.lastResults?.property_studio || null}
-                onDraftSaved={(draft) => {
+                onUsageUpdate={(patch) => {
                   onUpdateUser({
                     ...user,
+                    ...(typeof patch.analysesLeft === 'number'
+                      ? {
+                          analysesLeft: patch.analysesLeft,
+                          freeAnalyses: patch.analysesLeft,
+                          freeAnalysesLeft: patch.analysesLeft,
+                        }
+                      : {}),
+                    ...(typeof patch.analysesUsed === 'number'
+                      ? { analysesUsed: patch.analysesUsed }
+                      : {}),
+                    ...(typeof patch.aiListingsUsed === 'number'
+                      ? { aiListingsUsed: patch.aiListingsUsed }
+                      : {}),
+                    ...(typeof patch.pdfsUsed === 'number'
+                      ? { pdfsUsed: patch.pdfsUsed }
+                      : {}),
+                  });
+                }}
+                onOpenRenewal={onOpenRenewal}
+                onDraftSaved={(draft, billingPatch) => {
+                  onUpdateUser({
+                    ...user,
+                    ...(typeof billingPatch?.analysesLeft === 'number'
+                      ? {
+                          analysesLeft: billingPatch.analysesLeft,
+                          freeAnalyses: billingPatch.analysesLeft,
+                          freeAnalysesLeft: billingPatch.analysesLeft,
+                        }
+                      : {}),
+                    ...(typeof billingPatch?.analysesUsed === 'number'
+                      ? { analysesUsed: billingPatch.analysesUsed }
+                      : {}),
+                    ...(typeof billingPatch?.aiListingsUsed === 'number'
+                      ? { aiListingsUsed: billingPatch.aiListingsUsed }
+                      : {}),
                     lastResults: {
                       ...(user.lastResults || {}),
                       property_studio: draft,
@@ -8470,6 +8700,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 userEmail={user.email}
                 currentCurrency={currentCurrency}
                 savedAnalyses={savedAnalyses}
+                compareLimit={user.compareLimit ?? PLANS[license.planKey].compareLimit}
+                onOpenRenewal={onOpenRenewal}
                 persistedComparison={user.lastResults?.scenario_comparison || null}
                 onComparisonSaved={(payload) => {
                   onUpdateUser({
@@ -8492,6 +8724,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 userEmail={user.email}
                 currentCurrency={currentCurrency}
                 savedAnalyses={savedAnalyses}
+                teamUsersLimit={user.teamUsersLimit ?? PLANS[license.planKey].teamUsersLimit}
+                isInstitutional={license.planKey === 'institutional'}
               />
             </div>
           )}
@@ -8905,6 +9139,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 currentCurrency={currentCurrency}
                 savedAnalyses={savedAnalyses}
                 initialAssets={user.portfolioAssets}
+                portfolioAssetsLimit={user.portfolioAssetsLimit ?? PLANS[license.planKey].portfolioAssetsLimit}
               />
             </div>
           )}
@@ -9014,7 +9249,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 )}
               </div>
 
-              <MarketIntelligencePanel currentCurrency={currentCurrency} />
+              <MarketIntelligencePanel
+                currentCurrency={currentCurrency}
+                onOpenRenewal={onOpenRenewal}
+              />
             </div>
           )}
 
@@ -9075,6 +9313,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <Zap className="w-3.5 h-3.5 fill-black" />
                       <span>Switch / Renew Plan</span>
                     </button>
+                    <button
+                      onClick={onOpenRenewal}
+                      className="px-3.5 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-bold text-xs font-mono cursor-pointer transition"
+                    >
+                      + Buy AI Credits
+                    </button>
                   </div>
                 </div>
 
@@ -9086,8 +9330,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </div>
 
                   <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">ANALYSES LEFT</span>
+                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">CREDITS LEFT</span>
                     <strong className="text-base font-bold font-mono text-white">{analysesLeftStr}</strong>
+                    {(user.extraCredits ?? 0) > 0 && (
+                      <span className="text-[10px] font-mono text-emerald-400 block mt-0.5">
+                        Includes +{user.extraCredits} top-up credits
+                      </span>
+                    )}
                   </div>
 
                   <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
@@ -9113,6 +9362,46 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     <strong className="text-sm font-bold font-mono text-zinc-200">
                       {endsAt ? new Date(endsAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 'No Expiry'}
                     </strong>
+                  </div>
+                </div>
+
+                {/* Strict Server Quota Meters (Month / Daily Entitlements) */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-4">
+                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                    <div className="text-[10px] text-zinc-400 uppercase">Image / PDF Scans</div>
+                    <div className="text-sm font-bold text-white mt-0.5">
+                      {user.imagePdfUsed ?? 0} / {user.imagePdfLimit ?? PLANS[license.planKey].imagePdfLimit}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                    <div className="text-[10px] text-zinc-400 uppercase">AI Listings</div>
+                    <div className="text-sm font-bold text-white mt-0.5">
+                      {user.aiListingsUsed ?? 0} / {user.aiListingLimit ?? PLANS[license.planKey].aiListingLimit}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                    <div className="text-[10px] text-zinc-400 uppercase">PDF Exports / mo</div>
+                    <div className="text-sm font-bold text-white mt-0.5">
+                      {user.pdfsUsed ?? 0} / {user.investmentPdfLimit ?? PLANS[license.planKey].investmentPdfLimit}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                    <div className="text-[10px] text-zinc-400 uppercase">Portfolio Cap</div>
+                    <div className="text-sm font-bold text-[#D4AF37] mt-0.5">
+                      {(user.portfolioAssets?.length ?? 0)} / {user.portfolioAssetsLimit ?? PLANS[license.planKey].portfolioAssetsLimit}
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                    <div className="text-[10px] text-zinc-400 uppercase">Compare / Seats</div>
+                    <div className="text-sm font-bold text-cyan-300 mt-0.5">
+                      {user.compareLimit ?? PLANS[license.planKey].compareLimit}x / {user.teamUsersLimit ?? PLANS[license.planKey].teamUsersLimit}u
+                    </div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                    <div className="text-[10px] text-zinc-400 uppercase">REST API Today</div>
+                    <div className="text-sm font-bold text-purple-300 mt-0.5">
+                      {user.apiCallsToday ?? 0} / {PLANS[license.planKey].apiDailyLimit.toLocaleString('en-US')}
+                    </div>
                   </div>
                 </div>
 
@@ -9461,9 +9750,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </strong>
                   </div>
                   <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
-                    <span className="text-[10px] text-zinc-400 uppercase block">Analyses Used</span>
+                    <span className="text-[10px] text-zinc-400 uppercase block">Credits Used</span>
                     <strong className="text-sm font-bold text-white">
-                      {user.analysesUsed ?? 0} / {license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLimit}
+                      {user.analysesUsed ?? 0} / {license.analysesLimit}
                     </strong>
                   </div>
                   <div className="p-3 rounded-xl bg-white/[0.02] border border-white/[0.06]">
@@ -9662,13 +9951,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 <h3 className="text-sm font-mono font-bold uppercase text-white">Feature Entitlements Checklist</h3>
                 <div className="space-y-2 text-sm font-mono">
                   {[
-                    { label: 'Basic Cap Rate & Cash-on-Cash', unlocked: true, req: 'FREE' },
-                    { label: 'Yield & Sensitivity Calculator + Full Matrix', unlocked: canSensitivity, req: 'STARTER' },
-                    { label: 'Monte Carlo Stress Tests (+200bps)', unlocked: canMonteCarlo, req: 'PROFESSIONAL' },
-                    { label: 'PDF Memorandum Export', unlocked: canPdfExport, req: 'PROFESSIONAL' },
-                    { label: 'Multi-Asset Portfolio Aggregation', unlocked: canPortfolioAgg, req: 'PROFESSIONAL' },
-                    { label: 'Full REST API Credentials', unlocked: canApiAccess, req: 'SOVEREIGN' },
-                    { label: '1-on-1 Dedicated Analyst Desk & Custom Underwriting', unlocked: canAnalystDesk && canCustomUnderwriting, req: 'SOVEREIGN' },
+                    { label: 'Basic Cap Rate, Watermarked PDF Trial & Deal Preview', unlocked: true, req: 'FREE' },
+                    { label: 'Yield & Sensitivity, 1,000 Monte Carlo, Full Matrix & 12M Forecast', unlocked: canSensitivity, req: 'STARTER' },
+                    { label: 'Memorandum PDF, Advanced Stress (5,000 Monte Carlo), DD & REST API (100/day)', unlocked: canMemorandumPdf, req: 'PROFESSIONAL' },
+                    { label: 'White-Label Reports, 10,000 Monte Carlo, 1-on-1 Analyst Desk & 2,000 req/day API', unlocked: canWhiteLabelReports, req: 'SOVEREIGN' },
+                    { label: 'Full Platform White-Label, Audit Trail & Contract SLA (1,000/mo, 10,000 req/day)', unlocked: license.planKey === 'institutional', req: 'ENTERPRISE' },
                   ].map((item) => (
                     <div key={item.label} className="flex items-center justify-between p-3 rounded-lg bg-white/[0.02]">
                       <div className="flex items-center gap-2">
@@ -9692,20 +9979,91 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   onClick={onOpenRenewal}
                   className="mt-4 px-5 py-2.5 rounded-xl bg-[#D4AF37] text-black font-bold text-sm font-mono cursor-pointer"
                 >
-                  Upgrade / Renew Subscription
+                  Upgrade / Renew / Buy AI Credits
                 </button>
               </div>
 
-              {/* Sovereign API Credentials & Dedicated Analyst Desk */}
+              {/* White-Label PDF & Report Branding (SOVEREIGN & ENTERPRISE) */}
+              <div className="glass-panel p-6 border border-[#D4AF37]/30 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-mono font-bold uppercase text-[#D4AF37]">
+                    White-Label PDF &amp; Report Branding ({license.planKey === 'institutional' ? 'Full Platform + Reports' : 'Institutional Reports'})
+                  </div>
+                  <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-[#D4AF37]/15 text-[#D4AF37] border border-[#D4AF37]/30">
+                    SOVEREIGN / ENTERPRISE
+                  </span>
+                </div>
+                {canWhiteLabelReports ? (
+                  <form onSubmit={handleSaveBranding} className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
+                    <div>
+                      <label className="text-zinc-400 block mb-1 uppercase text-[10px]">Firm / Organization Name</label>
+                      <input
+                        type="text"
+                        value={brandingFirmDraft}
+                        onChange={(e) => setBrandingFirmDraft(e.target.value)}
+                        placeholder="e.g. Gulf Sovereign Capital"
+                        className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-zinc-400 block mb-1 uppercase text-[10px]">Brand Accent Hex</label>
+                      <input
+                        type="text"
+                        value={brandingColorDraft}
+                        onChange={(e) => setBrandingColorDraft(e.target.value)}
+                        placeholder="#D4AF37"
+                        className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-zinc-400 block mb-1 uppercase text-[10px]">Logo HTTPS URL (Optional)</label>
+                      <input
+                        type="url"
+                        value={brandingLogoDraft}
+                        onChange={(e) => setBrandingLogoDraft(e.target.value)}
+                        placeholder="https://example.com/logo.png"
+                        className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/15 text-white outline-none focus:border-[#D4AF37]"
+                      />
+                    </div>
+                    <div className="sm:col-span-3 flex items-center justify-between pt-1">
+                      <span className="text-[11px] text-zinc-400">
+                        Applied automatically to Institutional Memorandum, Studio &amp; Deal PDFs.
+                      </span>
+                      <button
+                        type="submit"
+                        disabled={isSavingBranding}
+                        className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs cursor-pointer disabled:opacity-50"
+                      >
+                        {isSavingBranding ? 'Saving Branding...' : 'Save White-Label Branding'}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-mono text-zinc-300">
+                    <span>Upgrade to SOVEREIGN ($599) or ENTERPRISE ($1,499) to customize PDF headers, firm name, accent color &amp; remove default AQARI branding.</span>
+                    <button
+                      type="button"
+                      onClick={onOpenRenewal}
+                      className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs shrink-0 cursor-pointer"
+                    >
+                      Upgrade Plan
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* REST API Credentials & Executive Services */}
               {canApiAccess ? (
                 <div className="glass-panel p-6 border border-purple-500/40 space-y-5">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-purple-400 font-mono text-xs font-bold uppercase">
                       <Key className="w-4 h-4" />
-                      <span>Sovereign REST API Credentials &amp; Executive Services</span>
+                      <span>
+                        REST API Credentials ({PLANS[license.planKey].apiDailyLimit.toLocaleString('en-US')} req/day)
+                      </span>
                     </div>
                     <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300 font-bold">
-                      WHITE-GLOVE UNDERWRITING ACTIVE
+                      {canAnalystDesk ? 'ANALYST DESK & WHITE-GLOVE ACTIVE' : `API RATE CAP: ${PLANS[license.planKey].apiDailyLimit}/DAY`}
                     </span>
                   </div>
 
@@ -9745,7 +10103,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     {showApiDocs && (
                       <div className="mt-2 p-3 rounded-lg bg-zinc-950 border border-white/10 text-[11px] font-mono text-zinc-300 space-y-1">
                         <div>POST /api/analyze • Header: Authorization: Bearer {maskedApiKeyDisplay || '****'} (Click COPY above for full secret)</div>
-                        <div className="text-amber-300">Your developer needs to integrate this. Not automatic.</div>
+                        <div className="text-amber-300">Daily Server Quota: {user.apiCallsToday ?? 0} / {PLANS[license.planKey].apiDailyLimit.toLocaleString('en-US')} calls today.</div>
                       </div>
                     )}
                   </div>
@@ -9778,9 +10136,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="flex items-start gap-3">
                     <Lock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
                     <div className="text-xs font-mono text-zinc-300 space-y-1">
-                      <div className="font-bold text-white">Available in SOVEREIGN - Upgrade</div>
+                      <div className="font-bold text-white">REST API Available in PROFESSIONAL+ ($199) - Upgrade</div>
                       <div className="text-zinc-400">
-                        Unlock Full REST API Credentials, 1-on-1 Dedicated Analyst Desk, and White-glove Custom Underwriting.
+                        Unlock REST API Credentials (PRO 100/day, SOVEREIGN 2,000/day, ENTERPRISE 10,000/day), Dedicated Analyst Desk, and White-Label Reporting.
                       </div>
                     </div>
                   </div>
@@ -9789,7 +10147,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     onClick={onOpenRenewal}
                     className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold text-xs font-mono shrink-0 cursor-pointer"
                   >
-                    Upgrade to SOVEREIGN
+                    Upgrade Plan
                   </button>
                 </div>
               )}

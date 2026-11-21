@@ -258,7 +258,7 @@ export const DocumentDueDiligencePanel: React.FC<DocumentDueDiligencePanelProps>
           <FileCheck2 className="w-4 h-4" />
         )}
         <span>
-          {isScanning ? 'Extracting & Cross-Checking Documents...' : 'Scan Documents vs Financial Model (-1 CREDIT)'}
+          {isScanning ? 'Extracting & Cross-Checking Documents...' : 'Scan Documents vs Financial Model (-3 CREDITS)'}
         </span>
       </button>
 

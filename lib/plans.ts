@@ -136,6 +136,7 @@ export interface ExtraCreditPack {
   credits: number;
   priceUSD: number;
   perCreditUSD: string;
+  badge?: string;
   description: string;
 }
 
@@ -146,6 +147,7 @@ export const EXTRA_CREDIT_PACKS: ExtraCreditPack[] = [
     credits: 25,
     priceUSD: 19,
     perCreditUSD: '$0.76',
+    badge: 'Instant top-up',
     description: 'Immediate top-up for extra underwriting, Deal Finder, or OCR extractions.',
   },
   {
@@ -154,6 +156,7 @@ export const EXTRA_CREDIT_PACKS: ExtraCreditPack[] = [
     credits: 100,
     priceUSD: 59,
     perCreditUSD: '$0.59',
+    badge: 'Most popular',
     description: 'Active acquisition sprint pack for Due Diligence & Studio workflows.',
   },
   {
@@ -162,6 +165,7 @@ export const EXTRA_CREDIT_PACKS: ExtraCreditPack[] = [
     credits: 500,
     priceUSD: 249,
     perCreditUSD: '$0.50',
+    badge: 'Best value',
     description: 'High-volume credit reserve for teams, portfolios, and multi-doc DD.',
   },
 ];
@@ -352,7 +356,7 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
       'Global Portfolio Optimizer + Institutional Advisor',
       'Cross-Border Full + Tax & Sovereign Radar',
       'Portfolio 100 assets • Compare 10 scenarios',
-      'Unlimited saves (fair-use cap 2,000)',
+      'Save up to 2,000 analyses',
       'Limited REST API (100 req/day) • 2 users',
       'Priority support',
       'No White Label branding',
@@ -420,7 +424,7 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
       'Monte Carlo 10,000 cycles + Advanced Stress',
       'Sovereign Radar + Cross-Border Intelligence',
       'Portfolio 400 assets • Compare 25 scenarios',
-      'Unlimited saves (fair-use cap 5,000)',
+      'Save up to 5,000 analyses',
       'Full REST API (2,000 req/day) • 10 users + RBAC',
       'High priority + Dedicated Analyst Desk',
     ],

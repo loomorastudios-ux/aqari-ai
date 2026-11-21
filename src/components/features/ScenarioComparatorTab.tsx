@@ -22,6 +22,8 @@ interface ScenarioComparatorTabProps {
   userEmail: string;
   currentCurrency: CurrencyCode;
   savedAnalyses: SavedAnalysis[];
+  compareLimit?: number;
+  onOpenRenewal?: () => void;
   persistedComparison?: { scenarios: ScenarioCompareOutput[]; created_at: string } | null;
   onComparisonSaved: (payload: { scenarios: ScenarioCompareOutput[]; created_at: string }) => void;
 }
@@ -63,12 +65,16 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
   userEmail,
   currentCurrency,
   savedAnalyses,
+  compareLimit = 3,
+  onOpenRenewal,
   persistedComparison,
   onComparisonSaved,
 }) => {
-  const [inputs, setInputs] = useState<ScenarioCompareInput[]>(DEFAULT_INPUTS);
+  const maxAllowedSlots = Math.max(1, compareLimit);
+  const initialSlices = DEFAULT_INPUTS.slice(0, Math.min(3, maxAllowedSlots));
+  const [inputs, setInputs] = useState<ScenarioCompareInput[]>(initialSlices);
   const [results, setResults] = useState<ScenarioCompareOutput[]>(
-    persistedComparison?.scenarios || []
+    persistedComparison?.scenarios?.slice(0, maxAllowedSlots) || []
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,6 +82,7 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
   const runComparison = async (customInputs = inputs) => {
     setLoading(true);
     setError(null);
+    const payloadInputs = customInputs.slice(0, maxAllowedSlots);
     try {
       const res = await fetch('/api/app?action=scenario-compare', {
         method: 'POST',
@@ -84,7 +91,7 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
         body: JSON.stringify({
           email: userEmail,
           login_email: userEmail,
-          scenarios: customInputs,
+          scenarios: payloadInputs,
         }),
       });
       const data = await res.json();
@@ -106,7 +113,7 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
 
   useEffect(() => {
     if (!persistedComparison?.scenarios?.length) {
-      runComparison(DEFAULT_INPUTS);
+      runComparison(initialSlices);
     }
   }, []);
 
@@ -142,10 +149,10 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
             <span>CROSS-BORDER SCENARIO COMPARATOR</span>
           </div>
           <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-            Compare 3 Properties / Scenarios: Muscat vs Dubai vs Riyadh
+            Compare Properties / Scenarios (Up to {maxAllowedSlots})
           </h2>
           <p className="text-xs font-mono text-zinc-400 mt-1">
-            Side-by-side Net Yield, Financing (LTV / Debt Service / DSCR), Risk, Tax &amp; Visa, and Liquidity comparison.
+            Side-by-side Net Yield, Financing (LTV / Debt Service / DSCR), Risk, Tax &amp; Visa, and Liquidity comparison • 0 AI Credits.
           </p>
         </div>
 
@@ -156,9 +163,26 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
           className="px-5 py-3 rounded-xl bg-[#D4AF37] hover:bg-[#F3E5AB] text-black font-mono font-bold text-xs uppercase tracking-wider flex items-center gap-2 cursor-pointer shrink-0 disabled:opacity-50"
         >
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-          <span>Compare 3 Scenarios</span>
+          <span>Compare {inputs.length} {inputs.length === 1 ? 'Scenario' : 'Scenarios'}</span>
         </button>
       </div>
+
+      {maxAllowedSlots < 3 && (
+        <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-amber-200">
+          <span>
+            FREE plan supports {maxAllowedSlots} scenario preview. Upgrade to STARTER (3 scenarios), PRO (10), SOVEREIGN (25), or ENTERPRISE (50).
+          </span>
+          {onOpenRenewal && (
+            <button
+              type="button"
+              onClick={onOpenRenewal}
+              className="px-3 py-1.5 rounded-lg bg-[#D4AF37] text-black font-bold cursor-pointer"
+            >
+              Upgrade Plan
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 3 Editable Scenario Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono">

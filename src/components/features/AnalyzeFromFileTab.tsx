@@ -31,8 +31,16 @@ interface AnalyzeFromFileTabProps {
   lockBannerMessage: string;
   analysesLeftStr: string;
   canPdfExport: boolean;
+  canMemorandumPdf?: boolean;
+  imagePdfUsed?: number;
+  imagePdfLimit?: number;
+  isFreeTier?: boolean;
+  branding?: { firmName?: string; logoUrl?: string; accentColor?: string } | null;
   persistedReport: FileAnalysisReport | null;
-  onReportCreated: (report: FileAnalysisReport, billingPatch?: { analysesLeft?: number; analysesUsed?: number }) => void;
+  onReportCreated: (
+    report: FileAnalysisReport,
+    billingPatch?: { analysesLeft?: number; analysesUsed?: number; imagePdfUsed?: number; pdfsUsed?: number }
+  ) => void;
   onClearPersisted: () => void;
   onSaveToPortfolio: (report: FileAnalysisReport) => Promise<void>;
   onOpenRenewal: () => void;
@@ -63,6 +71,11 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
   lockBannerMessage,
   analysesLeftStr,
   canPdfExport,
+  canMemorandumPdf = true,
+  imagePdfUsed = 0,
+  imagePdfLimit = 1,
+  isFreeTier = false,
+  branding = null,
   persistedReport,
   onReportCreated,
   onClearPersisted,
@@ -250,6 +263,7 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
       onReportCreated(data.report, {
         analysesLeft: data.analyses_left,
         analysesUsed: data.analyses_used,
+        imagePdfUsed: typeof data.image_pdf_used === 'number' ? data.image_pdf_used : undefined,
       });
     } catch (err: any) {
       setRunError(err?.message || 'Network error generating report.');
@@ -273,9 +287,14 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
             Upload a brochure PDF, floorplan, or listing screenshot → Review [Extracted / AI Estimated / Missing] fields → Generate full underwriting (-1 Credit).
           </p>
         </div>
-        <div className="text-xs font-mono text-zinc-400">
-          Credits Remaining:{' '}
-          <strong className="text-[#D4AF37]">{isAccountLocked ? '0 analyses left' : analysesLeftStr}</strong>
+        <div className="flex flex-wrap items-center gap-3 text-xs font-mono text-zinc-400">
+          <span className="px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/10">
+            Image / PDF Quota: <strong className="text-white">{imagePdfUsed} / {imagePdfLimit}</strong>
+          </span>
+          <span>
+            Credits Remaining:{' '}
+            <strong className="text-[#D4AF37]">{isAccountLocked ? '0 analyses left' : analysesLeftStr}</strong>
+          </span>
         </div>
       </div>
 
@@ -373,7 +392,7 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
             className="px-5 py-3 rounded-xl bg-[#D4AF37] hover:bg-[#F3E5AB] text-black font-mono font-bold text-xs uppercase tracking-wider flex items-center gap-2 cursor-pointer disabled:opacity-50"
           >
             {isExtracting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            <span>{isExtracting ? 'Extracting via Gemini...' : 'Step 1: Extract Location & Financials'}</span>
+            <span>{isExtracting ? 'Extracting via Gemini...' : 'Step 1: Extract Location & Financials (-1 CREDIT)'}</span>
           </button>
 
           {!draft && (
@@ -815,11 +834,39 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
 
             <button
               type="button"
-              onClick={() => {
-                if (!canPdfExport) {
+              onClick={async () => {
+                if (!canPdfExport || isAccountLocked) {
                   onOpenRenewal();
                   return;
                 }
+                const targetDocType = canMemorandumPdf ? 'memorandum' : 'pdf';
+                try {
+                  const res = await fetch('/api/app?action=export', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                      email: userEmail,
+                      login_email: userEmail,
+                      format: 'pdf',
+                      docType: targetDocType,
+                      propertyTitle: report.inputs.propertyTitle,
+                    }),
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (res.status === 403) {
+                    setRunError(data?.error || 'PDF quota exceeded or upgrade required.');
+                    onOpenRenewal();
+                    return;
+                  }
+                  if (typeof data?.analyses_left === 'number' || typeof data?.pdfs_used === 'number') {
+                    onReportCreated(report, {
+                      analysesLeft: data?.analyses_left,
+                      analysesUsed: data?.analyses_used,
+                      pdfsUsed: data?.pdfs_used,
+                    });
+                  }
+                } catch {}
                 downloadInstitutionalMemorandumPdf({
                   title: report.inputs.propertyTitle,
                   city: report.inputs.city,
@@ -852,12 +899,16 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
                     `Source file: ${report.fileName} (Provenance tracked per field)`,
                     `Market benchmark: ${report.marketContext.source} (${report.marketContext.updatedDate})`,
                   ],
+                  isWatermarked: Boolean(isFreeTier),
+                  branding: branding || null,
                 });
               }}
               className="px-4 py-2.5 rounded-xl bg-[#D4AF37]/20 hover:bg-[#D4AF37] hover:text-black border border-[#D4AF37]/40 text-[#D4AF37] font-mono font-bold text-xs cursor-pointer flex items-center gap-2"
             >
-              {canPdfExport ? <Download className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
-              <span>Export Institutional Memorandum PDF</span>
+              {canPdfExport && !isAccountLocked ? <Download className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+              <span>
+                {isFreeTier ? 'Export Watermarked PDF (-1 CREDIT)' : 'Export Institutional Memorandum PDF (-1 CREDIT)'}
+              </span>
             </button>
 
             {saveSuccess && <span className="text-xs font-mono text-emerald-300">{saveSuccess}</span>}

@@ -23,12 +23,16 @@ interface EnterpriseWorkspaceTabProps {
   userEmail: string;
   currentCurrency: CurrencyCode;
   savedAnalyses: SavedAnalysis[];
+  teamUsersLimit?: number;
+  isInstitutional?: boolean;
 }
 
 export const EnterpriseWorkspaceTab: React.FC<EnterpriseWorkspaceTabProps> = ({
   userEmail,
   currentCurrency,
   savedAnalyses,
+  teamUsersLimit = 1,
+  isInstitutional = false,
 }) => {
   const [orgs, setOrgs] = useState<EnterpriseOrganization[]>([]);
   const [activeOrg, setActiveOrg] = useState<EnterpriseOrganization | null>(null);
@@ -180,6 +184,14 @@ export const EnterpriseWorkspaceTab: React.FC<EnterpriseWorkspaceTabProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+          <span className="px-3 py-1.5 rounded-xl bg-white/[0.04] border border-white/10 text-zinc-300">
+            Team Seats: <strong className="text-white">{activeOrg?.members?.length ?? 1} / {teamUsersLimit}</strong>
+          </span>
+          {isInstitutional && (
+            <span className="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-bold">
+              CONTRACT GOVERNANCE &amp; AUDIT TRAIL
+            </span>
+          )}
           <span className="px-3 py-1.5 rounded-xl bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37] font-bold flex items-center gap-1.5">
             <Shield className="w-3.5 h-3.5" />
             <span>Your Role: {myRole}</span>

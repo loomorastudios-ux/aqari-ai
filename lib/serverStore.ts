@@ -144,7 +144,7 @@ export interface UsedOrderRecord {
   login_email: string;
   payment_email: string;
   plan: PlanKey;
-  plan_display: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  plan_display: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE' | string;
   analyses: number;
   amount: number;
   test_mode: boolean;
@@ -161,7 +161,7 @@ export interface PricingChangeLogEntry {
 
 export interface StoredPlanConfig {
   key: PlanKey;
-  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE';
   originalPrice: number;
   launchPrice: number;
   analysesLimit: number;
@@ -277,6 +277,15 @@ function createDefaultPricingConfig(): StoredPricingConfig {
         analysesLimit: PLANS.enterprise.analysesLimit,
         savedLimit: PLANS.enterprise.savedLimit,
         features: [...PLANS.enterprise.features],
+      },
+      institutional: {
+        key: 'institutional',
+        displayName: 'ENTERPRISE',
+        originalPrice: PLANS.institutional.originalPrice,
+        launchPrice: PLANS.institutional.launchPrice,
+        analysesLimit: PLANS.institutional.analysesLimit,
+        savedLimit: PLANS.institutional.savedLimit,
+        features: [...PLANS.institutional.features],
       },
     },
   };

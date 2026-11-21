@@ -7,11 +7,11 @@ import path from 'path';
 // 1. INLINED PLANS, SECURITY & ENV HELPERS (Zero external ../lib imports)
 // =========================================================================
 
-type PlanKey = 'free' | 'starter' | 'pro' | 'enterprise';
+type PlanKey = 'free' | 'starter' | 'pro' | 'enterprise' | 'institutional';
 
 const PRODUCTION_URL = 'https://aqari-ai-rho.vercel.app';
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-const DEFAULT_LAUNCH_BADGE = 'LAUNCH -40% - First 30 users only';
+const DEFAULT_LAUNCH_BADGE = 'LAUNCH OFFER - First 30 institutional seats';
 const SESSION_COOKIE_NAME = 'aqari_session';
 const EMAIL_FROM = 'AQARI Terminal <onboarding@resend.dev>';
 const EMAIL_FROM_ADDRESS = 'onboarding@resend.dev';
@@ -20,7 +20,7 @@ const PLANS: Record<
   PlanKey,
   {
     key: PlanKey;
-    displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+    displayName: 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE';
     originalPrice: number;
     launchPrice: number;
     analysesLimit: number;
@@ -36,23 +36,28 @@ const PLANS: Record<
     analysesLimit: 3,
     savedLimit: 3,
     features: [
-      '3 Analyses / 30 Days',
-      'Basic Cap Rate',
-      'Cash-on-Cash only',
+      '3 analyses / 30 days',
+      'Basic ROI (Cap + NOI + Cashflow)',
+      '1 Image / PDF upload trial',
+      '1 AI Listing trial',
+      '1 Basic PDF with AQARI watermark',
+      'Save up to 3 properties',
     ],
   },
   starter: {
     key: 'starter',
     displayName: 'STARTER',
     originalPrice: 129,
-    launchPrice: 79,
+    launchPrice: 75,
     analysesLimit: 30,
-    savedLimit: 15,
+    savedLimit: 30,
     features: [
-      '30 Analyses / 30 Days',
-      'Yield & Sensitivity Calculator',
-      'Cross-border Tax & Visa Matrix',
-      'Save 15',
+      '30 analyses / 30 days',
+      'Full financial (Cap + NOI + DSCR + CoC + IRR)',
+      '5 Image / PDF extractions / mo',
+      '3 AI Listings / mo • 5 PDFs / mo',
+      'Deal Finder + Forecast Basic',
+      'Save 30 analyses',
     ],
   },
   pro: {
@@ -61,15 +66,14 @@ const PLANS: Record<
     originalPrice: 349,
     launchPrice: 199,
     analysesLimit: 150,
-    savedLimit: 75,
+    savedLimit: 2000,
     features: [
-      '150 Analyses / 30 Days',
-      'Monte Carlo Stress Tests +200bps',
-      'PDF Memorandum Export',
-      'Multi-asset Portfolio Aggregation',
-      'Yield & Sensitivity Calculator',
-      'Cross-border Tax & Visa Matrix',
-      'Save 75',
+      '150 analyses / 30 days',
+      'Advanced financial + Equity Waterfall + MC 5,000',
+      '30 Image / PDF extractions / mo • 20 AI Listings / mo',
+      '30 PDFs + Memorandum PDF',
+      'AI Due Diligence + Optimizer + Advisor',
+      'REST API (100 req/day) • Save 2,000 (fair use)',
     ],
   },
   enterprise: {
@@ -77,19 +81,31 @@ const PLANS: Record<
     displayName: 'SOVEREIGN',
     originalPrice: 999,
     launchPrice: 599,
-    analysesLimit: 400,
-    savedLimit: 400,
+    analysesLimit: 500,
+    savedLimit: 5000,
     features: [
-      '400 Analyses / 30 Days',
-      'Full REST API Credentials',
-      '1-on-1 Dedicated Analyst Desk',
-      'White-glove Custom Underwriting',
-      'Monte Carlo Stress Tests +200bps',
-      'PDF Memorandum Export',
-      'Multi-asset Portfolio Aggregation',
-      'Yield & Sensitivity Calculator',
-      'Cross-border Tax & Visa Matrix',
-      'Save 400',
+      '500 analyses / 30 days',
+      '100 Image / PDF / mo • 100 AI Listings / mo • 100 PDFs / mo',
+      'White Label Reports + Custom logo & colors',
+      'Monte Carlo 10,000 cycles',
+      'Full REST API (2,000 req/day) • 10 users + RBAC',
+      'Save 5,000 (fair use)',
+    ],
+  },
+  institutional: {
+    key: 'institutional',
+    displayName: 'ENTERPRISE',
+    originalPrice: 2499,
+    launchPrice: 1499,
+    analysesLimit: 1000,
+    savedLimit: 1000,
+    features: [
+      '1,000 analyses / mo (per contract)',
+      '250 Image / PDF / mo • 250 AI Listings / mo • 250 PDFs / mo',
+      'Portfolio 1,000 assets • Save 1,000 (not unlimited)',
+      'Full White Label Platform + Custom org dashboards',
+      'Custom API Integration (10,000 req/day) • 50 seats • Audit Trail',
+      'Custom SLA per written contract',
     ],
   },
 };
@@ -99,6 +115,14 @@ function normalizePlanKey(raw?: string | null): PlanKey {
   if (val === 'starter' || val === 'standard') return 'starter';
   if (val === 'pro' || val === 'professional') return 'pro';
   if (val === 'enterprise' || val === 'sovereign' || val === 'agency') return 'enterprise';
+  if (
+    val === 'institutional' ||
+    val === 'enterprise_contract' ||
+    val === 'contract' ||
+    val === 'custom_enterprise'
+  ) {
+    return 'institutional';
+  }
   return 'free';
 }
 
@@ -217,6 +241,7 @@ function createDefaultPricingConfig() {
       starter: { ...PLANS.starter },
       pro: { ...PLANS.pro },
       enterprise: { ...PLANS.enterprise },
+      institutional: { ...PLANS.institutional },
     },
   };
 }
@@ -325,7 +350,7 @@ function hydratePricingConfig(raw: any) {
   const def = createDefaultPricingConfig();
   if (!raw || typeof raw !== 'object') return def;
   const plans: any = { ...def.plans };
-  for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
+  for (const k of ['free', 'starter', 'pro', 'enterprise', 'institutional'] as PlanKey[]) {
     const r = raw.plans?.[k];
     if (r && typeof r === 'object') {
       const analysesLimit = Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0 ? Number(r.analysesLimit) : def.plans[k].analysesLimit;
@@ -789,7 +814,7 @@ function getPricingPublicPayload() {
   const plansMap: Record<PlanKey, any> = {} as any;
   const plansList: any[] = [];
 
-  for (const k of ['free', 'starter', 'pro', 'enterprise'] as PlanKey[]) {
+  for (const k of ['free', 'starter', 'pro', 'enterprise', 'institutional'] as PlanKey[]) {
     const p = cfg.plans[k];
     const entry = {
       id: k,
@@ -1016,7 +1041,9 @@ function updateServerPlanPricing(params: {
 
   const nextPrice = cfg.launchDiscountActive ? nextLaunch : nextOriginal;
   const planTitle =
-    current.displayName === 'PROFESSIONAL'
+    current.displayName === 'ENTERPRISE'
+      ? 'Enterprise'
+      : current.displayName === 'PROFESSIONAL'
       ? 'Professional'
       : current.displayName === 'STARTER'
       ? 'Starter'
@@ -1456,6 +1483,7 @@ export default async function handler(req: any, res: any) {
         let starterCount = 0;
         let proCount = 0;
         let enterpriseCount = 0;
+        let institutionalCount = 0;
         let freeCount = 0;
         let totalRevenueUSD = 0;
         let totalAnalysesUsed = 0;
@@ -1473,17 +1501,24 @@ export default async function handler(req: any, res: any) {
           } else if (lic.planKey === 'enterprise') {
             paidUsers++;
             enterpriseCount++;
+          } else if (lic.planKey === 'institutional') {
+            paidUsers++;
+            institutionalCount++;
           } else {
             freeCount++;
           }
         }
 
         const pricing = getPricingPublicPayload();
-        const starterPrice = findPlanPricing(pricing, 'starter')?.activePrice || 79;
+        const starterPrice = findPlanPricing(pricing, 'starter')?.activePrice || 75;
         const proPrice = findPlanPricing(pricing, 'pro')?.activePrice || 199;
         const entPrice = findPlanPricing(pricing, 'enterprise')?.activePrice || 599;
+        const instPrice = findPlanPricing(pricing, 'institutional')?.activePrice || 1499;
         const estimatedMrrUSD =
-          starterCount * starterPrice + proCount * proPrice + enterpriseCount * entPrice;
+          starterCount * starterPrice +
+          proCount * proPrice +
+          enterpriseCount * entPrice +
+          institutionalCount * instPrice;
 
         const analystOpenCount = Object.values(threadsMap).filter(
           (t: any) => t?.status !== 'Closed' && (t?.messages?.length || 0) > 0
@@ -1502,6 +1537,7 @@ export default async function handler(req: any, res: any) {
               starter: starterCount,
               pro: proCount,
               enterprise: enterpriseCount,
+              institutional: institutionalCount,
             },
             totalRevenueUSD,
             estimatedMrrUSD,
@@ -1783,9 +1819,7 @@ export default async function handler(req: any, res: any) {
         const analysesLeft =
           rawLeft !== '' && rawLeft !== undefined
             ? rawLeft
-            : Number.isFinite(planCfg.analysesLimit)
-            ? Math.max(0, planCfg.analysesLimit - (userRecord.analyses_used || 0))
-            : 'Unlimited';
+            : Math.max(0, planCfg.analysesLimit - (userRecord.analyses_used || 0));
 
         const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
         const endDateFormatted = tomorrow.toLocaleDateString('en-US', {

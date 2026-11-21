@@ -129,7 +129,7 @@ export const DEMO_ANALYSES: Record<string, DemoAnalysisItem> = {
       'PDF Investment Memorandum Generation (Pro)',
       'Real-Time Rest API & Multi-Jurisdiction Feeds (Agency)',
     ],
-    watermarkNote: 'SAMPLE STANDARD TIER ANALYSIS • SIGN IN TO RUN UNLIMITED UNDERWRITINGS',
+    watermarkNote: 'SAMPLE STANDARD TIER ANALYSIS • SIGN IN FOR FULL UNDERWRITING PLANS',
   },
 
   'muscat-wave': {
@@ -257,7 +257,7 @@ export const DEMO_ANALYSES: Record<string, DemoAnalysisItem> = {
     tenantRisk: 'AAA',
     liquidityScore: 94,
     featuresUnlocked: [
-      'Unlimited Underwriting Dossiers & Syndicate Aggregation',
+      'Portfolio Underwriting Dossiers & Syndicate Aggregation (Up to 5,000 fair-use saves)',
       'Automated Cross-Border Currency Hedging (USD, OMR, AED, GBP)',
       'Multi-Jurisdiction Tax Shield Arbitrage (+360bps Yield Spread)',
       'Live REST API Access & Instant Webhook Feeds',
@@ -301,7 +301,7 @@ export const DEMO_ANALYSES: Record<string, DemoAnalysisItem> = {
     tenantRisk: 'AAA',
     liquidityScore: 96,
     featuresUnlocked: [
-      'Unlimited Institutional Analysis Access',
+      'Institutional Portfolio Analysis Access (Up to 500 credits/mo)',
       'KAFD Vision 2030 Corporate Headquarters Demand Index',
       'Singapore USD-Pegged Wealth Preservation Arbitrage',
       'Real-Time Capital Flow Radar & Rebalancing Triggers',

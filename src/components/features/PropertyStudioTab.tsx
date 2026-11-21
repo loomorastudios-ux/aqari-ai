@@ -27,8 +27,29 @@ import { downloadPropertyStudioPdf } from '../../utils/pdfExport';
 interface PropertyStudioTabProps {
   userEmail: string;
   userName?: string;
+  aiListingsUsed?: number;
+  aiListingLimit?: number;
+  isAccountLocked?: boolean;
+  isFreeTier?: boolean;
+  canMemorandumPdf?: boolean;
+  branding?: { firmName?: string; logoUrl?: string; accentColor?: string } | null;
   persistedDraft: PropertyStudioDraft | null;
-  onDraftSaved: (draft: PropertyStudioDraft) => void;
+  onDraftSaved: (
+    draft: PropertyStudioDraft,
+    billingPatch?: {
+      analysesLeft?: number;
+      analysesUsed?: number;
+      aiListingsUsed?: number;
+      pdfsUsed?: number;
+    }
+  ) => void;
+  onUsageUpdate?: (patch: {
+    analysesLeft?: number;
+    analysesUsed?: number;
+    aiListingsUsed?: number;
+    pdfsUsed?: number;
+  }) => void;
+  onOpenRenewal?: () => void;
 }
 
 const AMENITY_OPTIONS = [
@@ -47,8 +68,16 @@ const AMENITY_OPTIONS = [
 export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
   userEmail,
   userName,
+  aiListingsUsed = 0,
+  aiListingLimit = 1,
+  isAccountLocked = false,
+  isFreeTier = false,
+  canMemorandumPdf = false,
+  branding = null,
   persistedDraft,
   onDraftSaved,
+  onUsageUpdate,
+  onOpenRenewal,
 }) => {
   const [docType, setDocType] = useState<'listing' | 'memorandum'>(
     persistedDraft?.docType || 'listing'
@@ -161,7 +190,11 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
       setLocationNarrative(data.draft.locationNarrative);
       setHighlights(data.draft.investmentHighlights || []);
       setRiskNotes(data.draft.riskNotes || []);
-      onDraftSaved(data.draft);
+      onDraftSaved(data.draft, {
+        analysesLeft: typeof data.analyses_left === 'number' ? data.analyses_left : undefined,
+        analysesUsed: typeof data.analyses_used === 'number' ? data.analyses_used : undefined,
+        aiListingsUsed: typeof data.ai_listings_used === 'number' ? data.ai_listings_used : undefined,
+      });
     } catch (err: any) {
       setError(err?.message || 'Network error generating dossier.');
     } finally {
@@ -169,7 +202,45 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
     }
   };
 
-  const handleDownloadPdf = (chosenType: 'listing' | 'memorandum') => {
+  const handleDownloadPdf = async (chosenType: 'listing' | 'memorandum') => {
+    if (isAccountLocked) {
+      onOpenRenewal?.();
+      return;
+    }
+    if (chosenType === 'memorandum' && !canMemorandumPdf) {
+      setError('Investment Memorandum PDF requires PROFESSIONAL, SOVEREIGN, or ENTERPRISE tier.');
+      onOpenRenewal?.();
+      return;
+    }
+    setError(null);
+    try {
+      const res = await fetch('/api/app?action=export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: userEmail,
+          login_email: userEmail,
+          format: 'pdf',
+          docType: chosenType === 'memorandum' ? 'memorandum' : 'pdf',
+          propertyTitle: title,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        setError(data?.error || 'PDF quota exceeded or upgrade required.');
+        onOpenRenewal?.();
+        return;
+      }
+      if (onUsageUpdate && (typeof data?.analyses_left === 'number' || typeof data?.pdfs_used === 'number')) {
+        onUsageUpdate({
+          analysesLeft: data.analyses_left,
+          analysesUsed: data.analyses_used,
+          pdfsUsed: data.pdfs_used,
+        });
+      }
+    } catch {}
+
     const safeDesc =
       description.trim() ||
       `${isVirtual ? 'Virtual Concept - Not a real listing. ' : ''}${finishing} ${propertyType} in ${areaDistrict}, ${city}, ${country} spanning ${areaNum.toLocaleString('en-US')} m2 tailored for ${targetAudience}.`;
@@ -225,6 +296,8 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
       contactEmail,
       contactPhone,
       contactFirm,
+      isWatermarked: Boolean(isFreeTier),
+      branding: branding || null,
     });
     setPdfNotice(`Downloaded ${file}`);
   };
@@ -253,25 +326,36 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2 bg-black/50 p-1 rounded-xl border border-white/15 font-mono text-xs">
-          <button
-            type="button"
-            onClick={() => setDocType('listing')}
-            className={`px-3 py-2 rounded-lg font-bold cursor-pointer transition ${
-              docType === 'listing' ? 'bg-[#D4AF37] text-black' : 'text-zinc-300 hover:text-white'
-            }`}
-          >
-            Property Listing PDF
-          </button>
-          <button
-            type="button"
-            onClick={() => setDocType('memorandum')}
-            className={`px-3 py-2 rounded-lg font-bold cursor-pointer transition ${
-              docType === 'memorandum' ? 'bg-[#D4AF37] text-black' : 'text-zinc-300 hover:text-white'
-            }`}
-          >
-            Investment Memorandum PDF
-          </button>
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+          <span className="px-3 py-1.5 rounded-xl bg-white/[0.04] border border-white/10 text-xs font-mono text-zinc-300">
+            AI Listings: <strong className="text-[#D4AF37]">{aiListingsUsed} / {aiListingLimit}</strong>
+          </span>
+          <div className="flex items-center gap-2 bg-black/50 p-1 rounded-xl border border-white/15 font-mono text-xs">
+            <button
+              type="button"
+              onClick={() => setDocType('listing')}
+              className={`px-3 py-2 rounded-lg font-bold cursor-pointer transition ${
+                docType === 'listing' ? 'bg-[#D4AF37] text-black' : 'text-zinc-300 hover:text-white'
+              }`}
+            >
+              Property Listing PDF
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!canMemorandumPdf) {
+                  onOpenRenewal?.();
+                  return;
+                }
+                setDocType('memorandum');
+              }}
+              className={`px-3 py-2 rounded-lg font-bold cursor-pointer transition ${
+                docType === 'memorandum' ? 'bg-[#D4AF37] text-black' : 'text-zinc-300 hover:text-white'
+              }`}
+            >
+              {canMemorandumPdf ? 'Investment Memorandum PDF' : 'Investment Memo PDF (PRO+)'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -543,39 +627,41 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
-            disabled={isGenerating}
+            disabled={isGenerating || isAccountLocked}
             onClick={() => handleGenerate(true)}
             className="px-5 py-3 rounded-xl bg-[#D4AF37] hover:bg-[#F3E5AB] text-black font-mono font-bold text-xs uppercase tracking-wider flex items-center gap-2 cursor-pointer disabled:opacity-50"
           >
             {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            <span>{isGenerating ? 'Generating Copy...' : 'Generate Copy with Gemini AI'}</span>
+            <span>{isGenerating ? 'Generating Copy...' : 'Generate Copy with Gemini AI (-2 CREDITS)'}</span>
           </button>
 
           <button
             type="button"
-            disabled={isGenerating}
+            disabled={isGenerating || isAccountLocked}
             onClick={() => handleGenerate(false)}
-            className="px-4 py-3 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 text-white font-mono text-xs cursor-pointer"
+            className="px-4 py-3 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/15 text-white font-mono text-xs cursor-pointer disabled:opacity-50"
           >
-            Save Structured Draft
+            Save Structured Draft (-2 CREDITS)
           </button>
 
           <button
             type="button"
+            disabled={isAccountLocked}
             onClick={() => handleDownloadPdf('listing')}
-            className="px-4 py-3 rounded-xl bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-mono font-bold text-xs cursor-pointer flex items-center gap-2"
+            className="px-4 py-3 rounded-xl bg-purple-500/20 hover:bg-purple-500 hover:text-black border border-purple-500/40 text-purple-200 font-mono font-bold text-xs cursor-pointer flex items-center gap-2 disabled:opacity-50"
           >
             <Download className="w-4 h-4" />
-            <span>Export Property Listing PDF</span>
+            <span>{isFreeTier ? 'Export Watermarked Listing PDF (-1 CR)' : 'Export Property Listing PDF (-1 CR)'}</span>
           </button>
 
           <button
             type="button"
+            disabled={isAccountLocked}
             onClick={() => handleDownloadPdf('memorandum')}
-            className="px-4 py-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-200 font-mono font-bold text-xs cursor-pointer flex items-center gap-2"
+            className="px-4 py-3 rounded-xl bg-emerald-500/20 hover:bg-emerald-500 hover:text-black border border-emerald-500/40 text-emerald-200 font-mono font-bold text-xs cursor-pointer flex items-center gap-2 disabled:opacity-50"
           >
             <FileText className="w-4 h-4" />
-            <span>Export Investment Memo PDF</span>
+            <span>{canMemorandumPdf ? 'Export Investment Memo PDF (-1 CR)' : 'Investment Memo PDF (PRO+)'}</span>
           </button>
         </div>
 

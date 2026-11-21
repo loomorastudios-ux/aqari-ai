@@ -32,6 +32,7 @@ interface PortfolioIntelligencePanelProps {
   currentCurrency: CurrencyCode;
   savedAnalyses: SavedAnalysis[];
   initialAssets?: PortfolioAssetPostPurchase[];
+  portfolioAssetsLimit?: number;
 }
 
 export const PortfolioIntelligencePanel: React.FC<PortfolioIntelligencePanelProps> = ({
@@ -39,6 +40,7 @@ export const PortfolioIntelligencePanel: React.FC<PortfolioIntelligencePanelProp
   currentCurrency,
   savedAnalyses,
   initialAssets,
+  portfolioAssetsLimit,
 }) => {
   const [assets, setAssets] = useState<PortfolioAssetPostPurchase[]>(initialAssets || []);
   const [summary, setSummary] = useState<any>(null);
@@ -151,6 +153,9 @@ export const PortfolioIntelligencePanel: React.FC<PortfolioIntelligencePanelProp
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <span className="px-3 py-1.5 rounded-xl bg-white/[0.04] border border-white/10 text-xs font-mono text-zinc-300">
+            Assets: <strong className="text-[#D4AF37]">{assets.length} / {portfolioAssetsLimit ?? 10}</strong>
+          </span>
           {savedAnalyses.length > 0 && (
             <button
               type="button"

@@ -85,9 +85,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     ? '--'
     : !isCreditsLoaded
     ? 'Loading...'
-    : license?.isUnlimitedAnalyses
-    ? 'Unlimited left'
-    : `${license?.analysesLeft ?? 0} analyses left`;
+    : `${license?.analysesLeft ?? 0} credits left`;
 
   return (
     <TooltipProvider delayDuration={200}>

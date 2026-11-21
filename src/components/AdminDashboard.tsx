@@ -125,9 +125,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [countdownDaysInput, setCountdownDaysInput] = useState('7');
   const [planDrafts, setPlanDrafts] = useState<Record<PlanKey, EditablePlanDraft>>({
     free: { originalPrice: '0', launchPrice: '0', analysesLimit: '3', featuresText: '' },
-    starter: { originalPrice: '129', launchPrice: '79', analysesLimit: '30', featuresText: '' },
+    starter: { originalPrice: '129', launchPrice: '75', analysesLimit: '30', featuresText: '' },
     pro: { originalPrice: '349', launchPrice: '199', analysesLimit: '150', featuresText: '' },
-    enterprise: { originalPrice: '999', launchPrice: '599', analysesLimit: '400', featuresText: '' },
+    enterprise: { originalPrice: '999', launchPrice: '599', analysesLimit: '500', featuresText: '' },
+    institutional: { originalPrice: '2499', launchPrice: '1499', analysesLimit: '1000', featuresText: '' },
   });
   const [pricingMsg, setPricingMsg] = useState<string | null>(null);
   const [savingPricingKey, setSavingPricingKey] = useState<string | null>(null);
@@ -140,6 +141,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const starterP = findPlanPricing(p, 'starter');
     const proP = findPlanPricing(p, 'pro');
     const enterpriseP = findPlanPricing(p, 'enterprise');
+    const institutionalP = findPlanPricing(p, 'institutional');
     setPlanDrafts({
       free: {
         originalPrice: String(freeP?.originalPrice ?? 0),
@@ -149,7 +151,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       },
       starter: {
         originalPrice: String(starterP?.originalPrice ?? 129),
-        launchPrice: String(starterP?.launchPrice ?? 79),
+        launchPrice: String(starterP?.launchPrice ?? 75),
         analysesLimit: String(starterP?.analysesLimit ?? 30),
         featuresText: (starterP?.features || []).join('\n'),
       },
@@ -162,8 +164,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       enterprise: {
         originalPrice: String(enterpriseP?.originalPrice ?? 999),
         launchPrice: String(enterpriseP?.launchPrice ?? 599),
-        analysesLimit: String(enterpriseP?.analysesLimit ?? 400),
+        analysesLimit: String(enterpriseP?.analysesLimit ?? 500),
         featuresText: (enterpriseP?.features || []).join('\n'),
+      },
+      institutional: {
+        originalPrice: String(institutionalP?.originalPrice ?? 2499),
+        launchPrice: String(institutionalP?.launchPrice ?? 1499),
+        analysesLimit: String(institutionalP?.analysesLimit ?? 1000),
+        featuresText: (institutionalP?.features || []).join('\n'),
       },
     });
   };
@@ -849,15 +857,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
 
             {/* Per-Plan Editors */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-              {(['starter', 'pro', 'enterprise'] as const).map((planKey) => {
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+              {(['starter', 'pro', 'enterprise', 'institutional'] as const).map((planKey) => {
                 const draft = planDrafts[planKey];
                 const title =
                   planKey === 'starter'
                     ? 'STARTER'
                     : planKey === 'pro'
                     ? 'PROFESSIONAL'
-                    : 'SOVEREIGN';
+                    : planKey === 'enterprise'
+                    ? 'SOVEREIGN'
+                    : 'ENTERPRISE';
                 return (
                   <div
                     key={planKey}

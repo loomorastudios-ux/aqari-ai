@@ -173,6 +173,7 @@ const EXTRA_CREDIT_PACKS = [
     credits: 25,
     priceUSD: 19,
     perCreditUSD: '$0.76',
+    badge: 'Instant top-up',
     description: 'Immediate top-up for extra underwriting, Deal Finder, or OCR extractions.',
   },
   {
@@ -181,6 +182,7 @@ const EXTRA_CREDIT_PACKS = [
     credits: 100,
     priceUSD: 59,
     perCreditUSD: '$0.59',
+    badge: 'Most popular',
     description: 'Active acquisition sprint pack for Due Diligence & Studio workflows.',
   },
   {
@@ -189,6 +191,7 @@ const EXTRA_CREDIT_PACKS = [
     credits: 500,
     priceUSD: 249,
     perCreditUSD: '$0.50',
+    badge: 'Best value',
     description: 'High-volume credit reserve for teams, portfolios, and multi-doc DD.',
   },
 ] as const;
@@ -367,7 +370,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
       'Global Portfolio Optimizer + Institutional Advisor',
       'Cross-Border Full + Tax & Sovereign Radar',
       'Portfolio 100 assets • Compare 10 scenarios',
-      'Unlimited saves (fair-use cap 2,000)',
+      'Save up to 2,000 analyses',
       'Limited REST API (100 req/day) • 2 users',
       'Priority support',
       'No White Label branding',
@@ -435,7 +438,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
       'Monte Carlo 10,000 cycles + Advanced Stress',
       'Sovereign Radar + Cross-Border Intelligence',
       'Portfolio 400 assets • Compare 25 scenarios',
-      'Unlimited saves (fair-use cap 5,000)',
+      'Save up to 5,000 analyses',
       'Full REST API (2,000 req/day) • 10 users + RBAC',
       'High priority + Dedicated Analyst Desk',
     ],
@@ -1668,7 +1671,7 @@ interface ForensicPaymentEntry {
   id: string;
   timestamp: string;
   order_id: string;
-  plan: PlanKey;
+  plan: PlanKey | string;
   amount: number;
   currency: string;
   test_mode: boolean;
@@ -1727,6 +1730,8 @@ interface PersistedLastResults {
     country: string;
     countryCode?: string;
     avgCapRate?: number;
+    isLimitedPreview?: boolean;
+    totalAvailableDeals?: number;
     disclaimer?: string;
     deals: any[];
     created_at: string;
@@ -1858,7 +1863,7 @@ interface UsedOrderRecord {
   login_email: string;
   payment_email: string;
   plan: PlanKey;
-  plan_display: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE';
+  plan_display: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE' | string;
   analyses: number;
   amount: number;
   test_mode: boolean;
@@ -4511,7 +4516,7 @@ const DEMO_ANALYSES: Record<string, any> = {
       'PDF Investment Memorandum Generation (Pro)',
       'Real-Time Rest API & Multi-Jurisdiction Feeds (Agency)',
     ],
-    watermarkNote: 'SAMPLE STANDARD TIER ANALYSIS • SIGN IN TO RUN UNLIMITED UNDERWRITINGS',
+    watermarkNote: 'SAMPLE STANDARD TIER ANALYSIS • SIGN IN FOR FULL UNDERWRITING PLANS',
   },
   'muscat-wave': {
     slug: 'muscat-wave',
@@ -4634,7 +4639,7 @@ const DEMO_ANALYSES: Record<string, any> = {
     tenantRisk: 'AAA',
     liquidityScore: 94,
     featuresUnlocked: [
-      'Unlimited Underwriting Dossiers & Syndicate Aggregation',
+      'Portfolio Underwriting Dossiers & Syndicate Aggregation (Up to 5,000 fair-use saves)',
       'Automated Cross-Border Currency Hedging (USD, OMR, AED, GBP)',
       'Multi-Jurisdiction Tax Shield Arbitrage (+360bps Yield Spread)',
       'Live REST API Access & Instant Webhook Feeds',
@@ -4677,7 +4682,7 @@ const DEMO_ANALYSES: Record<string, any> = {
     tenantRisk: 'AAA',
     liquidityScore: 96,
     featuresUnlocked: [
-      'Unlimited Institutional Analysis Access',
+      'Institutional Portfolio Analysis Access (Up to 500 credits/mo)',
       'KAFD Vision 2030 Corporate Headquarters Demand Index',
       'Singapore USD-Pegged Wealth Preservation Arbitrage',
       'Real-Time Capital Flow Radar & Rebalancing Triggers',
@@ -6169,7 +6174,8 @@ export default async function handler(req: any, res: any) {
           license_start: userRecord.license_start,
           license_end: userRecord.license_end,
           analyses_used: license.analysesUsed,
-          analyses_left: license.isUnlimitedAnalyses ? 'Unlimited' : license.analysesLeft,
+          analyses_left: license.analysesLeft,
+          extra_credits: userRecord.extra_credits || 0,
           days_left: license.daysLeft,
           locked_launch_price: userRecord.locked_launch_price ?? null,
           features:
@@ -6252,7 +6258,7 @@ export default async function handler(req: any, res: any) {
             ...creditCheck.payload,
             plan: license.planKey,
             displayName: license.displayName,
-            daysLeft: creditCheck.lock?.reason === 'expired' ? 0 : license.daysLeft,
+            daysLeft: creditCheck.payload.reason === 'expired' ? 0 : license.daysLeft,
           });
         }
 
@@ -6754,6 +6760,7 @@ export default async function handler(req: any, res: any) {
           analyses_left: nextLicense.analysesLeft,
           analyses_total: nextLicense.analysesLimit,
           analyses_used: nextLicense.analysesUsed,
+          extra_credits: updatedUser.extra_credits || 0,
           successful_analyses: updatedUser.successful_analyses || 0,
           saved_count: updatedUser.saved_analyses.length,
           maxSaved: PLAN_DEFINITIONS[nextLicense.planKey].savedLimit,
@@ -11335,7 +11342,7 @@ Return JSON with:
             {
               id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
               timestamp: new Date(now).toISOString(),
-              type: 'branding_update',
+              type: 'branding_update' as const,
               message: `Updated White-Label PDF Branding (${branding.firmName}, ${branding.accentColor})`,
               actor: email,
             },

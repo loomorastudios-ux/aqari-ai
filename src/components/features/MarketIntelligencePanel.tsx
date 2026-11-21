@@ -14,13 +14,17 @@ import { formatPrice } from '../../utils/formatters';
 
 interface MarketIntelligencePanelProps {
   currentCurrency: CurrencyCode;
+  onOpenRenewal?: () => void;
 }
 
 export const MarketIntelligencePanel: React.FC<MarketIntelligencePanelProps> = ({
   currentCurrency,
+  onOpenRenewal,
 }) => {
   const [markets, setMarkets] = useState<GlobalMarketIntelCity[]>([]);
   const [selectedCityName, setSelectedCityName] = useState<string>('Muscat');
+  const [isBasicMarket, setIsBasicMarket] = useState(false);
+  const [marketDisclaimer, setMarketDisclaimer] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -28,10 +32,12 @@ export const MarketIntelligencePanel: React.FC<MarketIntelligencePanelProps> = (
     const load = async () => {
       setLoading(true);
       try {
-        const res = await fetch('/api/app?action=market-intelligence');
+        const res = await fetch('/api/app?action=market-intelligence', { credentials: 'include' });
         const data = await res.json();
         if (active && res.ok && data.success && Array.isArray(data.markets)) {
           setMarkets(data.markets);
+          setIsBasicMarket(Boolean(data.isBasicMarket));
+          setMarketDisclaimer(data.disclaimer ? String(data.disclaimer) : null);
         }
       } catch {
       } finally {
@@ -75,6 +81,21 @@ export const MarketIntelligencePanel: React.FC<MarketIntelligencePanelProps> = (
           </select>
         </div>
       </div>
+
+      {isBasicMarket && marketDisclaimer && (
+        <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-wrap items-center justify-between gap-3 text-xs font-mono text-amber-200">
+          <span>{marketDisclaimer}</span>
+          {onOpenRenewal && (
+            <button
+              type="button"
+              onClick={onOpenRenewal}
+              className="px-3 py-1 rounded-lg bg-[#D4AF37] text-black font-bold cursor-pointer shrink-0"
+            >
+              Upgrade for Full Global Benchmarks
+            </button>
+          )}
+        </div>
+      )}
 
       {selected && (
         <>

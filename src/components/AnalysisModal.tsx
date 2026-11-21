@@ -48,7 +48,7 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
   const planCfg = PLANS[planKey];
   const isActiveUser = Boolean(user && user.subscriptionStatus !== 'expired');
   const canExportPdf = Boolean(isActiveUser && canUseFeature(planKey, 'pdfExport'));
-  const isWatermarkedTier = Boolean(planCfg.isWatermarked);
+  const isWatermarkedTier = planKey === 'free';
   const currentSavedCount = (user?.savedAnalyses || []).length;
   const parsedSaveFeature = hasMeFeatures
     ? user!.features!

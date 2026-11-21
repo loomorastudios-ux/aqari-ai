@@ -389,7 +389,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                     }}
                     className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-mono transition cursor-pointer"
                   >
-                    Unlock Starter (50 Analyses)
+                    Unlock Starter (30 Credits)
                   </button>
                   <button
                     type="button"
@@ -399,7 +399,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                     }}
                     className="px-3 py-1.5 rounded-lg bg-[#D4AF37] hover:bg-[#F3E5AB] text-black font-bold text-xs font-mono transition cursor-pointer"
                   >
-                    Unlock Pro (400 Analyses)
+                    Unlock Pro (150 Credits)
                   </button>
                   <button
                     type="button"
@@ -409,7 +409,17 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                     }}
                     className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs font-mono transition cursor-pointer"
                   >
-                    Unlock Enterprise (Unlimited)
+                    Unlock Sovereign (500 Credits)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onTestUnlock('institutional' as any);
+                      onClose();
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs font-mono transition cursor-pointer"
+                  >
+                    Unlock Enterprise (1,000 Credits)
                   </button>
                 </div>
               </div>
