@@ -47,6 +47,7 @@ import {
   downloadMemorandumPdf,
   downloadInstitutionalMemorandumPdf,
   downloadWhiteGlovePdf,
+  type InstitutionalMemoInput,
 } from '../utils/pdfExport';
 import type { LiveMarketResponse } from '../utils/marketDataService';
 import {
@@ -128,6 +129,14 @@ import {
   DialogDescription,
   DialogFooter,
 } from './ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from './ui/dropdown-menu';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui/tabs';
 import {
   TooltipProvider,
@@ -141,7 +150,10 @@ import {
   MarketComparisonChart,
   mapDealsToCompareItems,
   RiskScenarioChart,
+  MonteCarloDistributionChart,
+  ForecastTrajectoryChart,
 } from './charts/AqariRecharts';
+import { InstitutionalPdfScreen } from './InstitutionalPdfScreen';
 import { AnalyzeFromFileTab } from './features/AnalyzeFromFileTab';
 import { PropertyStudioTab } from './features/PropertyStudioTab';
 import { PortfolioIntelligencePanel } from './features/PortfolioIntelligenceTab';
@@ -279,6 +291,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
   // Mobile sidebar drawer state
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [pdfScreenMemo, setPdfScreenMemo] = useState<InstitutionalMemoInput | null>(null);
 
   // Tool Issue & Subscription Cancellation modal states
   const [isIssueModalOpen, setIsIssueModalOpen] = useState(false);
@@ -810,6 +823,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     annualOPEXUSD: number;
     annualDebtServiceUSD: number;
     downPaymentUSD: number;
+    loanAmountUSD?: number;
     closingCostsUSD?: number;
     totalEquityInvestedUSD?: number;
     exitGrossValueUSD?: number;
@@ -3676,29 +3690,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
   };
 
-  // Backend-enforced Institutional PDF Memorandum Export
-  const handleExportPDF = async (title: string) => {
-    if (isAccountLocked) {
-      showToast(lockBannerMessage);
-      onOpenRenewal();
-      return;
-    }
-    if (!canPdfExport) {
-      showToast('Available in PROFESSIONAL - Upgrade');
-      onOpenRenewal();
-      return;
-    }
-    if (!hasRunAnalysis || !runResult) {
-      showToast('Please run analysis first before exporting PDF.');
-      return;
-    }
+  const buildAnalysisMemoInput = (title: string): InstitutionalMemoInput | null => {
+    if (!hasRunAnalysis || !runResult) return null;
     const r = runResult;
     const mc = monteCarloResult || r.monteCarlo;
     const targetCity = r.inputs.city || city;
     const cityBench = CROSS_BORDER_DATA.find(
       (m) => m.city.toLowerCase() === targetCity.toLowerCase()
     );
-    const memoPayload = {
+    return {
       title,
       city: targetCity,
       country: selectedCityEntry?.country || cityBench?.country || undefined,
@@ -3713,7 +3713,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       irrError: r.irrError,
       dscr: r.dscr ?? null,
       monthlyCashflowUSD: r.monthlyCashflowUSD,
-      riskScore: r.capRate >= 7.5 && (r.dscrNumeric ?? 0) >= 1.35 ? 'AAA Institutional Grade' : 'Moderate Sensitivity',
+      riskScore:
+        r.capRate >= 7.5 && (r.dscrNumeric ?? 0) >= 1.35
+          ? 'AAA Institutional Grade'
+          : 'Moderate Sensitivity',
+      downPaymentPct: r.inputs.downPaymentPct,
+      interestRatePct: r.inputs.interestRatePct,
+      closingCostsPct: r.inputs.closingCostsPct ?? closingCostsPct,
+      loanAmountUSD: r.loanAmountUSD ?? Math.max(0, r.inputs.priceUSD - r.downPaymentUSD),
+      totalEquityInvestedUSD: r.totalEquityInvestedUSD ?? r.downPaymentUSD,
       noiBreakdown: r.noiBreakdown,
       yearByYear: r.yearByYear,
       marketBenchmarks: {
@@ -3727,7 +3735,38 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       monteCarlo: mc || null,
       warnings: r.warnings || [],
       notes: `${r.inputs.downPaymentPct}% Equity Down | ${r.inputs.interestRatePct}% Interest Rate | ${r.inputs.operatingExpensePct}% OPEX`,
+      isWatermarked: license.planKey === 'free',
+      branding: canWhiteLabelReports ? user.branding || null : null,
     };
+  };
+
+  // Separate mobile-ready editorial PDF viewer screen
+  const handleOpenMobilePdfScreen = (title: string) => {
+    const memoPayload = buildAnalysisMemoInput(title);
+    if (!memoPayload) {
+      showToast('Please run analysis first before opening the PDF screen.');
+      return;
+    }
+    setPdfScreenMemo(memoPayload);
+  };
+
+  // Backend-enforced Institutional PDF Memorandum Export
+  const handleExportPDF = async (title: string) => {
+    if (isAccountLocked) {
+      showToast(lockBannerMessage);
+      onOpenRenewal();
+      return;
+    }
+    if (!canPdfExport) {
+      showToast('Available in PROFESSIONAL - Upgrade');
+      onOpenRenewal();
+      return;
+    }
+    const memoPayload = buildAnalysisMemoInput(title);
+    if (!memoPayload) {
+      showToast('Please run analysis first before exporting PDF.');
+      return;
+    }
 
     try {
       const res = await fetch('/api/app?action=export', {
@@ -3765,11 +3804,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       });
       showToast(`Downloaded Institutional Memorandum PDF: ${filename}`);
     } catch {
-      const filename = downloadInstitutionalMemorandumPdf({
-        ...memoPayload,
-        isWatermarked: license.planKey === 'free',
-        branding: canWhiteLabelReports ? user.branding || null : null,
-      });
+      const filename = downloadInstitutionalMemorandumPdf(memoPayload);
       showToast(`Downloaded Institutional Memorandum PDF: ${filename}`);
     }
   };
@@ -4148,6 +4183,52 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             <span>🇺🇸</span>
             <span className="font-semibold">USD</span>
           </div>
+
+          {/* Radix DropdownMenu Quick Actions */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.09] border border-white/10 text-xs font-mono text-zinc-200 cursor-pointer transition min-h-[36px]"
+                aria-label="Terminal quick menu"
+              >
+                <span className="hidden sm:inline truncate max-w-[110px]">{user.name || user.email.split('@')[0]}</span>
+                <ChevronDown className="w-3.5 h-3.5 text-[#D4AF37]" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel>{license.displayName} • {analysesLeftStr}</DropdownMenuLabel>
+              <DropdownMenuItem onSelect={() => setActiveTab('dashboard')}>
+                <BarChart3 className="w-3.5 h-3.5 text-[#D4AF37]" />
+                <span>Overview Dashboard</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setActiveTab('analyze')}>
+                <Calculator className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Underwriting Workbench</span>
+              </DropdownMenuItem>
+              {hasRunAnalysis && runResult && (
+                <DropdownMenuItem
+                  onSelect={() => handleOpenMobilePdfScreen(runResult.inputs.propertyTitle || propertyName)}
+                >
+                  <FileText className="w-3.5 h-3.5 text-[#D4AF37]" />
+                  <span>Open Mobile PDF Screen</span>
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onSelect={() => setActiveTab('settings')}>
+                <Settings className="w-3.5 h-3.5 text-zinc-300" />
+                <span>Settings &amp; API Key</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={onOpenRenewal}>
+                <Crown className="w-3.5 h-3.5 text-[#D4AF37]" />
+                <span>Upgrade / Buy Credits</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => onSignOut(false)} className="text-rose-300 focus:text-rose-200">
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sign Out</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
       </header>
@@ -5677,24 +5758,35 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         );
                       })()}
 
-                      {/* PDF Memorandum / Watermarked Report Export */}
-                      <div className="pt-2">
+                      {/* PDF Memorandum / Mobile PDF Screen Preview & Binary Download */}
+                      <div className="pt-2 space-y-2">
                         {canPdfExport ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => handleExportPDF(runResult.inputs.propertyTitle || propertyName)}
-                            className="w-full"
-                          >
-                            <Download className="w-3.5 h-3.5 text-[#D4AF37]" />
-                            <span>
-                              {canMemorandumPdf
-                                ? 'EXPORT MEMORANDUM PDF (-1 CREDIT)'
-                                : license.planKey === 'free'
-                                ? 'EXPORT WATERMARKED PDF (-1 CREDIT)'
-                                : 'EXPORT INVESTMENT PDF (-1 CREDIT)'}
-                            </span>
-                          </Button>
+                          <>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => handleExportPDF(runResult.inputs.propertyTitle || propertyName)}
+                              className="w-full"
+                            >
+                              <Download className="w-3.5 h-3.5 text-[#D4AF37]" />
+                              <span>
+                                {canMemorandumPdf
+                                  ? 'EXPORT MEMORANDUM PDF (-1 CREDIT)'
+                                  : license.planKey === 'free'
+                                  ? 'EXPORT WATERMARKED PDF (-1 CREDIT)'
+                                  : 'EXPORT INVESTMENT PDF (-1 CREDIT)'}
+                              </span>
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              onClick={() => handleOpenMobilePdfScreen(runResult.inputs.propertyTitle || propertyName)}
+                              className="w-full border border-white/10 text-zinc-200 hover:border-[#D4AF37]/40"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-[#D4AF37]" />
+                              <span>PREVIEW SEPARATE MOBILE PDF SCREEN</span>
+                            </Button>
+                          </>
                         ) : (
                           <button
                             type="button"
@@ -6017,46 +6109,29 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         </div>
                       )}
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                        <div className="space-y-1.5">
-                          <div className="text-[10px] text-zinc-400 uppercase">DSCR Distribution ({monteCarloResult.cycles.toLocaleString('en-US')} Cycles)</div>
-                          {monteCarloResult.distribution.map((b) => (
-                            <div key={b.label} className="flex items-center gap-2 text-[10px]">
-                              <span className="w-20 text-zinc-400 shrink-0">{b.label}</span>
-                              <div className="flex-1 h-2 bg-zinc-900 rounded-full overflow-hidden">
-                                <div
-                                  className="h-full bg-gradient-to-r from-[#D4AF37] to-emerald-400 rounded-full"
-                                  style={{ width: `${Math.max(4, b.pct)}%` }}
-                                />
-                              </div>
-                              <span className="w-16 text-right text-white font-bold">{b.pct}%</span>
-                            </div>
-                          ))}
-                        </div>
-
-                        {Array.isArray(monteCarloResult.irrDistribution) && (
-                          <div className="space-y-1.5">
-                            <div className="text-[10px] text-zinc-400 uppercase">IRR Distribution ({monteCarloResult.cycles.toLocaleString('en-US')} Cycles)</div>
-                            {monteCarloResult.irrDistribution.map((b) => (
-                              <div key={b.label} className="flex items-center gap-2 text-[10px]">
-                                <span className="w-16 text-zinc-400 shrink-0">{b.label}</span>
-                                <div className="flex-1 h-2 bg-zinc-900 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-gradient-to-r from-purple-500 to-cyan-400 rounded-full"
-                                    style={{ width: `${Math.max(4, b.pct)}%` }}
-                                  />
-                                </div>
-                                <span className="w-14 text-right text-white font-bold">{b.pct}%</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                      <MonteCarloDistributionChart
+                        cycles={monteCarloResult.cycles}
+                        dscrBins={monteCarloResult.distribution}
+                        irrBins={monteCarloResult.irrDistribution || []}
+                      />
 
                       {monteCarloResult.assumptions && (
-                        <div className="p-2.5 rounded-lg bg-black/50 border border-white/10 text-[10px] text-zinc-400 leading-relaxed">
-                          <strong className="text-zinc-300">Simulation Assumptions:</strong>{' '}
-                          Cycles={monteCarloResult.assumptions.cycles.toLocaleString('en-US')} | Rate Shock Mean +{monteCarloResult.assumptions.rateShockMeanBps}bps (SD {monteCarloResult.assumptions.rateShockStdBps}bps) | Rent Mean {monteCarloResult.assumptions.rentShockMeanPct}% (SD {monteCarloResult.assumptions.rentShockStdPct}%) | Vacancy Mean {monteCarloResult.assumptions.vacancyMeanPct}% (SD {monteCarloResult.assumptions.vacancyStdPct}%) | Appreciation SD {monteCarloResult.assumptions.appreciationStdPct}%. {monteCarloResult.assumptions.methodology}
+                        <div className="p-2.5 rounded-lg bg-black/50 border border-white/10 text-[10px] text-zinc-400 leading-relaxed flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <strong className="text-emerald-400">[REAL STOCHASTIC SIMULATION]</strong>{' '}
+                            Cycles={monteCarloResult.assumptions.cycles.toLocaleString('en-US')} | Rate Mean +{monteCarloResult.assumptions.rateShockMeanBps}bps (SD {monteCarloResult.assumptions.rateShockStdBps}bps) | Rent Mean {monteCarloResult.assumptions.rentShockMeanPct}% (SD {monteCarloResult.assumptions.rentShockStdPct}%) | Vacancy Mean {monteCarloResult.assumptions.vacancyMeanPct}% (SD {monteCarloResult.assumptions.vacancyStdPct}%). {monteCarloResult.assumptions.methodology}
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={handleToggleMonteCarlo}
+                            disabled={isRunningMonteCarlo}
+                            className="shrink-0"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Re-Run Seed</span>
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -6512,12 +6587,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             <div className="space-y-6 max-w-6xl mx-auto">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/[0.08] pb-5">
                 <div>
-                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-xs font-mono text-[#D4AF37] mb-2">
-                    <Radar className="w-3.5 h-3.5" />
-                    <span>AI DEAL FINDER • {license.planKey === 'free' ? 'LIMITED PREVIEW (2 DEALS)' : 'FULL SCAN (5 DEALS)'}</span>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-xs font-mono text-amber-300 mb-2">
+                    <Radar className="w-3.5 h-3.5 text-[#D4AF37]" />
+                    <span>GENERATED / SIMULATED SCREENING — NOT LIVE MLS • {license.planKey === 'free' ? '2 SAMPLE DEALS' : '5 MODELED DEALS'}</span>
                   </div>
                   <h2 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-                    AI Deal Finder
+                    AI Deal Finder <span className="text-xs font-mono text-amber-300 font-normal ml-2">[Simulated]</span>
                   </h2>
                 </div>
                 <div className="text-xs font-mono text-zinc-400">
@@ -6794,8 +6869,11 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div className="text-[11px] font-mono text-[#D4AF37]">
                         Last Result - {formatLastResultTimestamp(dfCreatedAt)} - {dfResultsCity}
                       </div>
-                      <h3 className="text-sm font-mono font-bold uppercase text-white mt-0.5">
-                        Ranked Simulated Deals • {dfResultsCity}
+                      <h3 className="text-sm font-mono font-bold uppercase text-white mt-0.5 flex flex-wrap items-center gap-2">
+                        <span>Ranked Simulated Deals • {dfResultsCity}</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 text-amber-300">
+                          GENERATED / NOT LIVE MLS
+                        </span>
                       </h3>
                     </div>
                     <div className="flex items-center gap-3">
@@ -7217,95 +7295,53 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     </div>
                   </div>
 
-                  {/* Existing Forecast Curve Chart: Now -> 12M -> 3Y -> 5Y (Preserved) */}
-                  {Array.isArray(fcResult.series) && fcResult.series.length >= 2 && (() => {
-                    const pts = fcResult.series;
-                    const W = 680;
-                    const H = 220;
-                    const padL = 44;
-                    const padR = 24;
-                    const padT = 20;
-                    const padB = 34;
-                    const plotW = W - padL - padR;
-                    const plotH = H - padT - padB;
-                    const capVals = pts.map((p) => p.capRate);
-                    const minCap = Math.max(0, Math.floor((Math.min(...capVals) - 0.8) * 10) / 10);
-                    const maxCap = Math.ceil((Math.max(...capVals) + 0.8) * 10) / 10;
-                    const spanCap = Math.max(0.5, maxCap - minCap);
-                    const minIdx = 100;
-                    const maxIdx = Math.max(115, ...pts.map((p) => Math.max(p.priceIndex, p.rentIndex)) ) + 3;
-                    const spanIdx = Math.max(10, maxIdx - minIdx);
+                  {/* Documented Recharts Forecast Trajectory */}
+                  {Array.isArray(fcResult.series) && fcResult.series.length >= 2 && (
+                    <ForecastTrajectoryChart city={fcResult.city} series={fcResult.series} />
+                  )}
 
-                    const xAt = (i: number) => padL + (i / Math.max(1, pts.length - 1)) * plotW;
-                    const yCap = (v: number) => padT + plotH - ((v - minCap) / spanCap) * plotH;
-                    const yIdx = (v: number) => padT + plotH - ((v - minIdx) / spanIdx) * plotH;
-
-                    const capPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yCap(p.capRate).toFixed(1)}`).join(' ');
-                    const pricePath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yIdx(p.priceIndex).toFixed(1)}`).join(' ');
-                    const rentPath = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yIdx(p.rentIndex).toFixed(1)}`).join(' ');
-
-                    return (
-                      <div className="p-4 rounded-2xl bg-black/50 border border-white/10 space-y-3">
-                        <div className="flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
-                          <span className="font-bold text-white uppercase">
-                            Projected Trajectory (Now &rarr; 12M &rarr; 3Y &rarr; 5Y)
-                          </span>
-                          <div className="flex flex-wrap items-center gap-4 text-[11px]">
-                            <span className="flex items-center gap-1.5 text-[#D4AF37]">
-                              <span className="w-3 h-0.5 bg-[#D4AF37] inline-block" /> Cap Rate (%)
-                            </span>
-                            <span className="flex items-center gap-1.5 text-purple-300">
-                              <span className="w-3 h-0.5 bg-purple-400 inline-block" /> Price Index (100=Now)
-                            </span>
-                            <span className="flex items-center gap-1.5 text-emerald-300">
-                              <span className="w-3 h-0.5 bg-emerald-400 inline-block" /> Rent Index (100=Now)
-                            </span>
+                  {/* Documented Forecast Model & Historical Baseline Transparency Box */}
+                  <div className="rounded-2xl border border-white/10 bg-black/45 p-4 space-y-3 text-xs font-mono">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.07] pb-2">
+                      <span className="font-bold uppercase text-[#D4AF37]">
+                        {fcResult.modelSpec?.modelName || 'Documented Forecast Model & Historical Baseline'}
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
+                        {fcResult.modelSpec?.dataType || 'Historical Benchmark + Compounding Model'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-300 leading-relaxed">
+                      {fcResult.modelSpec?.methodologySummary ||
+                        `Calibrated to ${fcResult.city} benchmark avg cap rate (${fcResult.currentAvgCapRate}%) with compounding rent (+${fcResult.rentGrowth12M}% YoY) and capital growth (+${fcResult.priceGrowth12M}% YoY).`}
+                    </p>
+                    {fcResult.modelSpec?.formulas && fcResult.modelSpec.formulas.length > 0 && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                        {fcResult.modelSpec.formulas.map((eq, idx) => (
+                          <div key={idx} className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.06] text-[10px] text-zinc-200">
+                            {eq}
                           </div>
+                        ))}
+                      </div>
+                    )}
+                    {fcResult.historicalBaseline?.historicalPriceIndex && (
+                      <div className="space-y-1.5 pt-1">
+                        <div className="flex flex-wrap items-center justify-between text-[10px] text-zinc-400">
+                          <span>{fcResult.historicalBaseline.dataType} (2022=100)</span>
+                          <span>
+                            Source: {fcResult.historicalBaseline.source} • Updated: {fcResult.historicalBaseline.updatedDate}
+                          </span>
                         </div>
-
-                        <div className="w-full overflow-x-auto">
-                          <svg viewBox={`0 0 ${W} ${H}`} className="w-full max-w-[680px] h-auto mx-auto font-mono">
-                            {[0, 0.25, 0.5, 0.75, 1].map((t) => {
-                              const y = padT + plotH * t;
-                              return (
-                                <line
-                                  key={t}
-                                  x1={padL}
-                                  y1={y}
-                                  x2={W - padR}
-                                  y2={y}
-                                  stroke="rgba(255,255,255,0.08)"
-                                  strokeDasharray="3 3"
-                                />
-                              );
-                            })}
-                            <path d={pricePath} fill="none" stroke="#c084fc" strokeWidth="2.5" />
-                            <path d={rentPath} fill="none" stroke="#34d399" strokeWidth="2.5" />
-                            <path d={capPath} fill="none" stroke="#D4AF37" strokeWidth="3" />
-                            {pts.map((p, i) => {
-                              const x = xAt(i);
-                              const yc = yCap(p.capRate);
-                              const yp = yIdx(p.priceIndex);
-                              const yr = yIdx(p.rentIndex);
-                              return (
-                                <g key={p.label}>
-                                  <circle cx={x} cy={yp} r="3.5" fill="#c084fc" />
-                                  <circle cx={x} cy={yr} r="3.5" fill="#34d399" />
-                                  <circle cx={x} cy={yc} r="4.5" fill="#D4AF37" stroke="#000" strokeWidth="1.5" />
-                                  <text x={x} y={yc - 10} textAnchor="middle" fill="#D4AF37" fontSize="10" fontWeight="bold">
-                                    {p.capRate}%
-                                  </text>
-                                  <text x={x} y={H - 10} textAnchor="middle" fill="#a1a1aa" fontSize="11" fontWeight="bold">
-                                    {p.label}
-                                  </text>
-                                </g>
-                              );
-                            })}
-                          </svg>
+                        <div className="grid grid-cols-5 gap-2">
+                          {fcResult.historicalBaseline.historicalPriceIndex.map((pt) => (
+                            <div key={pt.year} className="p-2 rounded-lg bg-white/[0.03] border border-white/[0.05] text-center">
+                              <div className="text-[10px] text-zinc-400">{pt.year}</div>
+                              <div className="text-xs font-bold text-white">{pt.index}</div>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    );
-                  })()}
+                    )}
+                  </div>
 
                   {/* Feature 2 Recharts Companion: Cross-Market Yield & Growth Benchmark */}
                   <MarketComparisonChart
@@ -9256,13 +9292,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             </div>
           )}
 
-          {/* TAB 5: MY DASHBOARD OVERVIEW */}
+          {/* TAB 5: MY DASHBOARD OVERVIEW (Calm 5-KPI Executive Lead + Tabbed Details) */}
           {activeTab === 'dashboard' && (
             <div className="space-y-6 max-w-6xl mx-auto">
-              
+
               {/* Expiration Notice if subscription ended */}
               {isExpired && (
-                <div className="p-4 sm:p-5 rounded-2xl bg-rose-950/40 border border-rose-500/50 text-rose-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-in fade-in duration-200">
+                <div className="p-4 sm:p-5 rounded-2xl bg-rose-950/40 border border-rose-500/50 text-rose-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
                     <div className="p-2 rounded-xl bg-rose-500/20 text-rose-400">
                       <AlertTriangle className="w-5 h-5" />
@@ -9274,143 +9310,261 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       </div>
                     </div>
                   </div>
-                  <button
-                    onClick={onOpenRenewal}
-                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-xs font-mono uppercase tracking-wider shrink-0 cursor-pointer shadow-lg"
-                  >
+                  <Button variant="solidGold" onClick={onOpenRenewal} className="shrink-0">
                     Renew Subscription Now
-                  </button>
+                  </Button>
                 </div>
               )}
 
-              {/* Dedicated Subscription Details Card: Plan Name, Status, Days Left, End Date, Renew */}
-              <div className="glass-panel p-6 sm:p-8 rounded-3xl border border-white/10 relative overflow-hidden">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-white/[0.08] pb-6">
-                  <div>
-                    <div className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider">
-                      AQARI AI LICENSE OVERVIEW
+              {/* Calm Header + Primary Actions */}
+              <FadeInCard>
+                <Card className="p-6 sm:p-7 rounded-3xl border border-white/10">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-white/[0.08]">
+                    <div>
+                      <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-zinc-400">
+                        EXECUTIVE TERMINAL SUMMARY
+                      </div>
+                      <h3 className="text-2xl font-bold text-white mt-1">
+                        {`Aqari AI — ${planDisplayName}`}
+                        <span className="text-sm font-mono font-normal text-zinc-400 ml-2">
+                          (${planPriceUSD}/30d)
+                        </span>
+                      </h3>
                     </div>
-                    <h3 className="text-2xl font-bold text-white mt-1">
-                      {`Aqari AI - ${planDisplayName} ($${planPriceUSD}/30d)`}
-                    </h3>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <Button variant="solidGold" size="sm" onClick={onOpenRenewal}>
+                        <Zap className="w-3.5 h-3.5 fill-black" />
+                        <span>Switch / Renew Plan</span>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={onOpenRenewal}
+                        className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/15"
+                      >
+                        + Buy AI Credits
+                      </Button>
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
-                    <span className={`px-3 py-1 rounded-full text-xs font-mono font-bold uppercase tracking-wider border ${
-                      isExpired
-                        ? 'bg-rose-500/20 text-rose-400 border-rose-500/40'
-                        : license.planKey !== 'free'
-                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                        : 'bg-zinc-500/20 text-zinc-300 border-zinc-500/40'
-                    }`}>
-                      {isExpired ? 'STATUS: EXPIRED' : license.planKey !== 'free' ? 'STATUS: ACTIVE' : 'STATUS: FREE TIER'}
-                    </span>
-
-                    <button
-                      onClick={onOpenRenewal}
-                      className="px-4 py-2 rounded-xl bg-[#D4AF37] hover:bg-amber-400 text-black font-bold text-xs font-mono tracking-wide cursor-pointer transition flex items-center gap-1.5 shadow-[0_0_15px_rgba(212,175,55,0.3)]"
-                    >
-                      <Zap className="w-3.5 h-3.5 fill-black" />
-                      <span>Switch / Renew Plan</span>
-                    </button>
-                    <button
-                      onClick={onOpenRenewal}
-                      className="px-3.5 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-bold text-xs font-mono cursor-pointer transition"
-                    >
-                      + Buy AI Credits
-                    </button>
-                  </div>
-                </div>
-
-                {/* 5 Metadata Metrics */}
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 pt-6">
-                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">PLAN TIER</span>
-                    <strong className="text-base font-bold font-mono text-[#D4AF37]">{planDisplayName} Terminal</strong>
-                  </div>
-
-                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">CREDITS LEFT</span>
-                    <strong className="text-base font-bold font-mono text-white">{analysesLeftStr}</strong>
-                    {(user.extraCredits ?? 0) > 0 && (
-                      <span className="text-[10px] font-mono text-emerald-400 block mt-0.5">
-                        Includes +{user.extraCredits} top-up credits
+                  {/* 5 Calm Key Metrics First (Black + Gold on Plan/Credits + Green on Active Portfolio) */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 pt-6">
+                    <div className="p-4 rounded-2xl bg-black/50 border border-[#D4AF37]/30">
+                      <span className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                        CREDITS REMAINING
                       </span>
-                    )}
+                      <strong className="text-xl font-black font-mono text-[#D4AF37] tabular-nums">
+                        {isCreditsLoaded ? <CountUpNumber value={license.analysesLeft} /> : '--'}
+                      </strong>
+                      {(user.extraCredits ?? 0) > 0 && (
+                        <span className="text-[10px] font-mono text-emerald-400 block mt-0.5">
+                          +{user.extraCredits} top-up credits
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="p-4 rounded-2xl bg-black/50 border border-white/[0.07]">
+                      <span className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                        LICENSE WINDOW
+                      </span>
+                      <strong className={`text-xl font-black font-mono tabular-nums ${isExpired ? 'text-rose-400' : 'text-white'}`}>
+                        {isExpired ? '0d' : `${daysLeft ?? 30}d left`}
+                      </strong>
+                      <span className="text-[10px] font-mono text-zinc-500 block mt-0.5">
+                        {endsAt ? new Date(endsAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'No expiry'}
+                      </span>
+                    </div>
+
+                    <div className="p-4 rounded-2xl bg-black/50 border border-white/[0.07]">
+                      <span className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                        PORTFOLIO AUM
+                      </span>
+                      <strong className="text-xl font-black font-mono text-white tabular-nums">
+                        {formatPrice(portfolioTotalValUSD, currentCurrency, { compact: true })}
+                      </strong>
+                      <span className="text-[10px] font-mono text-zinc-500 block mt-0.5">
+                        {portfolioAgg.trackedAssets} tracked assets
+                      </span>
+                    </div>
+
+                    <div className="p-4 rounded-2xl bg-black/50 border border-white/[0.07]">
+                      <span className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                        WEIGHTED CAP RATE
+                      </span>
+                      <strong className="text-xl font-black font-mono text-emerald-400 tabular-nums">
+                        {portfolioAgg.trackedAssets > 0 ? `${portfolioAvgCapRate}%` : '--'}
+                      </strong>
+                      <span className="text-[10px] font-mono text-zinc-500 block mt-0.5">
+                        {formatPrice(portfolioMonthlyCashflowUSD, currentCurrency)}/mo net
+                      </span>
+                    </div>
+
+                    <div className="p-4 rounded-2xl bg-black/50 border border-white/[0.07] col-span-2 sm:col-span-1">
+                      <span className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
+                        STATUS
+                      </span>
+                      <strong className={`text-lg font-black font-mono ${isExpired ? 'text-rose-400' : license.planKey !== 'free' ? 'text-emerald-400' : 'text-zinc-200'}`}>
+                        {isExpired ? 'Expired' : license.planKey !== 'free' ? 'Active' : 'Free Trial'}
+                      </strong>
+                      <span className="text-[10px] font-mono text-zinc-500 block mt-0.5">
+                        {planDisplayName} Tier
+                      </span>
+                    </div>
+                  </div>
+                </Card>
+              </FadeInCard>
+
+              {/* Calm Organized Tabs: Portfolio, Quotas, Market Benchmarks, Capabilities */}
+              <Tabs defaultValue="portfolio" className="w-full space-y-4">
+                <TabsList className="w-full sm:w-auto overflow-x-auto">
+                  <TabsTrigger value="portfolio">Portfolio Summary</TabsTrigger>
+                  <TabsTrigger value="quotas">Usage &amp; Quotas</TabsTrigger>
+                  <TabsTrigger value="benchmarks">Market Benchmarks</TabsTrigger>
+                  <TabsTrigger value="capabilities">Plan Capabilities</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="portfolio" className="space-y-4">
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-zinc-300">
+                      Recent Saved Analyses ({savedAnalyses.length}/{maxSaved})
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('analyze')}
+                        className="text-xs font-mono text-emerald-400 hover:underline cursor-pointer"
+                      >
+                        + New Underwriting
+                      </button>
+                      {savedAnalyses.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab('portfolio')}
+                          className="text-xs font-mono text-[#D4AF37] hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <span>Full Portfolio</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">Subscription Status</span>
-                    <strong className={`text-base font-bold font-mono ${
-                      isExpired ? 'text-rose-400' : license.planKey !== 'free' ? 'text-emerald-400' : 'text-zinc-300'
-                    }`}>
-                      {isExpired ? 'Expired' : license.planKey !== 'free' ? 'Active (30 Days)' : 'Trial'}
-                    </strong>
-                  </div>
+                  {savedAnalyses.length === 0 ? (
+                    <div className="glass-panel p-6 sm:p-8 border border-dashed border-white/15 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <div className="text-base font-bold text-white">No saved analyses yet</div>
+                        <p className="text-xs text-zinc-400 font-mono mt-1">
+                          Run an analysis and save it to monitor NOI, yield, and risk coverage across sessions.
+                        </p>
+                      </div>
+                      <Button variant="solidGold" onClick={() => setActiveTab('analyze')}>
+                        <span>Run First Analysis</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {savedAnalyses.slice(0, 3).map((item) => (
+                        <div key={item.id} className="glass-panel p-4 space-y-2 border border-white/[0.08] hover:border-[#D4AF37]/40 transition">
+                          <div className="flex items-center justify-between text-[11px] font-mono">
+                            <span className="text-zinc-400">{item.city}</span>
+                            <span className="text-emerald-400 font-bold">{item.capRate}% Cap</span>
+                          </div>
+                          <div className="text-sm font-bold text-white truncate">{item.property}</div>
+                          <div className="flex items-center justify-between text-xs font-mono text-zinc-400 pt-1.5 border-t border-white/[0.05]">
+                            <span>{formatPrice(item.price, currentCurrency)}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleLoadSaved(item)}
+                              className="text-[#D4AF37] hover:underline cursor-pointer text-[11px] flex items-center gap-1"
+                            >
+                              <span>Open</span>
+                              <ArrowRight className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </TabsContent>
 
-                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">Days Left</span>
-                    <strong className={`text-base font-bold font-mono ${
-                      isExpired ? 'text-rose-400' : isEndingIn24h ? 'text-amber-400' : 'text-white'
-                    }`}>
-                      {isExpired ? '0 days (Expired)' : daysLeft !== null ? `${daysLeft} days left` : '30 days left'}
-                    </strong>
+                <TabsContent value="quotas">
+                  <div className="glass-panel p-5 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                    <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                      <div className="text-[10px] text-zinc-400 uppercase">Image / PDF Scans</div>
+                      <div className="text-sm font-bold text-white mt-0.5">
+                        {user.imagePdfUsed ?? 0} / {user.imagePdfLimit ?? PLANS[license.planKey].imagePdfLimit}
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                      <div className="text-[10px] text-zinc-400 uppercase">AI Listings</div>
+                      <div className="text-sm font-bold text-white mt-0.5">
+                        {user.aiListingsUsed ?? 0} / {user.aiListingLimit ?? PLANS[license.planKey].aiListingLimit}
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                      <div className="text-[10px] text-zinc-400 uppercase">PDF Exports / mo</div>
+                      <div className="text-sm font-bold text-white mt-0.5">
+                        {user.pdfsUsed ?? 0} / {user.investmentPdfLimit ?? PLANS[license.planKey].investmentPdfLimit}
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                      <div className="text-[10px] text-zinc-400 uppercase">Portfolio Cap</div>
+                      <div className="text-sm font-bold text-emerald-400 mt-0.5">
+                        {(user.portfolioAssets?.length ?? 0)} / {user.portfolioAssetsLimit ?? PLANS[license.planKey].portfolioAssetsLimit}
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                      <div className="text-[10px] text-zinc-400 uppercase">Compare / Seats</div>
+                      <div className="text-sm font-bold text-zinc-200 mt-0.5">
+                        {user.compareLimit ?? PLANS[license.planKey].compareLimit}x / {user.teamUsersLimit ?? PLANS[license.planKey].teamUsersLimit}u
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
+                      <div className="text-[10px] text-zinc-400 uppercase">REST API Today</div>
+                      <div className="text-sm font-bold text-zinc-200 mt-0.5">
+                        {user.apiCallsToday ?? 0} / {PLANS[license.planKey].apiDailyLimit.toLocaleString('en-US')}
+                      </div>
+                    </div>
                   </div>
+                </TabsContent>
 
-                  <div className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.06]">
-                    <span className="text-[10px] font-mono uppercase text-zinc-500 block mb-1">End Date</span>
-                    <strong className="text-sm font-bold font-mono text-zinc-200">
-                      {endsAt ? new Date(endsAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 'No Expiry'}
-                    </strong>
+                <TabsContent value="benchmarks" className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs font-mono">
+                    <span className="text-zinc-300">
+                      Updated: {macroSyncInfo?.data_as_of || marketLive?.last_synced_display || '2026-04-01'}
+                    </span>
+                    <span className="text-zinc-400">
+                      [Actual] FRED US10Y • [Estimated] Regional Yields
+                    </span>
                   </div>
-                </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="glass-panel p-4 border border-white/[0.08]">
+                      <div className="text-[11px] font-mono uppercase text-zinc-400">Muscat vs US 10Y Spread</div>
+                      <div className="text-lg font-black font-mono text-[#D4AF37] mt-1">
+                        +{marketLive?.metrics?.muscat_vs_us10y_bps ?? 412} bps • {marketLive?.cities?.find((c) => c.city === 'Muscat')?.gross_yield ?? 8.4}%
+                      </div>
+                      <div className="text-[11px] text-zinc-500 font-mono mt-1">Source: FRED + Oman NCSI</div>
+                    </div>
+                    <div className="glass-panel p-4 border border-white/[0.08]">
+                      <div className="text-[11px] font-mono uppercase text-zinc-400">Dubai DLD Residential Index</div>
+                      <div className="text-lg font-black font-mono text-emerald-400 mt-1">
+                        {marketLive?.metrics?.dubai_dld_index ?? 184.2} pts • {marketLive?.cities?.find((c) => c.city === 'Dubai')?.gross_yield ?? 8.8}%
+                      </div>
+                      <div className="text-[11px] text-zinc-500 font-mono mt-1">Source: Dubai Land Department [Estimated]</div>
+                    </div>
+                    <div className="glass-panel p-4 border border-white/[0.08]">
+                      <div className="text-[11px] font-mono uppercase text-zinc-400">Riyadh Rental YoY</div>
+                      <div className="text-lg font-black font-mono text-white mt-1">
+                        +{marketLive?.cities?.find((c) => c.city === 'Riyadh')?.rental_yoy ?? 14.8}% YoY
+                      </div>
+                      <div className="text-[11px] text-zinc-500 font-mono mt-1">Source: JLL KSA Baseline [Estimated]</div>
+                    </div>
+                  </div>
+                </TabsContent>
 
-                {/* Strict Server Quota Meters (Month / Daily Entitlements) */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-4">
-                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
-                    <div className="text-[10px] text-zinc-400 uppercase">Image / PDF Scans</div>
-                    <div className="text-sm font-bold text-white mt-0.5">
-                      {user.imagePdfUsed ?? 0} / {user.imagePdfLimit ?? PLANS[license.planKey].imagePdfLimit}
-                    </div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
-                    <div className="text-[10px] text-zinc-400 uppercase">AI Listings</div>
-                    <div className="text-sm font-bold text-white mt-0.5">
-                      {user.aiListingsUsed ?? 0} / {user.aiListingLimit ?? PLANS[license.planKey].aiListingLimit}
-                    </div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
-                    <div className="text-[10px] text-zinc-400 uppercase">PDF Exports / mo</div>
-                    <div className="text-sm font-bold text-white mt-0.5">
-                      {user.pdfsUsed ?? 0} / {user.investmentPdfLimit ?? PLANS[license.planKey].investmentPdfLimit}
-                    </div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
-                    <div className="text-[10px] text-zinc-400 uppercase">Portfolio Cap</div>
-                    <div className="text-sm font-bold text-[#D4AF37] mt-0.5">
-                      {(user.portfolioAssets?.length ?? 0)} / {user.portfolioAssetsLimit ?? PLANS[license.planKey].portfolioAssetsLimit}
-                    </div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
-                    <div className="text-[10px] text-zinc-400 uppercase">Compare / Seats</div>
-                    <div className="text-sm font-bold text-cyan-300 mt-0.5">
-                      {user.compareLimit ?? PLANS[license.planKey].compareLimit}x / {user.teamUsersLimit ?? PLANS[license.planKey].teamUsersLimit}u
-                    </div>
-                  </div>
-                  <div className="p-3 rounded-xl bg-black/40 border border-white/[0.07] font-mono">
-                    <div className="text-[10px] text-zinc-400 uppercase">REST API Today</div>
-                    <div className="text-sm font-bold text-purple-300 mt-0.5">
-                      {user.apiCallsToday ?? 0} / {PLANS[license.planKey].apiDailyLimit.toLocaleString('en-US')}
-                    </div>
-                  </div>
-                </div>
-
-                {/* INCLUDED CAPABILITIES for Current Active Plan Only */}
-                <div className="pt-6 mt-6 border-t border-white/[0.08]">
-                  <div className="text-xs font-mono uppercase tracking-wider text-zinc-400 font-bold mb-3">
-                    INCLUDED CAPABILITIES:
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                <TabsContent value="capabilities">
+                  <div className="glass-panel p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                     {meFeatures.map((cap, idx) => {
                       const isExclusion = cap.toLowerCase().startsWith('no ');
                       return (
@@ -9434,192 +9588,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       );
                     })}
                   </div>
-                </div>
-              </div>
-
-              {/* Section A: MARKET HIGHLIGHTS - SOURCE & DATA TYPE TAGGED */}
-              <div className="space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-1">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-[#D4AF37]" />
-                    <span className="text-sm font-mono font-bold uppercase tracking-wider text-white">
-                      Market Benchmarks • Updated{' '}
-                      {macroSyncInfo?.data_as_of || marketLive?.last_synced_display || 'Daily'}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-mono text-amber-300 bg-amber-500/10 px-2.5 py-1 rounded border border-amber-500/20">
-                      [Actual] FRED / FX • [Estimated] City Yields
-                    </span>
-                    <span className="text-xs font-mono text-zinc-300 bg-white/[0.04] px-2.5 py-1 rounded border border-white/10">
-                      Source: {macroSyncInfo?.source || 'FRED / World Bank / DLD / JLL'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                  <div className="glass-panel p-5 border border-white/[0.08]">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono uppercase text-zinc-400">Muscat vs US 10Y Spread</span>
-                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[9px] font-mono font-bold">
-                        [Actual FRED + Est. Yield]
-                      </span>
-                    </div>
-                    <div className="text-xl font-black font-mono text-[#D4AF37] mt-1">
-                      +{marketLive?.metrics?.muscat_vs_us10y_bps ?? 412} bps • {marketLive?.cities?.find((c) => c.city === 'Muscat')?.gross_yield ?? 8.4}%
-                    </div>
-                    <p className="text-xs text-zinc-400 font-mono mt-1.5">
-                      FRED US10Y: {marketLive?.macro?.us_10y_yield ?? 4.28}% • Updated: {macroSyncInfo?.last_updated || marketLive?.last_synced_display || '2026-04-01'}
-                    </p>
-                    <p className="text-[11px] text-zinc-500 font-mono mt-0.5">Source: FRED + Oman NCSI Benchmark</p>
-                  </div>
-
-                  <div className="glass-panel p-5 border border-white/[0.08]">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono uppercase text-zinc-400">Dubai DLD Residential Index</span>
-                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[9px] font-mono font-bold">
-                        [Estimated]
-                      </span>
-                    </div>
-                    <div className="text-xl font-black font-mono text-emerald-400 mt-1">
-                      {marketLive?.metrics?.dubai_dld_index ?? 184.2} pts • {marketLive?.cities?.find((c) => c.city === 'Dubai')?.gross_yield ?? 8.8}%
-                    </div>
-                    <p className="text-xs text-zinc-400 font-mono mt-1.5">
-                      Source: Dubai Land Department • Updated: {macroSyncInfo?.data_as_of || '2026-04-01'}
-                    </p>
-                    <p className="text-[11px] text-zinc-500 font-mono mt-0.5">Type: Estimated Benchmark</p>
-                  </div>
-
-                  <div className="glass-panel p-5 border border-white/[0.08]">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-mono uppercase text-zinc-400">Riyadh KAFD Rental Spread</span>
-                      <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[9px] font-mono font-bold">
-                        [Estimated]
-                      </span>
-                    </div>
-                    <div className="text-xl font-black font-mono text-purple-400 mt-1">
-                      Riyadh • +{marketLive?.cities?.find((c) => c.city === 'Riyadh')?.rental_yoy ?? 14.8}% YoY
-                    </div>
-                    <p className="text-xs text-zinc-400 font-mono mt-1.5">
-                      Source: JLL KSA Baseline • Updated: {macroSyncInfo?.data_as_of || '2026-04-01'}
-                    </p>
-                    <p className="text-[11px] text-zinc-500 font-mono mt-0.5">Type: Estimated Benchmark</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Section B: MY PORTFOLIO */}
-              <div className="space-y-4 pt-2">
-                <div className="flex items-center justify-between px-1">
-                  <div className="flex items-center gap-2">
-                    <Briefcase className="w-4 h-4 text-[#D4AF37]" />
-                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-white">
-                      My Portfolio
-                    </span>
-                  </div>
-                  {savedAnalyses.length > 0 && (
-                    <button
-                      onClick={() => setActiveTab('portfolio')}
-                      className="text-xs font-mono text-[#D4AF37] hover:underline flex items-center gap-1 cursor-pointer"
-                    >
-                      <span>View Full Portfolio ({savedAnalyses.length})</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-
-                {savedAnalyses.length === 0 ? (
-                  <div className="glass-panel p-8 sm:p-10 border border-dashed border-white/15 space-y-5">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div className="space-y-1">
-                        <div className="text-base font-bold text-white">No analyses yet - Your portfolio is empty</div>
-                        <p className="text-xs text-zinc-400 font-mono max-w-xl">
-                          Your portfolio is empty. Analyze a property and save it to track yields, cashflow, and risk covenants.
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => setActiveTab('analyze')}
-                        className="px-5 py-2.5 rounded-xl bg-[#D4AF37] hover:bg-amber-400 text-black font-bold text-xs font-mono shrink-0 transition flex items-center gap-1.5 cursor-pointer shadow-lg"
-                      >
-                        <span>Run Your First Analysis</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-white/[0.06]">
-                      <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.05]">
-                        <div className="text-[10px] font-mono uppercase text-zinc-400">Total Value</div>
-                        <div className="text-lg font-bold font-mono text-zinc-500 mt-0.5">{formatPrice(0, currentCurrency)}</div>
-                      </div>
-                      <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.05]">
-                        <div className="text-[10px] font-mono uppercase text-zinc-400">Monthly Cashflow</div>
-                        <div className="text-lg font-bold font-mono text-zinc-500 mt-0.5">{formatPrice(0, currentCurrency)}</div>
-                      </div>
-                      <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.05]">
-                        <div className="text-[10px] font-mono uppercase text-zinc-400">Avg Cap Rate</div>
-                        <div className="text-lg font-bold font-mono text-zinc-500 mt-0.5">--</div>
-                      </div>
-                      <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.05]">
-                        <div className="text-[10px] font-mono uppercase text-zinc-400">Saved</div>
-                        <div className="text-lg font-bold font-mono text-zinc-500 mt-0.5">0 properties</div>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      <div className="glass-panel p-4">
-                        <div className="text-[10px] font-mono uppercase text-zinc-400">Total Value</div>
-                        <div className="text-xl font-bold font-mono text-white mt-1">
-                          {formatPrice(portfolioTotalValUSD, currentCurrency)}
-                        </div>
-                      </div>
-                      <div className="glass-panel p-4">
-                        <div className="text-[10px] font-mono uppercase text-zinc-400">Monthly Cashflow</div>
-                        <div className="text-xl font-bold font-mono text-[#D4AF37] mt-1">
-                          {formatPrice(portfolioMonthlyCashflowUSD, currentCurrency)}
-                        </div>
-                      </div>
-                      <div className="glass-panel p-4">
-                        <div className="text-[10px] font-mono uppercase text-zinc-400">Weighted Cap Rate</div>
-                        <div className="text-xl font-bold font-mono text-cyan-400 mt-1">
-                          {portfolioAvgCapRate}%
-                        </div>
-                      </div>
-                      <div className="glass-panel p-4">
-                        <div className="text-[10px] font-mono uppercase text-zinc-400">Tracked Assets</div>
-                        <div className="text-xl font-bold font-mono text-emerald-400 mt-1">
-                          {portfolioAgg.trackedAssets} properties
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Mini Cards of Top 3 Saved Properties */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      {savedAnalyses.slice(0, 3).map((item) => (
-                        <div key={item.id} className="glass-panel p-4 space-y-2 border border-white/[0.08] hover:border-[#D4AF37]/40 transition">
-                          <div className="flex items-center justify-between text-[11px] font-mono">
-                            <span className="text-[#D4AF37] font-semibold">{item.city}</span>
-                            <span className="text-emerald-400">{item.capRate}% Cap</span>
-                          </div>
-                          <div className="text-sm font-bold text-white truncate">{item.property}</div>
-                          <div className="flex items-center justify-between text-xs font-mono text-zinc-400 pt-1 border-t border-white/[0.05]">
-                            <span>{formatPrice(item.price, currentCurrency)}</span>
-                            <button
-                              onClick={() => handleLoadSaved(item)}
-                              className="text-[#D4AF37] hover:underline cursor-pointer text-[11px] flex items-center gap-1"
-                            >
-                              <span>Open in Model</span>
-                              <ArrowRight className="w-3 h-3" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
+                </TabsContent>
+              </Tabs>
             </div>
           )}
 
@@ -10500,6 +10470,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Separate Editorial Mobile-Friendly PDF Template Screen */}
+      <InstitutionalPdfScreen
+        open={Boolean(pdfScreenMemo)}
+        onClose={() => setPdfScreenMemo(null)}
+        memo={pdfScreenMemo}
+        onAfterDownload={(filename) => showToast(`Downloaded Official PDF: ${filename}`)}
+      />
 
     </div>
     </TooltipProvider>

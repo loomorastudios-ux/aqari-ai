@@ -321,6 +321,7 @@ export interface LastResultsData {
     country: string;
     countryCode?: string;
     avgCapRate?: number;
+    sourceType?: string;
     disclaimer?: string;
     deals: DealFinderDeal[];
     created_at: string;
@@ -514,6 +515,21 @@ export interface MarketForecastResult {
   confidence: 'High' | 'Medium' | 'Low' | string;
   recommendation: 'Buy' | 'Hold' | 'Wait' | string;
   series: MarketForecastSeriesPoint[];
+  modelSpec?: {
+    modelName: string;
+    dataType: string;
+    methodologySummary: string;
+    formulas: string[];
+    baselineSource: string;
+    updatedDate: string;
+  };
+  historicalBaseline?: {
+    cityAvgCapRate: number;
+    historicalPriceIndex: Array<{ year: string; index: number }>;
+    source: string;
+    updatedDate: string;
+    dataType: string;
+  };
   disclaimer: string;
 }
 

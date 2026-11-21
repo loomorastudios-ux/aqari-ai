@@ -524,7 +524,7 @@ export function buildInstitutionalPdfDocument(opts: InstitutionalPdfOptions): Ui
       }
     }
 
-    // Optional Key-Value Grid (2 columns, generous padding)
+    // Optional Key-Value Grid (2 columns, generous private-bank ivory cards)
     if (sec.keyValues && sec.keyValues.length > 0) {
       const colW = 260;
       const rowH = 34;
@@ -535,21 +535,24 @@ export function buildInstitutionalPdfDocument(opts: InstitutionalPdfOptions): Ui
           if (!item) continue;
           const bx = 40 + col * (colW + 12);
           const by = y - rowH + 10;
-          currentOps.push('0.97 0.97 0.98 rg');
+          const isNoiOrHighlight =
+            item.label.toLowerCase().includes('noi') ||
+            item.label.toLowerCase().includes('effective gross');
+          currentOps.push('0.985 0.980 0.965 rg');
           currentOps.push(`${bx} ${by} ${colW} ${rowH - 4} re f`);
-          currentOps.push('0.88 0.88 0.91 RG');
+          currentOps.push(isNoiOrHighlight ? '0.68 0.56 0.22 RG' : '0.86 0.84 0.78 RG');
           currentOps.push('0.5 w');
           currentOps.push(`${bx} ${by} ${colW} ${rowH - 4} re S`);
 
           currentOps.push('BT');
           currentOps.push('/F1 7.5 Tf');
-          currentOps.push('0.45 0.46 0.52 rg');
+          currentOps.push('0.42 0.41 0.39 rg');
           currentOps.push(`${bx + 8} ${by + 18} Td (${escapePdfText(item.label.slice(0, 42))}) Tj`);
           currentOps.push('ET');
 
           currentOps.push('BT');
           currentOps.push('/F2 9.5 Tf');
-          currentOps.push('0.08 0.08 0.12 rg');
+          currentOps.push(isNoiOrHighlight ? '0.08 0.42 0.26 rg' : '0.08 0.08 0.12 rg');
           currentOps.push(`${bx + 8} ${by + 6} Td (${escapePdfText(item.value.slice(0, 42))}) Tj`);
           currentOps.push('ET');
         }

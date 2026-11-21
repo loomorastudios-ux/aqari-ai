@@ -554,3 +554,235 @@ export const RiskScenarioChart: React.FC<RiskScenarioChartProps> = ({
 
   return null;
 };
+
+/* -------------------------------------------------------------------------- */
+/* 4. Monte Carlo Distribution Histogram (Real Stochastic IRR & DSCR Cycles)  */
+/* -------------------------------------------------------------------------- */
+interface MonteCarloDistributionChartProps {
+  cycles: number;
+  dscrBins: Array<{ label: string; count: number; pct: number }>;
+  irrBins?: Array<{ label: string; count: number; pct: number }>;
+}
+
+export const MonteCarloDistributionChart: React.FC<MonteCarloDistributionChartProps> = ({
+  cycles,
+  dscrBins,
+  irrBins = [],
+}) => {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+      <ChartReveal className="rounded-xl border border-white/10 bg-black/50 p-3 space-y-1.5">
+        <div className="flex items-center justify-between text-[10px] font-mono">
+          <span className="font-bold uppercase text-white">
+            DSCR Outcome Histogram ({cycles.toLocaleString('en-US')} cycles)
+          </span>
+          <span className="text-[#D4AF37]">% of Trials</span>
+        </div>
+        <div className="h-[170px] w-full" dir="ltr">
+          <ResponsiveContainer width="100%" height="100%" minWidth={180}>
+            <BarChart data={dscrBins} margin={{ top: 6, right: 6, left: -14, bottom: 0 }}>
+              <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
+              <XAxis
+                dataKey="label"
+                stroke="#a1a1aa"
+                tick={{ fill: '#a1a1aa', fontSize: 10, fontFamily: 'monospace' }}
+              />
+              <YAxis
+                stroke="#a1a1aa"
+                tick={{ fill: '#a1a1aa', fontSize: 10, fontFamily: 'monospace' }}
+                tickFormatter={(v) => `${v}%`}
+              />
+              <RechartsTooltip
+                content={
+                  <TooltipShell formatter={(_, val) => `${val}% of simulated runs`} />
+                }
+              />
+              <Bar
+                dataKey="pct"
+                name="Share"
+                radius={[5, 5, 0, 0]}
+                animationDuration={420}
+              >
+                {dscrBins.map((entry, idx) => (
+                  <Cell
+                    key={entry.label}
+                    fill={idx === 0 ? ROSE : idx === 1 ? GOLD : EMERALD}
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </ChartReveal>
+
+      {irrBins.length > 0 && (
+        <ChartReveal className="rounded-xl border border-white/10 bg-black/50 p-3 space-y-1.5">
+          <div className="flex items-center justify-between text-[10px] font-mono">
+            <span className="font-bold uppercase text-white">
+              IRR Outcome Histogram ({cycles.toLocaleString('en-US')} cycles)
+            </span>
+            <span className="text-emerald-400">% of Trials</span>
+          </div>
+          <div className="h-[170px] w-full" dir="ltr">
+            <ResponsiveContainer width="100%" height="100%" minWidth={180}>
+              <BarChart data={irrBins} margin={{ top: 6, right: 6, left: -14, bottom: 0 }}>
+                <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="label"
+                  stroke="#a1a1aa"
+                  tick={{ fill: '#a1a1aa', fontSize: 10, fontFamily: 'monospace' }}
+                />
+                <YAxis
+                  stroke="#a1a1aa"
+                  tick={{ fill: '#a1a1aa', fontSize: 10, fontFamily: 'monospace' }}
+                  tickFormatter={(v) => `${v}%`}
+                />
+                <RechartsTooltip
+                  content={
+                    <TooltipShell formatter={(_, val) => `${val}% of simulated runs`} />
+                  }
+                />
+                <Bar
+                  dataKey="pct"
+                  name="Share"
+                  radius={[5, 5, 0, 0]}
+                  animationDuration={450}
+                >
+                  {irrBins.map((entry, idx) => (
+                    <Cell
+                      key={entry.label}
+                      fill={idx === 0 || entry.label === 'N/A' ? ROSE : idx <= 2 ? GOLD : EMERALD}
+                    />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </ChartReveal>
+      )}
+    </div>
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+/* 5. Market Forecast Trajectory Chart (Recharts Replaces Static SVG)         */
+/* -------------------------------------------------------------------------- */
+interface ForecastTrajectoryChartProps {
+  city: string;
+  series: Array<{
+    label: string;
+    capRate: number;
+    rentGrowthPct: number;
+    priceGrowthPct: number;
+    rentIndex?: number;
+    priceIndex?: number;
+  }>;
+}
+
+export const ForecastTrajectoryChart: React.FC<ForecastTrajectoryChartProps> = ({
+  city,
+  series,
+}) => {
+  const data = useMemo(
+    () =>
+      series.map((pt) => ({
+        label: pt.label,
+        capRate: Number(pt.capRate || 0),
+        rentIndex:
+          typeof pt.rentIndex === 'number' && Number.isFinite(pt.rentIndex)
+            ? pt.rentIndex
+            : Number((100 + Number(pt.rentGrowthPct || 0)).toFixed(1)),
+        priceIndex:
+          typeof pt.priceIndex === 'number' && Number.isFinite(pt.priceIndex)
+            ? pt.priceIndex
+            : Number((100 + Number(pt.priceGrowthPct || 0)).toFixed(1)),
+      })),
+    [series]
+  );
+
+  if (data.length < 2) return null;
+
+  return (
+    <ChartReveal className="rounded-2xl border border-white/10 bg-black/50 p-4 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+        <span className="font-bold uppercase text-white">
+          Projected Trajectory — {city} (Now → 5Y)
+        </span>
+        <span className="text-[10px] text-[#D4AF37]">
+          Left Axis: Cap Rate (%) • Right Axis: Rent &amp; Price Index (Base 100)
+        </span>
+      </div>
+      <div className="h-[225px] w-full" dir="ltr">
+        <ResponsiveContainer width="100%" height="100%" minWidth={240}>
+          <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
+            <XAxis
+              dataKey="label"
+              stroke="#a1a1aa"
+              tick={{ fill: '#a1a1aa', fontSize: 11, fontFamily: 'monospace' }}
+            />
+            <YAxis
+              yAxisId="cap"
+              stroke={GOLD}
+              tick={{ fill: GOLD, fontSize: 10, fontFamily: 'monospace' }}
+              tickFormatter={(v) => `${v}%`}
+              width={44}
+              domain={['auto', 'auto']}
+            />
+            <YAxis
+              yAxisId="idx"
+              orientation="right"
+              stroke={EMERALD}
+              tick={{ fill: EMERALD, fontSize: 10, fontFamily: 'monospace' }}
+              width={46}
+              domain={[95, 'auto']}
+            />
+            <RechartsTooltip
+              content={
+                <TooltipShell
+                  formatter={(name, val) =>
+                    name.includes('Cap') ? `${Number(val).toFixed(2)}%` : `${val} pts`
+                  }
+                />
+              }
+            />
+            <Legend
+              wrapperStyle={{ fontSize: '11px', fontFamily: 'monospace', color: '#d4d4d8' }}
+            />
+            <Line
+              yAxisId="cap"
+              type="monotone"
+              dataKey="capRate"
+              name="Cap Rate (%)"
+              stroke={GOLD}
+              strokeWidth={3}
+              dot={{ r: 4, fill: GOLD, stroke: '#000', strokeWidth: 1.5 }}
+              animationDuration={460}
+            />
+            <Line
+              yAxisId="idx"
+              type="monotone"
+              dataKey="rentIndex"
+              name="Rent Index (100=Now)"
+              stroke={EMERALD}
+              strokeWidth={2.5}
+              dot={{ r: 3.5, fill: EMERALD, stroke: '#000', strokeWidth: 1.5 }}
+              animationDuration={480}
+            />
+            <Line
+              yAxisId="idx"
+              type="monotone"
+              dataKey="priceIndex"
+              name="Price Index (100=Now)"
+              stroke={PURPLE}
+              strokeWidth={2.5}
+              dot={{ r: 3.5, fill: PURPLE, stroke: '#000', strokeWidth: 1.5 }}
+              animationDuration={480}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    </ChartReveal>
+  );
+};
+

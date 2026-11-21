@@ -52,6 +52,11 @@ export interface InstitutionalMemoInput {
   dscr: string | null;
   monthlyCashflowUSD: number | null;
   riskScore?: string | number;
+  downPaymentPct?: number;
+  interestRatePct?: number;
+  closingCostsPct?: number;
+  loanAmountUSD?: number;
+  totalEquityInvestedUSD?: number;
   noiBreakdown?: {
     grossRentAnnualUSD: number;
     vacancyLossUSD: number;
@@ -104,7 +109,10 @@ export interface InstitutionalMemoInput {
   branding?: PdfBrandingOptions | null;
 }
 
-export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInput): string {
+export function buildInstitutionalMemorandumBytes(params: InstitutionalMemoInput): {
+  filename: string;
+  pdfBytes: Uint8Array;
+} {
   const dateStr = new Date().toISOString().slice(0, 10);
   const safeName =
     params.title
@@ -136,6 +144,21 @@ export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInpu
       ? 'SELECTIVE HOLD / NEGOTIATE: Moderate yield profile; negotiate acquisition basis or optimize financing/OPEX before closing.'
       : 'CAUTIOUS / PASS OR RE-PRICE: Low initial unlevered yield or negative cashflow requires sharper pricing discount.');
 
+  const financingPairs: Array<{ label: string; value: string }> = [
+    ...(typeof params.downPaymentPct === 'number'
+      ? [{ label: 'Equity Down Payment (%)', value: `${params.downPaymentPct}%` }]
+      : []),
+    ...(typeof params.interestRatePct === 'number'
+      ? [{ label: 'Debt Interest Rate (%)', value: `${params.interestRatePct}%` }]
+      : []),
+    ...(typeof params.loanAmountUSD === 'number'
+      ? [{ label: 'Senior Loan Principal (USD)', value: `$${Math.round(params.loanAmountUSD).toLocaleString('en-US')}` }]
+      : []),
+    ...(typeof params.totalEquityInvestedUSD === 'number'
+      ? [{ label: 'Total Cash Equity Invested (USD)', value: `$${Math.round(params.totalEquityInvestedUSD).toLocaleString('en-US')}` }]
+      : []),
+  ];
+
   const sections: InstitutionalPdfSection[] = [
     {
       heading: '1. EXECUTIVE SUMMARY',
@@ -163,7 +186,7 @@ export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInpu
     },
     {
       heading: '2. FINANCIAL UNDERWRITING & NOI WATERFALL',
-      subtitle: 'Transparent expense waterfall with zero hidden deductions',
+      subtitle: 'Transparent expense waterfall & capital structure matching underwriting outputs',
       ...(noiBreakdown
         ? {
             keyValues: [
@@ -173,6 +196,7 @@ export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInpu
               { label: 'Base OPEX + Management', value: `-$${Math.round(noiBreakdown.baseOpexUSD + noiBreakdown.managementFeeUSD).toLocaleString('en-US')}` },
               { label: 'Property Tax + Insurance', value: `-$${Math.round(noiBreakdown.propertyTaxUSD + noiBreakdown.insuranceUSD).toLocaleString('en-US')}` },
               { label: 'Maintenance Reserve + HOA', value: `-$${Math.round(noiBreakdown.maintenanceReserveUSD + noiBreakdown.hoaUSD).toLocaleString('en-US')}` },
+              ...financingPairs,
             ],
             bars: {
               title: 'Annual Cashflow Waterfall (USD)',
@@ -195,6 +219,8 @@ export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInpu
               ],
             },
           }
+        : financingPairs.length > 0
+        ? { keyValues: financingPairs }
         : {}),
       ...(params.yearByYear && params.yearByYear.length > 0
         ? {
@@ -348,6 +374,11 @@ export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInpu
     sections,
   });
 
+  return { filename, pdfBytes };
+}
+
+export function downloadInstitutionalMemorandumPdf(params: InstitutionalMemoInput): string {
+  const { filename, pdfBytes } = buildInstitutionalMemorandumBytes(params);
   triggerPdfDownload(pdfBytes, filename);
   return filename;
 }
