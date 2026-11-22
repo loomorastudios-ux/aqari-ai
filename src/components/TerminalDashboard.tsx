@@ -50,6 +50,7 @@ import {
   type InstitutionalMemoInput,
 } from '../utils/pdfExport';
 import type { LiveMarketResponse } from '../utils/marketDataService';
+import { getPaddleEnvironment } from '../utils/paddleClient';
 import {
   Building2,
   Calculator,
@@ -443,9 +444,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     return Array.isArray(user.customCities) ? user.customCities : [];
   }, [user.customCities]);
 
-  const isTestMode =
-    import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' ||
-    (import.meta.env.VITE_PAYMENT_TEST_MODE as unknown) === true;
+  const isTestMode = getPaddleEnvironment() === 'sandbox';
 
   // Plan info & Live 1-minute countdown interval
   const [, setMinuteTick] = useState(0);
@@ -10358,13 +10357,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         );
                       })()}
                       <span className="text-zinc-200">
-                        PAYMENT_WEBHOOK_SECRET present?{' '}
+                        PADDLE_WEBHOOK_SECRET present?{' '}
                         <strong className={webhookEnvStatus?.webhookSecretPresent ? 'text-emerald-400' : 'text-rose-400'}>
                           {webhookEnvStatus ? (webhookEnvStatus.webhookSecretPresent ? 'Yes' : 'No') : '...'}
                         </strong>
                       </span>
                       <span className="text-zinc-200">
-                        PAYMENT_API_KEY present?{' '}
+                        PADDLE_API_KEY present?{' '}
                         <strong className={webhookEnvStatus?.apiKeyPresent ? 'text-emerald-400' : 'text-rose-400'}>
                           {webhookEnvStatus ? (webhookEnvStatus.apiKeyPresent ? 'Yes' : 'No') : '...'}
                         </strong>

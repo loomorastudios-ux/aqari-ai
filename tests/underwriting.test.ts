@@ -1050,4 +1050,97 @@ test('One-time credit pack webhook credits account once and stays idempotent on 
   assert.equal(meAfterReplay.data.credits_balance, 25);
 });
 
+test('Backend Paddle endpoints fail closed without test-key fallback when env vars are missing', async (t) => {
+  const prevSecret = process.env.PADDLE_WEBHOOK_SECRET;
+  const prevApiKey = process.env.PADDLE_API_KEY;
+  const prevEnv = process.env.PADDLE_ENVIRONMENT;
+  const prevLegacyEnv = process.env.PADDLE_ENV;
+  delete process.env.PADDLE_WEBHOOK_SECRET;
+  delete process.env.PADDLE_API_KEY;
+  delete process.env.PADDLE_ENVIRONMENT;
+  delete process.env.PADDLE_ENV;
+
+  t.after(() => {
+    if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
+    else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
+    if (prevApiKey === undefined) delete process.env.PADDLE_API_KEY;
+    else process.env.PADDLE_API_KEY = prevApiKey;
+    if (prevEnv === undefined) delete process.env.PADDLE_ENVIRONMENT;
+    else process.env.PADDLE_ENVIRONMENT = prevEnv;
+    if (prevLegacyEnv === undefined) delete process.env.PADDLE_ENV;
+    else process.env.PADDLE_ENV = prevLegacyEnv;
+  });
+
+  const whRes = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': 'ts=1700000000;h1=deadbeef' },
+    body: JSON.stringify({ event_type: 'transaction.completed', data: { id: 'txn_missing_secret' } }),
+  });
+  assert.equal(whRes.statusCode, 500);
+  assert.equal(whRes.data.verified, false);
+  assert.match(String(whRes.data.error), /PADDLE_WEBHOOK_SECRET/);
+
+  const checkoutRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: { plan: 'pro', email: 'buyer@aqari.test' },
+  });
+  assert.equal(checkoutRes.statusCode, 500);
+  assert.equal(checkoutRes.data.success, false);
+  assert.match(String(checkoutRes.data.error), /PADDLE_ENVIRONMENT/);
+
+  const verifyRes = await invokeApi({
+    action: 'verify-payment',
+    method: 'POST',
+    body: { email: 'buyer@aqari.test', transaction_id: 'txn_01missingkey' },
+  });
+  assert.equal(verifyRes.statusCode, 500);
+  assert.equal(verifyRes.data.success, false);
+  assert.match(String(verifyRes.data.error), /PADDLE_API_KEY/);
+
+  const buyCreditsRes = await invokeApi({
+    action: 'buy-credits',
+    method: 'POST',
+    body: { email: 'buyer@aqari.test', packId: 'pack_25' },
+  });
+  assert.equal(buyCreditsRes.statusCode, 500);
+  assert.equal(buyCreditsRes.data.success, false);
+  assert.match(String(buyCreditsRes.data.error), /PADDLE_API_KEY/);
+});
+
+test('Frontend paddleClient uses only NEXT_PUBLIC_ variables and maps live -> production', async (t) => {
+  const { getPaddleClientToken, getPaddleEnvironment } = await import('../src/utils/paddleClient.ts');
+
+  const prevNextToken = process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN;
+  const prevNextEnv = process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT;
+  const prevViteToken = process.env.VITE_PADDLE_CLIENT_TOKEN;
+
+  t.after(() => {
+    if (prevNextToken === undefined) delete process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN;
+    else process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN = prevNextToken;
+    if (prevNextEnv === undefined) delete process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT;
+    else process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = prevNextEnv;
+    if (prevViteToken === undefined) delete process.env.VITE_PADDLE_CLIENT_TOKEN;
+    else process.env.VITE_PADDLE_CLIENT_TOKEN = prevViteToken;
+  });
+
+  delete process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN;
+  delete process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT;
+  process.env.VITE_PADDLE_CLIENT_TOKEN = 'legacy_vite_should_be_ignored';
+
+  assert.equal(getPaddleClientToken(), '');
+  assert.equal(getPaddleEnvironment(), null);
+
+  process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN = 'test_next_public_token_placeholder';
+  process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = 'live';
+
+  assert.equal(getPaddleClientToken(), 'test_next_public_token_placeholder');
+  assert.equal(getPaddleEnvironment(), 'production');
+
+  process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = 'sandbox';
+  assert.equal(getPaddleEnvironment(), 'sandbox');
+});
+
+
 

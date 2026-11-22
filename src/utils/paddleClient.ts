@@ -10,15 +10,15 @@ export const LIVE_PADDLE_PRICE_IDS: Record<PaidPlanId, string> = {
 };
 
 export const PADDLE_PRICE_ENV_KEYS: Record<PaidPlanId, string> = {
-  starter: 'VITE_PADDLE_STARTER_PRICE',
-  pro: 'VITE_PADDLE_PRICE_ID',
-  enterprise: 'VITE_PADDLE_SOVEREIGN_PRICE',
+  starter: 'NEXT_PUBLIC_PADDLE_STARTER_PRICE',
+  pro: 'NEXT_PUBLIC_PADDLE_PRICE_ID',
+  enterprise: 'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE',
 };
 
 export const PADDLE_CREDIT_PACK_ENV_KEYS: Record<CreditPackId, string> = {
-  pack_25: 'VITE_PADDLE_CREDIT_25_PRICE',
-  pack_100: 'VITE_PADDLE_CREDIT_100_PRICE',
-  pack_500: 'VITE_PADDLE_CREDIT_500_PRICE',
+  pack_25: 'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE',
+  pack_100: 'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE',
+  pack_500: 'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE',
 };
 
 export const CREDIT_PACK_CREDITS: Record<CreditPackId, number> = {
@@ -63,96 +63,87 @@ function cleanEnvStr(val: unknown): string {
   return s && s !== 'undefined' && s !== 'null' ? s : '';
 }
 
-function pickLivePriceId(candidates: string[], fallbackLiveId: string): string {
+function pickPriceId(candidates: string[], fallbackLiveId?: string): string {
   for (const raw of candidates) {
     const cleaned = cleanEnvStr(raw);
     if (cleaned && cleaned !== LEGACY_SANDBOX_PRICE_ID && cleaned.startsWith('pri_')) {
       return cleaned;
     }
   }
-  return fallbackLiveId;
+  return fallbackLiveId || '';
 }
 
-export function getPaddleEnvironment(): 'production' {
-  return 'production';
+export function getPaddleEnvironment(): 'production' | 'sandbox' | null {
+  const viteEnv = cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_ENVIRONMENT);
+  let procEnv = '';
+  try {
+    if (typeof process !== 'undefined' && process.env) {
+      procEnv = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT);
+    }
+  } catch {}
+  const raw = (viteEnv || procEnv).toLowerCase();
+  if (raw === 'live' || raw === 'production') return 'production';
+  if (raw === 'sandbox') return 'sandbox';
+  return null;
 }
 
 export function getPaddleClientToken(): string {
-  const viteClientToken = cleanEnvStr(import.meta.env?.VITE_PADDLE_CLIENT_TOKEN);
-  const viteNextToken = cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN);
-  let procViteToken = '';
+  const viteNextToken = cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN);
   let procNextToken = '';
   try {
     if (typeof process !== 'undefined' && process.env) {
-      procViteToken = cleanEnvStr(process.env.VITE_PADDLE_CLIENT_TOKEN);
       procNextToken = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN);
     }
   } catch {}
-  return viteClientToken || procViteToken || viteNextToken || procNextToken;
+  return viteNextToken || procNextToken;
 }
 
 export function getPaddlePriceId(plan: PaidPlanId): string {
-  let procStarter = '';
-  let procStarterAlt = '';
-  let procPro = '';
-  let procProAlt = '';
-  let procSovereign = '';
-  let procSovereignAlt = '';
   let procNextStarter = '';
+  let procNextStarterAlt = '';
   let procNextPro = '';
   let procNextSovereign = '';
+  let procNextSovereignAlt = '';
   try {
     if (typeof process !== 'undefined' && process.env) {
-      procStarter = cleanEnvStr(process.env.VITE_PADDLE_STARTER_PRICE);
-      procStarterAlt = cleanEnvStr(process.env.VITE_PADDLE_STARTER_PRICE_ID);
-      procPro = cleanEnvStr(process.env.VITE_PADDLE_PRICE_ID);
-      procProAlt = cleanEnvStr(process.env.VITE_PADDLE_PRO_PRICE_ID);
-      procSovereign = cleanEnvStr(process.env.VITE_PADDLE_SOVEREIGN_PRICE);
-      procSovereignAlt = cleanEnvStr(process.env.VITE_PADDLE_SOVEREIGN_PRICE_ID);
-      procNextStarter = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID);
+      procNextStarter = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE);
+      procNextStarterAlt = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID);
       procNextPro = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_PRICE_ID);
-      procNextSovereign = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID);
+      procNextSovereign = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE);
+      procNextSovereignAlt = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID);
     }
   } catch {}
 
+  const env = getPaddleEnvironment();
+  const liveFallback = env === 'production' ? LIVE_PADDLE_PRICE_IDS : undefined;
+
   if (plan === 'starter') {
-    return pickLivePriceId(
+    return pickPriceId(
       [
-        cleanEnvStr(import.meta.env?.VITE_PADDLE_STARTER_PRICE),
-        cleanEnvStr(import.meta.env?.VITE_PADDLE_STARTER_PRICE_ID),
-        procStarter,
-        procStarterAlt,
-        cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID),
+        cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_STARTER_PRICE),
+        cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID),
         procNextStarter,
+        procNextStarterAlt,
       ],
-      LIVE_PADDLE_PRICE_IDS.starter
+      liveFallback?.starter
     );
   }
 
   if (plan === 'enterprise') {
-    return pickLivePriceId(
+    return pickPriceId(
       [
-        cleanEnvStr(import.meta.env?.VITE_PADDLE_SOVEREIGN_PRICE),
-        cleanEnvStr(import.meta.env?.VITE_PADDLE_SOVEREIGN_PRICE_ID),
-        procSovereign,
-        procSovereignAlt,
-        cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID),
+        cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE),
+        cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID),
         procNextSovereign,
+        procNextSovereignAlt,
       ],
-      LIVE_PADDLE_PRICE_IDS.enterprise
+      liveFallback?.enterprise
     );
   }
 
-  return pickLivePriceId(
-    [
-      cleanEnvStr(import.meta.env?.VITE_PADDLE_PRICE_ID),
-      cleanEnvStr(import.meta.env?.VITE_PADDLE_PRO_PRICE_ID),
-      procPro,
-      procProAlt,
-      cleanEnvStr(import.meta.env?.NEXT_PUBLIC_PADDLE_PRICE_ID),
-      procNextPro,
-    ],
-    LIVE_PADDLE_PRICE_IDS.pro
+  return pickPriceId(
+    [cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_PRICE_ID), procNextPro],
+    liveFallback?.pro
   );
 }
 
@@ -166,26 +157,20 @@ export function getPaddleCreditPriceId(packId: CreditPackId): string {
   let proc500 = '';
   try {
     if (typeof process !== 'undefined' && process.env) {
-      proc25 = cleanEnvStr(process.env.VITE_PADDLE_CREDIT_25_PRICE);
-      proc100 = cleanEnvStr(process.env.VITE_PADDLE_CREDIT_100_PRICE);
-      proc500 = cleanEnvStr(process.env.VITE_PADDLE_CREDIT_500_PRICE);
+      proc25 = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE);
+      proc100 = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE);
+      proc500 = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE);
     }
   } catch {}
 
   const candidates =
     packId === 'pack_25'
-      ? [cleanEnvStr(import.meta.env?.VITE_PADDLE_CREDIT_25_PRICE), proc25]
+      ? [cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE), proc25]
       : packId === 'pack_100'
-      ? [cleanEnvStr(import.meta.env?.VITE_PADDLE_CREDIT_100_PRICE), proc100]
-      : [cleanEnvStr(import.meta.env?.VITE_PADDLE_CREDIT_500_PRICE), proc500];
+      ? [cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE), proc100]
+      : [cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE), proc500];
 
-  for (const raw of candidates) {
-    const cleaned = cleanEnvStr(raw);
-    if (cleaned && cleaned !== LEGACY_SANDBOX_PRICE_ID && cleaned.startsWith('pri_')) {
-      return cleaned;
-    }
-  }
-  return '';
+  return pickPriceId(candidates);
 }
 
 async function handlePaddleEvent(event: PaddleEventData) {
@@ -345,11 +330,17 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
 
   const token = getPaddleClientToken();
   if (!token) {
-    console.error('[Paddle] Missing VITE_PADDLE_CLIENT_TOKEN');
+    console.error('[Paddle] Missing required environment variable: NEXT_PUBLIC_PADDLE_CLIENT_TOKEN');
     return undefined;
   }
 
   const environment = getPaddleEnvironment();
+  if (!environment) {
+    console.error(
+      '[Paddle] Missing or invalid environment variable: NEXT_PUBLIC_PADDLE_ENVIRONMENT (expected "live" or "sandbox").'
+    );
+    return undefined;
+  }
 
   if (!paddleInstancePromise) {
     paddleInstancePromise = initializePaddle({
@@ -382,16 +373,23 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
 
   const token = getPaddleClientToken();
   if (!token) {
-    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN';
+    const msg = 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN';
     console.error('[Paddle]', msg);
     throw new Error(msg);
   }
 
-  const expectedPriceKey = PADDLE_PRICE_ENV_KEYS[targetPlan] || 'VITE_PADDLE_PRICE_ID';
+  const environment = getPaddleEnvironment();
+  if (!environment) {
+    const msg = 'Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT (expected "live" or "sandbox")';
+    console.error('[Paddle]', msg);
+    throw new Error(msg);
+  }
+
+  const expectedPriceKey = PADDLE_PRICE_ENV_KEYS[targetPlan] || 'NEXT_PUBLIC_PADDLE_PRICE_ID';
   const priceId = getPaddlePriceId(targetPlan);
   if (!priceId || !priceId.startsWith('pri_')) {
     const msg = `Missing ${expectedPriceKey}: Paddle Price ID for ${targetPlan} is not configured.`;
-    console.error('[Paddle]', msg, { plan: targetPlan, priceId });
+    console.error('[Paddle]', msg, { plan: targetPlan });
     throw new Error(msg);
   }
 
@@ -404,7 +402,7 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
   }
 
   if (!paddle) {
-    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN or Paddle failed to initialize.';
+    const msg = 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN or NEXT_PUBLIC_PADDLE_ENVIRONMENT.';
     console.error('[Paddle]', msg);
     throw new Error(msg);
   }
@@ -458,7 +456,14 @@ export async function openPaddleCreditPackCheckout(
 
   const token = getPaddleClientToken();
   if (!token) {
-    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN';
+    const msg = 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN';
+    console.error('[Paddle]', msg);
+    throw new Error(msg);
+  }
+
+  const environment = getPaddleEnvironment();
+  if (!environment) {
+    const msg = 'Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT (expected "live" or "sandbox")';
     console.error('[Paddle]', msg);
     throw new Error(msg);
   }
@@ -473,7 +478,7 @@ export async function openPaddleCreditPackCheckout(
 
   const paddle = await getPaddleClient();
   if (!paddle) {
-    const msg = 'Missing VITE_PADDLE_CLIENT_TOKEN or Paddle failed to initialize.';
+    const msg = 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN or NEXT_PUBLIC_PADDLE_ENVIRONMENT.';
     console.error('[Paddle]', msg);
     throw new Error(msg);
   }

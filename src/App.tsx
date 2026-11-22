@@ -33,7 +33,7 @@ import {
   PricingPublicPayload,
   PRODUCTION_URL,
 } from '../lib/plans';
-import { getPaddleClient, getPaddleClientToken } from './utils/paddleClient';
+import { getPaddleClient, getPaddleClientToken, getPaddleEnvironment } from './utils/paddleClient';
 import { AmbientBackground } from './components/AmbientBackground';
 import { CustomCursor } from './components/CustomCursor';
 import { Navbar } from './components/Navbar';
@@ -753,10 +753,14 @@ export default function App() {
       handleVerifyRedirectToken();
     }
 
-    if (getPaddleClientToken()) {
+    if (getPaddleClientToken() && getPaddleEnvironment()) {
       void getPaddleClient().catch((err) => {
         console.error('[Paddle] Startup init failed:', err);
       });
+    } else if (getPaddleClientToken() && !getPaddleEnvironment()) {
+      console.error(
+        '[Paddle] Missing required environment variable: NEXT_PUBLIC_PADDLE_ENVIRONMENT (expected "live" or "sandbox").'
+      );
     }
 
     const handlePaddleVerified = (ev: Event) => {

@@ -1448,6 +1448,38 @@ function cleanEnvValue(value?: string | null): string {
   return (value || '').replace(/^["']|["']$/g, '').trim();
 }
 
+function resolvePaddleEnvironment(): {
+  configured: boolean;
+  raw: string;
+  normalized: 'live' | 'sandbox' | null;
+  baseUrl: string;
+  isSandbox: boolean;
+} {
+  const raw = cleanEnvValue(getEnv('PADDLE_ENVIRONMENT') || getEnv('PADDLE_ENV')).toLowerCase();
+  if (!raw) {
+    return { configured: false, raw: '', normalized: null, baseUrl: '', isSandbox: false };
+  }
+  if (raw === 'live' || raw === 'production') {
+    return {
+      configured: true,
+      raw,
+      normalized: 'live',
+      baseUrl: 'https://api.paddle.com',
+      isSandbox: false,
+    };
+  }
+  if (raw === 'sandbox') {
+    return {
+      configured: true,
+      raw,
+      normalized: 'sandbox',
+      baseUrl: 'https://sandbox-api.paddle.com',
+      isSandbox: true,
+    };
+  }
+  return { configured: false, raw, normalized: null, baseUrl: '', isSandbox: false };
+}
+
 function getAdminEmail(): string {
   return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'loomorastudios@gmail.com').toLowerCase();
 }
@@ -6044,11 +6076,9 @@ export default async function handler(req: any, res: any) {
         } catch {}
 
         let orderId = '';
-        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY') || getEnv('PAYMENT_API_KEY'));
-        const isExplicitSandbox = cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox';
-        const paddleBaseUrl = isExplicitSandbox
-          ? 'https://sandbox-api.paddle.com'
-          : 'https://api.paddle.com';
+        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+        const paddleEnv = resolvePaddleEnvironment();
+        const paddleBaseUrl = paddleEnv.baseUrl;
         const hasPaymentKey = Boolean(paddleApiKey);
 
         try {
@@ -6406,45 +6436,35 @@ export default async function handler(req: any, res: any) {
             return await returnExistingUsedOrder(existingUsedOrder);
           }
 
-          if (!hasPaymentKey) {
-            return res.status(200).json({
+          if (!hasPaymentKey || !paddleApiKey) {
+            console.error('[Paddle Verify] Missing required environment variable: PADDLE_API_KEY');
+            return res.status(500).json({
               success: false,
-              error: 'Paddle API key (PADDLE_API_KEY) is missing on server.',
+              error: 'Missing required server environment variable: PADDLE_API_KEY.',
             });
           }
 
-          if (!paddleApiKey) {
-            return res.status(200).json({
-              success: false,
-              error: 'Paddle API key (PADDLE_API_KEY) is missing on server.',
-            });
-          }
-
-          // Verify Paddle transaction against Paddle API v2 (production first so live checkouts work even if PADDLE_ENV wasn't switched yet)
-          const endpointsToTry = isExplicitSandbox
-            ? ['https://api.paddle.com', 'https://sandbox-api.paddle.com']
-            : ['https://api.paddle.com'];
-          let paddleRes: Response | null = null;
-          let paddleJson: any = null;
-          let verifiedBaseUrl = paddleBaseUrl;
-          for (const base of endpointsToTry) {
-            const candidateRes = await fetch(
-              `${base}/transactions/${encodeURIComponent(orderId)}`,
-              {
-                headers: {
-                  Authorization: `Bearer ${paddleApiKey}`,
-                  Accept: 'application/json',
-                },
-              }
+          if (!paddleEnv.configured || !paddleBaseUrl) {
+            console.error(
+              '[Paddle Verify] Missing or invalid environment variable: PADDLE_ENVIRONMENT (expected "live" or "sandbox").'
             );
-            const candidateJson: any = await candidateRes.json().catch(() => null);
-            paddleRes = candidateRes;
-            paddleJson = candidateJson;
-            verifiedBaseUrl = base;
-            if (candidateRes.ok && candidateJson?.data?.id) {
-              break;
-            }
+            return res.status(500).json({
+              success: false,
+              error: 'Missing required server environment variable: PADDLE_ENVIRONMENT.',
+            });
           }
+
+          const verifiedBaseUrl = paddleBaseUrl;
+          const paddleRes = await fetch(
+            `${verifiedBaseUrl}/transactions/${encodeURIComponent(orderId)}`,
+            {
+              headers: {
+                Authorization: `Bearer ${paddleApiKey}`,
+                Accept: 'application/json',
+              },
+            }
+          );
+          const paddleJson: any = await paddleRes.json().catch(() => null);
           const txnData = paddleJson?.data;
           if (!paddleRes?.ok || !txnData?.id) {
             return res.status(200).json({
@@ -6480,23 +6500,23 @@ export default async function handler(req: any, res: any) {
               : PLAN_DEFINITIONS[requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro'].launchPrice;
 
           const LEGACY_SANDBOX_PRICE_ID = 'pri_01m7qwqceh520nd4we9pg90f8m';
-          const rawProEnv = cleanEnvValue(getEnv('VITE_PADDLE_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
+          const rawProEnv = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
           const proPriceId =
             rawProEnv && rawProEnv !== LEGACY_SANDBOX_PRICE_ID
               ? rawProEnv
-              : 'pri_01m7tggqhjtgk9fxmmg6mbp5wy';
+              : !paddleEnv.isSandbox
+              ? 'pri_01m7tggqhjtgk9fxmmg6mbp5wy'
+              : '';
           const starterPriceId =
             cleanEnvValue(
-              getEnv('VITE_PADDLE_STARTER_PRICE') ||
-                getEnv('VITE_PADDLE_STARTER_PRICE_ID') ||
+              getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE') ||
                 getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')
-            ) || 'pri_01m7tgfvteegdih2mx4hgyz1c';
+            ) || (!paddleEnv.isSandbox ? 'pri_01m7tgfvteegdih2mx4hgyz1c' : '');
           const sovereignPriceId =
             cleanEnvValue(
-              getEnv('VITE_PADDLE_SOVEREIGN_PRICE') ||
-                getEnv('VITE_PADDLE_SOVEREIGN_PRICE_ID') ||
+              getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE') ||
                 getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')
-            ) || 'pri_01m7tgj4pp767gacchp49k2qev';
+            ) || (!paddleEnv.isSandbox ? 'pri_01m7tgj4pp767gacchp49k2qev' : '');
           const firstItem = Array.isArray(txnData?.items) ? txnData.items[0] : null;
           const itemPriceId = String(firstItem?.price?.id || firstItem?.price_id || '').trim();
           const itemProductName = String(
@@ -6555,7 +6575,7 @@ export default async function handler(req: any, res: any) {
         const sessionEmail = getSessionEmailFromReq(req);
         const isProd =
           getEnv('VERCEL_ENV') === 'production' ||
-          (getEnv('NODE_ENV') === 'production' && getEnv('PAYMENT_TEST_MODE') !== 'true');
+          getEnv('NODE_ENV') === 'production';
 
         if (isProd && !isAdminEmail(sessionEmail)) {
           return res.status(403).json({
@@ -9008,29 +9028,36 @@ export default async function handler(req: any, res: any) {
         const isLaunchPrice = Boolean(pricing.launchDiscountActive);
         const activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
 
-        const isTestMode =
-          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox' ||
-          getEnv('PAYMENT_TEST_MODE') === 'true' ||
-          getEnv('VITE_PAYMENT_TEST_MODE') === 'true';
+        const paddleEnv = resolvePaddleEnvironment();
+        if (!paddleEnv.configured) {
+          console.error(
+            '[Paddle Checkout] Missing or invalid environment variable: PADDLE_ENVIRONMENT (expected "live" or "sandbox").'
+          );
+          return res.status(500).json({
+            success: false,
+            error: 'Missing required server environment variable: PADDLE_ENVIRONMENT.',
+          });
+        }
+        const isTestMode = paddleEnv.isSandbox;
 
         const LEGACY_SANDBOX_PRICE_ID = 'pri_01m7qwqceh520nd4we9pg90f8m';
-        const rawProEnv = cleanEnvValue(getEnv('VITE_PADDLE_PRICE_ID') || getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
+        const rawProEnv = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
         const proPriceId =
           rawProEnv && rawProEnv !== LEGACY_SANDBOX_PRICE_ID
             ? rawProEnv
-            : 'pri_01m7tggqhjtgk9fxmmg6mbp5wy';
+            : !isTestMode
+            ? 'pri_01m7tggqhjtgk9fxmmg6mbp5wy'
+            : '';
         const starterPriceId =
           cleanEnvValue(
-            getEnv('VITE_PADDLE_STARTER_PRICE') ||
-              getEnv('VITE_PADDLE_STARTER_PRICE_ID') ||
+            getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE') ||
               getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')
-          ) || 'pri_01m7tgfvteegdih2mx4hgyz1c';
+          ) || (!isTestMode ? 'pri_01m7tgfvteegdih2mx4hgyz1c' : '');
         const sovereignPriceId =
           cleanEnvValue(
-            getEnv('VITE_PADDLE_SOVEREIGN_PRICE') ||
-              getEnv('VITE_PADDLE_SOVEREIGN_PRICE_ID') ||
+            getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE') ||
               getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')
-          ) || 'pri_01m7tgj4pp767gacchp49k2qev';
+          ) || (!isTestMode ? 'pri_01m7tgj4pp767gacchp49k2qev' : '');
         const resolvedPriceId =
           validPlan === 'pro'
             ? proPriceId
@@ -9053,10 +9080,7 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({
           success: true,
           provider: 'paddle',
-          environment:
-            cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox'
-              ? 'sandbox'
-              : 'production',
+          environment: isTestMode ? 'sandbox' : 'production',
           priceId: resolvedPriceId,
           url: '/#pricing',
           success_url: SUCCESS_REDIRECT,
@@ -9331,9 +9355,7 @@ export default async function handler(req: any, res: any) {
         if (req.method !== 'POST') {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
-        const webhookSecret = cleanEnvValue(
-          getEnv('PAYMENT_WEBHOOK_SECRET') || getEnv('PADDLE_WEBHOOK_SECRET')
-        );
+        const webhookSecret = cleanEnvValue(getEnv('PADDLE_WEBHOOK_SECRET'));
         const sigHeader = String(
           req?.headers?.['paddle-signature'] || req?.headers?.['Paddle-Signature'] || ''
         ).trim();
@@ -9346,9 +9368,14 @@ export default async function handler(req: any, res: any) {
 
         let signatureValid = false;
         let verifyError = '';
+        let missingSecret = false;
 
         if (!webhookSecret) {
-          verifyError = 'PAYMENT_WEBHOOK_SECRET / PADDLE_WEBHOOK_SECRET is not configured on server.';
+          missingSecret = true;
+          verifyError = 'Missing required server environment variable: PADDLE_WEBHOOK_SECRET.';
+          console.error(
+            '[Paddle Webhook] Missing required environment variable: PADDLE_WEBHOOK_SECRET. Refusing webhook verification without test-key fallback.'
+          );
         } else if (!sigHeader) {
           verifyError = 'Missing Paddle-Signature header.';
         } else {
@@ -9404,13 +9431,13 @@ export default async function handler(req: any, res: any) {
           totalMinorOrUsd > 1000 ? Number((totalMinorOrUsd / 100).toFixed(2)) : totalMinorOrUsd;
 
         const credit25Price = cleanEnvValue(
-          getEnv('PADDLE_CREDIT_25_PRICE') || getEnv('VITE_PADDLE_CREDIT_25_PRICE')
+          getEnv('PADDLE_CREDIT_25_PRICE') || getEnv('NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE')
         );
         const credit100Price = cleanEnvValue(
-          getEnv('PADDLE_CREDIT_100_PRICE') || getEnv('VITE_PADDLE_CREDIT_100_PRICE')
+          getEnv('PADDLE_CREDIT_100_PRICE') || getEnv('NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE')
         );
         const credit500Price = cleanEnvValue(
-          getEnv('PADDLE_CREDIT_500_PRICE') || getEnv('VITE_PADDLE_CREDIT_500_PRICE')
+          getEnv('PADDLE_CREDIT_500_PRICE') || getEnv('NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE')
         );
         const customPackId = String(
           dataObj?.custom_data?.packId || dataObj?.custom_data?.pack_id || ''
@@ -9445,9 +9472,8 @@ export default async function handler(req: any, res: any) {
                 'pro'
               );
 
-        const isTestEnv =
-          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox' ||
-          getEnv('PAYMENT_TEST_MODE') === 'true';
+        const paddleEnv = resolvePaddleEnvironment();
+        const isTestEnv = paddleEnv.isSandbox;
 
         await appendWebhookLogToDb({
           order_id: orderId,
@@ -9467,7 +9493,7 @@ export default async function handler(req: any, res: any) {
         });
 
         if (!signatureValid) {
-          return res.status(401).json({
+          return res.status(missingSecret ? 500 : 401).json({
             success: false,
             received: true,
             verified: false,
@@ -9541,24 +9567,17 @@ export default async function handler(req: any, res: any) {
         res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
         const logs = await getWebhookLogsFromDb(50);
         const emailLogs = await getEmailLogsFromDb(50);
-        const paymentWebhookSecretPresent = Boolean(
-          cleanEnvValue(getEnv('PAYMENT_WEBHOOK_SECRET'))
-        );
         const paddleWebhookSecretPresent = Boolean(
           cleanEnvValue(getEnv('PADDLE_WEBHOOK_SECRET'))
         );
-        const webhookSecretPresent =
-          paymentWebhookSecretPresent || paddleWebhookSecretPresent;
-        const apiKeyPresent = Boolean(
-          cleanEnvValue(getEnv('PADDLE_API_KEY')) ||
-            cleanEnvValue(getEnv('PAYMENT_API_KEY'))
-        );
+        const webhookSecretPresent = paddleWebhookSecretPresent;
+        const apiKeyPresent = Boolean(cleanEnvValue(getEnv('PADDLE_API_KEY')));
+        const paddleEnv = resolvePaddleEnvironment();
         const webhookStatus = webhookSecretPresent ? 'Connected' : 'Not Connected';
 
         return res.status(200).json({
           success: true,
-          testMode:
-            getEnv('PAYMENT_TEST_MODE') === 'true' || getEnv('VITE_PAYMENT_TEST_MODE') === 'true',
+          testMode: paddleEnv.isSandbox,
           webhookStatus,
           logs,
           webhookLogs: logs,
@@ -9567,16 +9586,17 @@ export default async function handler(req: any, res: any) {
           emails: emailLogs,
           envStatus: {
             webhookSecretPresent,
-            paymentWebhookSecretPresent,
             paddleWebhookSecretPresent,
             apiKeyPresent,
+            paddleEnvironmentConfigured: paddleEnv.configured,
+            paddleEnvironment: paddleEnv.normalized || 'missing',
             webhookStatus,
           },
           ...(logs.length === 0
             ? {
                 debug: webhookSecretPresent
-                  ? 'Webhook secret configured (Connected) — waiting for Paddle events.'
-                  : 'PAYMENT_WEBHOOK_SECRET / PADDLE_WEBHOOK_SECRET missing (Not Connected).',
+                  ? 'PADDLE_WEBHOOK_SECRET configured (Connected) — waiting for Paddle events.'
+                  : 'PADDLE_WEBHOOK_SECRET missing (Not Connected).',
               }
             : {}),
         });
@@ -10089,14 +10109,28 @@ export default async function handler(req: any, res: any) {
         const refundedAmountUSD = Number(
           user.payments?.[0]?.amount || PLAN_DEFINITIONS[planKey].launchPrice || 0
         );
-        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY') || getEnv('PAYMENT_API_KEY'));
-        const paddleBaseUrl =
-          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox'
-            ? 'https://sandbox-api.paddle.com'
-            : 'https://api.paddle.com';
+        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+        const paddleEnv = resolvePaddleEnvironment();
+        const paddleBaseUrl = paddleEnv.baseUrl;
         let refundedAlready = false;
 
-        if (paddleApiKey && orderId.startsWith('txn_')) {
+        if (orderId.startsWith('txn_')) {
+          if (!paddleApiKey) {
+            console.error('[Paddle Refund] Missing required environment variable: PADDLE_API_KEY');
+            return res.status(500).json({
+              success: false,
+              error: 'Missing required server environment variable: PADDLE_API_KEY. Refund could not be processed.',
+            });
+          }
+          if (!paddleEnv.configured || !paddleBaseUrl) {
+            console.error(
+              '[Paddle Refund] Missing or invalid environment variable: PADDLE_ENVIRONMENT (expected "live" or "sandbox").'
+            );
+            return res.status(500).json({
+              success: false,
+              error: 'Missing required server environment variable: PADDLE_ENVIRONMENT. Refund could not be processed.',
+            });
+          }
           try {
             const refundRes = await fetch(`${paddleBaseUrl}/adjustments`, {
               method: 'POST',
@@ -11819,62 +11853,28 @@ Return JSON with:
         }
 
         const rawOrderId = normalizeOrderId(String(body.transaction_id || body.transactionId || body.order_id || '').trim());
-        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY') || getEnv('PAYMENT_API_KEY'));
-        const isStrictProd =
-          process.env.NODE_ENV === 'production' &&
-          getEnv('PAYMENT_TEST_MODE') !== 'true' &&
-          cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() !== 'sandbox';
+        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+        const paddleEnv = resolvePaddleEnvironment();
 
-        if (rawOrderId) {
-          const used = await getUsedOrderFromDb(rawOrderId);
-          if (used) {
-            if (normalizeEmail(used.login_email) !== email) {
-              return res.status(403).json({
-                success: false,
-                error: 'This transaction ID has already been redeemed by another account.',
-              });
-            }
-            const existingUser =
-              (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
-            const existingLic = computeServerLicenseStatus(existingUser);
-            return res.status(200).json({
-              success: true,
-              alreadyApplied: true,
-              pack,
-              analyses_left: existingLic.analysesLeft,
-              analyses_total: existingLic.analysesLimit,
-              extra_credits: existingUser.extra_credits || 0,
-            });
-          }
+        if (!paddleApiKey) {
+          console.error('[Paddle BuyCredits] Missing required environment variable: PADDLE_API_KEY');
+          return res.status(500).json({
+            success: false,
+            error: 'Missing required server environment variable: PADDLE_API_KEY.',
+          });
+        }
 
-          if (rawOrderId.startsWith('txn_') && paddleApiKey) {
-            const paddleBaseUrl =
-              cleanEnvValue(getEnv('PADDLE_ENV')).toLowerCase() === 'sandbox'
-                ? 'https://sandbox-api.paddle.com'
-                : 'https://api.paddle.com';
-            try {
-              const pRes = await fetch(`${paddleBaseUrl}/transactions/${encodeURIComponent(rawOrderId)}`, {
-                headers: {
-                  Authorization: `Bearer ${paddleApiKey}`,
-                  Accept: 'application/json',
-                },
-              });
-              const pJson: any = await pRes.json().catch(() => null);
-              const pStatus = String(pJson?.data?.status || '').toLowerCase();
-              if (!pRes.ok || (pStatus !== 'completed' && pStatus !== 'paid')) {
-                return res.status(400).json({
-                  success: false,
-                  error: `Paddle transaction ${rawOrderId} is not completed/paid (status: ${pStatus || pRes.status}).`,
-                });
-              }
-            } catch (err: any) {
-              return res.status(502).json({
-                success: false,
-                error: `Unable to verify Paddle transaction: ${err?.message || 'network error'}`,
-              });
-            }
-          }
-        } else if (isStrictProd && paddleApiKey) {
+        if (!paddleEnv.configured || !paddleEnv.baseUrl) {
+          console.error(
+            '[Paddle BuyCredits] Missing or invalid environment variable: PADDLE_ENVIRONMENT (expected "live" or "sandbox").'
+          );
+          return res.status(500).json({
+            success: false,
+            error: 'Missing required server environment variable: PADDLE_ENVIRONMENT.',
+          });
+        }
+
+        if (!rawOrderId) {
           return res.status(402).json({
             success: false,
             requiresPayment: true,
@@ -11884,13 +11884,61 @@ Return JSON with:
           });
         }
 
-        const now = Date.now();
-        const txId = rawOrderId || `cr_${pack.id}_${now}_${Math.random().toString(36).slice(2, 6)}`;
+        const used = await getUsedOrderFromDb(rawOrderId);
+        if (used) {
+          if (normalizeEmail(used.login_email) !== email) {
+            return res.status(403).json({
+              success: false,
+              error: 'This transaction ID has already been redeemed by another account.',
+            });
+          }
+          const existingUser =
+            (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+          const existingLic = computeServerLicenseStatus(existingUser);
+          return res.status(200).json({
+            success: true,
+            alreadyApplied: true,
+            pack,
+            analyses_left: existingLic.analysesLeft,
+            analyses_total: existingLic.analysesLimit,
+            extra_credits: existingUser.extra_credits || 0,
+          });
+        }
+
+        if (!rawOrderId.startsWith('txn_')) {
+          return res.status(400).json({
+            success: false,
+            error: 'Valid Paddle transaction_id (txn_...) is required.',
+          });
+        }
+
+        try {
+          const pRes = await fetch(`${paddleEnv.baseUrl}/transactions/${encodeURIComponent(rawOrderId)}`, {
+            headers: {
+              Authorization: `Bearer ${paddleApiKey}`,
+              Accept: 'application/json',
+            },
+          });
+          const pJson: any = await pRes.json().catch(() => null);
+          const pStatus = String(pJson?.data?.status || '').toLowerCase();
+          if (!pRes.ok || (pStatus !== 'completed' && pStatus !== 'paid')) {
+            return res.status(400).json({
+              success: false,
+              error: `Paddle transaction ${rawOrderId} is not completed/paid (status: ${pStatus || pRes.status}).`,
+            });
+          }
+        } catch (err: any) {
+          return res.status(502).json({
+            success: false,
+            error: `Unable to verify Paddle transaction: ${err?.message || 'network error'}`,
+          });
+        }
+
         const updatedUser = await applyCreditPackToUser({
           email,
           pack,
-          orderId: txId,
-          isTestMode: !isStrictProd,
+          orderId: rawOrderId,
+          isTestMode: paddleEnv.isSandbox,
         });
         const nextLicense = computeServerLicenseStatus(updatedUser);
 
@@ -11898,7 +11946,7 @@ Return JSON with:
           success: true,
           message: `Added +${pack.credits} non-expiring AI credits (${pack.label}) to your balance.`,
           pack,
-          transaction_id: txId,
+          transaction_id: rawOrderId,
           analyses_left: nextLicense.analysesLeft,
           analyses_used: nextLicense.analysesUsed,
           analyses_total: nextLicense.analysesLimit,

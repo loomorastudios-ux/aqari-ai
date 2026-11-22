@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { RemoteConfig } from '../types';
 import { CONFIG_URL } from '../constants';
+import { getPaddleEnvironment } from '../utils/paddleClient';
 import { 
   X, 
   Settings, 
@@ -198,10 +199,9 @@ export const AdminModal: React.FC<AdminModalProps> = ({
               </p>
             </div>
 
-            {(import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' || import.meta.env.VITE_PAYMENT_TEST_MODE === true) && (
+            {getPaddleEnvironment() === 'sandbox' && (
               <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs font-mono flex items-center justify-between gap-2">
-                <span>TEST MODE ACTIVE</span>
-                <span className="font-bold underline">Use test card: 4242 4242 4242 4242</span>
+                <span>SANDBOX MODE ACTIVE</span>
               </div>
             )}
 

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { CurrencyCode, User, RemoteConfig } from '../types';
 import { computeLicenseStatus } from '../../lib/plans';
+import { getPaddleEnvironment } from '../utils/paddleClient';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -53,9 +54,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const isTestMode =
-    import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' ||
-    (import.meta.env.VITE_PAYMENT_TEST_MODE as unknown) === true;
+  const isTestMode = getPaddleEnvironment() === 'sandbox';
 
   const endsAt = user?.subscriptionEndsAt || user?.subscriptionExpiry || null;
   const msLeft = endsAt ? endsAt - Date.now() : 0;

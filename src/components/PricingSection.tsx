@@ -12,6 +12,7 @@ import {
 } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
 import {
+  getPaddleEnvironment,
   openPaddleCheckout,
   openPaddleCreditPackCheckout,
   CreditPackId,
@@ -94,10 +95,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
       .replace(/[^0-9]/g, '');
 
-  const isTestMode =
-    typeof window !== 'undefined' &&
-    (import.meta.env.VITE_PAYMENT_TEST_MODE === 'true' ||
-      (import.meta.env.VITE_PAYMENT_TEST_MODE as unknown) === true);
+  const isTestMode = getPaddleEnvironment() === 'sandbox';
 
   useEffect(() => {
     if (externalPricing) {
