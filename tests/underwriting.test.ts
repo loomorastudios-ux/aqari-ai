@@ -450,6 +450,16 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
       analyses_total: 1000,
       analyses_left: 1000,
       analyses_used: 0,
+      custom_analyses_limit: 1000,
+      custom_image_pdf_limit: 250,
+      custom_listings_limit: 250,
+      custom_portfolio_limit: 500,
+      custom_seats: 10,
+      custom_storage_gb: 100,
+      white_label_enabled: true,
+      custom_api_enabled: true,
+      sla_level: '99.9% Dedicated',
+      contract_end_date: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
       license_start: Date.now() - 1000,
       license_end: Date.now() + 30 * 24 * 60 * 60 * 1000,
       status: 'active',
@@ -591,4 +601,453 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
   assert.equal(latestAudit.action, 'DEAL_DELETED');
   assert.ok(latestAudit.timestamp);
 });
+
+async function invokeAdminApi(params: {
+  method?: string;
+  action: string;
+  body?: any;
+  query?: Record<string, string>;
+  headers?: Record<string, string>;
+}) {
+  const { default: adminHandler } = await import('../api/admin');
+  let statusCode = 200;
+  let jsonPayload: any = null;
+  const responseHeaders: Record<string, any> = {};
+
+  const qs = new URLSearchParams({ action: params.action, ...(params.query || {}) }).toString();
+  const req: any = {
+    method: params.method || 'POST',
+    url: `/api/admin?${qs}`,
+    headers: { host: 'localhost:3000', ...(params.headers || {}) },
+    body: params.body || {},
+    query: { action: params.action, ...(params.query || {}) },
+  };
+  const res: any = {
+    status(code: number) {
+      statusCode = code;
+      return this;
+    },
+    setHeader(k: string, v: any) {
+      responseHeaders[k] = v;
+      return this;
+    },
+    getHeader(k: string) {
+      return responseHeaders[k];
+    },
+    json(payload: any) {
+      jsonPayload = payload;
+      return this;
+    },
+    send(payload: any) {
+      jsonPayload = payload;
+      return this;
+    },
+    end() {
+      return this;
+    },
+  };
+
+  await adminHandler(req, res);
+  return { statusCode, data: jsonPayload, headers: responseHeaders };
+}
+
+test('Enterprise null limits lock by default and unlock only after Admin override', async (t) => {
+  const fs = await import('node:fs');
+  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const entEmail = `ent_unset_${Date.now()}@aqari.test`;
+
+  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
+  existing.users = existing.users || {};
+  existing.users[entEmail] = {
+    email: entEmail,
+    name: 'Unconfigured Enterprise',
+    plan: 'institutional',
+    analyses_total: 0,
+    analyses_left: 0,
+    analyses_used: 0,
+    custom_analyses_limit: null,
+    custom_image_pdf_limit: null,
+    custom_listings_limit: null,
+    custom_portfolio_limit: null,
+    custom_seats: null,
+    custom_storage_gb: null,
+    sla_level: null,
+    contract_end_date: null,
+    white_label_enabled: false,
+    custom_api_enabled: false,
+    license_start: Date.now() - 1000,
+    license_end: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    status: 'active',
+  };
+  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+
+  t.after(() => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      if (parsed?.users?.[entEmail]) {
+        delete parsed.users[entEmail];
+        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+      }
+    } catch {}
+  });
+
+  // 1. Unconfigured Enterprise user MUST be blocked with ENTERPRISE_CONTRACT_LIMIT_UNSET
+  const blockedRes = await invokeApi({
+    action: 'run-analysis',
+    body: {
+      email: entEmail,
+      propertyTitle: 'Null Enterprise Test',
+      city: 'Muscat',
+      priceUSD: 1_250_000,
+      rentUSD: 8_400,
+    },
+  });
+  assert.equal(blockedRes.statusCode, 403);
+  assert.equal(blockedRes.data.code, 'ENTERPRISE_CONTRACT_LIMIT_UNSET');
+
+  // 2. Owner signs in to get a valid signed admin session cookie
+  const ownerSess = await invokeApi({
+    action: 'session',
+    method: 'POST',
+    body: { email: 'loomorastudios@gmail.com', name: 'Owner' },
+  });
+  assert.equal(ownerSess.statusCode, 200);
+  const rawSetCookie = ownerSess.headers['Set-Cookie'];
+  const cookieHeader = Array.isArray(rawSetCookie)
+    ? rawSetCookie.map((c: string) => c.split(';')[0]).join('; ')
+    : String(rawSetCookie || '').split(';')[0];
+
+  // 3. Admin sets Enterprise contract limits
+  const adminRes = await invokeAdminApi({
+    action: 'user',
+    method: 'POST',
+    headers: { cookie: cookieHeader },
+    body: {
+      operation: 'update_enterprise_limits',
+      email: entEmail,
+      custom_analyses_limit: 50,
+      custom_image_pdf_limit: 10,
+      custom_listings_limit: 10,
+      custom_portfolio_limit: 100,
+      custom_seats: 5,
+      custom_storage_gb: 25,
+      sla_level: '99.9%',
+      contract_end_date: '31/12/2026',
+      white_label_enabled: true,
+      custom_api_enabled: true,
+      reason: 'Signed corporate contract',
+    },
+  });
+  assert.equal(adminRes.statusCode, 200);
+  assert.equal(adminRes.data.success, true);
+
+  // 4. Configured Enterprise user can now run analysis
+  const allowedRes = await invokeApi({
+    action: 'run-analysis',
+    body: {
+      email: entEmail,
+      propertyTitle: 'Configured Enterprise Test',
+      city: 'Muscat',
+      priceUSD: 1_250_000,
+      rentUSD: 8_400,
+    },
+  });
+  assert.equal(allowedRes.statusCode, 200);
+  assert.equal(allowedRes.data.success, true);
+});
+
+test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async (t) => {
+  const fs = await import('node:fs');
+  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const freeOldEmail = `free_60d_${Date.now()}@aqari.test`;
+
+  const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
+  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
+  existing.users = existing.users || {};
+  existing.users[freeOldEmail] = {
+    email: freeOldEmail,
+    name: 'Old Free User',
+    plan: 'free',
+    analyses_total: 3,
+    analyses_left: 3,
+    analyses_used: 0,
+    extra_credits: 0,
+    license_start: sixtyDaysAgo - 30 * 24 * 60 * 60 * 1000,
+    license_end: sixtyDaysAgo, // 60 days past — Free must NOT expire by time!
+    status: 'active',
+  };
+  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+
+  t.after(() => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      if (parsed?.users?.[freeOldEmail]) {
+        delete parsed.users[freeOldEmail];
+        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+      }
+    } catch {}
+  });
+
+  // Check /api/app?action=me confirms active & not expired
+  const meRes = await invokeApi({
+    method: 'GET',
+    action: 'me',
+    query: { login_email: freeOldEmail },
+  });
+  assert.equal(meRes.statusCode, 200);
+  assert.equal(meRes.data.package_expired, false);
+  assert.equal(meRes.data.locked, false);
+  assert.equal(meRes.data.analyses_left, 3);
+
+  // All 3 runs succeed despite license_end being 60 days ago
+  for (let i = 0; i < 3; i++) {
+    const r = await invokeApi({
+      action: 'run-analysis',
+      body: {
+        email: freeOldEmail,
+        propertyTitle: `Free Pass Asset ${i + 1}`,
+        city: 'Muscat',
+        priceUSD: 600_000,
+        rentUSD: 4_000,
+      },
+    });
+    assert.equal(r.statusCode, 200);
+  }
+
+  // 4th run locks with exact exhaustion message
+  const blocked = await invokeApi({
+    action: 'run-analysis',
+    body: {
+      email: freeOldEmail,
+      propertyTitle: 'Free Pass Asset 4',
+      city: 'Muscat',
+      priceUSD: 600_000,
+      rentUSD: 4_000,
+    },
+  });
+  assert.equal(blocked.statusCode, 403);
+  assert.equal(blocked.data.error, 'You used your 3 free analyses. Buy a plan or credits to continue.');
+});
+
+test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring credits, and deducts package before credits', async (t) => {
+  const fs = await import('node:fs');
+  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const expiredNoCredsEmail = `exp_nocreds_${Date.now()}@aqari.test`;
+  const expiredWithCredsEmail = `exp_creds_${Date.now()}@aqari.test`;
+  const pkgFirstEmail = `pkg_first_${Date.now()}@aqari.test`;
+
+  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
+  existing.users = existing.users || {};
+
+  // User A: Expired Pro with 0 credits
+  existing.users[expiredNoCredsEmail] = {
+    email: expiredNoCredsEmail,
+    name: 'Expired Zero Credits',
+    plan: 'pro',
+    analyses_total: 150,
+    analyses_left: 50,
+    analyses_used: 100,
+    extra_credits: 0,
+    license_start: Date.now() - 35 * 86_400_000,
+    license_end: Date.now() - 5 * 86_400_000,
+    status: 'active',
+  };
+
+  // User B: Expired Pro with 25 non-expiring credits
+  existing.users[expiredWithCredsEmail] = {
+    email: expiredWithCredsEmail,
+    name: 'Expired With Credits',
+    plan: 'pro',
+    analyses_total: 175,
+    analyses_left: 75,
+    analyses_used: 100,
+    extra_credits: 25,
+    license_start: Date.now() - 35 * 86_400_000,
+    license_end: Date.now() - 5 * 86_400_000,
+    status: 'active',
+  };
+
+  // User C: Active Starter with 2 plan analyses left + 10 non-expiring credits (total 12)
+  existing.users[pkgFirstEmail] = {
+    email: pkgFirstEmail,
+    name: 'Package First User',
+    plan: 'starter',
+    analyses_total: 40,
+    analyses_left: 12,
+    analyses_used: 28,
+    extra_credits: 10,
+    license_start: Date.now() - 5 * 86_400_000,
+    license_end: Date.now() + 25 * 86_400_000,
+    status: 'active',
+  };
+
+  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+
+  t.after(() => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      for (const k of [expiredNoCredsEmail, expiredWithCredsEmail, pkgFirstEmail]) {
+        if (parsed?.users?.[k]) delete parsed.users[k];
+      }
+      fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+    } catch {}
+  });
+
+  // Check User A: locked cleanly with exact no-auto-charge message
+  const resA = await invokeApi({
+    action: 'run-analysis',
+    body: {
+      email: expiredNoCredsEmail,
+      propertyTitle: 'Expired No Creds',
+      city: 'Muscat',
+      priceUSD: 600_000,
+      rentUSD: 4_000,
+    },
+  });
+  assert.equal(resA.statusCode, 403);
+  assert.ok(String(resA.data.error).includes('No auto-charge was made'));
+
+  // Check User B: /me shows package_expired=true, credits_only_mode=true, analyses_left=25
+  const meB = await invokeApi({
+    method: 'GET',
+    action: 'me',
+    query: { login_email: expiredWithCredsEmail },
+  });
+  assert.equal(meB.statusCode, 200);
+  assert.equal(meB.data.package_expired, true);
+  assert.equal(meB.data.credits_only_mode, true);
+  assert.equal(meB.data.locked, false);
+  assert.equal(meB.data.analyses_left, 25);
+  assert.equal(meB.data.credits_balance, 25);
+
+  // User B package modules (Monte Carlo) MUST be blocked with 403 while package expired
+  const mcB = await invokeApi({
+    action: 'monte-carlo',
+    body: { email: expiredWithCredsEmail, priceUSD: 600_000, rentUSD: 4_000 },
+  });
+  assert.equal(mcB.statusCode, 403);
+
+  // User B standard analysis MUST succeed and deduct 25 -> 24 extra_credits
+  const runB = await invokeApi({
+    action: 'run-analysis',
+    body: {
+      email: expiredWithCredsEmail,
+      propertyTitle: 'Credits Only Run',
+      city: 'Muscat',
+      priceUSD: 600_000,
+      rentUSD: 4_000,
+    },
+  });
+  assert.equal(runB.statusCode, 200);
+  assert.equal(runB.data.extra_credits, 24);
+  assert.equal(runB.data.analyses_left, 24);
+
+  // Check User C: Package deducts first (2 plan runs), keeping extra_credits=10 intact, then 3rd run burns credits to 9
+  const runC1 = await invokeApi({
+    action: 'run-analysis',
+    body: { email: pkgFirstEmail, propertyTitle: 'Pkg 1', city: 'Muscat', priceUSD: 600_000, rentUSD: 4_000 },
+  });
+  assert.equal(runC1.statusCode, 200);
+  assert.equal(runC1.data.plan_analyses_left, 1);
+  assert.equal(runC1.data.extra_credits, 10);
+  assert.equal(runC1.data.analyses_left, 11);
+
+  const runC2 = await invokeApi({
+    action: 'run-analysis',
+    body: { email: pkgFirstEmail, propertyTitle: 'Pkg 2', city: 'Muscat', priceUSD: 600_000, rentUSD: 4_000 },
+  });
+  assert.equal(runC2.statusCode, 200);
+  assert.equal(runC2.data.plan_analyses_left, 0);
+  assert.equal(runC2.data.extra_credits, 10);
+  assert.equal(runC2.data.analyses_left, 10);
+
+  const runC3 = await invokeApi({
+    action: 'run-analysis',
+    body: { email: pkgFirstEmail, propertyTitle: 'Cred 1', city: 'Muscat', priceUSD: 600_000, rentUSD: 4_000 },
+  });
+  assert.equal(runC3.statusCode, 200);
+  assert.equal(runC3.data.plan_analyses_left, 0);
+  assert.equal(runC3.data.extra_credits, 9);
+  assert.equal(runC3.data.analyses_left, 9);
+});
+
+test('One-time credit pack webhook credits account once and stays idempotent on replay', async (t) => {
+  const fs = await import('node:fs');
+  const crypto = await import('node:crypto');
+  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const buyerEmail = `pack_buyer_${Date.now()}@aqari.test`;
+  const txnId = `txn_pack_${Date.now()}`;
+  const prevSecret = process.env.PADDLE_WEBHOOK_SECRET;
+  const testSecret = 'pdl_ntfset_test_secret_unit';
+  process.env.PADDLE_WEBHOOK_SECRET = testSecret;
+
+  t.after(() => {
+    if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
+    else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      if (parsed?.users?.[buyerEmail]) {
+        delete parsed.users[buyerEmail];
+        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+      }
+    } catch {}
+  });
+
+  const payload = {
+    event_type: 'transaction.completed',
+    data: {
+      id: txnId,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      details: { totals: { total: '2900' } },
+      custom_data: {
+        email: buyerEmail,
+        login_email: buyerEmail,
+        purchase_type: 'credit_pack',
+        packId: 'pack_25',
+      },
+    },
+  };
+  const rawBody = JSON.stringify(payload);
+  const ts = String(Math.floor(Date.now() / 1000));
+  const h1 = crypto.createHmac('sha256', testSecret).update(`${ts}:${rawBody}`).digest('hex');
+  const sigHeader = `ts=${ts};h1=${h1}`;
+
+  const firstWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sigHeader },
+    body: rawBody,
+  });
+  assert.equal(firstWh.statusCode, 200);
+  assert.equal(firstWh.data.verified, true);
+  assert.equal(firstWh.data.purchase_type, 'credit_pack');
+  assert.equal(firstWh.data.creditsAdded, 25);
+
+  const meAfterFirst = await invokeApi({
+    method: 'GET',
+    action: 'me',
+    query: { login_email: buyerEmail },
+  });
+  assert.equal(meAfterFirst.data.credits_balance, 25);
+  assert.equal(meAfterFirst.data.extra_credits, 25);
+
+  // Replay exact same webhook -> must be idempotent (0 additional credits added)
+  const replayWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sigHeader },
+    body: rawBody,
+  });
+  assert.equal(replayWh.statusCode, 200);
+  assert.equal(replayWh.data.creditsAdded, 0);
+
+  const meAfterReplay = await invokeApi({
+    method: 'GET',
+    action: 'me',
+    query: { login_email: buyerEmail },
+  });
+  assert.equal(meAfterReplay.data.credits_balance, 25);
+});
+
 

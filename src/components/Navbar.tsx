@@ -79,8 +79,22 @@ export const Navbar: React.FC<NavbarProps> = ({
   );
 
   const daysLeft = license ? license.daysLeft : 0;
-  const isExpired = Boolean(license?.isExpired || (user && user.subscriptionStatus === 'expired'));
-  const isExpiringIn1Day = Boolean(user && license && license.planKey !== 'free' && endsAt && msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000);
+  const isFreePlan = license?.planKey === 'free';
+  const creditsBalance = Math.max(0, Number(user?.creditsBalance ?? user?.extraCredits ?? 0));
+  const isExpired = Boolean(!isFreePlan && (license?.isExpired || user?.packageExpired));
+  const isExpiringIn1Day = Boolean(
+    user &&
+      license &&
+      !isFreePlan &&
+      !isExpired &&
+      (user.day29Reminder || (endsAt && msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000))
+  );
+  const expiryDDMMYYYY = (() => {
+    if (user?.expiryDateFormatted) return user.expiryDateFormatted;
+    if (!endsAt || !Number.isFinite(endsAt)) return 'N/A';
+    const d = new Date(endsAt);
+    return `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+  })();
   const analysesLeftDisplay = !user
     ? '--'
     : !isCreditsLoaded
@@ -100,11 +114,12 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* 1-Day Expiration Reminder Top Banner */}
       {isExpiringIn1Day && (
-        <div className="bg-gradient-to-r from-red-600 via-amber-600 to-red-600 text-white text-xs font-semibold py-2 px-4 flex items-center justify-between shadow-lg animate-pulse z-50">
+        <div className="bg-gradient-to-r from-red-600 via-amber-600 to-red-600 text-white text-xs font-semibold py-2 px-4 flex items-center justify-between shadow-lg z-50">
           <div className="flex items-center gap-2 max-w-4xl mx-auto">
             <AlertTriangle className="w-4 h-4 text-white shrink-0" />
             <span>
-              ⚠️ Your <strong className="uppercase">{license?.displayName}</strong> ends tomorrow — Renew now to keep terminal access without interruption.
+              Your <strong className="uppercase">{license?.displayName}</strong> expires tomorrow{' '}
+              <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{expiryDDMMYYYY}</strong>. Renew now to keep access. No auto-charge will happen.
             </span>
           </div>
           <button
@@ -112,7 +127,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             onClick={onOpenPricing}
             className="px-3 py-1 bg-black text-[#D4AF37] hover:bg-zinc-900 rounded text-xs font-mono font-bold transition shrink-0 ml-2 cursor-pointer"
           >
-            Renew Now &rarr;
+            Renew Plan &rarr;
           </button>
         </div>
       )}
@@ -134,13 +149,15 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       )}
 
-      {/* Subscription Expired Warning Banner */}
+      {/* Paid Plan Expired Warning Banner */}
       {isExpired && (
         <div className="bg-rose-950/95 border-b border-rose-500/50 text-rose-200 text-xs py-2 px-4 flex items-center justify-between backdrop-blur-md">
           <div className="flex items-center gap-2 max-w-4xl mx-auto">
             <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
             <span>
-              Subscription expired — Renew to continue accessing institutional feeds and underwriting.
+              {creditsBalance > 0
+                ? `Your ${license?.displayName || 'Plan'} plan expired. You still have ${creditsBalance} Credits. Buy a plan to unlock full features, or continue with credits.`
+                : `Your ${license?.displayName || 'Plan'} expired on ${expiryDDMMYYYY}. Renew to continue. No auto-charge was made.`}
             </span>
           </div>
           <button
@@ -148,7 +165,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             onClick={onOpenPricing}
             className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold transition shrink-0 ml-2 cursor-pointer"
           >
-            Renew Subscription
+            {creditsBalance > 0 ? 'Buy Plan' : 'Renew Plan'}
           </button>
         </div>
       )}
@@ -222,29 +239,35 @@ export const Navbar: React.FC<NavbarProps> = ({
                     {isExpiringIn1Day ? (
                       <button
                         onClick={onOpenPricing}
-                        className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-0.5 rounded-lg bg-red-950/80 border border-red-500/60 text-red-300 hover:text-white transition animate-pulse cursor-pointer"
+                        className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-0.5 rounded-lg bg-red-950/80 border border-red-500/60 text-red-300 hover:text-white transition cursor-pointer"
                       >
                         <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
                         <span className="text-red-400 font-bold uppercase tracking-wider">
-                          {license.displayName} • {analysesLeftDisplay} • 1 days left - Renew
+                          {license.displayName} • {analysesLeftDisplay} • 1 day left - Renew
                         </span>
                       </button>
                     ) : (
                       <div className="flex items-center gap-1.5 text-xs font-mono">
-                        <span className={`w-2 h-2 rounded-full ${license.planKey === 'free' ? 'bg-[#D4AF37]' : 'bg-emerald-400'} animate-pulse`} />
-                        <span className={`${license.planKey === 'free' ? 'text-[#D4AF37]' : 'text-emerald-400'} font-bold uppercase tracking-wider`}>
+                        <span className={`w-2 h-2 rounded-full ${isFreePlan ? 'bg-[#D4AF37]' : isExpired ? 'bg-rose-500' : 'bg-emerald-400'} animate-pulse`} />
+                        <span className={`${isFreePlan ? 'text-[#D4AF37]' : isExpired ? 'text-rose-400' : 'text-emerald-400'} font-bold uppercase tracking-wider`}>
                           {license.displayName}
                         </span>
                         <span className="text-zinc-500">•</span>
                         <span className="text-zinc-200 font-semibold">{analysesLeftDisplay}</span>
                         <span className="text-zinc-500">•</span>
-                        <span className="text-zinc-300 font-medium">{daysLeft} days left</span>
+                        <span className="text-zinc-300 font-medium">
+                          {isFreePlan ? 'No Expiry' : isExpired ? 'Expired' : `${daysLeft} days left`}
+                        </span>
                       </div>
                     )}
                   </div>
                 </TooltipTrigger>
                 <TooltipContent>
-                  Active 30-day terminal license • {license.displayName} ({daysLeft}d remaining)
+                  {isFreePlan
+                    ? `Free plan (no time expiry) • ${analysesLeftDisplay}`
+                    : isExpired
+                    ? `30-day one-time license expired (${creditsBalance} non-expiring Credits remaining)`
+                    : `30-day one-time license (No auto-renew) • ${license.displayName} (${daysLeft}d remaining)`}
                 </TooltipContent>
               </Tooltip>
             ) : null}

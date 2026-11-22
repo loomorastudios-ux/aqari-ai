@@ -275,14 +275,6 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
                   whileTap={{ scale: 0.99 }}
                   transition={{ duration: 0.15 }}
                   onClick={() => {
-                    if (isShowcaseCard && !isActiveEnterprise) {
-                      if (onEnterpriseShowcaseLock) {
-                        onEnterpriseShowcaseLock();
-                        return;
-                      }
-                      onOpenPricing();
-                      return;
-                    }
                     if (onOpenDemo) {
                       onOpenDemo(getPropertyDemoSlug(property));
                     } else {
@@ -309,20 +301,12 @@ export const PropertyGrid: React.FC<PropertyGridProps> = ({
         </div>
         <div className="flex flex-wrap items-center justify-center gap-2.5">
           {ENTERPRISE_CAPABILITY_PILLS.map((label) => (
-            <button
+            <span
               key={label}
-              type="button"
-              onClick={() => {
-                if (!isActiveEnterprise && onEnterpriseShowcaseLock) {
-                  onEnterpriseShowcaseLock();
-                } else {
-                  onOpenPricing();
-                }
-              }}
-              className="px-3.5 py-1.5 rounded-lg bg-black border border-[#D4AF37]/35 hover:border-[#D4AF37] text-[11px] font-mono text-zinc-200 hover:text-[#D4AF37] transition cursor-pointer shadow-sm"
+              className="px-3.5 py-1.5 rounded-lg bg-black border border-[#D4AF37]/35 text-[11px] font-mono text-zinc-200 shadow-sm select-none"
             >
               {label}
-            </button>
+            </span>
           ))}
         </div>
       </div>

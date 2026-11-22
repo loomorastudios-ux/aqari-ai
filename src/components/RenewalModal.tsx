@@ -56,14 +56,24 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
 
   const launchActive = pricingData?.launchDiscountActive ?? true;
   const launchEndsAt = pricingData?.launchEndsAt || DEFAULT_LAUNCH_END_DATE_MS;
-  const launchEndDateStr = new Date(launchEndsAt).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
+  const formatDDMMYYYY = (ms: number): string => {
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return '';
+    return `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+  };
+  const launchEndDateStr = formatDDMMYYYY(launchEndsAt);
   const starterPricing = findPlanPricing(pricingData, 'starter');
   const proPricing = findPlanPricing(pricingData, 'pro');
   const enterprisePricing = findPlanPricing(pricingData, 'enterprise');
+
+  const userPlanKey = user?.plan || 'free';
+  const endsAtMs = user?.subscriptionEndsAt ?? user?.subscriptionExpiry ?? null;
+  const msLeftForDay29 = endsAtMs ? endsAtMs - Date.now() : 0;
+  const isDay29 =
+    userPlanKey !== 'free' &&
+    (Boolean(user?.day29Reminder) || (msLeftForDay29 > 0 && msLeftForDay29 <= 24 * 60 * 60 * 1000));
+  const userPlanDisplay = user?.planName || PLANS[userPlanKey === 'pro' || userPlanKey === 'starter' || userPlanKey === 'enterprise' || userPlanKey === 'institutional' ? userPlanKey : 'free'].displayName;
+  const expiryDateDisplay = user?.expiryDateFormatted || (endsAtMs ? formatDDMMYYYY(endsAtMs) : '');
 
   const handleRenewPaddle = async (plan: 'starter' | 'pro' | 'enterprise') => {
     if (!refundAccepted) {
@@ -180,17 +190,24 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
         <div className="text-center mb-6">
           <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/25 text-xs font-mono text-[#D4AF37] mb-2">
             <Sparkles className="w-3.5 h-3.5" />
-            <span>INSTITUTIONAL SUBSCRIPTION UPGRADE / RENEWAL</span>
+            <span>30-DAY ONE-TIME ACCESS • NO AUTO-RENEW</span>
           </div>
           <h3 className="text-2xl sm:text-4xl font-bold tracking-tight text-white">
             Extend Your 30-Day Terminal Access
           </h3>
           <p className="text-xs sm:text-sm text-zinc-400 mt-2 max-w-lg mx-auto">
-            Launch pricing and standard renewal rates are shown transparently below. Payments process securely via Paddle.
+            All plans are one-time 30-day purchases with no automatic charges. Purchased Extra Credits never expire.
           </p>
 
+          {isDay29 && (
+            <div className="mt-3 p-3 rounded-xl bg-rose-950/60 border border-rose-500/50 text-rose-200 text-xs font-mono leading-relaxed tabular-nums">
+              <strong className="text-white">Day 29 Expiry Reminder:</strong> Your {userPlanDisplay} expires tomorrow{' '}
+              <strong className="text-white">{expiryDateDisplay}</strong>. Renew now to keep access. No auto-charge will happen.
+            </div>
+          )}
+
           {launchActive && (
-            <div className="mt-3 inline-flex items-center gap-2 px-4 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono">
+            <div className="mt-3 inline-flex items-center gap-2 px-4 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-mono tabular-nums">
               <Flame className="w-3.5 h-3.5" />
               <span>
                 {pricingData?.launchBadgeText || 'LAUNCH OFFER'} • Ends {launchEndDateStr} ({pricingData?.daysRemaining ?? 7} days left)
@@ -266,7 +283,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
                       {formatPrice(discountedUSD, currentCurrency)}
                     </div>
                     <div className="text-[10px] font-mono text-amber-200/90 mt-1">
-                      Renews at {formatPrice(originalUSD, currentCurrency)}/mo after launch (ends {launchEndDateStr})
+                      One-time 30-day rate (Std {formatPrice(originalUSD, currentCurrency)} after launch ends {launchEndDateStr}) • No auto-renew
                     </div>
                   </div>
 
@@ -306,7 +323,7 @@ export const RenewalModal: React.FC<RenewalModalProps> = ({
         <div className="mb-4 p-3 rounded-2xl bg-black/40 border border-white/10 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-xs font-mono text-zinc-300">
             <Coins className="w-4 h-4 text-[#D4AF37]" />
-            <span>Need extra credits right away?</span>
+            <span>Extra Credits (Never Expire):</span>
           </div>
           <div className="flex flex-wrap gap-2">
             {EXTRA_CREDIT_PACKS.map((pk) => (

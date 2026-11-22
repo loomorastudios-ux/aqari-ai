@@ -616,8 +616,9 @@ export function computeLicenseStatus(params: {
 }): ComputedLicenseStatus {
   const now = params.now ?? Date.now();
   const rawPlanKey = normalizePlanKey(params.plan);
-  const hasEnd = Boolean(params.licenseEnd);
-  const isExpired = Boolean(hasEnd && params.licenseEnd! <= now);
+  const isFreePlan = rawPlanKey === 'free';
+  const hasEnd = Boolean(!isFreePlan && params.licenseEnd);
+  const isExpired = Boolean(!isFreePlan && hasEnd && params.licenseEnd! <= now);
 
   const effectivePlanKey: PlanKey = rawPlanKey;
   const planCfg = PLANS[effectivePlanKey];
@@ -633,8 +634,10 @@ export function computeLicenseStatus(params: {
   const isUnlimitedAnalyses = !Number.isFinite(effectiveAnalysesLimit);
   const isUnlimitedSaved = !Number.isFinite(effectiveSavedLimit);
 
-  let daysLeft = 30;
-  if (isExpired) {
+  let daysLeft = isFreePlan ? 0 : 30;
+  if (isFreePlan) {
+    daysLeft = 0;
+  } else if (isExpired) {
     daysLeft = 0;
   } else if (params.licenseEnd) {
     daysLeft = Math.max(0, Math.ceil((params.licenseEnd - now) / (1000 * 60 * 60 * 24)));
@@ -647,7 +650,7 @@ export function computeLicenseStatus(params: {
     ? Infinity
     : Math.max(0, effectiveAnalysesLimit - analysesUsed);
 
-  if (!isExpired && !isUnlimitedAnalyses) {
+  if (!isUnlimitedAnalyses) {
     const explicitLeft =
       params.analysesLeft ?? params.freeAnalysesLeft;
     if (typeof explicitLeft === 'number') {
@@ -660,15 +663,17 @@ export function computeLicenseStatus(params: {
 
   const timeProgress = isExpired
     ? 0
-    : params.licenseEnd
+    : !isFreePlan && params.licenseEnd
     ? Math.min(100, Math.max(0, Math.round((daysLeft / 30) * 100)))
     : isUnlimitedAnalyses
     ? 100
-    : Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)));
+    : Math.min(100, Math.max(0, Math.round((analysesLeft / Math.max(1, effectiveAnalysesLimit)) * 100)));
 
   const leftStr = isUnlimitedAnalyses ? 'Unlimited credits left' : `${analysesLeft} credits left`;
-  const sidebarText = isExpired
-    ? `LICENSING COUNTDOWN - ${planCfg.displayName} - EXPIRED - 0 credits left`
+  const sidebarText = isFreePlan
+    ? `FREE PLAN (NO TIME EXPIRY) - ${leftStr}`
+    : isExpired
+    ? `LICENSING COUNTDOWN - ${planCfg.displayName} - EXPIRED - ${leftStr}`
     : `LICENSING COUNTDOWN - ${planCfg.displayName} - ${daysLeft} days left - ${leftStr}`;
 
   return {
@@ -676,7 +681,7 @@ export function computeLicenseStatus(params: {
     displayName: planCfg.displayName,
     isExpired,
     daysLeft,
-    daysTotal: 30,
+    daysTotal: isFreePlan ? 0 : 30,
     analysesLimit: effectiveAnalysesLimit,
     analysesUsed,
     analysesLeft,

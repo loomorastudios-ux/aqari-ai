@@ -4,12 +4,12 @@ import crypto from 'crypto';
 export function getAdminEmail(): string {
   try {
     const envVal = typeof process !== 'undefined' && process?.env ? process.env.ADMIN_EMAIL : '';
-    return (envVal || 'azzamalshmale@gmail.com').trim().toLowerCase();
+    return (envVal || 'loomorastudios@gmail.com').trim().toLowerCase();
   } catch {
-    return 'azzamalshmale@gmail.com';
+    return 'loomorastudios@gmail.com';
   }
 }
-export const ADMIN_EMAIL = 'azzamalshmale@gmail.com';
+export const ADMIN_EMAIL = 'loomorastudios@gmail.com';
 export const SESSION_COOKIE_NAME = 'aqari_session';
 export const ENTITLEMENT_COOKIE_NAME = 'aqari_entitlement';
 
@@ -92,7 +92,7 @@ function appendSetCookieHeader(res: any, cookieStr: string): void {
 export function isAdminEmail(email?: string | null): boolean {
   const norm = (email || '').trim().toLowerCase();
   if (!norm) return false;
-  return norm === getAdminEmail() || norm === 'azzamalshmale@gmail.com';
+  return norm === getAdminEmail() || norm === 'loomorastudios@gmail.com' || norm === 'azzamalshmale@gmail.com';
 }
 
 export function signSessionToken(email: string): string {

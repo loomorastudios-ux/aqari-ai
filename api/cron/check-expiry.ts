@@ -135,7 +135,7 @@ function buildDay29RenewalEmail(params: {
   analysesLeft: number | string;
 }) {
   const planName = PLAN_DEFINITIONS[params.plan]?.displayName || 'STARTER';
-  const subject = `Your AQARI ${planName} ends tomorrow - Renew in 1 click`;
+  const subject = `Your AQARI ${planName} expires tomorrow ${params.endDateFormatted} - Renew Plan`;
   const renewUrl = `${PRODUCTION_URL}/pricing`;
   const leftText =
     params.analysesLeft === Infinity || params.analysesLeft === 'Unlimited'
@@ -145,28 +145,30 @@ function buildDay29RenewalEmail(params: {
   const text = [
     `Hi ${params.name},`,
     '',
-    `Your ${planName} ends tomorrow (${params.endDateFormatted}). You have ${leftText} analyses left.`,
+    `Your ${planName} expires tomorrow ${params.endDateFormatted}. You have ${leftText} analyses left.`,
+    `Renew now to keep access. No auto-charge will happen.`,
     '',
-    `Renew same plan: ${renewUrl}`,
-    `Or Upgrade to Professional ($${PLAN_DEFINITIONS.pro.launchPrice}) / Sovereign ($${PLAN_DEFINITIONS.enterprise.launchPrice}): ${renewUrl}`,
-    '',
-    `If you don't renew, you will return to FREE (3 analyses).`,
+    `Renew Plan (30-day one-time access): ${renewUrl}`,
     '',
     `AQARI Global Terminal`,
     PRODUCTION_URL,
   ].join('\n');
 
-  const html = `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#070709;color:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"><div style="max-width:600px;margin:0 auto;padding:32px 24px;background:#0b0b0f;border:1px solid #26262e;border-radius:16px;"><div style="font-family:monospace;color:#D4AF37;font-size:12px;letter-spacing:1.5px;font-weight:bold;margin-bottom:12px;">AQARI GLOBAL TERMINAL • 30-DAY LICENSING NOTICE</div><h1 style="font-size:22px;margin:0 0 16px;color:#ffffff;">Your AQARI ${planName} ends tomorrow</h1><p style="font-size:15px;line-height:1.6;color:#d4d4d8;margin:0 0 16px;">Hi <strong>${params.name}</strong>, your <strong>${planName}</strong> ends tomorrow (<strong>${params.endDateFormatted}</strong>). You have <strong>${leftText}</strong> analyses left.</p><a href="${renewUrl}" style="display:inline-block;padding:12px 22px;background:#D4AF37;color:#000000;font-weight:800;font-family:monospace;text-decoration:none;border-radius:10px;font-size:13px;">Renew ${planName} in 1 Click &rarr;</a><p style="font-size:13px;line-height:1.6;color:#a1a1aa;margin:16px 0 0;border-top:1px solid #27272a;padding-top:16px;">If you don't renew, you will return to <strong>FREE (3 analyses)</strong>.</p></div></body></html>`;
+  const html = `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#070709;color:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"><div style="max-width:600px;margin:0 auto;padding:32px 24px;background:#0b0b0f;border:1px solid #26262e;border-radius:16px;"><div style="font-family:monospace;color:#D4AF37;font-size:12px;letter-spacing:1.5px;font-weight:bold;margin-bottom:12px;">AQARI GLOBAL TERMINAL • 30-DAY ONE-TIME ACCESS</div><h1 style="font-size:22px;margin:0 0 16px;color:#ffffff;">Your ${planName} expires tomorrow ${params.endDateFormatted}</h1><p style="font-size:15px;line-height:1.6;color:#d4d4d8;margin:0 0 16px;">Hi <strong>${params.name}</strong>, your <strong>${planName}</strong> expires tomorrow (<strong>${params.endDateFormatted}</strong>). You have <strong>${leftText}</strong> credits left. Renew now to keep access. <strong>No auto-charge will happen.</strong></p><a href="${renewUrl}" style="display:inline-block;padding:12px 22px;background:#D4AF37;color:#000000;font-weight:800;font-family:monospace;text-decoration:none;border-radius:10px;font-size:13px;">Renew Plan &rarr;</a><p style="font-size:13px;line-height:1.6;color:#a1a1aa;margin:16px 0 0;border-top:1px solid #27272a;padding-top:16px;">All plans are 30-day one-time purchases. Purchased Extra Credits never expire.</p></div></body></html>`;
 
   return { subject, text, html };
 }
 
-function buildExpiredEmail(params: { name: string; previousPlan: PlanKey }) {
+function buildExpiredEmail(params: { name: string; previousPlan: PlanKey; expiredDateFormatted: string; extraCredits: number }) {
   const prevName = PLAN_DEFINITIONS[params.previousPlan]?.displayName || 'STARTER';
   const renewUrl = `${PRODUCTION_URL}/pricing`;
-  const subject = `Your AQARI ${prevName} plan expired`;
-  const text = `Hi ${params.name},\n\nYour AQARI ${prevName} licensing window has expired. Your account has returned to FREE (3 analyses).\n\nRenew anytime: ${renewUrl}\n\nAQARI Global Terminal`;
-  const html = `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#070709;color:#ffffff;font-family:sans-serif;"><div style="max-width:600px;margin:0 auto;padding:32px 24px;background:#0b0b0f;border:1px solid #26262e;border-radius:16px;"><div style="font-family:monospace;color:#fb7185;font-size:12px;font-weight:bold;margin-bottom:10px;">AQARI GLOBAL TERMINAL</div><h2 style="margin:0 0 12px;color:#fff;">Your AQARI ${prevName} plan expired</h2><p style="color:#d4d4d8;font-size:14px;line-height:1.6;">Hi ${params.name}, your 30-day licensing window has ended and your account has returned to <strong>FREE (3 analyses)</strong>.</p><a href="${renewUrl}" style="display:inline-block;margin-top:16px;padding:12px 22px;background:#D4AF37;color:#000;font-weight:bold;text-decoration:none;border-radius:10px;">Renew Subscription &rarr;</a></div></body></html>`;
+  const subject = `Your AQARI ${prevName} expired on ${params.expiredDateFormatted}`;
+  const creditNote =
+    params.extraCredits > 0
+      ? `You still have ${params.extraCredits} non-expiring Credits. Buy a plan to unlock full features, or continue with credits.`
+      : `Renew to continue. No auto-charge was made.`;
+  const text = `Hi ${params.name},\n\nYour ${prevName} expired on ${params.expiredDateFormatted}. ${creditNote}\n\nRenew anytime: ${renewUrl}\n\nAQARI Global Terminal`;
+  const html = `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#070709;color:#ffffff;font-family:sans-serif;"><div style="max-width:600px;margin:0 auto;padding:32px 24px;background:#0b0b0f;border:1px solid #26262e;border-radius:16px;"><div style="font-family:monospace;color:#fb7185;font-size:12px;font-weight:bold;margin-bottom:10px;">AQARI GLOBAL TERMINAL</div><h2 style="margin:0 0 12px;color:#fff;">Your ${prevName} expired on ${params.expiredDateFormatted}</h2><p style="color:#d4d4d8;font-size:14px;line-height:1.6;">Hi ${params.name}, ${creditNote}</p><a href="${renewUrl}" style="display:inline-block;margin-top:16px;padding:12px 22px;background:#D4AF37;color:#000;font-weight:bold;text-decoration:none;border-radius:10px;">Renew Plan &rarr;</a></div></body></html>`;
   return { subject, text, html };
 }
 
@@ -293,8 +295,11 @@ export default async function handler(req: any, res: any) {
       if (now >= u.license_end) {
         const previousPlan = planKey;
         const shouldSendExpired = !u.expired_email_sent;
+        const preservedCredits = Math.max(0, Number(u.extra_credits || 0));
+        const expD = new Date(u.license_end);
+        const expiredDateFormatted = `${String(expD.getUTCDate()).padStart(2, '0')}/${String(expD.getUTCMonth() + 1).padStart(2, '0')}/${expD.getUTCFullYear()}`;
         u.status = 'expired';
-        u.analyses_left = 0;
+        u.analyses_left = preservedCredits;
         u.expired_email_sent = true;
         u.updated_at = now;
         store.users[u.email] = u;
@@ -302,7 +307,12 @@ export default async function handler(req: any, res: any) {
         downgradedToFree++;
 
         if (shouldSendExpired) {
-          const mail = buildExpiredEmail({ name: u.name || u.email.split('@')[0], previousPlan });
+          const mail = buildExpiredEmail({
+            name: u.name || u.email.split('@')[0],
+            previousPlan,
+            expiredDateFormatted,
+            extraCredits: preservedCredits,
+          });
           await dispatchEmail({
             to: u.email,
             subject: mail.subject,
@@ -333,14 +343,11 @@ export default async function handler(req: any, res: any) {
         const planCfg = PLAN_DEFINITIONS[planKey];
         const limit = planCfg.analysesLimit;
         const analysesLeft = Number.isFinite(limit)
-          ? Math.max(0, limit - Math.max(0, Number(u.analyses_used || 0)))
+          ? Math.max(0, limit - Math.max(0, Number(u.analyses_used || 0))) + Math.max(0, Number(u.extra_credits || 0))
           : 'Unlimited';
 
-        const formattedEnd = new Date(u.license_end).toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-        });
+        const expD = new Date(u.license_end);
+        const formattedEnd = `${String(expD.getUTCDate()).padStart(2, '0')}/${String(expD.getUTCMonth() + 1).padStart(2, '0')}/${expD.getUTCFullYear()}`;
 
         const mail = buildDay29RenewalEmail({
           name: u.name || u.email.split('@')[0],

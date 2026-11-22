@@ -80,7 +80,7 @@ type AppRoute =
   | 'admin'
   | 'checkout-verifying';
 
-const OWNER_ADMIN_EMAILS = ['azzamalshmale@gmail.com'];
+const OWNER_ADMIN_EMAILS = ['loomorastudios@gmail.com', 'azzamalshmale@gmail.com'];
 const isOwnerAdminEmail = (email?: string | null) =>
   Boolean(email && OWNER_ADMIN_EMAILS.includes(email.trim().toLowerCase()));
 
@@ -363,11 +363,13 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, []);
 
-  // 1-Day Expiration Reminder Modal Check
+  // Day 29 Expiration Reminder Modal Check (paid 30-day plans only, once per day)
   useEffect(() => {
-    if (user && user.plan !== 'free' && user.subscriptionExpiry) {
-      const msLeft = user.subscriptionExpiry - Date.now();
-      if (msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000) {
+    if (user && user.plan !== 'free') {
+      const expiry = user.subscriptionEndsAt ?? user.subscriptionExpiry;
+      const msLeft = expiry ? expiry - Date.now() : 0;
+      const isDay29 = Boolean(user.day29Reminder) || (msLeft > 0 && msLeft <= 24 * 60 * 60 * 1000);
+      if (isDay29) {
         const todayStr = new Date().toISOString().slice(0, 10);
         if (user.lastReminderDate !== todayStr) {
           const updated: User = { ...user, lastReminderDate: todayStr };
@@ -482,7 +484,16 @@ export default function App() {
       freeAnalyses: numericLeft,
       freeAnalysesLeft: numericLeft,
       analysesLeft: numericLeft,
+      planAnalysesLeft: typeof (meData?.plan_analyses_left ?? data?.plan_analyses_left) === 'number'
+        ? Number(meData?.plan_analyses_left ?? data?.plan_analyses_left)
+        : existing?.planAnalysesLeft,
       extraCredits: Number(meData?.extra_credits ?? data?.extra_credits ?? data?.user?.extra_credits ?? existing?.extraCredits ?? 0),
+      creditsBalance: Number(meData?.credits_balance ?? meData?.extra_credits ?? data?.extra_credits ?? data?.user?.extra_credits ?? existing?.creditsBalance ?? 0),
+      packageExpired: Boolean(meData?.package_expired ?? data?.package_expired ?? false),
+      creditsOnlyMode: Boolean(meData?.credits_only_mode ?? data?.credits_only_mode ?? false),
+      day29Reminder: Boolean(meData?.day29Reminder ?? false),
+      expiryBanner: meData?.expiryBanner ?? null,
+      expiryDateFormatted: meData?.expiryDateFormatted ?? null,
       imagePdfUsed: Number(meData?.image_pdf_used ?? data?.image_pdf_used ?? data?.user?.image_pdf_used ?? existing?.imagePdfUsed ?? 0),
       imagePdfLimit: Number(meData?.image_pdf_limit ?? data?.image_pdf_limit ?? verifiedCfg.imagePdfLimit),
       aiListingsUsed: Number(meData?.ai_listings_used ?? data?.ai_listings_used ?? data?.user?.ai_listings_used ?? existing?.aiListingsUsed ?? 0),
@@ -495,10 +506,10 @@ export default function App() {
       apiDailyLimit: Number(meData?.api_daily_limit ?? data?.api_daily_limit ?? verifiedCfg.apiDailyLimit),
       apiCallsToday: Number(meData?.api_calls_today ?? data?.api_calls_today ?? existing?.apiCallsToday ?? 0),
       branding: meData?.branding ?? data?.branding ?? data?.user?.branding ?? existing?.branding ?? null,
-      status: 'active',
-      locked: false,
-      lockReason: null,
-      lockError: null,
+      status: String(meData?.status ?? data?.status ?? 'active'),
+      locked: Boolean(meData?.locked ?? data?.locked ?? false),
+      lockReason: meData?.lockReason ?? data?.lockReason ?? null,
+      lockError: meData?.lockError ?? data?.lockError ?? null,
       lockedLaunchPrice:
         meData?.locked_launch_price ?? data?.user?.locked_launch_price ?? null,
       customCities: Array.isArray(meData?.custom_cities)
@@ -779,13 +790,19 @@ export default function App() {
             ? detail.analyses_left
             : prev.analysesLeft;
         const nextExtra =
-          typeof detail.extra_credits === 'number'
+          typeof detail.credits_balance === 'number'
+            ? detail.credits_balance
+            : typeof detail.extra_credits === 'number'
             ? detail.extra_credits
-            : prev.extraCredits;
+            : prev.creditsBalance ?? prev.extraCredits;
         const nextTotal =
           typeof detail.analyses_total === 'number'
             ? detail.analyses_total
             : prev.analysesTotal;
+        const nextPlanLeft =
+          typeof detail.plan_analyses_left === 'number'
+            ? detail.plan_analyses_left
+            : prev.planAnalysesLeft;
         const unlocked = typeof nextLeft === 'number' && nextLeft > 0;
         const nextUser: User = {
           ...prev,
@@ -793,9 +810,17 @@ export default function App() {
           freeAnalyses: nextLeft,
           freeAnalysesLeft: nextLeft,
           analysesTotal: nextTotal,
+          planAnalysesLeft: nextPlanLeft,
           extraCredits: nextExtra,
+          creditsBalance: nextExtra,
+          packageExpired:
+            typeof detail.package_expired === 'boolean' ? detail.package_expired : prev.packageExpired,
+          creditsOnlyMode:
+            typeof detail.credits_only_mode === 'boolean'
+              ? detail.credits_only_mode
+              : Boolean((typeof detail.package_expired === 'boolean' ? detail.package_expired : prev.packageExpired) && (nextExtra ?? 0) > 0),
           branding: detail.branding !== undefined ? detail.branding : prev.branding,
-          status: unlocked ? 'active' : prev.status,
+          status: unlocked ? (detail.package_expired ? 'expired' : 'active') : prev.status,
           locked: unlocked ? false : prev.locked,
           lockReason: unlocked ? null : prev.lockReason,
           lockError: unlocked ? null : prev.lockError,
@@ -909,7 +934,14 @@ export default function App() {
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
+            planAnalysesLeft: typeof data.plan_analyses_left === 'number' ? data.plan_analyses_left : undefined,
             extraCredits: Number(data.extra_credits ?? data.user?.extra_credits ?? 0),
+            creditsBalance: Number(data.credits_balance ?? data.extra_credits ?? data.user?.extra_credits ?? 0),
+            packageExpired: Boolean(data.package_expired || serverStatus === 'expired'),
+            creditsOnlyMode: Boolean(data.credits_only_mode),
+            day29Reminder: Boolean(data.day29Reminder),
+            expiryBanner: data.expiryBanner ?? null,
+            expiryDateFormatted: data.expiryDateFormatted ?? null,
             imagePdfUsed: Number(data.image_pdf_used ?? data.user?.image_pdf_used ?? 0),
             imagePdfLimit: Number(data.image_pdf_limit ?? serverCfg.imagePdfLimit),
             aiListingsUsed: Number(data.ai_listings_used ?? data.user?.ai_listings_used ?? 0),
@@ -1151,6 +1183,14 @@ export default function App() {
         const serverCustomStorageGb = data.custom_storage_gb ?? data.user?.custom_storage_gb ?? null;
         const serverSlaLevel = data.sla_level ?? data.user?.sla_level ?? null;
         const serverContractEndDate = data.contract_end_date ?? data.user?.contract_end_date ?? null;
+        const serverPlanAnalysesLeft =
+          typeof data.plan_analyses_left === 'number' ? data.plan_analyses_left : undefined;
+        const serverCreditsBalance = Number(data.credits_balance ?? serverExtraCredits);
+        const serverPackageExpired = Boolean(data.package_expired || serverStatus === 'expired');
+        const serverCreditsOnlyMode = Boolean(data.credits_only_mode);
+        const serverDay29Reminder = Boolean(data.day29Reminder);
+        const serverExpiryBanner = data.expiryBanner ?? null;
+        const serverExpiryDateFormatted = data.expiryDateFormatted ?? null;
 
         const changed =
           !user ||
@@ -1165,6 +1205,13 @@ export default function App() {
           (user.analysesUsed ?? -1) !== serverUsed ||
           (user.analysesTotal ?? -1) !== serverTotal ||
           (user.extraCredits ?? -1) !== serverExtraCredits ||
+          (user.creditsBalance ?? -1) !== serverCreditsBalance ||
+          user.planAnalysesLeft !== serverPlanAnalysesLeft ||
+          Boolean(user.packageExpired) !== serverPackageExpired ||
+          Boolean(user.creditsOnlyMode) !== serverCreditsOnlyMode ||
+          Boolean(user.day29Reminder) !== serverDay29Reminder ||
+          (user.expiryBanner ?? null) !== serverExpiryBanner ||
+          (user.expiryDateFormatted ?? null) !== serverExpiryDateFormatted ||
           (user.imagePdfUsed ?? -1) !== serverImagePdfUsed ||
           (user.imagePdfLimit ?? -1) !== serverImagePdfLimit ||
           (user.aiListingsUsed ?? -1) !== serverAiListingsUsed ||
@@ -1242,7 +1289,14 @@ export default function App() {
             freeAnalyses: serverLeft,
             freeAnalysesLeft: serverLeft,
             analysesLeft: serverLeft,
+            planAnalysesLeft: serverPlanAnalysesLeft,
             extraCredits: serverExtraCredits,
+            creditsBalance: serverCreditsBalance,
+            packageExpired: serverPackageExpired,
+            creditsOnlyMode: serverCreditsOnlyMode,
+            day29Reminder: serverDay29Reminder,
+            expiryBanner: serverExpiryBanner,
+            expiryDateFormatted: serverExpiryDateFormatted,
             imagePdfUsed: serverImagePdfUsed,
             imagePdfLimit: serverImagePdfLimit,
             aiListingsUsed: serverAiListingsUsed,
@@ -1396,6 +1450,8 @@ export default function App() {
         }
         const nextLeft = Number(data?.analyses_left ?? data?.license?.analysesLeft ?? 0);
         const nextTotal = Number(data?.analyses_total ?? data?.license?.analysesLimit ?? user.analysesTotal ?? 0);
+        const nextExtra = typeof data?.extra_credits === 'number' ? data.extra_credits : user.creditsBalance ?? user.extraCredits;
+        const nextPlanLeft = typeof data?.plan_analyses_left === 'number' ? data.plan_analyses_left : user.planAnalysesLeft;
         handleSaveUser({
           ...user,
           plan: data?.license?.planKey || user.plan,
@@ -1406,6 +1462,9 @@ export default function App() {
           freeAnalyses: nextLeft,
           freeAnalysesLeft: nextLeft,
           analysesLeft: nextLeft,
+          planAnalysesLeft: nextPlanLeft,
+          extraCredits: nextExtra,
+          creditsBalance: nextExtra,
           lastResults: data?.last_results ?? user.lastResults,
         });
         setActivePropertyAnalysis(property);
@@ -1472,8 +1531,8 @@ export default function App() {
           <span>
             Market data is indicative, synced daily from public sources. Not financial advice. Data as of {lastSyncDisplay}.
           </span>
-          <a href="mailto:azzamalshmale@gmail.com" className="text-zinc-400 hover:text-[#D4AF37]">
-            azzamalshmale@gmail.com
+          <a href="mailto:loomorastudios@gmail.com" className="text-zinc-400 hover:text-[#D4AF37]">
+            loomorastudios@gmail.com
           </a>
         </div>
       </div>

@@ -171,6 +171,12 @@ button, a, input, select {
   touch-action: manipulation;
 }
 
+/* Global Latin/English tabular numerals everywhere */
+* {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
 /* Force Latin/English numerals and LTR direction inside all numeric inputs */
 input[type="number"],
 input[data-numeric="true"] {
@@ -178,7 +184,7 @@ input[data-numeric="true"] {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
   direction: ltr;
-  unicode-bidi: embed;
+  unicode-bidi: plaintext;
   text-align: left;
 }
 

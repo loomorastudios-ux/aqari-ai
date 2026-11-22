@@ -115,15 +115,15 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
 
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-mono text-xs mb-3">
           <Sparkles className="w-3.5 h-3.5" />
-          <span>PAYMENT VERIFIED • 30 DAYS ACTIVE</span>
+          <span>PAYMENT VERIFIED • 30-DAY ONE-TIME ACCESS</span>
         </div>
 
         <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-white mb-3">
-          Subscription Activated!
+          30-Day License Activated!
         </h1>
 
         <p className="text-sm text-zinc-400 max-w-md mx-auto mb-8 leading-relaxed">
-          Your payment was processed successfully via Paddle. Your institutional license is unlocked and ready for underwriting.
+          Your one-time payment was processed via Paddle with zero auto-renew. Your institutional license is unlocked for 30 days.
         </p>
 
         <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-3.5 text-left mb-8">
@@ -143,9 +143,9 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
           </div>
 
           <div className="flex items-center justify-between text-xs font-mono">
-            <span className="text-zinc-400">Subscription Status:</span>
+            <span className="text-zinc-400">Access Status:</span>
             <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold text-[10px] uppercase">
-              Active (30 Days)
+              Active (30 Days • No Auto-Renew)
             </span>
           </div>
 
@@ -188,8 +188,8 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
               Refund Policy
             </a>{' '}
             • Support:{' '}
-            <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
-              azzamalshmale@gmail.com
+            <a href="mailto:loomorastudios@gmail.com" className="text-[#D4AF37] underline">
+              loomorastudios@gmail.com
             </a>
           </div>
         </div>

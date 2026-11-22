@@ -72,15 +72,15 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                   <strong>Operator &amp; Company:</strong> AQARI TERMINAL is operated by{' '}
                   <strong>Loomora Studios</strong>, owned by <strong>Hamed Al Shami</strong>, Oman.
                   Official support and legal correspondence:{' '}
-                  <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
-                    azzamalshmale@gmail.com
+                  <a href="mailto:loomorastudios@gmail.com" className="text-[#D4AF37] underline">
+                    loomorastudios@gmail.com
                   </a>
                   .
                 </p>
                 <p>
                   <strong>1. Nature of Service:</strong> AQARI TERMINAL is a Software-as-a-Service (SaaS)
-                  real estate underwriting, yield sensitivity, and macro-data analytical tool. Access is
-                  provided on a non-transferable <strong>30-day software licensing</strong> basis. AQARI
+                  real estate underwriting, yield sensitivity, and macro-data analytical tool. Paid access is
+                  provided on a non-transferable <strong>one-time 30-day license (no auto-renew)</strong> basis. AQARI
                   TERMINAL does not own, broker, custody, sell, or convey ownership of any real estate
                   properties.
                 </p>
@@ -149,8 +149,8 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                 <p>
                   <strong>4. Data Deletion Requests:</strong> You may request permanent deletion of your
                   account and stored underwriting history at any time by emailing{' '}
-                  <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
-                    azzamalshmale@gmail.com
+                  <a href="mailto:loomorastudios@gmail.com" className="text-[#D4AF37] underline">
+                    loomorastudios@gmail.com
                   </a>
                   .
                 </p>
@@ -173,8 +173,8 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                 <div className="font-bold text-white">AQARI AI - Refund &amp; Cancellation Policy</div>
                 <div>
                   Support:{' '}
-                  <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline font-bold">
-                    azzamalshmale@gmail.com
+                  <a href="mailto:loomorastudios@gmail.com" className="text-[#D4AF37] underline font-bold">
+                    loomorastudios@gmail.com
                   </a>{' '}
                   • Or report a tool issue via Settings &gt; Report Tool Issue
                 </div>
@@ -187,7 +187,7 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                   1. 7-Day Cancellation Window: You may cancel within 7 days of activation ONLY if you have completed ZERO (0) successful analyses.
                 </p>
                 <p>
-                  2. No Refund After 1 Successful Analysis: If you complete 1 or more successful analyses, your subscription is non-refundable and non-cancellable, even within 7 days.
+                  2. No Refund After 1 Successful Analysis: If you complete 1 or more successful analyses, your 30-day one-time license is non-refundable and non-cancellable, even within 7 days.
                 </p>
                 <p>
                   3. No Refund After 7 Days Without Tool Issue: If 7 days have passed since activation and you have not reported a tool issue, you cannot cancel or request a refund, even if you completed 0 analyses.
@@ -196,19 +196,19 @@ export const LegalPages: React.FC<LegalPagesProps> = ({
                   4. Tool Issue Exception: If tool has verified issue and you reported it via Report Tool Issue, and we do NOT resolve it within 7 days of report, AND you completed 0 successful analyses, you may cancel and receive full refund in 5-10 business days. If we resolve within 7 days, standard 7-day window applies.
                 </p>
                 <p>
-                  5. How to Cancel: Settings &gt; SUBSCRIPTION &amp; CANCELLATION. If eligible, Cancel button enabled. If not eligible, automatically locked with reason.
+                  5. How to Cancel: Settings &gt; LICENSE &amp; CANCELLATION. If eligible, Cancel button enabled. If not eligible, automatically locked with reason.
                 </p>
                 <p>
-                  6. What Happens After Cancellation: Plan reverts to FREE (3 analyses), paid analyses deactivated, refund ($79 / $199 / $599) issued to original payment method via Paddle in 5-10 business days.
+                  6. What Happens After Cancellation: 30-day paid plan is deactivated, non-expiring purchased Extra Credits remain intact if applicable, and refund ($75 / $199 / $599) is issued to original payment method via Paddle in 5-10 business days.
                 </p>
                 <p>
-                  7. No Partial Refunds for unused days or unused analyses. By purchasing, you agree to this policy.
+                  7. No Partial Refunds for unused days or unused analyses. All plans are one-time 30-day purchases with no auto-renew. By purchasing, you agree to this policy.
                 </p>
               </div>
               <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10 text-xs font-mono text-zinc-300">
                 Contact:{' '}
-                <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline font-bold">
-                  azzamalshmale@gmail.com
+                <a href="mailto:loomorastudios@gmail.com" className="text-[#D4AF37] underline font-bold">
+                  loomorastudios@gmail.com
                 </a>{' '}
                 or via <strong className="text-[#D4AF37]">Settings &gt; Report Tool Issue</strong>
               </div>

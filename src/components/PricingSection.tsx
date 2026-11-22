@@ -35,6 +35,10 @@ import {
   Coins,
   Briefcase,
   X,
+  Copy,
+  Phone,
+  Mail,
+  MessageSquare,
 } from 'lucide-react';
 
 interface PricingSectionProps {
@@ -76,11 +80,19 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   // Enterprise Contract Inquiry Modal State
   const [showEnterpriseModal, setShowEnterpriseModal] = useState<boolean>(false);
   const [entCompany, setEntCompany] = useState<string>('');
-  const [entEmail, setEntEmail] = useState<string>(user?.email || '');
+  const [entEmail, setEntEmail] = useState<string>('');
   const [entSeats, setEntSeats] = useState<string>('50');
   const [entAssets, setEntAssets] = useState<string>('1000');
   const [entNotes, setEntNotes] = useState<string>('');
   const [entSubmitting, setEntSubmitting] = useState<boolean>(false);
+  const [entSuccessMsg, setEntSuccessMsg] = useState<string | null>(null);
+  const [copiedDeskEmail, setCopiedDeskEmail] = useState<boolean>(false);
+
+  const sanitizeEnglishDigitsOnly = (raw: string) =>
+    raw
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+      .replace(/[^0-9]/g, '');
 
   const isTestMode =
     typeof window !== 'undefined' &&
@@ -92,12 +104,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       setLivePricing(externalPricing);
     }
   }, [externalPricing]);
-
-  useEffect(() => {
-    if (user?.email && !entEmail) {
-      setEntEmail(user.email);
-    }
-  }, [user?.email]);
 
   const refreshPricing = async () => {
     try {
@@ -303,20 +309,21 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
 
   const handleSubmitEnterpriseInquiry = async (e: React.FormEvent) => {
     e.preventDefault();
+    setEntSuccessMsg(null);
     if (!entCompany.trim() || !entEmail.trim()) {
-      showError('Please enter your company/organization name and business email.');
+      showError('Please enter your Organization / Company Name and Corporate Email.');
       return;
     }
     setEntSubmitting(true);
     try {
-      const res = await fetch('/api/app?action=enterprise-inquiry', {
+      const res = await fetch('/api/app?action=enterprise-request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           companyName: entCompany.trim(),
           email: entEmail.trim(),
-          seats: Number(entSeats || 50),
-          assetsCount: Number(entAssets || 1000),
+          seats: Number(sanitizeEnglishDigitsOnly(entSeats) || 50),
+          assetsCount: Number(sanitizeEnglishDigitsOnly(entAssets) || 1000),
           notes: entNotes.trim(),
         }),
       });
@@ -325,8 +332,9 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
         showError(data?.error || 'Unable to submit enterprise request.');
         return;
       }
-      setShowEnterpriseModal(false);
-      showSuccess(data?.message || 'Enterprise contract inquiry submitted.');
+      const confirmText = 'Request sent. We will contact you within 24h at your Corporate Email.';
+      setEntSuccessMsg(confirmText);
+      showSuccess(confirmText);
       setEntNotes('');
     } catch (err: any) {
       showError(err?.message || 'Network error submitting enterprise request.');
@@ -395,11 +403,11 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       originalPrice: free.originalPrice,
       launchPrice: free.launchPrice,
       activePrice: 0,
-      analysesLimitText: `${free.analysesLimit} Analyses / mo`,
+      analysesLimitText: `${free.analysesLimit} Free Analyses (Never expires by days)`,
       icon: <Building2 className="w-5 h-5 text-zinc-400" />,
       features: free.features,
       ctaLabel: !user
-        ? `Start FREE (${free.analysesLimit}/mo)`
+        ? `Start FREE (${free.analysesLimit} analyses)`
         : currentPlanKey === 'free'
         ? 'Current Plan'
         : 'Switch to FREE',
@@ -411,11 +419,11 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       originalPrice: starter.originalPrice,
       launchPrice: starter.launchPrice,
       activePrice: starter.activePrice,
-      analysesLimitText: `${starter.analysesLimit} Analyses / mo`,
+      analysesLimitText: `${starter.analysesLimit} Analyses / 30 days`,
       icon: <Building2 className="w-5 h-5 text-zinc-300" />,
       features: starter.features,
       ctaLabel: hasActivePaidPlan
-        ? `Switch to STARTER (${formatPrice(starter.activePrice, currentCurrency)})`
+        ? `Renew / Switch STARTER (${formatPrice(starter.activePrice, currentCurrency)})`
         : `Buy STARTER (${formatPrice(starter.activePrice, currentCurrency)})`,
     },
     {
@@ -427,12 +435,12 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       launchPrice: pro.launchPrice,
       activePrice: pro.activePrice,
       popular: true,
-      analysesLimitText: `${pro.analysesLimit} Analyses / mo`,
+      analysesLimitText: `${pro.analysesLimit} Analyses / 30 days`,
       icon: <Zap className="w-5 h-5 text-[#D4AF37]" />,
       features: pro.features,
       ctaLabel: hasActivePaidPlan
-        ? `Switch to PRO (${formatPrice(pro.activePrice, currentCurrency)})`
-        : `Subscribe PRO (${formatPrice(pro.activePrice, currentCurrency)})`,
+        ? `Renew / Switch PRO (${formatPrice(pro.activePrice, currentCurrency)})`
+        : `Buy PRO (${formatPrice(pro.activePrice, currentCurrency)})`,
     },
     {
       id: 'enterprise',
@@ -443,12 +451,12 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       originalPrice: enterprise.originalPrice,
       launchPrice: enterprise.launchPrice,
       activePrice: enterprise.activePrice,
-      analysesLimitText: `${enterprise.analysesLimit} Analyses / mo`,
+      analysesLimitText: `${enterprise.analysesLimit} Analyses / 30 days`,
       icon: <Crown className="w-5 h-5 text-purple-400" />,
       features: enterprise.features,
       ctaLabel: hasActivePaidPlan
-        ? `Switch to SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`
-        : `Subscribe SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`,
+        ? `Renew / Switch SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`
+        : `Buy SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`,
     },
     {
       id: 'institutional',
@@ -508,13 +516,13 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       <div className="text-center max-w-3xl mx-auto mb-10">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/25 text-xs font-mono text-[#D4AF37] mb-3">
           <Sparkles className="w-3.5 h-3.5" />
-          <span>INSTITUTIONAL SUBSCRIPTION ACCESS</span>
+          <span>30-DAY ONE-TIME ACCESS • NO AUTO-RENEW</span>
         </div>
         <h2 className="text-3xl sm:text-5xl font-bold tracking-tight text-white">
           Transparent Terminal Pricing
         </h2>
         <p className="text-zinc-400 text-sm mt-3 leading-relaxed">
-          All subscription quotas &amp; AI credit balances are enforced server-side. Launch discounts and standard renewal pricing are disclosed upfront before checkout.
+          All plans are one-time 30-day access passes (no auto-renew, no automatic charges). Extra Credit Packs never expire and work independently after plan expiry.
         </p>
 
         {launchActive && (
@@ -626,11 +634,11 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     <div className="mt-1.5 text-[10px] font-mono text-amber-200/90 leading-snug">
                       {tier.contractOnly ? (
                         <span>
-                          Renews at {formatPrice(tier.originalPrice, currentCurrency)}/mo standard, Launch ends {launchEndDateStr} - Price is STARTING price, final price per contract
+                          Starting at {formatPrice(tier.originalPrice, currentCurrency)}/30 days standard, Launch ends {launchEndDateStr} - Final price per contract
                         </span>
                       ) : (
                         <span>
-                          Standard renewal: {formatPrice(tier.originalPrice, currentCurrency)}/mo • Launch ends {launchEndDateStr}
+                          One-time 30-day access (Std {formatPrice(tier.originalPrice, currentCurrency)}) • No auto-renew • Launch ends {launchEndDateStr}
                         </span>
                       )}
                     </div>
@@ -704,7 +712,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                 </button>
                 {tier.activePrice > 0 && !tier.contractOnly && (
                   <p className="text-[9px] font-mono text-zinc-400 text-center leading-snug">
-                    7-Day Refund - 0 successful analyses or unresolved issue
+                    One-time 30-day payment • No auto-renew • 7-Day Refund
                   </p>
                 )}
                 {tier.contractOnly && (
@@ -828,11 +836,14 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
 
       {/* Enterprise Contract Inquiry Modal */}
       {showEnterpriseModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-xl">
-          <div className="relative w-full max-w-lg rounded-3xl bg-zinc-950 border border-sky-500/40 p-6 sm:p-8 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-xl overflow-y-auto">
+          <div className="relative w-full max-w-lg rounded-3xl bg-zinc-950 border border-sky-500/40 p-6 sm:p-8 shadow-2xl my-auto max-h-[92vh] overflow-y-auto">
             <button
               type="button"
-              onClick={() => setShowEnterpriseModal(false)}
+              onClick={() => {
+                setShowEnterpriseModal(false);
+                setEntSuccessMsg(null);
+              }}
               className="absolute top-4 right-4 p-2 rounded-full text-zinc-400 hover:text-white hover:bg-white/10"
             >
               <X className="w-5 h-5" />
@@ -843,11 +854,17 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
             </div>
             <h3 className="text-xl font-bold text-white">Request Enterprise Contract</h3>
             <p className="text-xs text-zinc-400 mt-1">
-              Starting price: <strong className="text-zinc-300 line-through">$2,499/mo</strong>{' '}
-              <strong className="text-sky-300">$1,499/mo Launch Starting Rate</strong> (Launch ends {launchEndDateStr}).
+              Starting price: <strong className="text-zinc-300 line-through">$2,499/30 days</strong>{' '}
+              <strong className="text-sky-300">$1,499/30 days Launch Starting Rate</strong> (One-time 30-day cycle • No auto-renew • Launch ends {launchEndDateStr}).
               Final pricing, analysis quotas, team seats, portfolio caps, API limits &amp; SLA are defined per written contract.
             </p>
-            <form onSubmit={handleSubmitEnterpriseInquiry} className="mt-5 space-y-3.5">
+            {entSuccessMsg && (
+              <div className="mt-4 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-mono flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <span>{entSuccessMsg}</span>
+              </div>
+            )}
+            <form onSubmit={handleSubmitEnterpriseInquiry} className="mt-4 space-y-3.5">
               <div>
                 <label className="block text-[11px] font-mono text-zinc-300 mb-1">Organization / Fund Name *</label>
                 <input
@@ -866,7 +883,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   required
                   value={entEmail}
                   onChange={(e) => setEntEmail(e.target.value)}
-                  placeholder="allocations@institution.com"
+                  placeholder="e.g. ceo@yourfund.com"
                   className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/15 text-sm text-white focus:border-sky-400 outline-none"
                 />
               </div>
@@ -875,10 +892,15 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   <label className="block text-[11px] font-mono text-zinc-300 mb-1">Requested Team Seats</label>
                   <input
                     type="number"
+                    inputMode="numeric"
+                    dir="ltr"
+                    lang="en"
                     min={1}
                     max={500}
+                    placeholder="50"
                     value={entSeats}
-                    onChange={(e) => setEntSeats(e.target.value)}
+                    onChange={(e) => setEntSeats(sanitizeEnglishDigitsOnly(e.target.value))}
+                    style={{ fontVariantNumeric: 'tabular-nums' }}
                     className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/15 text-sm text-white font-mono focus:border-sky-400 outline-none"
                   />
                 </div>
@@ -886,10 +908,15 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                   <label className="block text-[11px] font-mono text-zinc-300 mb-1">Requested Portfolio Assets</label>
                   <input
                     type="number"
+                    inputMode="numeric"
+                    dir="ltr"
+                    lang="en"
                     min={1}
                     max={10000}
+                    placeholder="1000"
                     value={entAssets}
-                    onChange={(e) => setEntAssets(e.target.value)}
+                    onChange={(e) => setEntAssets(sanitizeEnglishDigitsOnly(e.target.value))}
+                    style={{ fontVariantNumeric: 'tabular-nums' }}
                     className="w-full px-3 py-2.5 rounded-xl bg-black/60 border border-white/15 text-sm text-white font-mono focus:border-sky-400 outline-none"
                   />
                 </div>
@@ -913,6 +940,59 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                 <span>Submit Enterprise Contract Request</span>
               </button>
             </form>
+
+            {/* Fixed Direct Contact AQARI Enterprise Desk Card (Uneditable) */}
+            <div className="mt-5 p-4 rounded-2xl bg-black/70 border border-[#D4AF37]/35 space-y-2.5">
+              <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-[#D4AF37]">
+                [CONTACT AQARI ENTERPRISE DESK]
+              </div>
+              <p className="text-xs text-zinc-300">
+                For Enterprise contract questions, contact us directly.
+              </p>
+              <div className="space-y-2 text-xs font-mono">
+                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-white/[0.03] border border-white/10">
+                  <a
+                    href="mailto:loomorastudios@gmail.com"
+                    className="flex items-center gap-2 text-white hover:text-[#D4AF37] transition"
+                  >
+                    <Mail className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
+                    <span>loomorastudios@gmail.com</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText('loomorastudios@gmail.com').catch(() => {});
+                      setCopiedDeskEmail(true);
+                      setTimeout(() => setCopiedDeskEmail(false), 2000);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-[#D4AF37]/15 hover:bg-[#D4AF37]/25 border border-[#D4AF37]/40 text-[#D4AF37] text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>{copiedDeskEmail ? 'Copied' : 'Copy'}</span>
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-white/[0.03] border border-white/10">
+                  <a
+                    href="tel:+96878900731"
+                    dir="ltr"
+                    className="flex items-center gap-2 text-white hover:text-emerald-400 transition"
+                    style={{ fontVariantNumeric: 'tabular-nums' }}
+                  >
+                    <Phone className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>+968 78900731</span>
+                  </a>
+                  <a
+                    href="https://wa.me/96878900731"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold flex items-center gap-1"
+                  >
+                    <MessageSquare className="w-3 h-3" />
+                    <span>WhatsApp</span>
+                  </a>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

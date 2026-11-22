@@ -166,7 +166,7 @@ function cleanEnvValue(value?: string | null): string {
 }
 
 function getAdminEmail(): string {
-  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'azzamalshmale@gmail.com').toLowerCase();
+  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'loomorastudios@gmail.com').toLowerCase();
 }
 
 function getSessionSecret(): string {
@@ -181,7 +181,7 @@ function getSessionSecret(): string {
 function isAdminEmail(email?: string | null): boolean {
   const norm = (email || '').trim().toLowerCase();
   if (!norm) return false;
-  return norm === getAdminEmail() || norm === 'azzamalshmale@gmail.com';
+  return norm === getAdminEmail() || norm === 'loomorastudios@gmail.com' || norm === 'azzamalshmale@gmail.com';
 }
 
 function parseCookies(cookieHeader?: string | null): Record<string, string> {
@@ -508,31 +508,42 @@ function enforceServerUserExpiry(rawEmail: string): any {
   const now = Date.now();
   if (!user) return getOrCreateServerUser(email);
 
+  const planKey = normalizePlanKey(user.plan);
+  if (planKey === 'free') {
+    const used = Math.max(0, Number(user.analyses_used || 0));
+    const extraCredits = Math.max(0, Number(user.extra_credits || 0));
+    const targetLeft = Math.max(0, PLANS.free.analysesLimit + extraCredits - used);
+    const targetStatus = targetLeft <= 0 ? 'exhausted' : 'active';
+    if (user.status !== targetStatus) {
+      user.status = targetStatus;
+      store.users[email] = user;
+      persistStore(store);
+    }
+    return user;
+  }
+
   const contractEndMs = user.contract_end_date ? Date.parse(String(user.contract_end_date)) : NaN;
   const contractExpired =
-    user.plan === 'institutional' && Number.isFinite(contractEndMs) && now > contractEndMs;
+    planKey === 'institutional' && Number.isFinite(contractEndMs) && now > contractEndMs;
 
-  if (user.plan !== 'free' && ((user.license_end && now >= user.license_end) || contractExpired)) {
-    const prevPlan = PLANS[normalizePlanKey(user.plan)].displayName;
+  if ((user.license_end && now >= user.license_end) || contractExpired) {
+    const prevPlan = PLANS[planKey].displayName;
     const extraCredits = Math.max(0, Number(user.extra_credits || 0));
-    user.plan = 'free';
-    user.analyses_used = 0;
-    user.analyses_total = PLANS.free.analysesLimit + extraCredits;
-    user.analyses_left = PLANS.free.analysesLimit + extraCredits;
-    user.max_saved = PLANS.free.savedLimit;
-    user.license_start = now;
-    user.license_end = now + THIRTY_DAYS_MS;
-    user.day29_email_sent = false;
-    user.updated_at = now;
-    user.timeline.unshift({
-      id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-      timestamp: new Date(now).toISOString(),
-      type: 'expired',
-      message: `30-day ${prevPlan} license expired -> auto-downgraded to FREE (Extra credits preserved: ${extraCredits})`,
-      actor: 'system',
-    });
-    store.users[email] = user;
-    persistStore(store);
+    const alreadyExpired = user.status === 'expired' && user.analyses_left === extraCredits;
+    user.status = 'expired';
+    user.analyses_left = extraCredits;
+    if (!alreadyExpired) {
+      user.updated_at = now;
+      user.timeline.unshift({
+        id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: new Date(now).toISOString(),
+        type: 'expired',
+        message: `30-day ${prevPlan} plan expired (No auto-charge). Package features locked; extra credits preserved: ${extraCredits}`,
+        actor: 'system',
+      });
+      store.users[email] = user;
+      persistStore(store);
+    }
   }
   return user;
 }
@@ -935,13 +946,14 @@ function getPricingPublicPayload() {
 function computeServerLicenseStatus(user: any) {
   const pricing = getPricingPublicPayload();
   const rawPlanKey = normalizePlanKey(user.plan);
+  const isFree = rawPlanKey === 'free';
   const now = Date.now();
   const contractEndMs = user.contract_end_date ? Date.parse(String(user.contract_end_date)) : NaN;
   const contractExpired =
     rawPlanKey === 'institutional' && Number.isFinite(contractEndMs) && now > contractEndMs;
-  const hasPaidEnd = Boolean(rawPlanKey !== 'free' && user.license_end);
-  const isExpired = Boolean((hasPaidEnd && user.license_end <= now) || contractExpired);
-  const effectivePlanKey: PlanKey = isExpired ? 'free' : rawPlanKey;
+  const hasPaidEnd = Boolean(!isFree && user.license_end);
+  const isExpired = Boolean(!isFree && ((hasPaidEnd && user.license_end <= now) || contractExpired));
+  const effectivePlanKey: PlanKey = rawPlanKey;
   const dynamicPlan = pricing.plansMap?.[effectivePlanKey];
   const planCfg = PLANS[effectivePlanKey];
   const extraCredits = Math.max(0, Number(user.extra_credits || 0));
@@ -949,33 +961,39 @@ function computeServerLicenseStatus(user: any) {
     effectivePlanKey === 'institutional'
       ? Math.max(0, Number(user.custom_analyses_limit ?? 0))
       : dynamicPlan?.analysesLimit || planCfg.analysesLimit;
-  const analysesLimit = baseAnalysesLimit + extraCredits;
-  const savedLimit =
-    effectivePlanKey === 'institutional'
-      ? Math.max(0, Number(user.custom_portfolio_limit ?? 0))
-      : dynamicPlan?.savedLimit === null
-      ? Infinity
-      : dynamicPlan?.savedLimit ?? planCfg.savedLimit;
+  const analysesLimit = (isExpired ? 0 : baseAnalysesLimit) + extraCredits;
+  const savedLimit = isExpired
+    ? PLANS.free.savedLimit
+    : effectivePlanKey === 'institutional'
+    ? Math.max(0, Number(user.custom_portfolio_limit ?? 0))
+    : dynamicPlan?.savedLimit === null
+    ? Infinity
+    : dynamicPlan?.savedLimit ?? planCfg.savedLimit;
   const isUnlimitedAnalyses = !Number.isFinite(analysesLimit);
   const analysesUsed = Math.max(0, Number(user.analyses_used || 0));
-  const analysesLeft = isUnlimitedAnalyses ? Infinity : Math.max(0, analysesLimit - analysesUsed);
+  const analysesLeft = isExpired
+    ? extraCredits
+    : isUnlimitedAnalyses
+    ? Infinity
+    : Math.max(0, analysesLimit - analysesUsed);
   const activeEndMs =
-    effectivePlanKey === 'institutional' && Number.isFinite(contractEndMs)
+    isFree
+      ? null
+      : effectivePlanKey === 'institutional' && Number.isFinite(contractEndMs)
       ? contractEndMs
       : user.license_end;
-  const daysLeft =
-    effectivePlanKey !== 'free' && activeEndMs
-      ? Math.max(0, Math.ceil((activeEndMs - now) / (1000 * 60 * 60 * 24)))
-      : isExpired
-      ? 0
-      : 30;
+  const daysLeft = isFree || isExpired
+    ? 0
+    : activeEndMs
+    ? Math.max(0, Math.ceil((activeEndMs - now) / (1000 * 60 * 60 * 24)))
+    : 30;
 
   return {
     planKey: effectivePlanKey,
     displayName: planCfg.displayName,
     isExpired,
     daysLeft,
-    daysTotal: 30,
+    daysTotal: isFree ? 0 : 30,
     analysesLimit,
     analysesUsed,
     analysesLeft,
@@ -1131,19 +1149,24 @@ function adminUpdateEnterpriseLimits(params: {
       : Math.max(0, Number(user.extra_credits || 0));
 
   const effectivePlan = normalizePlanKey(user.plan);
+  const parsedEndMs = nextContractEndDate ? Date.parse(nextContractEndDate) : NaN;
+  const nextLicenseEnd =
+    effectivePlan === 'institutional' && Number.isFinite(parsedEndMs) && parsedEndMs > now
+      ? parsedEndMs
+      : user.license_end;
+  const isPackageExpired =
+    effectivePlan !== 'free' &&
+    Boolean((nextLicenseEnd && now > nextLicenseEnd) || (effectivePlan === 'institutional' && Number.isFinite(parsedEndMs) && now > parsedEndMs));
+
   const baseLimit =
     effectivePlan === 'institutional'
       ? Math.max(0, Number(nextAnalysesLimit ?? 0))
       : PLANS[effectivePlan].analysesLimit;
   const analysesUsed = Math.max(0, Number(user.analyses_used || 0));
   const nextAnalysesTotal = baseLimit + nextExtraCredits;
-  const nextAnalysesLeft = Math.max(0, nextAnalysesTotal - analysesUsed);
-
-  const parsedEndMs = nextContractEndDate ? Date.parse(nextContractEndDate) : NaN;
-  const nextLicenseEnd =
-    effectivePlan === 'institutional' && Number.isFinite(parsedEndMs) && parsedEndMs > now
-      ? parsedEndMs
-      : user.license_end;
+  const nextAnalysesLeft = isPackageExpired
+    ? nextExtraCredits
+    : Math.max(0, nextAnalysesTotal - analysesUsed);
 
   const summaryBits = [
     `analyses=${nextAnalysesLimit ?? 'unset'}`,
@@ -1183,7 +1206,7 @@ function adminUpdateEnterpriseLimits(params: {
     analyses_left: nextAnalysesLeft,
     max_saved: effectivePlan === 'institutional' ? (nextPortfolioLimit ?? 0) : user.max_saved,
     license_end: nextLicenseEnd,
-    status: nextAnalysesLeft <= 0 ? 'exhausted' : 'active',
+    status: isPackageExpired ? 'expired' : nextAnalysesLeft <= 0 ? 'exhausted' : 'active',
     timeline: [timelineEntry, ...(user.timeline || [])].slice(0, 200),
   });
 }
@@ -2042,7 +2065,7 @@ export default async function handler(req: any, res: any) {
         const email = (
           getQueryParam(req, url, 'email') ||
           body.email ||
-          'azzamalshmale@gmail.com'
+          'loomorastudios@gmail.com'
         )
           .toString()
           .trim()

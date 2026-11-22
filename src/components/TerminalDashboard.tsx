@@ -419,7 +419,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const [backupTargetEmail, setBackupTargetEmail] = useState('');
   const [backupVerifyMsg, setBackupVerifyMsg] = useState<string | null>(null);
   const [isRunningBackupVerify, setIsRunningBackupVerify] = useState(false);
-  const isOwnerAdmin = ['azzamalshmale@gmail.com'].includes(
+  const isOwnerAdmin = ['loomorastudios@gmail.com', 'azzamalshmale@gmail.com'].includes(
     (user?.email || '').trim().toLowerCase()
   );
 
@@ -456,6 +456,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     return () => clearInterval(timer);
   }, []);
 
+  const formatDDMMYYYY = (ms?: number | null): string => {
+    if (!ms || !Number.isFinite(ms)) return '';
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return '';
+    return `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+  };
+
   const endsAt = user.subscriptionEndsAt || user.subscriptionExpiry;
   const msRemaining = endsAt ? Math.max(0, endsAt - Date.now()) : 0;
 
@@ -477,28 +484,50 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   });
 
   const planInfo = PLAN_LIMITS[license.planKey] || PLAN_LIMITS.free;
-  const daysLeft = license.daysLeft;
-  const isPlanEnded = license.isExpired;
-  const isExpired = user.subscriptionStatus === 'expired' || isPlanEnded;
-  const isEndingIn24h = Boolean(license.planKey !== 'free' && endsAt && msRemaining > 0 && msRemaining <= 24 * 60 * 60 * 1000);
-  const countdownText = endsAt ? formatTimeLeft(msRemaining) : null;
-
-  const analysesRemaining = !isCreditsLoaded ? 0 : license.analysesLeft;
-  const isAccountLocked = Boolean(
-    user.locked ||
+  const isFreePlan = license.planKey === 'free';
+  const creditsBalance = Math.max(0, Number(user.creditsBalance ?? user.extraCredits ?? 0));
+  const isPackageExpired =
+    !isFreePlan &&
+    (Boolean(user.packageExpired) ||
       user.status === 'expired' ||
-      user.status === 'exhausted' ||
-      isExpired ||
-      (isCreditsLoaded && analysesRemaining <= 0)
+      user.subscriptionStatus === 'expired' ||
+      license.isExpired ||
+      Boolean(endsAt && Date.now() > endsAt));
+  const isCreditsOnlyMode = isPackageExpired && creditsBalance > 0;
+  const isExpired = isPackageExpired;
+  const daysLeft = isFreePlan ? null : isPackageExpired ? 0 : license.daysLeft;
+  const expiryDateFormatted = user.expiryDateFormatted || (endsAt ? formatDDMMYYYY(endsAt) : '');
+  const isEndingIn24h = Boolean(
+    !isFreePlan && !isPackageExpired && (user.day29Reminder || (endsAt && msRemaining > 0 && msRemaining <= 24 * 60 * 60 * 1000))
   );
+  const countdownText = !isFreePlan && endsAt ? formatTimeLeft(msRemaining) : null;
+
+  const analysesRemaining = isPackageExpired
+    ? creditsBalance
+    : !isCreditsLoaded
+    ? 0
+    : license.analysesLeft;
+  const planAnalysesRemaining = isPackageExpired
+    ? 0
+    : typeof user.planAnalysesLeft === 'number'
+    ? Math.max(0, user.planAnalysesLeft)
+    : Math.max(0, analysesRemaining - creditsBalance);
+  const isAccountLocked = Boolean(
+    (user.locked && !isCreditsOnlyMode) ||
+      (isPackageExpired && creditsBalance <= 0) ||
+      (!isPackageExpired && isCreditsLoaded && analysesRemaining <= 0)
+  );
+  const canUsePackageFeatures = !isAccountLocked && !isPackageExpired;
   const lockReasonKind: 'expired' | 'exhausted' | null = isAccountLocked
-    ? user.lockReason === 'expired' || user.status === 'expired' || isExpired
+    ? isPackageExpired || user.lockReason === 'expired' || user.status === 'expired'
       ? 'expired'
       : 'exhausted'
     : null;
   const analysesLeftStr = !isCreditsLoaded
     ? 'Loading...'
-    : `${license.analysesLeft} credits left`;
+    : isCreditsOnlyMode
+    ? `${creditsBalance} Credits (Package Expired)`
+    : `${analysesRemaining} analyses left`;
 
   const meFeatures: string[] = useMemo(() => {
     if (Array.isArray(user.features) && user.features.length > 0) {
@@ -511,6 +540,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   }, [user.features, dynamicPlanPricing?.features, license.planKey]);
 
   const maxSaved = useMemo(() => {
+    if (isPackageExpired) {
+      return PLANS.free.savedLimit;
+    }
     if (typeof user.maxSaved === 'number' && user.maxSaved > 0) {
       return user.maxSaved;
     }
@@ -522,7 +554,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       return PLANS[license.planKey].savedLimit;
     }
     return PLANS[license.planKey].savedLimit;
-  }, [user.maxSaved, meFeatures, license.planKey]);
+  }, [user.maxSaved, meFeatures, license.planKey, isPackageExpired]);
 
   const planDisplayName = user.planName || license.displayName;
   const planPriceUSD =
@@ -534,9 +566,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
   const lockBannerMessage =
     user.lockError ||
-    (lockReasonKind === 'expired'
-      ? `Your ${planDisplayName} expired${endsAt ? ' on ' + new Date(endsAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : ''}. Renew to continue.`
-      : `No analyses left for ${planDisplayName}. Upgrade to continue.`);
+    (isFreePlan && analysesRemaining <= 0
+      ? 'You used your 3 free analyses. Buy a plan or credits to continue.'
+      : isCreditsOnlyMode
+      ? `Your ${planDisplayName} plan expired. You still have ${creditsBalance} Credits. Buy a plan to unlock full features, or continue with credits.`
+      : isPackageExpired
+      ? `Your ${planDisplayName} expired${expiryDateFormatted ? ` on ${expiryDateFormatted}` : ''}. Renew to continue. No auto-charge was made.`
+      : `No analyses left for ${planDisplayName}. Buy a plan or credits to continue.`);
 
   const applyServerLockFromResponse = (data: any) => {
     if (!data?.locked) return;
@@ -550,50 +586,51 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       analysesLeft: nextLeft,
       freeAnalyses: nextLeft,
       freeAnalysesLeft: nextLeft,
-      subscriptionStatus: 'expired',
+      packageExpired: Boolean(data.package_expired ?? (data.status === 'expired')),
+      subscriptionStatus: data.status === 'expired' ? 'expired' : user.subscriptionStatus,
     });
   };
 
   const canSensitivity =
-    !isAccountLocked &&
+    canUsePackageFeatures &&
     (meFeatures.includes('Yield & Sensitivity Calculator') || canUseFeature(license.planKey, 'yieldSensitivity'));
   const canMonteCarlo =
-    !isAccountLocked &&
+    canUsePackageFeatures &&
     (meFeatures.includes('Monte Carlo Stress Tests +200bps') || canUseFeature(license.planKey, 'monteCarlo'));
   const canPdfExport =
-    !isAccountLocked &&
+    canUsePackageFeatures &&
     (meFeatures.includes('PDF Memorandum Export') || canUseFeature(license.planKey, 'pdfExport'));
   const canMemorandumPdf =
-    !isAccountLocked && canUseFeature(license.planKey, 'memorandumPdf');
+    canUsePackageFeatures && canUseFeature(license.planKey, 'memorandumPdf');
   const canWhiteLabelReports =
-    !isAccountLocked && canUseFeature(license.planKey, 'whiteLabelReports');
+    canUsePackageFeatures && canUseFeature(license.planKey, 'whiteLabelReports');
   const canPortfolioAgg =
-    !isAccountLocked &&
+    canUsePackageFeatures &&
     (meFeatures.includes('Multi-asset Portfolio Aggregation') || canUseFeature(license.planKey, 'portfolioAggregation'));
   const canFullMatrix =
-    !isAccountLocked &&
+    canUsePackageFeatures &&
     (meFeatures.includes('Cross-border Tax & Visa Matrix') || canUseFeature(license.planKey, 'crossBorderMatrixFull'));
   const canApiAccess =
-    !isAccountLocked &&
+    canUsePackageFeatures &&
     (meFeatures.includes('Full REST API Credentials') || canUseFeature(license.planKey, 'apiAccess'));
   const canAnalystDesk =
-    !isAccountLocked &&
+    canUsePackageFeatures &&
     (meFeatures.includes('1-on-1 Dedicated Analyst Desk') || canUseFeature(license.planKey, 'analystDesk'));
   const canCustomUnderwriting =
-    !isAccountLocked &&
+    canUsePackageFeatures &&
     (meFeatures.includes('White-glove Custom Underwriting') || canUseFeature(license.planKey, 'customUnderwriting'));
   const canDealFinder =
-    !isAccountLocked && canUseFeature(license.planKey, 'dealFinder');
+    canUsePackageFeatures && canUseFeature(license.planKey, 'dealFinder');
   const canMarketForecast =
-    !isAccountLocked && canUseFeature(license.planKey, 'forecastBasic');
+    canUsePackageFeatures && canUseFeature(license.planKey, 'forecastBasic');
   const canForecastAdvanced =
-    !isAccountLocked && canUseFeature(license.planKey, 'forecastAdvanced');
+    canUsePackageFeatures && canUseFeature(license.planKey, 'forecastAdvanced');
   const canDueDiligence =
-    !isAccountLocked && canUseFeature(license.planKey, 'dueDiligence');
+    canUsePackageFeatures && canUseFeature(license.planKey, 'dueDiligence');
   const canPortfolioOptimizer =
-    !isAccountLocked && canUseFeature(license.planKey, 'globalOptimizer');
+    canUsePackageFeatures && canUseFeature(license.planKey, 'globalOptimizer');
   const canInstitutionalAdvisor =
-    !isAccountLocked && canUseFeature(license.planKey, 'institutionalAdvisor');
+    canUsePackageFeatures && canUseFeature(license.planKey, 'institutionalAdvisor');
   const canSaveProperty = !isAccountLocked && maxSaved > 0;
 
   const loadWebhookLogs = async () => {
@@ -3251,6 +3288,18 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       const analyzedAtStr = String(data.analyzedAt || data.last_results?.analysis?.created_at || new Date().toISOString());
       const resCityName = data.inputs?.city || cleanCityName;
       lastHydratedSigRef.current.analysis = `${analyzedAtStr}|${resCityName}|${priceUSD}|${rentUSD}`;
+      const nextExtraCredits =
+        typeof data.extra_credits === 'number'
+          ? data.extra_credits
+          : planAnalysesRemaining > 0
+          ? creditsBalance
+          : Math.max(0, creditsBalance - 1);
+      const nextPlanLeft =
+        typeof data.plan_analyses_left === 'number'
+          ? data.plan_analyses_left
+          : isPackageExpired
+          ? 0
+          : Math.max(0, planAnalysesRemaining - 1);
       onUpdateUser({
         ...user,
         plan: data?.license?.planKey || user.plan,
@@ -3261,6 +3310,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         freeAnalyses: nextLeft,
         freeAnalysesLeft: nextLeft,
         analysesLeft: nextLeft,
+        planAnalysesLeft: nextPlanLeft,
+        extraCredits: nextExtraCredits,
+        creditsBalance: nextExtraCredits,
         lastResults: data.last_results ?? user.lastResults,
       });
 
@@ -4149,24 +4201,34 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         {/* Status Indicators & User Controls */}
         <div className="flex items-center gap-2 sm:gap-4">
           
-          {/* Unified Plan Badge: PLAN + days left */}
+          {/* Unified Plan Badge: Free No Expiry / Paid Days Left / Credits Only */}
           {isEndingIn24h ? (
             <button
               onClick={onOpenRenewal}
-              className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-red-950/80 border border-red-500/60 text-xs font-mono text-red-400 font-bold uppercase animate-pulse cursor-pointer"
-              title="Subscription ends tomorrow - Click to renew"
+              className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-red-950/80 border border-red-500/60 text-xs font-mono text-red-300 font-bold uppercase cursor-pointer tabular-nums"
+              title={`Your ${planDisplayName} expires tomorrow ${expiryDateFormatted}. Renew now to keep access. No auto-charge will happen.`}
             >
               <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
-              <span>{license.displayName} • 1 days left - Renew</span>
+              <span>{planDisplayName} • Expires {expiryDateFormatted} - Renew</span>
+            </button>
+          ) : isCreditsOnlyMode ? (
+            <button
+              onClick={onOpenRenewal}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-950/70 border border-amber-500/50 text-xs font-mono text-amber-200 font-bold uppercase cursor-pointer tabular-nums"
+            >
+              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              <span>{planDisplayName} Expired • {creditsBalance} Credits Left</span>
             </button>
           ) : (
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-white/[0.04] border border-white/10 text-xs font-mono">
-              <span className={`w-2 h-2 rounded-full ${license.planKey === 'free' ? 'bg-[#D4AF37]' : 'bg-emerald-400'} animate-pulse`} />
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-white/[0.04] border border-white/10 text-xs font-mono tabular-nums">
+              <span className={`w-2 h-2 rounded-full ${isExpired ? 'bg-rose-500' : isFreePlan ? 'bg-[#D4AF37]' : 'bg-emerald-400 animate-pulse'}`} />
               <span className="font-bold uppercase text-white tracking-wide">
                 {license.displayName}
               </span>
               <span className="text-zinc-600">•</span>
-              <span className="text-zinc-300">{daysLeft} days left</span>
+              <span className={isExpired ? 'text-rose-400 font-bold' : 'text-zinc-300'}>
+                {isFreePlan ? 'No Expiry' : isExpired ? 'Expired' : `${daysLeft} days left`}
+              </span>
             </div>
           )}
 
@@ -4291,22 +4353,44 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 </div>
               </div>
 
-              {/* Live 30-Day Licensing Countdown & Quota Progress Bar Widget */}
-              <div className="px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/[0.08] font-mono text-[11px] space-y-2">
+              {/* Live 30-Day Licensing Countdown & Credits Summary */}
+              <div className="px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/[0.08] font-mono text-[11px] space-y-2 tabular-nums">
                 <div className="text-zinc-400 uppercase text-[9px] font-bold tracking-wider flex items-center justify-between">
-                  <span>LICENSING COUNTDOWN</span>
-                  <span className={`w-1.5 h-1.5 rounded-full ${isPlanEnded ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`} />
+                  <span>{isFreePlan ? 'FREE TRIAL QUOTA' : '30-DAY ONE-TIME PASS'}</span>
+                  <span className={`w-1.5 h-1.5 rounded-full ${isExpired ? 'bg-rose-500' : 'bg-emerald-400 animate-pulse'}`} />
                 </div>
-                {isPlanEnded ? (
-                  <div className="text-rose-400 font-bold leading-tight">
-                    Licensing window expired - Renew
+                {isExpired ? (
+                  <div className="space-y-1">
+                    <div className="text-rose-400 font-bold leading-tight">
+                      {planDisplayName} expired {expiryDateFormatted ? `on ${expiryDateFormatted}` : ''}
+                    </div>
+                    {creditsBalance > 0 && (
+                      <div className="text-emerald-400 text-[10px] font-bold">
+                        {creditsBalance} Credits Available (Never Expire)
+                      </div>
+                    )}
                   </div>
+                ) : isFreePlan ? (
+                  <>
+                    <div className="text-[#D4AF37] font-bold leading-snug">
+                      FREE (No Time Expiry) • {analysesRemaining} / 3 runs left
+                    </div>
+                    <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-[#D4AF37] to-emerald-400 transition-all duration-500 rounded-full"
+                        style={{ width: `${Math.min(100, Math.round((analysesRemaining / 3) * 100))}%` }}
+                      />
+                    </div>
+                    {creditsBalance > 0 && (
+                      <div className="text-[10px] text-emerald-400">+{creditsBalance} Extra Credits (Never Expire)</div>
+                    )}
+                  </>
                 ) : (
                   <>
                     <div className="text-[#D4AF37] font-bold leading-snug">
                       {isCreditsLoaded
-                        ? license.sidebarText
-                        : `LICENSING COUNTDOWN - ${license.displayName} - ${daysLeft} days left - Loading...`}
+                        ? `${planDisplayName} • ${daysLeft}d left • ${planAnalysesRemaining} plan left`
+                        : `${planDisplayName} • ${daysLeft} days left - Loading...`}
                     </div>
                     <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
                       <div
@@ -4314,8 +4398,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         style={{ width: `${license.progressPct}%` }}
                       />
                     </div>
-                    {countdownText && license.planKey !== 'free' && (
-                      <div className="text-[10px] text-zinc-400">{countdownText}</div>
+                    {expiryDateFormatted && (
+                      <div className="text-[10px] text-zinc-400">
+                        Ends {expiryDateFormatted} (No auto-renew){countdownText ? ` • ${countdownText}` : ''}
+                      </div>
+                    )}
+                    {creditsBalance > 0 && (
+                      <div className="text-[10px] text-emerald-400">+{creditsBalance} Extra Credits (Never Expire)</div>
                     )}
                   </>
                 )}
@@ -4611,14 +4700,25 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <span className="text-xs font-mono font-bold px-3 py-1.5 rounded-xl bg-[#D4AF37]/15 border border-[#D4AF37]/40 text-[#D4AF37]">
                     {license.displayName}
                   </span>
-                  <span className="text-xs font-mono text-white bg-white/[0.04] px-3 py-1.5 rounded-xl border border-white/[0.08]">
+                  <span className="text-xs font-mono text-white bg-white/[0.04] px-3 py-1.5 rounded-xl border border-white/[0.08] tabular-nums">
                     {analysesLeftStr}
                   </span>
-                  <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20">
-                    {daysLeft} days left
+                  <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-500/20 tabular-nums">
+                    {isFreePlan ? 'No Expiry' : isExpired ? 'Expired' : `${daysLeft} days left`}
                   </span>
                 </div>
               </div>
+
+              {isCreditsOnlyMode && (
+                <div className="p-3.5 rounded-2xl bg-amber-950/40 border border-amber-500/40 text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-mono tabular-nums">
+                  <span>
+                    Your {planDisplayName} plan expired. You still have <strong className="text-white">{creditsBalance} Credits</strong>. Buy a plan to unlock full features, or continue with credits.
+                  </span>
+                  <Button variant="solidGold" size="sm" onClick={onOpenRenewal} className="shrink-0">
+                    Buy a Plan
+                  </Button>
+                </div>
+              )}
 
               {/* Presets & Add Your City */}
               <div className="glass-panel p-5 sm:p-6 space-y-4">
@@ -9292,89 +9392,175 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             </div>
           )}
 
-          {/* TAB 5: MY DASHBOARD OVERVIEW (Calm 5-KPI Executive Lead + Tabbed Details) */}
+          {/* TAB 5: MY DASHBOARD OVERVIEW (2 Separate Cards: Current Plan + My Credits + Calm Key Metrics) */}
           {activeTab === 'dashboard' && (
             <div className="space-y-6 max-w-6xl mx-auto">
 
-              {/* Expiration Notice if subscription ended */}
-              {isExpired && (
-                <div className="p-4 sm:p-5 rounded-2xl bg-rose-950/40 border border-rose-500/50 text-rose-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              {/* Day 29 Pre-Expiry Reminder Banner */}
+              {isEndingIn24h && (
+                <div className="p-4 sm:p-5 rounded-2xl bg-amber-950/40 border border-amber-500/50 text-amber-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 tabular-nums">
                   <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-xl bg-rose-500/20 text-rose-400">
+                    <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300">
                       <AlertTriangle className="w-5 h-5" />
                     </div>
                     <div>
-                      <div className="text-sm font-bold text-white">30-Day Subscription Has Expired</div>
-                      <div className="text-xs text-rose-300 font-mono mt-0.5">
-                        Premium underwriting features are locked. Renew your subscription to restore instant access.
+                      <div className="text-sm font-bold text-white">Day 29 Plan Expiry Notice</div>
+                      <div className="text-xs text-amber-200 font-mono mt-0.5">
+                        Your {planDisplayName} expires tomorrow {expiryDateFormatted}. Renew now to keep access. No auto-charge will happen.
                       </div>
                     </div>
                   </div>
                   <Button variant="solidGold" onClick={onOpenRenewal} className="shrink-0">
-                    Renew Subscription Now
+                    Renew Plan
                   </Button>
                 </div>
               )}
 
-              {/* Calm Header + Primary Actions */}
-              <FadeInCard>
-                <Card className="p-6 sm:p-7 rounded-3xl border border-white/10">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-white/[0.08]">
-                    <div>
-                      <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-zinc-400">
-                        EXECUTIVE TERMINAL SUMMARY
-                      </div>
-                      <h3 className="text-2xl font-bold text-white mt-1">
-                        {`Aqari AI — ${planDisplayName}`}
-                        <span className="text-sm font-mono font-normal text-zinc-400 ml-2">
-                          (${planPriceUSD}/30d)
-                        </span>
-                      </h3>
+              {/* Expiration / Free Exhausted / Credits-Only Notice */}
+              {(isExpired || (isFreePlan && isAccountLocked)) && (
+                <div className={`p-4 sm:p-5 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 tabular-nums ${
+                  isCreditsOnlyMode
+                    ? 'bg-amber-950/40 border-amber-500/50 text-amber-100'
+                    : 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                }`}>
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-xl ${isCreditsOnlyMode ? 'bg-amber-500/20 text-amber-300' : 'bg-rose-500/20 text-rose-400'}`}>
+                      <AlertTriangle className="w-5 h-5" />
                     </div>
-                    <div className="flex flex-wrap items-center gap-2.5">
+                    <div>
+                      <div className="text-sm font-bold text-white">
+                        {isCreditsOnlyMode
+                          ? `${planDisplayName} Plan Expired • ${creditsBalance} Credits Ready`
+                          : isFreePlan
+                          ? 'Free Trial Analyses Exhausted'
+                          : `${planDisplayName} 30-Day Pass Expired`}
+                      </div>
+                      <div className="text-xs font-mono mt-0.5">
+                        {isFreePlan
+                          ? 'You used your 3 free analyses. Buy a plan or credits to continue.'
+                          : isCreditsOnlyMode
+                          ? `Your ${planDisplayName} plan expired. You still have ${creditsBalance} Credits. Buy a plan to unlock full features, or continue with credits.`
+                          : `Your ${planDisplayName} expired${expiryDateFormatted ? ` on ${expiryDateFormatted}` : ''}. Renew to continue. No auto-charge was made.`}
+                      </div>
+                    </div>
+                  </div>
+                  <Button variant="solidGold" onClick={onOpenRenewal} className="shrink-0">
+                    {isCreditsOnlyMode ? 'Buy Plan to Unlock Features' : isFreePlan ? 'Buy Plan or Credits' : 'Renew Plan'}
+                  </Button>
+                </div>
+              )}
+
+              {/* TWO SEPARATE ENTITLEMENT CARDS: Card 1 (Current Plan) + Card 2 (My Credits) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 tabular-nums">
+                {/* CARD 1: CURRENT PLAN */}
+                <FadeInCard>
+                  <Card className="p-5 sm:p-6 rounded-3xl border border-[#D4AF37]/30 bg-black/60 h-full flex flex-col justify-between gap-4">
+                    <div className="flex items-start justify-between gap-3 border-b border-white/[0.08] pb-3.5">
+                      <div>
+                        <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-[#D4AF37]">
+                          CARD 1 • CURRENT PLAN
+                        </div>
+                        <h3 className="text-xl font-bold text-white mt-1">
+                          {planDisplayName}
+                          <span className="text-xs font-mono font-normal text-zinc-400 ml-2">
+                            {isFreePlan ? '(Free Tier)' : `($${planPriceUSD} / 30d one-time)`}
+                          </span>
+                        </h3>
+                      </div>
+                      <span className={`px-2.5 py-1 rounded-full text-[11px] font-mono font-bold uppercase border ${
+                        isExpired
+                          ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                          : isFreePlan
+                          ? 'bg-zinc-800 border-white/15 text-zinc-200'
+                          : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                      }`}>
+                        Status: {isExpired ? 'Expired' : 'Active'}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3 font-mono text-xs">
+                      <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/[0.06]">
+                        <span className="text-[10px] text-zinc-400 uppercase block mb-1">Expires On</span>
+                        <strong className="text-sm font-bold text-white">
+                          {isFreePlan ? 'Never' : expiryDateFormatted || '--'}
+                        </strong>
+                      </div>
+                      <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/[0.06]">
+                        <span className="text-[10px] text-zinc-400 uppercase block mb-1">Days Left</span>
+                        <strong className={`text-sm font-bold ${isExpired ? 'text-rose-400' : 'text-emerald-400'}`}>
+                          {isFreePlan ? 'Never (Free Plan)' : isExpired ? '0 days' : `${daysLeft} days`}
+                        </strong>
+                      </div>
+                      <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/[0.06]">
+                        <span className="text-[10px] text-zinc-400 uppercase block mb-1">Plan Quota</span>
+                        <strong className="text-sm font-bold text-[#D4AF37]">
+                          {isCreditsLoaded ? `${planAnalysesRemaining} left` : '--'}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1 text-[11px] font-mono text-zinc-400">
+                      <span>{isFreePlan ? 'Locks after 3 free analyses unless upgraded.' : 'No auto-renew • Manual 30-day renewal.'}</span>
                       <Button variant="solidGold" size="sm" onClick={onOpenRenewal}>
                         <Zap className="w-3.5 h-3.5 fill-black" />
-                        <span>Switch / Renew Plan</span>
+                        <span>{isExpired ? 'Renew Plan' : 'Buy / Upgrade Plan'}</span>
                       </Button>
+                    </div>
+                  </Card>
+                </FadeInCard>
+
+                {/* CARD 2: MY CREDITS */}
+                <FadeInCard>
+                  <Card className="p-5 sm:p-6 rounded-3xl border border-emerald-500/30 bg-black/60 h-full flex flex-col justify-between gap-4">
+                    <div className="flex items-start justify-between gap-3 border-b border-white/[0.08] pb-3.5">
+                      <div>
+                        <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-emerald-400">
+                          CARD 2 • MY CREDITS
+                        </div>
+                        <h3 className="text-xl font-bold text-white mt-1">
+                          <span className="text-emerald-400 font-mono">
+                            {isCreditsLoaded ? <CountUpNumber value={creditsBalance} /> : '--'}
+                          </span>{' '}
+                          Credits Balance
+                        </h3>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold uppercase bg-emerald-500/15 border border-emerald-500/40 text-emerald-300">
+                        Expires: Never
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 font-mono text-xs">
+                      <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/[0.06]">
+                        <span className="text-[10px] text-zinc-400 uppercase block mb-1">Credits Expiration</span>
+                        <strong className="text-sm font-bold text-emerald-400">Never Expires</strong>
+                      </div>
+                      <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/[0.06]">
+                        <span className="text-[10px] text-zinc-400 uppercase block mb-1">Total Available Now</span>
+                        <strong className="text-sm font-bold text-white">
+                          {isCreditsLoaded ? `${analysesRemaining} runs` : '--'}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1 text-[11px] font-mono text-zinc-400">
+                      <span>Plan analyses deduct first; credits remain safe forever.</span>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={onOpenRenewal}
-                        className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/15"
+                        className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/15 shrink-0"
                       >
-                        + Buy AI Credits
+                        + Buy Credits
                       </Button>
                     </div>
-                  </div>
+                  </Card>
+                </FadeInCard>
+              </div>
 
-                  {/* 5 Calm Key Metrics First (Black + Gold on Plan/Credits + Green on Active Portfolio) */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 pt-6">
-                    <div className="p-4 rounded-2xl bg-black/50 border border-[#D4AF37]/30">
-                      <span className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                        CREDITS REMAINING
-                      </span>
-                      <strong className="text-xl font-black font-mono text-[#D4AF37] tabular-nums">
-                        {isCreditsLoaded ? <CountUpNumber value={license.analysesLeft} /> : '--'}
-                      </strong>
-                      {(user.extraCredits ?? 0) > 0 && (
-                        <span className="text-[10px] font-mono text-emerald-400 block mt-0.5">
-                          +{user.extraCredits} top-up credits
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="p-4 rounded-2xl bg-black/50 border border-white/[0.07]">
-                      <span className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                        LICENSE WINDOW
-                      </span>
-                      <strong className={`text-xl font-black font-mono tabular-nums ${isExpired ? 'text-rose-400' : 'text-white'}`}>
-                        {isExpired ? '0d' : `${daysLeft ?? 30}d left`}
-                      </strong>
-                      <span className="text-[10px] font-mono text-zinc-500 block mt-0.5">
-                        {endsAt ? new Date(endsAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'No expiry'}
-                      </span>
-                    </div>
-
+              {/* Calm Portfolio Metrics Strip */}
+              <FadeInCard>
+                <Card className="p-5 sm:p-6 rounded-3xl border border-white/10">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3.5">
                     <div className="p-4 rounded-2xl bg-black/50 border border-white/[0.07]">
                       <span className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
                         PORTFOLIO AUM
@@ -9401,13 +9587,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                     <div className="p-4 rounded-2xl bg-black/50 border border-white/[0.07] col-span-2 sm:col-span-1">
                       <span className="text-[10px] font-mono uppercase text-zinc-400 block mb-1">
-                        STATUS
+                        ANALYSES COMPLETED
                       </span>
-                      <strong className={`text-lg font-black font-mono ${isExpired ? 'text-rose-400' : license.planKey !== 'free' ? 'text-emerald-400' : 'text-zinc-200'}`}>
-                        {isExpired ? 'Expired' : license.planKey !== 'free' ? 'Active' : 'Free Trial'}
+                      <strong className="text-xl font-black font-mono text-[#D4AF37] tabular-nums">
+                        {user.analysesUsed ?? 0}
                       </strong>
                       <span className="text-[10px] font-mono text-zinc-500 block mt-0.5">
-                        {planDisplayName} Tier
+                        {isCreditsOnlyMode ? 'Credits-Only Mode' : isPackageExpired ? 'Package Expired' : 'Standard + AI Runs'}
                       </span>
                     </div>
                   </div>
@@ -9621,7 +9807,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 font-mono">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 font-mono tabular-nums">
                   <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
                     <span className="text-xs text-zinc-400 uppercase block mb-1">Plan</span>
                     <strong className="text-lg font-bold text-[#D4AF37]">{license.displayName}</strong>
@@ -9629,55 +9815,35 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
                     <span className="text-xs text-zinc-400 uppercase block mb-1">Start Date</span>
                     <strong className="text-sm font-bold text-white">
-                      {user.subscriptionStartAt
-                        ? new Date(user.subscriptionStartAt).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                          })
-                        : 'Active Today'}
+                      {user.subscriptionStartAt ? formatDDMMYYYY(user.subscriptionStartAt) : 'Active'}
                     </strong>
                   </div>
                   <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
-                    <span className="text-xs text-zinc-400 uppercase block mb-1">End Date</span>
+                    <span className="text-xs text-zinc-400 uppercase block mb-1">Expires On</span>
                     <strong className="text-sm font-bold text-white">
-                      {endsAt
-                        ? new Date(endsAt).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                          })
-                        : '30-Day Window'}
+                      {isFreePlan ? 'Never (Free Plan)' : expiryDateFormatted || '30-Day Pass'}
                     </strong>
                   </div>
                   <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06]">
                     <span className="text-xs text-zinc-400 uppercase block mb-1">Days Left</span>
-                    <strong className={`text-lg font-bold ${isPlanEnded ? 'text-rose-400' : 'text-emerald-400'}`}>
-                      {isPlanEnded ? '0 days' : `${daysLeft} days`}
+                    <strong className={`text-lg font-bold ${isExpired ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {isFreePlan ? 'No Expiry' : isExpired ? '0 days' : `${daysLeft} days`}
                     </strong>
                   </div>
                 </div>
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
-                  <p className="text-sm font-mono text-zinc-300">
-                    Your access ends on{' '}
-                    <strong className="text-white">
-                      {endsAt
-                        ? new Date(endsAt).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                          })
-                        : 'end of cycle'}
-                    </strong>
-                    , renew anytime, your saved analyses stay
+                  <p className="text-sm font-mono text-zinc-300 tabular-nums">
+                    {isFreePlan
+                      ? 'Free plan has no time expiry (locks after 3 analyses). Purchased credits never expire.'
+                      : `One-time 30-day pass ends ${expiryDateFormatted || 'after 30 days'}. No auto-charge. Extra Credits: ${creditsBalance} (Never expire).`}
                   </p>
                   <button
                     type="button"
                     onClick={() => (onGoToPricing ? onGoToPricing() : onOpenRenewal())}
                     className="w-full sm:w-auto px-5 py-3 rounded-xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#C99D28] hover:brightness-110 text-black font-black text-sm font-mono transition cursor-pointer shadow-lg shrink-0 min-h-[44px]"
                   >
-                    Extend Your 30-Day Terminal Access - جدد اشتراكك
+                    Buy / Renew 30-Day Pass
                   </button>
                 </div>
               </div>
@@ -9881,26 +10047,28 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   </div>
                   <div>
                     <span className="text-zinc-500 block mb-0.5">Licensing Expiry &amp; Countdown</span>
-                    <span className={isPlanEnded ? 'text-rose-400 font-bold' : 'text-[#D4AF37] font-bold'}>
-                      {isPlanEnded
-                        ? 'Licensing window expired - Renew'
+                    <span className={isExpired ? 'text-rose-400 font-bold' : 'text-[#D4AF37] font-bold'}>
+                      {isFreePlan
+                        ? 'Never (Free Plan)'
+                        : isExpired
+                        ? `Expired (${expiryDateFormatted || 'Renew'})`
                         : `${daysLeft} days left`}
                     </span>
-                    {endsAt && license.planKey !== 'free' && (
-                      <span className="text-xs text-zinc-500 block mt-0.5">
-                        Ends: {new Date(endsAt).toLocaleString('en-US')}
+                    {endsAt && !isFreePlan && (
+                      <span className="text-xs text-zinc-500 block mt-0.5 tabular-nums">
+                        Ends: {expiryDateFormatted}
                       </span>
                     )}
                   </div>
                   <div>
-                    <span className="text-zinc-500 block mb-0.5">Analyses Quota</span>
-                    <span className="text-emerald-400 font-bold">
-                      {analysesLeftStr}
+                    <span className="text-zinc-500 block mb-0.5">Analyses Quota &amp; Credits</span>
+                    <span className="text-emerald-400 font-bold tabular-nums">
+                      {analysesLeftStr} • {creditsBalance} Credits (Never Expire)
                     </span>
                   </div>
                   <div>
                     <span className="text-zinc-500 block mb-0.5">Saved Properties Limit</span>
-                    <span className="text-white">
+                    <span className="text-white tabular-nums">
                       {savedAnalyses.length} / {maxSaved}
                     </span>
                   </div>
@@ -9908,10 +10076,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                 <div className="pt-3 border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
                   <span className="text-zinc-400">Official Support Contact (Loomora Studios):</span>
                   <a
-                    href="mailto:azzamalshmale@gmail.com"
+                    href="mailto:loomorastudios@gmail.com"
                     className="text-[#D4AF37] underline font-bold hover:text-amber-300"
                   >
-                    azzamalshmale@gmail.com
+                    loomorastudios@gmail.com
                   </a>
                 </div>
               </div>

@@ -1325,6 +1325,15 @@ function findPlanPricing(
   return payload.plans?.[key];
 }
 
+function formatDateDDMMYYYY(ms?: number | null): string | null {
+  if (!ms || !Number.isFinite(ms)) return null;
+  const d = new Date(ms);
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = d.getUTCFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
 function computeLicenseStatus(params: {
   plan?: string | null;
   licenseStart?: number | null;
@@ -1338,7 +1347,8 @@ function computeLicenseStatus(params: {
 }): ComputedLicenseStatus {
   const now = params.now ?? Date.now();
   const rawPlanKey = normalizePlanKey(params.plan);
-  const hasEnd = Boolean(params.licenseEnd);
+  const isFreePlan = rawPlanKey === 'free';
+  const hasEnd = Boolean(!isFreePlan && params.licenseEnd);
   const isExpired = Boolean(hasEnd && params.licenseEnd! <= now);
 
   const effectivePlanKey: PlanKey = rawPlanKey;
@@ -1355,31 +1365,37 @@ function computeLicenseStatus(params: {
   const isUnlimitedAnalyses = !Number.isFinite(effectiveAnalysesLimit);
   const isUnlimitedSaved = !Number.isFinite(effectiveSavedLimit);
 
-  let daysLeft = 30;
-  if (isExpired) {
+  let daysLeft = isFreePlan ? 0 : 30;
+  if (isFreePlan) {
+    daysLeft = 0;
+  } else if (isExpired) {
     daysLeft = 0;
   } else if (params.licenseEnd) {
     daysLeft = Math.max(0, Math.ceil((params.licenseEnd - now) / (1000 * 60 * 60 * 24)));
   }
 
   let analysesUsed = Math.max(0, params.analysesUsed ?? 0);
+  const explicitLeft = params.analysesLeft ?? params.freeAnalysesLeft;
   let analysesLeft = isExpired
-    ? 0
+    ? typeof explicitLeft === 'number'
+      ? Math.max(0, explicitLeft)
+      : 0
     : isUnlimitedAnalyses
     ? Infinity
     : Math.max(0, effectiveAnalysesLimit - analysesUsed);
 
-  if (!isExpired && !isUnlimitedAnalyses) {
-    const explicitLeft = params.analysesLeft ?? params.freeAnalysesLeft;
-    if (typeof explicitLeft === 'number') {
-      analysesLeft = Math.max(0, explicitLeft);
-      if (analysesUsed === 0 && explicitLeft <= effectiveAnalysesLimit) {
-        analysesUsed = Math.max(0, effectiveAnalysesLimit - analysesLeft);
-      }
+  if (!isExpired && !isUnlimitedAnalyses && typeof explicitLeft === 'number') {
+    analysesLeft = Math.max(0, explicitLeft);
+    if (analysesUsed === 0 && explicitLeft <= effectiveAnalysesLimit) {
+      analysesUsed = Math.max(0, effectiveAnalysesLimit - analysesLeft);
     }
   }
 
-  const timeProgress = isExpired
+  const timeProgress = isFreePlan
+    ? effectiveAnalysesLimit > 0
+      ? Math.min(100, Math.max(0, Math.round((analysesLeft / effectiveAnalysesLimit) * 100)))
+      : 0
+    : isExpired
     ? 0
     : params.licenseEnd
     ? Math.min(100, Math.max(0, Math.round((daysLeft / 30) * 100)))
@@ -1390,16 +1406,18 @@ function computeLicenseStatus(params: {
     : 0;
 
   const leftStr = isUnlimitedAnalyses ? 'Unlimited credits left' : `${analysesLeft} credits left`;
-  const sidebarText = isExpired
-    ? `LICENSING COUNTDOWN - ${planCfg.displayName} - EXPIRED - 0 credits left`
-    : `LICENSING COUNTDOWN - ${planCfg.displayName} - ${daysLeft} days left - ${leftStr}`;
+  const sidebarText = isFreePlan
+    ? `FREE PLAN (NO TIME EXPIRY) - ${leftStr}`
+    : isExpired
+    ? `30-DAY LICENSE - ${planCfg.displayName} - EXPIRED - ${leftStr}`
+    : `30-DAY LICENSE - ${planCfg.displayName} - ${daysLeft} days left - ${leftStr}`;
 
   return {
     planKey: effectivePlanKey,
     displayName: planCfg.displayName,
     isExpired,
     daysLeft,
-    daysTotal: 30,
+    daysTotal: isFreePlan ? 0 : 30,
     analysesLimit: effectiveAnalysesLimit,
     analysesUsed,
     analysesLeft,
@@ -1431,7 +1449,7 @@ function cleanEnvValue(value?: string | null): string {
 }
 
 function getAdminEmail(): string {
-  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'azzamalshmale@gmail.com').toLowerCase();
+  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'loomorastudios@gmail.com').toLowerCase();
 }
 
 function getSessionSecret(): string {
@@ -1490,7 +1508,7 @@ function appendSetCookieHeader(res: any, cookieStr: string): void {
 function isAdminEmail(email?: string | null): boolean {
   const norm = (email || '').trim().toLowerCase();
   if (!norm) return false;
-  return norm === getAdminEmail() || norm === 'azzamalshmale@gmail.com';
+  return norm === getAdminEmail() || norm === 'loomorastudios@gmail.com' || norm === 'azzamalshmale@gmail.com';
 }
 
 function signSessionToken(email: string): string {
@@ -2050,31 +2068,45 @@ function normalizeIsoDateOrNull(val: any): string | null {
   return trimmed;
 }
 
-function resolveEffectiveQuotas(user: Partial<ServerUserRecord> & { plan?: PlanKey | string }) {
+function resolveEffectiveQuotas(user: Partial<ServerUserRecord> & { plan?: PlanKey | string }, now = Date.now()) {
   const planKey = normalizePlanKey(user?.plan);
   const planCfg = PLAN_DEFINITIONS[planKey];
+  const isFree = planKey === 'free';
+  const rawLicenseEnd = typeof user?.license_end === 'number' && Number.isFinite(user.license_end) ? user.license_end : null;
+  const contractEndDate = normalizeIsoDateOrNull(user?.contract_end_date);
+  const parsedEnd = contractEndDate ? Date.parse(contractEndDate) : NaN;
+  const contractEndMs = Number.isFinite(parsedEnd) ? parsedEnd : null;
+  const effectiveEndMs = isFree
+    ? null
+    : planKey === 'institutional' && contractEndMs !== null
+    ? contractEndMs
+    : rawLicenseEnd;
+  const packageExpired = Boolean(!isFree && effectiveEndMs !== null && now > effectiveEndMs);
+
   if (planKey !== 'institutional') {
+    const freeDef = PLAN_DEFINITIONS.free;
     return {
       planKey,
       displayName: planCfg.displayName,
       isEnterprise: false,
-      analysesLimit: planCfg.analysesLimit,
-      imagePdfLimit: planCfg.imagePdfLimit,
-      aiListingLimit: planCfg.aiListingLimit,
-      investmentPdfLimit: planCfg.investmentPdfLimit,
-      portfolioAssetsLimit: planCfg.portfolioAssetsLimit,
-      savedLimit: planCfg.savedLimit,
-      teamUsersLimit: planCfg.teamUsersLimit,
-      compareLimit: planCfg.compareLimit,
-      apiDailyLimit: planCfg.apiDailyLimit,
+      packageExpired,
+      analysesLimit: packageExpired ? 0 : planCfg.analysesLimit,
+      imagePdfLimit: packageExpired ? freeDef.imagePdfLimit : planCfg.imagePdfLimit,
+      aiListingLimit: packageExpired ? freeDef.aiListingLimit : planCfg.aiListingLimit,
+      investmentPdfLimit: packageExpired ? 0 : planCfg.investmentPdfLimit,
+      portfolioAssetsLimit: packageExpired ? freeDef.portfolioAssetsLimit : planCfg.portfolioAssetsLimit,
+      savedLimit: packageExpired ? freeDef.savedLimit : planCfg.savedLimit,
+      teamUsersLimit: packageExpired ? 0 : planCfg.teamUsersLimit,
+      compareLimit: packageExpired ? freeDef.compareLimit : planCfg.compareLimit,
+      apiDailyLimit: packageExpired ? 0 : planCfg.apiDailyLimit,
       storageGb: null as number | null,
       slaLevel: null as string | null,
       contractEndDate: null as string | null,
       contractEndMs: null as number | null,
       contractExpired: false,
-      whiteLabelEnabled: canUseFeature(planKey, 'whiteLabelReports'),
-      whiteLabelPlatformEnabled: canUseFeature(planKey, 'whiteLabelPlatform'),
-      customApiEnabled: canUseFeature(planKey, 'apiAccess'),
+      whiteLabelEnabled: packageExpired ? false : canUseFeature(planKey, 'whiteLabelReports'),
+      whiteLabelPlatformEnabled: packageExpired ? false : canUseFeature(planKey, 'whiteLabelPlatform'),
+      customApiEnabled: packageExpired ? false : canUseFeature(planKey, 'apiAccess'),
     };
   }
   const customAnalyses = parseOptionalPositiveInt(user?.custom_analyses_limit);
@@ -2083,30 +2115,33 @@ function resolveEffectiveQuotas(user: Partial<ServerUserRecord> & { plan?: PlanK
   const customPortfolio = parseOptionalPositiveInt(user?.custom_portfolio_limit);
   const customSeats = parseOptionalPositiveInt(user?.custom_seats);
   const customStorageGb = parseOptionalPositiveInt(user?.custom_storage_gb);
-  const contractEndDate = normalizeIsoDateOrNull(user?.contract_end_date);
-  const parsedEnd = contractEndDate ? Date.parse(contractEndDate) : NaN;
-  const contractEndMs = Number.isFinite(parsedEnd) ? parsedEnd : null;
-  const contractExpired = Boolean(contractEndMs !== null && Date.now() > contractEndMs);
-  const customApiEnabled = Boolean(user?.custom_api_enabled);
-  const whiteLabelEnabled = Boolean(user?.white_label_enabled);
+  const contractExpired = Boolean(contractEndMs !== null && now > contractEndMs);
+  const customApiEnabled = packageExpired ? false : Boolean(user?.custom_api_enabled);
+  const whiteLabelEnabled = packageExpired ? false : Boolean(user?.white_label_enabled);
+  const freeDef = PLAN_DEFINITIONS.free;
   return {
     planKey,
     displayName: planCfg.displayName,
     isEnterprise: true,
-    analysesLimit: customAnalyses,
-    imagePdfLimit: customImgPdf,
-    aiListingLimit: customListings,
-    investmentPdfLimit: customListings,
-    portfolioAssetsLimit: customPortfolio,
-    savedLimit: customPortfolio,
-    teamUsersLimit: customSeats,
-    compareLimit: customPortfolio ? Math.min(50, Math.max(1, customPortfolio)) : 50,
+    packageExpired,
+    analysesLimit: packageExpired ? 0 : customAnalyses,
+    imagePdfLimit: packageExpired ? freeDef.imagePdfLimit : customImgPdf,
+    aiListingLimit: packageExpired ? freeDef.aiListingLimit : customListings,
+    investmentPdfLimit: packageExpired ? 0 : customListings,
+    portfolioAssetsLimit: packageExpired ? freeDef.portfolioAssetsLimit : customPortfolio,
+    savedLimit: packageExpired ? freeDef.savedLimit : customPortfolio,
+    teamUsersLimit: packageExpired ? 0 : customSeats,
+    compareLimit: packageExpired
+      ? freeDef.compareLimit
+      : customPortfolio
+      ? Math.min(50, Math.max(1, customPortfolio))
+      : 50,
     apiDailyLimit: customApiEnabled ? 10000 : 0,
     storageGb: customStorageGb,
     slaLevel: typeof user?.sla_level === 'string' && user.sla_level.trim() ? user.sla_level.trim() : null,
     contractEndDate,
     contractEndMs,
-    contractExpired,
+    contractExpired: packageExpired || contractExpired,
     whiteLabelEnabled,
     whiteLabelPlatformEnabled: whiteLabelEnabled,
     customApiEnabled,
@@ -2116,6 +2151,7 @@ function resolveEffectiveQuotas(user: Partial<ServerUserRecord> & { plan?: PlanK
 function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
   const now = Date.now();
   const plan = normalizePlanKey(raw?.plan);
+  const isFreePlan = plan === 'free';
   const planCfg = PLAN_DEFINITIONS[plan];
   const extraCredits = Math.max(0, Number(raw?.extra_credits || 0));
   const customAnalysesLimit = parseOptionalPositiveInt(raw?.custom_analyses_limit);
@@ -2164,15 +2200,18 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
       : licenseStartVal + THIRTY_DAYS_MS;
 
   const contractEndParsed = contractEndDate ? Date.parse(contractEndDate) : NaN;
-  const effectiveEnd =
-    plan === 'institutional' && Number.isFinite(contractEndParsed) ? contractEndParsed : licenseEndVal;
+  const effectiveEnd = isFreePlan
+    ? null
+    : plan === 'institutional' && Number.isFinite(contractEndParsed)
+    ? contractEndParsed
+    : licenseEndVal;
 
-  const hydratedStatus: 'active' | 'expired' | 'exhausted' =
-    effectiveEnd && now > effectiveEnd
-      ? 'expired'
-      : analysesLeft <= 0
-      ? 'exhausted'
-      : 'active';
+  const packageExpired = Boolean(!isFreePlan && effectiveEnd && now > effectiveEnd);
+  const hydratedStatus: 'active' | 'expired' | 'exhausted' = packageExpired
+    ? 'expired'
+    : analysesLeft + (extraCredits > analysesLeft ? 0 : 0) <= 0 && extraCredits <= 0
+    ? 'exhausted'
+    : 'active';
 
   const todayUtc = new Date(now).toISOString().slice(0, 10);
   const apiCallsDay = typeof raw?.api_calls_day === 'string' ? raw.api_calls_day : todayUtc;
@@ -2185,7 +2224,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     license_start: licenseStartVal,
     license_end: licenseEndVal,
     analyses_used: analysesUsed,
-    analyses_left: hydratedStatus === 'active' ? analysesLeft : 0,
+    analyses_left: packageExpired ? extraCredits : hydratedStatus === 'active' ? Math.max(analysesLeft, extraCredits > 0 && analysesUsed === 0 && rawLeftNum === undefined ? analysesTotal : analysesLeft) : extraCredits,
     analyses_total: analysesTotal,
     successful_analyses: Math.max(0, Number(raw?.successful_analyses ?? 0)),
     saved_analyses: savedList,
@@ -2491,33 +2530,72 @@ function evaluateLockState(
   status: 'active' | 'expired' | 'exhausted';
   error: string | null;
   analysesLeft: number;
+  planAnalysesLeft: number;
+  creditsBalance: number;
+  packageExpired: boolean;
+  creditsOnlyMode: boolean;
+  day29Reminder: boolean;
+  expiryDateFormatted: string | null;
+  expiryBanner: string | null;
   enterpriseUnconfigured?: boolean;
 } {
-  const quotas = resolveEffectiveQuotas(user);
+  const quotas = resolveEffectiveQuotas(user, now);
   const planKey = quotas.planKey;
+  const isFreePlan = planKey === 'free';
   const planDisplay = quotas.displayName;
-  const baseLimit = quotas.isEnterprise ? (quotas.analysesLimit ?? 0) : PLAN_DEFINITIONS[planKey].analysesLimit;
-  const total = Math.max(0, Number(user.analyses_total ?? baseLimit));
+  const creditsBalance = Math.max(0, Number(user.extra_credits || 0));
+  const rawBaseLimit = isFreePlan
+    ? PLAN_DEFINITIONS.free.analysesLimit
+    : quotas.isEnterprise
+    ? parseOptionalPositiveInt(user.custom_analyses_limit) ?? 0
+    : PLAN_DEFINITIONS[planKey].analysesLimit;
+  const totalFallback = Math.max(0, rawBaseLimit + creditsBalance);
   const rawLeft =
     typeof user.analyses_left === 'number' && Number.isFinite(user.analyses_left)
       ? Math.max(0, user.analyses_left)
-      : Math.max(0, total - Math.max(0, Number(user.analyses_used || 0)));
+      : Math.max(0, totalFallback - Math.max(0, Number(user.analyses_used || 0)));
 
-  const effectiveEnd =
-    quotas.isEnterprise && quotas.contractEndMs !== null ? quotas.contractEndMs : user.license_end;
+  const effectiveEnd = isFreePlan
+    ? null
+    : quotas.isEnterprise && quotas.contractEndMs !== null
+    ? quotas.contractEndMs
+    : user.license_end;
+  const packageExpired = Boolean(!isFreePlan && effectiveEnd && now > effectiveEnd);
+  const expiryDateFormatted = isFreePlan ? null : formatDateDDMMYYYY(effectiveEnd);
+  const msLeft = effectiveEnd && !packageExpired ? effectiveEnd - now : 0;
+  const daysRemaining = effectiveEnd && !packageExpired ? Math.max(0, Math.ceil(msLeft / (24 * 60 * 60 * 1000))) : 0;
+  const day29Reminder = Boolean(!isFreePlan && !packageExpired && effectiveEnd && daysRemaining === 1);
 
-  if (effectiveEnd && now > effectiveEnd) {
-    const formattedDate = new Date(effectiveEnd).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
+  if (packageExpired) {
+    if (creditsBalance > 0) {
+      return {
+        locked: false,
+        reason: null,
+        status: 'expired',
+        error: null,
+        analysesLeft: creditsBalance,
+        planAnalysesLeft: 0,
+        creditsBalance,
+        packageExpired: true,
+        creditsOnlyMode: true,
+        day29Reminder: false,
+        expiryDateFormatted,
+        expiryBanner: `Your ${planDisplay} plan expired. You still have ${creditsBalance} Credits. Buy a plan to unlock full features, or continue with credits.`,
+      };
+    }
     return {
       locked: true,
       reason: 'expired',
       status: 'expired',
-      error: `Your ${planDisplay} ${quotas.isEnterprise ? 'contract' : 'license'} expired on ${formattedDate}. Renew to continue.`,
+      error: `Your ${planDisplay} expired on ${expiryDateFormatted || 'N/A'}. Renew to continue. No auto-charge was made.`,
       analysesLeft: 0,
+      planAnalysesLeft: 0,
+      creditsBalance: 0,
+      packageExpired: true,
+      creditsOnlyMode: false,
+      day29Reminder: false,
+      expiryDateFormatted,
+      expiryBanner: `Your ${planDisplay} expired on ${expiryDateFormatted || 'N/A'}. Renew to continue. No auto-charge was made.`,
     };
   }
 
@@ -2530,16 +2608,35 @@ function evaluateLockState(
       error:
         'Enterprise contract quotas (custom_analyses_limit) are not configured yet. Ask your Admin to configure contract limits in Admin Dashboard.',
       analysesLeft: 0,
+      planAnalysesLeft: 0,
+      creditsBalance,
+      packageExpired: false,
+      creditsOnlyMode: false,
+      day29Reminder,
+      expiryDateFormatted,
+      expiryBanner: null,
     };
   }
 
-  if (rawLeft <= 0) {
+  const planAnalysesLeft = Math.min(rawBaseLimit, Math.max(0, rawLeft - creditsBalance));
+  const totalAvailable = planAnalysesLeft + creditsBalance;
+
+  if (totalAvailable <= 0) {
     return {
       locked: true,
       reason: 'exhausted',
       status: 'exhausted',
-      error: `0 AI credits left for ${planDisplay}. Buy Extra Credits or Upgrade your plan.`,
+      error: isFreePlan
+        ? 'You used your 3 free analyses. Buy a plan or credits to continue.'
+        : `0 credits left for ${planDisplay}. Buy Extra Credits or a 30-day plan to continue.`,
       analysesLeft: 0,
+      planAnalysesLeft: 0,
+      creditsBalance: 0,
+      packageExpired: false,
+      creditsOnlyMode: false,
+      day29Reminder,
+      expiryDateFormatted,
+      expiryBanner: null,
     };
   }
 
@@ -2548,8 +2645,23 @@ function evaluateLockState(
     reason: null,
     status: 'active',
     error: null,
-    analysesLeft: rawLeft,
+    analysesLeft: totalAvailable,
+    planAnalysesLeft,
+    creditsBalance,
+    packageExpired: false,
+    creditsOnlyMode: false,
+    day29Reminder,
+    expiryDateFormatted,
+    expiryBanner: day29Reminder
+      ? `Your ${planDisplay} expires tomorrow ${expiryDateFormatted}. Renew now to keep access. No auto-charge will happen.`
+      : null,
   };
+}
+
+function getEffectiveFeaturePlanKey(user: Partial<ServerUserRecord> & Pick<ServerUserRecord, 'plan' | 'analyses_left' | 'analyses_total' | 'analyses_used' | 'license_end'>): PlanKey {
+  const lock = evaluateLockState(user);
+  if (lock.packageExpired) return 'free';
+  return normalizePlanKey(user.plan);
 }
 
 function ensureCreditsForAction(user: ServerUserRecord, cost: number) {
@@ -2564,7 +2676,7 @@ function ensureCreditsForAction(user: ServerUserRecord, cost: number) {
         insufficientCredits: true,
         reason: lock.reason,
         status: lock.status,
-        error: lock.error || 'No AI credits remaining or license expired.',
+        error: lock.error || 'No credits remaining or license expired.',
         code: lock.enterpriseUnconfigured
           ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET'
           : lock.reason === 'expired'
@@ -2572,6 +2684,10 @@ function ensureCreditsForAction(user: ServerUserRecord, cost: number) {
           : 'NO_ANALYSES_LEFT',
         analyses_left: 0,
         analysesLeft: 0,
+        plan_analyses_left: 0,
+        credits_balance: lock.creditsBalance,
+        package_expired: lock.packageExpired,
+        credits_only_mode: lock.creditsOnlyMode,
         requiredCredits: cost,
         creditsRemaining: 0,
       },
@@ -2586,11 +2702,15 @@ function ensureCreditsForAction(user: ServerUserRecord, cost: number) {
         locked: false,
         insufficientCredits: true,
         reason: 'insufficient_credits',
-        status: 'active',
-        error: `This action costs ${cost} AI credits, but only ${lock.analysesLeft} credit${lock.analysesLeft === 1 ? '' : 's'} remain. Buy Extra Credits or Upgrade your plan.`,
+        status: lock.status,
+        error: `This action costs ${cost} credits, but only ${lock.analysesLeft} credit${lock.analysesLeft === 1 ? '' : 's'} remain. Buy Extra Credits or a 30-day plan.`,
         code: 'INSUFFICIENT_CREDITS',
         analyses_left: lock.analysesLeft,
         analysesLeft: lock.analysesLeft,
+        plan_analyses_left: lock.planAnalysesLeft,
+        credits_balance: lock.creditsBalance,
+        package_expired: lock.packageExpired,
+        credits_only_mode: lock.creditsOnlyMode,
         requiredCredits: cost,
         creditsRemaining: lock.analysesLeft,
       },
@@ -2612,10 +2732,16 @@ function checkAndConsumeApiDailyQuota(user: ServerUserRecord) {
       status: 403,
       payload: {
         success: false,
-        error: quotas.isEnterprise
+        error: quotas.packageExpired
+          ? 'Your 30-day plan expired. Buy a plan to unlock full REST API access.'
+          : quotas.isEnterprise
           ? 'Enterprise custom_api_enabled is currently false. Admin must enable Custom API Access for this contract.'
           : 'REST API access requires PROFESSIONAL (100/day), SOVEREIGN (2,000/day), or ENTERPRISE with custom_api_enabled.',
-        code: quotas.isEnterprise ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET' : 'FEATURE_LOCKED',
+        code: quotas.packageExpired
+          ? 'LICENSE_EXPIRED'
+          : quotas.isEnterprise
+          ? 'ENTERPRISE_CONTRACT_LIMIT_UNSET'
+          : 'FEATURE_LOCKED',
         feature: 'apiAccess',
         requiredPlan: quotas.isEnterprise ? 'institutional' : 'pro',
       },
@@ -2652,11 +2778,10 @@ function enforceServerUserExpiry(rawEmail: string): ServerUserRecord {
   }
 
   const lock = evaluateLockState(user);
-  if (user.status !== lock.status) {
+  const targetLeft = lock.locked ? 0 : lock.analysesLeft;
+  if (user.status !== lock.status || user.analyses_left !== targetLeft) {
     user.status = lock.status;
-    if (lock.locked && lock.reason === 'expired') {
-      user.analyses_left = 0;
-    }
+    user.analyses_left = targetLeft;
     store.users[email] = user;
     persistStore(store);
   }
@@ -2769,7 +2894,7 @@ function updateServerUser(email: string, patch: Partial<ServerUserRecord>): Serv
   const updated: ServerUserRecord = {
     ...nextDraft,
     status: lock.status,
-    analyses_left: lock.locked && lock.reason === 'expired' ? 0 : analyses_left,
+    analyses_left: lock.locked ? 0 : lock.analysesLeft,
   };
   store.users[norm] = updated;
   persistStore(store);
@@ -2954,18 +3079,16 @@ async function applyCreditPackToUser(params: {
   const userRecord = hydratedDb || getOrCreateServerUser(email);
   const now = Date.now();
   const iso = new Date(now).toISOString();
-  const quotas = resolveEffectiveQuotas(userRecord);
-  const baseLimit = quotas.isEnterprise ? (quotas.analysesLimit ?? 0) : PLAN_DEFINITIONS[quotas.planKey].analysesLimit;
+  const quotas = resolveEffectiveQuotas(userRecord, now);
+  const lockBefore = evaluateLockState(userRecord, now);
+  const baseLimit = quotas.isEnterprise ? (parseOptionalPositiveInt(userRecord.custom_analyses_limit) ?? 0) : PLAN_DEFINITIONS[quotas.planKey].analysesLimit;
   const nextExtra = Math.max(0, Number(userRecord.extra_credits || 0)) + params.pack.credits;
-  const nextLeft = Math.max(0, Number(userRecord.analyses_left || 0)) + params.pack.credits;
+  const nextLeft = lockBefore.planAnalysesLeft + nextExtra;
   const currentTotal = Number(userRecord.analyses_total || 0);
   const nextTotal = Math.max(currentTotal, baseLimit) + params.pack.credits;
 
   const updatedUser = updateServerUser(email, {
-    status:
-      (userRecord.license_end && now > userRecord.license_end) || quotas.contractExpired
-        ? 'expired'
-        : 'active',
+    status: lockBefore.packageExpired ? 'expired' : 'active',
     extra_credits: nextExtra,
     analyses_left: nextLeft,
     analyses_total: nextTotal,
@@ -3182,22 +3305,26 @@ function recordUserAnalysis(
   }
   const now = Date.now();
   const iso = new Date(now).toISOString();
-  const quotas = resolveEffectiveQuotas(user);
+  const quotas = resolveEffectiveQuotas(user, now);
+  const lockBefore = evaluateLockState(user, now);
   const planCfg = PLAN_DEFINITIONS[quotas.planKey];
-  const baseLimit = quotas.isEnterprise ? (quotas.analysesLimit ?? 0) : planCfg.analysesLimit;
-  const extraCredits = Math.max(0, Number(user.extra_credits || 0));
+  const baseLimit = quotas.isEnterprise
+    ? parseOptionalPositiveInt(user.custom_analyses_limit) ?? 0
+    : planCfg.analysesLimit;
+  const currentExtraCredits = lockBefore.creditsBalance;
   const analysesTotal = Math.max(
     user.analyses_total > 0 ? user.analyses_total : baseLimit,
-    baseLimit + extraCredits
+    baseLimit + currentExtraCredits
   );
   const currentUsed = Math.max(0, Number(user.analyses_used || 0));
-  const currentLeft =
-    typeof user.analyses_left === 'number' && Number.isFinite(user.analyses_left)
-      ? Math.max(0, user.analyses_left)
-      : Math.max(0, analysesTotal - currentUsed);
   const cost = Math.max(0, Number.isFinite(creditCost) ? Math.round(creditCost) : 1);
+  // Deduction order: use active 30-day package analyses first, then non-expiring credits
+  const fromPlan = Math.min(cost, lockBefore.planAnalysesLeft);
+  const fromCredits = Math.max(0, cost - fromPlan);
+  const nextExtraCredits = Math.max(0, currentExtraCredits - fromCredits);
+  const nextPlanAnalysesLeft = Math.max(0, lockBefore.planAnalysesLeft - fromPlan);
   const nextUsed = currentUsed + cost;
-  const nextLeft = Math.max(0, currentLeft - cost);
+  const nextLeft = nextPlanAnalysesLeft + nextExtraCredits;
   const successfulNum = (user.successful_analyses || 0) + 1;
   const logEntry: ForensicAnalysisEntry = {
     id: `ana_${now}_${Math.random().toString(36).slice(2, 6)}`,
@@ -3208,7 +3335,7 @@ function recordUserAnalysis(
     id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
     timestamp: iso,
     type: 'analysis',
-    message: `Action #${successfulNum} (-${cost} ${cost === 1 ? 'credit' : 'credits'}) - ${entry.property} (${entry.city}) - ${entry.resultSummary}`,
+    message: `Action #${successfulNum} (-${cost} ${cost === 1 ? 'credit' : 'credits'}${fromCredits > 0 ? ` [${fromPlan} plan, ${fromCredits} extra]` : ''}) - ${entry.property} (${entry.city}) - ${entry.resultSummary}`,
     actor: user.email,
   };
 
@@ -3217,6 +3344,7 @@ function recordUserAnalysis(
     analyses_used: nextUsed,
     analyses_left: nextLeft,
     analyses_total: analysesTotal,
+    extra_credits: nextExtraCredits,
     successful_analyses: successfulNum,
     analyses_log: [logEntry, ...user.analyses_log].slice(0, 500),
     timeline: [timelineEntry, ...user.timeline].slice(0, 200),
@@ -3252,6 +3380,7 @@ function recordUserPdfDownload(
 function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStatus {
   const pricing = getPricingPublicPayload();
   const quotas = resolveEffectiveQuotas(user);
+  const lock = evaluateLockState(user);
   const planKey = quotas.planKey;
   const dynamicPlan = pricing.plansMap?.[planKey];
   const explicitTotal = quotas.isEnterprise
@@ -3262,19 +3391,19 @@ function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStat
     ? user.analyses_total
     : dynamicPlan?.analysesLimit;
   const effectiveEnd =
-    quotas.isEnterprise && quotas.contractEndMs !== null ? quotas.contractEndMs : user.license_end;
+    planKey === 'free'
+      ? null
+      : quotas.isEnterprise && quotas.contractEndMs !== null
+      ? quotas.contractEndMs
+      : user.license_end;
   return computeLicenseStatus({
     plan: user.plan,
     licenseStart: user.license_start,
     licenseEnd: effectiveEnd,
     analysesUsed: user.analyses_used,
-    analysesLeft: user.analyses_left,
+    analysesLeft: lock.analysesLeft,
     analysesLimitOverride: explicitTotal,
-    savedLimitOverride: quotas.isEnterprise
-      ? quotas.savedLimit ?? 0
-      : dynamicPlan?.savedLimit === null
-      ? Infinity
-      : dynamicPlan?.savedLimit,
+    savedLimitOverride: quotas.savedLimit ?? 0,
   });
 }
 
@@ -5574,6 +5703,7 @@ export default async function handler(req: any, res: any) {
             'buy-credits',
             'update-branding',
             'enterprise-inquiry',
+            'enterprise-request',
             'debug-plan',
             'run-analysis',
             'extract-from-file',
@@ -5722,10 +5852,11 @@ export default async function handler(req: any, res: any) {
             await saveUserToDb(dbUser).catch(() => {});
           }
         }
-        const analystThread = canUseFeature(license.planKey, 'analystDesk')
+        const featurePlanKey = getEffectiveFeaturePlanKey(dbUser);
+        const analystThread = canUseFeature(featurePlanKey, 'analystDesk')
           ? await getAnalystThreadFromDb(dbUser.email).catch(() => null)
           : null;
-        const allWhiteGlove = canUseFeature(license.planKey, 'customUnderwriting')
+        const allWhiteGlove = canUseFeature(featurePlanKey, 'customUnderwriting')
           ? await getWhiteGloveRequestsFromDb().catch(() => [])
           : [];
         const userWhiteGlove = Array.isArray(allWhiteGlove)
@@ -5740,9 +5871,26 @@ export default async function handler(req: any, res: any) {
         const todayUtc = new Date().toISOString().slice(0, 10);
         const apiCallsToday =
           dbUser.api_calls_day === todayUtc ? Math.max(0, Number(dbUser.api_calls_today || 0)) : 0;
+        const effectivePlanCfg = PLAN_DEFINITIONS[featurePlanKey];
+        const isFreePlan = license.planKey === 'free';
+        const effectiveExpiryMs = isFreePlan
+          ? null
+          : quotas.isEnterprise && quotas.contractEndMs !== null
+          ? quotas.contractEndMs
+          : dbUser.license_end;
 
         const quotaEnvelope = {
-          extra_credits: Math.max(0, Number(dbUser.extra_credits || 0)),
+          extra_credits: lockState.creditsBalance,
+          credits_balance: lockState.creditsBalance,
+          plan_analyses_left: lockState.planAnalysesLeft,
+          plan_status: lockState.status,
+          package_expired: lockState.packageExpired,
+          credits_only_mode: lockState.creditsOnlyMode,
+          purchase_date: isFreePlan ? null : dbUser.license_start,
+          expiry_date: effectiveExpiryMs,
+          expiry_date_formatted: lockState.expiryDateFormatted,
+          day29_reminder: lockState.day29Reminder,
+          expiry_banner: lockState.expiryBanner,
           image_pdf_used: Math.max(0, Number(dbUser.image_pdf_used || 0)),
           image_pdf_limit: quotas.imagePdfLimit ?? 0,
           ai_listings_used: Math.max(0, Number(dbUser.ai_listings_used || 0)),
@@ -5754,8 +5902,8 @@ export default async function handler(req: any, res: any) {
           team_users_limit: quotas.teamUsersLimit ?? 0,
           api_daily_limit: quotas.apiDailyLimit,
           api_calls_today: apiCallsToday,
-          monte_carlo_max_cycles: planCfg.monteCarloMaxCycles,
-          white_label_mode: quotas.whiteLabelEnabled ? planCfg.whiteLabelMode : 'none',
+          monte_carlo_max_cycles: effectivePlanCfg.monteCarloMaxCycles,
+          white_label_mode: quotas.whiteLabelEnabled ? effectivePlanCfg.whiteLabelMode : 'none',
           white_label_enabled: quotas.whiteLabelEnabled,
           custom_api_enabled: quotas.customApiEnabled,
           custom_analyses_limit: dbUser.custom_analyses_limit ?? null,
@@ -5790,8 +5938,8 @@ export default async function handler(req: any, res: any) {
           ...(lockState.error ? { error: lockState.error } : {}),
           price: planPrice,
           license_start: dbUser.license_start,
-          license_end: dbUser.license_end,
-          days_left: lockState.locked ? 0 : license.daysLeft,
+          license_end: effectiveExpiryMs,
+          days_left: isFreePlan || lockState.packageExpired ? 0 : license.daysLeft,
           analyses_total: license.analysesLimit,
           analyses_limit: license.analysesLimit,
           analyses_used: license.analysesUsed,
@@ -5821,7 +5969,7 @@ export default async function handler(req: any, res: any) {
           custom_cities: dbUser.custom_cities || [],
           features,
           capabilities: {
-            ...planCfg.capabilities,
+            ...effectivePlanCfg.capabilities,
             whiteLabelReports: quotas.whiteLabelEnabled,
             whiteLabelPlatform: quotas.whiteLabelPlatformEnabled,
             apiAccess: quotas.customApiEnabled,
@@ -5843,7 +5991,7 @@ export default async function handler(req: any, res: any) {
             lockReason: lockState.reason,
             lockError: lockState.error,
             license_start: dbUser.license_start,
-            license_end: dbUser.license_end,
+            license_end: effectiveExpiryMs,
             analyses_used: license.analysesUsed,
             analyses_left: lockState.analysesLeft,
             analyses_total: license.analysesLimit,
@@ -5872,7 +6020,7 @@ export default async function handler(req: any, res: any) {
           license: {
             ...license,
             analysesLeft: lockState.analysesLeft,
-            isExpired: lockState.reason === 'expired' || license.isExpired,
+            isExpired: lockState.packageExpired,
             savedLimit: maxSaved,
             isUnlimitedSaved: false,
           },
@@ -6528,7 +6676,8 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (body.useMonteCarlo === true && !canUseFeature(license.planKey, 'monteCarlo')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (body.useMonteCarlo === true && !canUseFeature(featurePlanKey, 'monteCarlo')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('monteCarlo'),
@@ -6636,9 +6785,9 @@ export default async function handler(req: any, res: any) {
         const uw = calculateServerUnderwriting(uwInputs);
         const capRate = uw.capRate;
         const cashOnCash = uw.cashOnCash;
-        const hasSensitivity = canUseFeature(license.planKey, 'yieldSensitivity');
-        const hasMonteCarlo = canUseFeature(license.planKey, 'monteCarlo');
-        const mcCycles = PLAN_DEFINITIONS[license.planKey].monteCarloMaxCycles || 1000;
+        const hasSensitivity = canUseFeature(featurePlanKey, 'yieldSensitivity');
+        const hasMonteCarlo = canUseFeature(featurePlanKey, 'monteCarlo');
+        const mcCycles = PLAN_DEFINITIONS[featurePlanKey].monteCarloMaxCycles || 1000;
 
         const sensitivity = hasSensitivity
           ? [-10, 0, 10].map((deltaPct) => {
@@ -6723,6 +6872,7 @@ export default async function handler(req: any, res: any) {
         );
         await saveUserToDb(updatedUser);
         const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLock = evaluateLockState(updatedUser);
         const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
         return res.status(200).json({
@@ -6733,9 +6883,14 @@ export default async function handler(req: any, res: any) {
           result: analysisResultPayload,
           results: analysisResultPayload,
           last_results: updatedUser.last_results || {},
-          analyses_left: nextLicense.analysesLeft,
+          analyses_left: nextLock.analysesLeft,
           analyses_total: nextLicense.analysesLimit,
           analyses_used: nextLicense.analysesUsed,
+          plan_analyses_left: nextLock.planAnalysesLeft,
+          extra_credits: nextLock.creditsBalance,
+          credits_balance: nextLock.creditsBalance,
+          package_expired: nextLock.packageExpired,
+          credits_only_mode: nextLock.creditsOnlyMode,
           successful_analyses: updatedUser.successful_analyses || 0,
           saved_count: updatedUser.saved_analyses.length,
           maxSaved: PLAN_DEFINITIONS[nextLicense.planKey].savedLimit,
@@ -6807,7 +6962,8 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (!canUseFeature(license.planKey, 'dealFinder')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (!canUseFeature(featurePlanKey, 'dealFinder')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('dealFinder'),
@@ -7097,7 +7253,8 @@ export default async function handler(req: any, res: any) {
         }
 
         // Basic 12M forecast unlocked on STARTER+; multi-year 3Y/5Y forecast unlocked on PROFESSIONAL+
-        if (!canUseFeature(license.planKey, 'forecastBasic')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (!canUseFeature(featurePlanKey, 'forecastBasic')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('forecastBasic'),
@@ -7118,7 +7275,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const hasAdvancedForecast = canUseFeature(license.planKey, 'forecastAdvanced');
+        const hasAdvancedForecast = canUseFeature(featurePlanKey, 'forecastAdvanced');
         const rawType = String(body.propertyType || 'Apartment').trim();
         const propertyType: 'Apartment' | 'Villa' | 'Commercial' =
           rawType === 'Villa' || rawType === 'Commercial' ? rawType : 'Apartment';
@@ -7373,7 +7530,8 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (!canUseFeature(license.planKey, 'dueDiligence')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (!canUseFeature(featurePlanKey, 'dueDiligence')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('dueDiligence'),
@@ -7766,7 +7924,8 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (!canUseFeature(license.planKey, 'globalOptimizer')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (!canUseFeature(featurePlanKey, 'globalOptimizer')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('globalOptimizer'),
@@ -8017,7 +8176,8 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (!canUseFeature(license.planKey, 'institutionalAdvisor')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (!canUseFeature(featurePlanKey, 'institutionalAdvisor')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('institutionalAdvisor'),
@@ -8221,7 +8381,8 @@ export default async function handler(req: any, res: any) {
             code: lockState.reason === 'expired' ? 'LICENSE_EXPIRED' : 'CREDITS_EXHAUSTED',
           });
         }
-        if (license.isExpired || !canUseFeature(license.planKey, 'monteCarlo')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (lockState.packageExpired || !canUseFeature(featurePlanKey, 'monteCarlo')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('monteCarlo'),
@@ -8230,7 +8391,7 @@ export default async function handler(req: any, res: any) {
             requiredPlan: 'starter',
           });
         }
-        const mcCycles = PLAN_DEFINITIONS[license.planKey].monteCarloMaxCycles || 1000;
+        const mcCycles = PLAN_DEFINITIONS[featurePlanKey].monteCarloMaxCycles || 1000;
         const monteCarlo = runServerMonteCarlo(
           {
             priceUSD: Number(body.priceUSD || 650000),
@@ -8433,7 +8594,8 @@ export default async function handler(req: any, res: any) {
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
-        if (license.isExpired || !canUseFeature(license.planKey, 'analystDesk')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (license.isExpired || !canUseFeature(featurePlanKey, 'analystDesk')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('analystDesk'),
@@ -8509,7 +8671,8 @@ export default async function handler(req: any, res: any) {
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
-        if (license.isExpired || !canUseFeature(license.planKey, 'customUnderwriting')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (license.isExpired || !canUseFeature(featurePlanKey, 'customUnderwriting')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('customUnderwriting'),
@@ -8592,7 +8755,8 @@ export default async function handler(req: any, res: any) {
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
-        if (license.isExpired || !canUseFeature(license.planKey, 'analystDesk')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (license.isExpired || !canUseFeature(featurePlanKey, 'analystDesk')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('analystDesk'),
@@ -8645,10 +8809,11 @@ export default async function handler(req: any, res: any) {
         const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
 
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
         if (license.isExpired) {
           return res.status(403).json({
             success: false,
-            error: 'Licensing window expired - Renew',
+            error: 'Your 30-day plan expired. Buy a plan to unlock exports. No auto-charge was made.',
             code: 'LICENSE_EXPIRED',
           });
         }
@@ -8668,7 +8833,7 @@ export default async function handler(req: any, res: any) {
             });
           }
         } else {
-          if (!canUseFeature(license.planKey, 'pdfExport')) {
+          if (!canUseFeature(featurePlanKey, 'pdfExport')) {
             return res.status(403).json({
               success: false,
               error: getUpgradeMessage('pdfExport'),
@@ -8677,7 +8842,7 @@ export default async function handler(req: any, res: any) {
               requiredPlan: 'starter',
             });
           }
-          if (docType === 'memorandum' && !canUseFeature(license.planKey, 'memorandumPdf')) {
+          if (docType === 'memorandum' && !canUseFeature(featurePlanKey, 'memorandumPdf')) {
             return res.status(403).json({
               success: false,
               error: getUpgradeMessage('memorandumPdf'),
@@ -8787,21 +8952,17 @@ export default async function handler(req: any, res: any) {
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) ||
           getOrCreateServerUser(email, { name: body.name });
-        const license = computeLicenseStatus({
-          plan: userRecord.plan,
-          licenseStart: userRecord.license_start,
-          licenseEnd: userRecord.license_end,
-          analysesUsed: userRecord.analyses_used,
-        });
+        const license = computeServerLicenseStatus(userRecord);
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
 
         if (license.isExpired) {
           return res.status(403).json({
-            error: 'Licensing window expired - Renew',
+            error: 'Your 30-day plan expired. Buy a plan to unlock portfolio aggregation. No auto-charge was made.',
             code: 'LICENSE_EXPIRED',
           });
         }
 
-        if (!canUseFeature(license.planKey, 'portfolioAggregation')) {
+        if (!canUseFeature(featurePlanKey, 'portfolioAggregation')) {
           return res.status(403).json({
             error: getUpgradeMessage('portfolioAggregation'),
             code: 'FEATURE_LOCKED',
@@ -9434,7 +9595,7 @@ export default async function handler(req: any, res: any) {
             {
               signal: controller.signal,
               headers: {
-                'User-Agent': 'AqariTerminal/1.0 (https://aqari-ai-rho.vercel.app; azzamalshmale@gmail.com)',
+                'User-Agent': 'AqariTerminal/1.0 (https://aqari-ai-rho.vercel.app; loomorastudios@gmail.com)',
                 'Accept-Language': 'en,ar',
               },
             }
@@ -9527,7 +9688,7 @@ export default async function handler(req: any, res: any) {
             {
               signal: controller.signal,
               headers: {
-                'User-Agent': 'AqariTerminal/1.0 (https://aqari-ai-rho.vercel.app; azzamalshmale@gmail.com)',
+                'User-Agent': 'AqariTerminal/1.0 (https://aqari-ai-rho.vercel.app; loomorastudios@gmail.com)',
                 'Accept-Language': 'en,ar',
               },
             }
@@ -10536,9 +10697,9 @@ export default async function handler(req: any, res: any) {
             yearByYear: uw.yearByYear,
             warnings: uw.warnings,
             sensitivity: null,
-            monteCarlo: canUseFeature(license.planKey, 'monteCarlo')
+            monteCarlo: canUseFeature(getEffectiveFeaturePlanKey(userRecord), 'monteCarlo')
               ? runServerMonteCarlo(uw.inputs, {
-                  cycles: PLAN_DEFINITIONS[license.planKey].monteCarloMaxCycles || 1000,
+                  cycles: PLAN_DEFINITIONS[getEffectiveFeaturePlanKey(userRecord)].monteCarloMaxCycles || 1000,
                 })
               : null,
           },
@@ -10624,7 +10785,8 @@ export default async function handler(req: any, res: any) {
 
         const isVirtual = body.isVirtual !== false;
         const docType = body.docType === 'memorandum' ? 'memorandum' : 'listing';
-        if (docType === 'memorandum' && !canUseFeature(license.planKey, 'memorandumPdf')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (docType === 'memorandum' && !canUseFeature(featurePlanKey, 'memorandumPdf')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('memorandumPdf'),
@@ -11026,7 +11188,8 @@ STRICT GUARDRAILS:
             displayName: license.displayName,
           });
         }
-        if (!canUseFeature(license.planKey, 'dueDiligence')) {
+        const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
+        if (!canUseFeature(featurePlanKey, 'dueDiligence')) {
           return res.status(403).json({
             success: false,
             error: getUpgradeMessage('dueDiligence'),
@@ -11803,13 +11966,14 @@ Return JSON with:
         });
       }
 
+      case 'enterprise-request':
       case 'enterprise-inquiry': {
         if (req.method !== 'POST') {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
         const companyName = String(body.companyName || body.firmName || '').trim().slice(0, 120);
-        const contactEmail = normalizeEmail(body.email || getSessionEmailFromReq(req) || '');
+        const contactEmail = normalizeEmail(body.email || '');
         const seats = Math.max(1, Math.min(500, Math.round(Number(body.seats || 50))));
         const assetsCount = Math.max(1, Math.min(10000, Math.round(Number(body.assetsCount || 1000))));
         const notes = String(body.notes || '').trim().slice(0, 2000);
@@ -11817,7 +11981,7 @@ Return JSON with:
         if (!companyName || !contactEmail || !contactEmail.includes('@')) {
           return res.status(400).json({
             success: false,
-            error: 'Organization / Company Name and a valid contact email are required.',
+            error: 'Organization / Company Name and a valid Corporate Email are required.',
           });
         }
 
@@ -11857,16 +12021,16 @@ Return JSON with:
         }
 
         await dispatchEmailAlert({
-          to: getAdminEmail(),
+          to: 'loomorastudios@gmail.com',
           subject: `AQARI ENTERPRISE Contract Inquiry (${inquiry.id}) - ${companyName}`,
-          text: `Organization: ${companyName}\nEmail: ${contactEmail}\nRequested Seats (Custom per contract): ${seats}\nPortfolio Assets Scope (Custom per contract): ${assetsCount}\nNotes:\n${notes || 'N/A'}\nSubmitted: ${inquiry.createdAt}`,
+          text: `Organization: ${companyName}\nCorporate Email: ${contactEmail}\nRequested Seats (Custom per contract): ${seats}\nPortfolio Assets Scope (Custom per contract): ${assetsCount}\nNotes:\n${notes || 'N/A'}\nSubmitted: ${inquiry.createdAt}`,
           eventType: 'enterprise_inquiry',
         }).catch(() => {});
 
         return res.status(200).json({
           success: true,
           inquiry,
-          message: `Enterprise contract request received (${inquiry.id}). Our institutional team will respond within 24 hours with a tailored SLA proposal.`,
+          message: 'Request sent. We will contact you within 24h at your Corporate Email.',
         });
       }
 
@@ -11897,6 +12061,7 @@ Return JSON with:
             'buy-credits',
             'update-branding',
             'enterprise-inquiry',
+            'enterprise-request',
             'get-last-results',
             'clear-last-result',
             'underwrite',

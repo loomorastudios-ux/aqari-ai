@@ -57,11 +57,15 @@ export const LimitModal: React.FC<LimitModalProps> = ({
 
   const launchActive = pricingData?.launchDiscountActive ?? true;
   const launchEndsAt = pricingData?.launchEndsAt || new Date('2026-11-28T23:59:59Z').getTime();
-  const launchEndDateStr = new Date(launchEndsAt).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
+  const formatDDMMYYYY = (ms: number): string => {
+    const d = new Date(ms);
+    if (Number.isNaN(d.getTime())) return '';
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const yyyy = d.getUTCFullYear();
+    return `${dd}/${mm}/${yyyy}`;
+  };
+  const launchEndDateStr = formatDDMMYYYY(launchEndsAt);
 
   if (mode === 'enterprise_showcase') {
     return (
@@ -90,7 +94,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
               Enterprise showcase. Upgrade to Enterprise to unlock Portfolio Optimization + Custom Risk Models.
             </p>
             <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 text-xs font-mono text-zinc-400">
-              Custom limits, ERP/CRM integrations, White Label platform, and dedicated SLA configured per contract ($1,499/mo launch starting price).
+              Custom limits, ERP/CRM integrations, White Label platform, and dedicated SLA configured per contract ($1,499/30-day one-time launch starting price • No auto-renew).
             </div>
 
             <div className="pt-2 flex flex-col sm:flex-row gap-3 justify-center">
@@ -129,8 +133,27 @@ export const LimitModal: React.FC<LimitModalProps> = ({
 
   const planKey = normalizePlanKey(user?.plan || 'free');
   const planDisplay = PLANS[planKey].displayName;
+  const creditsBalance = Math.max(0, Number(user?.creditsBalance ?? user?.extraCredits ?? 0));
+  const endsAt = user?.subscriptionEndsAt ?? user?.subscriptionExpiry ?? null;
+  const isPackageExpired =
+    planKey !== 'free' &&
+    (Boolean(user?.packageExpired) ||
+      user?.status === 'expired' ||
+      user?.subscriptionStatus === 'expired' ||
+      Boolean(endsAt && Date.now() > endsAt));
+  const isCreditsOnly = isPackageExpired && creditsBalance > 0;
+  const expiryDateStr = user?.expiryDateFormatted || (endsAt ? formatDDMMYYYY(endsAt) : '');
   const creditsLeft = Math.max(0, Number(user?.analysesLeft ?? 0));
   const creditsTotal = Math.max(1, Number(user?.analysesTotal ?? (PLANS[planKey].analysesLimit || creditsLeft || 1)));
+
+  const statusHeadline =
+    planKey === 'free' && creditsLeft <= 0
+      ? 'You used your 3 free analyses. Buy a plan or credits to continue.'
+      : isCreditsOnly
+      ? `Your ${planDisplay} plan expired. You still have ${creditsBalance} Credits. Buy a plan to unlock full features, or continue with credits.`
+      : isPackageExpired
+      ? `Your ${planDisplay} expired${expiryDateStr ? ` on ${expiryDateStr}` : ''}. Renew to continue. No auto-charge was made.`
+      : `Balance on ${planDisplay}: ${creditsLeft} / ${creditsTotal} analyses remaining.`;
 
   const starterPlan = findPlanPricing(pricingData, 'starter');
   const proPlan = findPlanPricing(pricingData, 'pro');
@@ -179,7 +202,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
       await openPaddleCreditPackCheckout({
         packId,
         email: user.email,
-        userId: user.id || user.googleId,
+        userId: user.id || user?.googleId,
         refundAcceptedAt: new Date().toISOString(),
         onVerified: (data) => {
           setBuyingPackId(null);
@@ -218,15 +241,13 @@ export const LimitModal: React.FC<LimitModalProps> = ({
             <Lock className="w-7 h-7 text-[#D4AF37]" />
           </div>
           <span className="px-3 py-1 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-mono font-bold uppercase tracking-wider">
-            {planDisplay} Credits / Quota Reached
+            {isPackageExpired ? `${planDisplay} 30-Day Pass Expired` : `${planDisplay} Quota / Upgrade`}
           </span>
           <h3 className="text-2xl sm:text-3xl font-bold tracking-tight text-white mt-2">
-            Upgrade Tier or Add Extra Credits
+            Buy a 30-Day Plan or Non-Expiring Credits
           </h3>
-          <p className="text-sm text-zinc-400 mt-2 max-w-md mx-auto">
-            Balance on <strong className="text-white font-mono">{planDisplay}</strong>:{' '}
-            <strong className="text-[#D4AF37] font-mono">{creditsLeft} / {creditsTotal}</strong> AI credits remaining.
-            Upgrade below or add an extra credit pack.
+          <p className="text-sm text-zinc-300 mt-2 max-w-lg mx-auto font-mono leading-relaxed tabular-nums">
+            {statusHeadline}
           </p>
         </div>
 
@@ -234,7 +255,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
         <div className="mb-5 p-3.5 rounded-2xl bg-white/[0.03] border border-[#D4AF37]/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
           <div className="flex items-center gap-2 text-xs font-mono text-zinc-200">
             <Coins className="w-4 h-4 text-[#D4AF37] shrink-0" />
-            <span>Buy Extra AI Credits:</span>
+            <span>Buy Extra Credits (Never Expire):</span>
           </div>
           <div className="flex flex-wrap gap-2">
             {EXTRA_CREDIT_PACKS.map((pk) => (
@@ -243,7 +264,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
                 type="button"
                 disabled={buyingPackId === pk.id}
                 onClick={() => handleBuyCreditPack(pk.id)}
-                className="px-2.5 py-1.5 rounded-lg bg-[#D4AF37]/15 hover:bg-[#D4AF37]/25 border border-[#D4AF37]/40 text-[#D4AF37] text-[11px] font-mono font-bold cursor-pointer"
+                className="px-2.5 py-1.5 rounded-lg bg-[#D4AF37]/15 hover:bg-[#D4AF37]/25 border border-[#D4AF37]/40 text-[#D4AF37] text-[11px] font-mono font-bold cursor-pointer tabular-nums"
               >
                 {buyingPackId === pk.id ? (
                   <Loader2 className="w-3 h-3 animate-spin" />
@@ -267,20 +288,20 @@ export const LimitModal: React.FC<LimitModalProps> = ({
                 <span className="font-bold text-white text-base">PROFESSIONAL</span>
                 <Zap className="w-4 h-4 text-[#D4AF37]" />
               </div>
-              <div className="text-2xl font-black font-mono text-white mb-1">
+              <div className="text-2xl font-black font-mono text-white mb-1 tabular-nums">
                 {launchActive && proOrigUSD > proUSD && (
                   <span className="text-xs text-zinc-500 line-through mr-2">
                     {formatPrice(proOrigUSD, currentCurrency)}
                   </span>
                 )}
                 {formatPrice(proUSD, currentCurrency)}
-                <span className="text-xs font-normal text-zinc-400 font-sans"> / 30 days</span>
+                <span className="text-xs font-normal text-zinc-400 font-sans"> / 30 days (one-time)</span>
               </div>
-              <div className="text-[10px] font-mono text-amber-200/90 mb-2">
-                Renews at {formatPrice(proOrigUSD, currentCurrency)}/mo after launch (ends {launchEndDateStr})
+              <div className="text-[10px] font-mono text-amber-200/90 mb-2 tabular-nums">
+                30-day one-time pass • No auto-renew • Launch price ends {launchEndDateStr} (standard {formatPrice(proOrigUSD, currentCurrency)})
               </div>
               <p className="text-xs text-zinc-300 font-mono mb-3">
-                {proAnalyses} Analyses/mo • AI Due Diligence • Portfolio Optimizer • Memorandum PDF • Limited API (100/day)
+                {proAnalyses} Analyses / 30d • AI Due Diligence • Portfolio Optimizer • Memorandum PDF • Limited API (100/day)
               </p>
             </div>
 
@@ -289,7 +310,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
                 onClick={() => handlePaddleCheckout('pro')}
                 className="w-full py-2.5 px-3 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
               >
-                <span>Unlock PROFESSIONAL</span>
+                <span>Buy PRO</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -300,19 +321,19 @@ export const LimitModal: React.FC<LimitModalProps> = ({
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="font-bold text-white text-base">STARTER</span>
-                <span className="text-[10px] text-zinc-400 font-mono">{starterAnalyses} ANALYSES/MO</span>
+                <span className="text-[10px] text-zinc-400 font-mono">{starterAnalyses} ANALYSES / 30D</span>
               </div>
-              <div className="text-2xl font-black font-mono text-white mb-1">
+              <div className="text-2xl font-black font-mono text-white mb-1 tabular-nums">
                 {launchActive && starterOrigUSD > starterUSD && (
                   <span className="text-xs text-zinc-500 line-through mr-2">
                     {formatPrice(starterOrigUSD, currentCurrency)}
                   </span>
                 )}
                 {formatPrice(starterUSD, currentCurrency)}
-                <span className="text-xs font-normal text-zinc-400 font-sans"> / 30 days</span>
+                <span className="text-xs font-normal text-zinc-400 font-sans"> / 30 days (one-time)</span>
               </div>
-              <div className="text-[10px] font-mono text-amber-200/90 mb-2">
-                Renews at {formatPrice(starterOrigUSD, currentCurrency)}/mo after launch (ends {launchEndDateStr})
+              <div className="text-[10px] font-mono text-amber-200/90 mb-2 tabular-nums">
+                30-day one-time pass • No auto-renew • Launch price ends {launchEndDateStr} (standard {formatPrice(starterOrigUSD, currentCurrency)})
               </div>
               <p className="text-xs text-zinc-400 font-mono mb-3">
                 DSCR, Cash-on-Cash, IRR, 5 Investment PDFs, Deal Finder, Market Radar &amp; MC 1,000 cycles.
@@ -324,7 +345,7 @@ export const LimitModal: React.FC<LimitModalProps> = ({
                 onClick={() => handlePaddleCheckout('starter')}
                 className="w-full py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs font-mono uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer"
               >
-                <span>Unlock STARTER</span>
+                <span>Buy STARTER</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
               <div className="text-[10px] font-mono text-zinc-400 text-center">

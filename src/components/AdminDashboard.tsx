@@ -90,10 +90,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [refundOnly, setRefundOnly] = useState(false);
 
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
-  const [newPlan, setNewPlan] = useState<'free' | 'starter' | 'pro' | 'enterprise'>('free');
+  const [newPlan, setNewPlan] = useState<'free' | 'starter' | 'pro' | 'enterprise' | 'institutional'>('free');
   const [planReason, setPlanReason] = useState('');
   const [refundNotes, setRefundNotes] = useState('');
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [entAnalysesLimit, setEntAnalysesLimit] = useState('');
+  const [entImagePdfLimit, setEntImagePdfLimit] = useState('');
+  const [entListingsLimit, setEntListingsLimit] = useState('');
+  const [entPortfolioLimit, setEntPortfolioLimit] = useState('');
+  const [entSeats, setEntSeats] = useState('');
+  const [entStorageGb, setEntStorageGb] = useState('');
+  const [entSlaLevel, setEntSlaLevel] = useState('');
+  const [entContractEndDate, setEntContractEndDate] = useState('');
+  const [entWhiteLabelEnabled, setEntWhiteLabelEnabled] = useState(false);
+  const [entCustomApiEnabled, setEntCustomApiEnabled] = useState(false);
+  const [entExtraCredits, setEntExtraCredits] = useState('');
+  const [entOverrideReason, setEntOverrideReason] = useState('');
+  const [savingEntLimits, setSavingEntLimits] = useState(false);
 
   // Analyst Desk Inbox state
   const [analystThreads, setAnalystThreads] = useState<AnalystThread[]>([]);
@@ -491,8 +504,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   useEffect(() => {
     const em = (currentUser?.email || '').toLowerCase();
-    if (!em || em !== 'azzamalshmale@gmail.com') {
-      onRedirectHome('403 Forbidden: Restricted to azzamalshmale@gmail.com');
+    if (!em || (em !== 'loomorastudios@gmail.com' && em !== 'azzamalshmale@gmail.com')) {
+      onRedirectHome('403 Forbidden: Restricted to loomorastudios@gmail.com');
       return;
     }
     loadUsers();
@@ -580,12 +593,72 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       });
       if (res.ok) {
         const data = await res.json();
-        setSelectedUser(data.user);
-        setNewPlan(data.user.plan || 'free');
+        const u = data.user;
+        setSelectedUser(u);
+        setNewPlan(u.plan || 'free');
         setPlanReason('');
         setRefundNotes('');
+        setEntAnalysesLimit(u.custom_analyses_limit !== null && u.custom_analyses_limit !== undefined ? String(u.custom_analyses_limit) : '');
+        setEntImagePdfLimit(u.custom_image_pdf_limit !== null && u.custom_image_pdf_limit !== undefined ? String(u.custom_image_pdf_limit) : '');
+        setEntListingsLimit(u.custom_listings_limit !== null && u.custom_listings_limit !== undefined ? String(u.custom_listings_limit) : '');
+        setEntPortfolioLimit(u.custom_portfolio_limit !== null && u.custom_portfolio_limit !== undefined ? String(u.custom_portfolio_limit) : '');
+        setEntSeats(u.custom_seats !== null && u.custom_seats !== undefined ? String(u.custom_seats) : '');
+        setEntStorageGb(u.custom_storage_gb !== null && u.custom_storage_gb !== undefined ? String(u.custom_storage_gb) : '');
+        setEntSlaLevel(u.sla_level ? String(u.sla_level) : '');
+        setEntContractEndDate(u.contract_end_date ? String(u.contract_end_date) : '');
+        setEntWhiteLabelEnabled(Boolean(u.white_label_enabled));
+        setEntCustomApiEnabled(Boolean(u.custom_api_enabled));
+        setEntExtraCredits(u.extra_credits !== undefined && u.extra_credits !== null ? String(u.extra_credits) : '0');
+        setEntOverrideReason('');
       }
     } catch {}
+  };
+
+  const handleSaveEnterpriseLimits = async () => {
+    if (!selectedUser) return;
+    setSavingEntLimits(true);
+    setActionMsg(null);
+    const parseOptNum = (v: string) => {
+      const t = v.trim();
+      if (!t) return null;
+      const n = Number(t);
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+    };
+    try {
+      const res = await fetch('/api/admin?action=user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          operation: 'update_enterprise_limits',
+          email: selectedUser.email,
+          custom_analyses_limit: parseOptNum(entAnalysesLimit),
+          custom_image_pdf_limit: parseOptNum(entImagePdfLimit),
+          custom_listings_limit: parseOptNum(entListingsLimit),
+          custom_portfolio_limit: parseOptNum(entPortfolioLimit),
+          custom_seats: parseOptNum(entSeats),
+          custom_storage_gb: parseOptNum(entStorageGb),
+          sla_level: entSlaLevel.trim() || null,
+          contract_end_date: entContractEndDate.trim() || null,
+          white_label_enabled: entWhiteLabelEnabled,
+          custom_api_enabled: entCustomApiEnabled,
+          extra_credits: parseOptNum(entExtraCredits) ?? 0,
+          reason: entOverrideReason.trim() || 'Admin Enterprise Contract & Credits update',
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.success) {
+        setActionMsg('Enterprise contract overrides & extra credits saved.');
+        await openUserDetail(selectedUser.email);
+        await loadUsers();
+      } else {
+        setActionMsg(data?.error || 'Failed to update enterprise limits.');
+      }
+    } catch {
+      setActionMsg('Network error updating enterprise limits.');
+    } finally {
+      setSavingEntLimits(false);
+    }
   };
 
   const handleChangePlan = async () => {
@@ -666,8 +739,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </h1>
             <p className="text-xs font-mono text-zinc-400 mt-1">
               Authenticated Owner: {currentUser?.email} • Support Contact:{' '}
-              <a href="mailto:azzamalshmale@gmail.com" className="text-[#D4AF37] underline">
-                azzamalshmale@gmail.com
+              <a href="mailto:loomorastudios@gmail.com" className="text-[#D4AF37] underline">
+                loomorastudios@gmail.com
               </a>{' '}
               • Immutable usage &amp; refund policy logs
             </p>
@@ -1044,6 +1117,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <option value="starter">STARTER</option>
             <option value="pro">PROFESSIONAL</option>
             <option value="enterprise">SOVEREIGN</option>
+            <option value="institutional">ENTERPRISE (Contract)</option>
           </select>
 
           <select
@@ -2094,6 +2168,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <option value="starter">STARTER</option>
                   <option value="pro">PROFESSIONAL</option>
                   <option value="enterprise">SOVEREIGN</option>
+                  <option value="institutional">ENTERPRISE (Contract)</option>
                 </select>
                 <input
                   type="text"
@@ -2107,6 +2182,172 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   className="px-4 py-2 rounded-xl bg-[#D4AF37] text-black font-bold cursor-pointer"
                 >
                   Apply Audited Change
+                </button>
+              </div>
+            </div>
+
+            {/* Enterprise Custom Contract Overrides (10 fields) & Non-Expiring Extra Credits */}
+            <div className="p-4 rounded-2xl bg-[#D4AF37]/[0.04] border border-[#D4AF37]/30 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-xs font-mono font-bold text-[#D4AF37] uppercase">
+                  Enterprise Custom Contract Overrides &amp; Extra Credits
+                </div>
+                <span className="text-[10px] font-mono text-zinc-400">
+                  Null fields enforce Enterprise contract lock until set by Admin
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 text-xs font-mono">
+                <label className="space-y-1">
+                  <span className="text-[10px] text-zinc-400 block">Custom Analyses Limit</span>
+                  <input
+                    type="number"
+                    min="0"
+                    dir="ltr"
+                    lang="en"
+                    value={entAnalysesLimit}
+                    onChange={(e) => setEntAnalysesLimit(e.target.value.replace(/[^\d]/g, ''))}
+                    placeholder="null"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white tabular-nums"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] text-zinc-400 block">Custom Image/PDF Limit</span>
+                  <input
+                    type="number"
+                    min="0"
+                    dir="ltr"
+                    lang="en"
+                    value={entImagePdfLimit}
+                    onChange={(e) => setEntImagePdfLimit(e.target.value.replace(/[^\d]/g, ''))}
+                    placeholder="null"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white tabular-nums"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] text-zinc-400 block">Custom AI Listings Limit</span>
+                  <input
+                    type="number"
+                    min="0"
+                    dir="ltr"
+                    lang="en"
+                    value={entListingsLimit}
+                    onChange={(e) => setEntListingsLimit(e.target.value.replace(/[^\d]/g, ''))}
+                    placeholder="null"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white tabular-nums"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] text-zinc-400 block">Custom Portfolio Limit</span>
+                  <input
+                    type="number"
+                    min="0"
+                    dir="ltr"
+                    lang="en"
+                    value={entPortfolioLimit}
+                    onChange={(e) => setEntPortfolioLimit(e.target.value.replace(/[^\d]/g, ''))}
+                    placeholder="null"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white tabular-nums"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] text-zinc-400 block">Custom Team Seats</span>
+                  <input
+                    type="number"
+                    min="0"
+                    dir="ltr"
+                    lang="en"
+                    value={entSeats}
+                    onChange={(e) => setEntSeats(e.target.value.replace(/[^\d]/g, ''))}
+                    placeholder="null"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white tabular-nums"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] text-zinc-400 block">Custom Storage (GB)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    dir="ltr"
+                    lang="en"
+                    value={entStorageGb}
+                    onChange={(e) => setEntStorageGb(e.target.value.replace(/[^\d]/g, ''))}
+                    placeholder="null"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white tabular-nums"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] text-zinc-400 block">SLA Level</span>
+                  <input
+                    type="text"
+                    value={entSlaLevel}
+                    onChange={(e) => setEntSlaLevel(e.target.value)}
+                    placeholder="e.g. 99.9% Dedicated"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] text-zinc-400 block">Contract End Date</span>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    lang="en"
+                    value={entContractEndDate}
+                    onChange={(e) => setEntContractEndDate(e.target.value)}
+                    placeholder="DD/MM/YYYY or ISO"
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-white/10 text-white tabular-nums"
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] text-emerald-300 block">Extra Credits (Never Expire)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    dir="ltr"
+                    lang="en"
+                    value={entExtraCredits}
+                    onChange={(e) => setEntExtraCredits(e.target.value.replace(/[^\d]/g, ''))}
+                    className="w-full px-2.5 py-1.5 rounded-lg bg-black/60 border border-emerald-500/30 text-emerald-300 font-bold tabular-nums"
+                  />
+                </label>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4 text-xs font-mono text-zinc-200">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={entWhiteLabelEnabled}
+                    onChange={(e) => setEntWhiteLabelEnabled(e.target.checked)}
+                    className="accent-[#D4AF37]"
+                  />
+                  <span>White-Label Enabled</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={entCustomApiEnabled}
+                    onChange={(e) => setEntCustomApiEnabled(e.target.checked)}
+                    className="accent-[#D4AF37]"
+                  />
+                  <span>Custom API Enabled</span>
+                </label>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+                <input
+                  type="text"
+                  value={entOverrideReason}
+                  onChange={(e) => setEntOverrideReason(e.target.value)}
+                  placeholder="Contract / Credits override note..."
+                  className="flex-1 min-w-[200px] px-3 py-2 rounded-xl bg-black/60 border border-white/10 text-white"
+                />
+                <button
+                  type="button"
+                  disabled={savingEntLimits}
+                  onClick={handleSaveEnterpriseLimits}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold cursor-pointer disabled:opacity-50"
+                >
+                  {savingEntLimits ? 'Saving...' : 'Save Contract & Credits'}
                 </button>
               </div>
             </div>

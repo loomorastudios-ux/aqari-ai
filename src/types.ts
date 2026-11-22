@@ -169,6 +169,13 @@ export interface User {
   analysesUsed: number;
   successfulAnalyses?: number;
   extraCredits?: number;
+  creditsBalance?: number;
+  planAnalysesLeft?: number;
+  packageExpired?: boolean;
+  creditsOnlyMode?: boolean;
+  day29Reminder?: boolean;
+  expiryBanner?: string | null;
+  expiryDateFormatted?: string | null;
   imagePdfUsed?: number;
   imagePdfLimit?: number;
   aiListingsUsed?: number;
