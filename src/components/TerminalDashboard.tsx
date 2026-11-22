@@ -1514,7 +1514,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     if (matched && q === formatCityOptionLabel(matched)) {
       return searchCities(matched.city, 25);
     }
-    if (q.length >= 2) {
+    if (q.length >= 1) {
       return searchCities(q, 25);
     }
     const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
@@ -1523,10 +1523,10 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
   const wgCityOptions = useMemo(() => {
     const q = wgTargetCity.trim();
-    if (q.length >= 2 && !resolveCityFromInput(q)) {
+    if (q.length >= 1 && !resolveCityFromInput(q)) {
       return searchCities(q, 20);
     }
-    if (q.length >= 2) {
+    if (q.length >= 1) {
       const m = resolveCityFromInput(q);
       if (m && q === formatCityOptionLabel(m)) return searchCities(m.city, 15);
       return searchCities(q, 20);
@@ -1553,7 +1553,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     if (matched && q === formatCityOptionLabel(matched)) {
       return searchCities(matched.city, 25);
     }
-    if (q.length >= 2) {
+    if (q.length >= 1) {
       return searchCities(q, 25);
     }
     const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
@@ -1581,8 +1581,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
     const cityEntry = resolveCityFromInput(dfCityComboInput);
     if (!cityEntry) {
-      setDfError('City not supported yet. Choose from list.');
-      showToast('City not supported yet. Choose from list.');
+      setDfError('City not found, please select from list');
+      showToast('City not found, please select from list');
       return;
     }
     if (!Number.isFinite(dfBudgetUSD) || dfBudgetUSD <= 0 || !Number.isFinite(dfMinCapPct) || dfMinCapPct <= 0) {
@@ -1602,6 +1602,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           login_email: user.email,
           name: user.name,
           city: cityEntry.city,
+          city_id: cityEntry.city_id,
           budget: dfBudgetUSD,
           minCapRate: dfMinCapPct,
           propertyType: dfPropType,
@@ -1660,7 +1661,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     if (matched && q === formatCityOptionLabel(matched)) {
       return searchCities(matched.city, 25);
     }
-    if (q.length >= 2) {
+    if (q.length >= 1) {
       return searchCities(q, 25);
     }
     const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
@@ -1689,8 +1690,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
     const cityEntry = resolveCityFromInput(fcCityComboInput);
     if (!cityEntry) {
-      setFcError('City not supported yet. Choose from list.');
-      showToast('City not supported yet. Choose from list.');
+      setFcError('City not found, please select from list');
+      showToast('City not found, please select from list');
       return;
     }
 
@@ -1706,6 +1707,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           login_email: user.email,
           name: user.name,
           city: cityEntry.city,
+          city_id: cityEntry.city_id,
           propertyType: fcPropType,
           period: fcPeriod,
         }),
@@ -1916,7 +1918,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     if (matched && q === formatCityOptionLabel(matched)) {
       return searchCities(matched.city, 25);
     }
-    if (q.length >= 2) {
+    if (q.length >= 1) {
       return searchCities(q, 25);
     }
     const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
@@ -1945,8 +1947,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
     const cityEntry = resolveCityFromInput(ddCityComboInput);
     if (!cityEntry) {
-      setDdError('City not supported yet. Choose from list.');
-      showToast('City not supported yet. Choose from list.');
+      setDdError('City not found, please select from list');
+      showToast('City not found, please select from list');
       return;
     }
     if (!Number.isFinite(ddPriceUSD) || ddPriceUSD <= 0 || !Number.isFinite(ddRentUSD) || ddRentUSD <= 0) {
@@ -1966,6 +1968,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           login_email: user.email,
           name: user.name,
           city: cityEntry.city,
+          city_id: cityEntry.city_id,
           propertyType: ddPropType,
           price: ddPriceUSD,
           monthlyRent: ddRentUSD,
@@ -2165,7 +2168,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   // --- Global Portfolio Optimizer options & handlers (SOVEREIGN ONLY) ---
   const optCityOptions = useMemo(() => {
     const q = optCityComboInput.trim();
-    if (q.length >= 2) {
+    if (q.length >= 1) {
       return searchCities(q, 25);
     }
     const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
@@ -2430,7 +2433,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     if (matched && q === formatCityOptionLabel(matched)) {
       return searchCities(matched.city, 25);
     }
-    if (q.length >= 2) {
+    if (q.length >= 1) {
       return searchCities(q, 25);
     }
     const defaults = ['Muscat', 'Dubai', 'Riyadh', 'London', 'New York', 'Singapore', 'Miami', 'Doha', 'Abu Dhabi', 'Cairo'];
@@ -2459,8 +2462,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     }
     const cityEntry = resolveCityFromInput(advCityComboInput);
     if (!cityEntry) {
-      setAdvError('City not supported yet. Choose from list.');
-      showToast('City not supported yet. Choose from list.');
+      setAdvError('City not found, please select from list');
+      showToast('City not found, please select from list');
       return;
     }
     if (advQuestion.trim().length < 4) {
@@ -2485,6 +2488,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           name: user.name,
           question: advQuestion.trim(),
           city: cityEntry.city,
+          city_id: cityEntry.city_id,
           budget: advBudgetUSD,
         }),
       });
@@ -2920,7 +2924,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     if (!canAnalystDesk || !user?.email) return;
     try {
       const res = await fetch(
-        `/api/app?action=analyst-chat&email=${encodeURIComponent(user.email)}&t=${Date.now()}`,
+        `/api/app?action=analyst-message&email=${encodeURIComponent(user.email)}&t=${Date.now()}`,
         { credentials: 'include' }
       );
       if (res.ok) {
@@ -2947,7 +2951,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     const attachedObj = (user.savedAnalyses || []).find((s) => s.id === analystAttachedId) || null;
     setIsSendingAnalystMsg(true);
     try {
-      const res = await fetch('/api/app?action=analyst-chat', {
+      const res = await fetch('/api/app?action=analyst-message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
@@ -3049,7 +3053,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
             source: d.source || 'FRED / World Bank / ExchangeRate API',
             last_updated: d.last_updated || marketLive?.last_synced_display || 'Today',
             data_as_of: d.data_as_of || new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }),
-            real_estate_note: d.real_estate_note || 'Estimated / Demo data - بيانات تقديرية',
+            real_estate_note: d.real_estate_note || 'Estimated / Demo data',
           });
         }
       })
@@ -3060,7 +3064,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   useEffect(() => {
     if (!isAddCityOpen) return;
     const q = cityQuery.trim();
-    if (q.length < 2) {
+    if (q.length < 1) {
       setCitySuggestions([]);
       return;
     }
@@ -3085,7 +3089,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   const handleAnalyzeCustomCity = async (explicitName?: string) => {
     const targetCity = (explicitName || cityQuery).trim();
     if (!targetCity) {
-      setCityError('City not found, try another spelling - المدينة غير موجودة، جرب تهجئة ثانية');
+      setCityError('City not found, please select from list');
       return;
     }
 
@@ -3117,7 +3121,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           onOpenRenewal();
         }
         setCityError(
-          data?.error || 'City not found, try another spelling - المدينة غير موجودة، جرب تهجئة ثانية'
+          data?.error || 'City not found, please select from list'
         );
         return;
       }
@@ -3156,7 +3160,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       setCitySuggestions([]);
       showToast(`Added ${card.city} (${card.grossYield}% Gross Estimated) • 1 credit deducted`);
     } catch {
-      setCityError('City not found, try another spelling - المدينة غير موجودة، جرب تهجئة ثانية');
+      setCityError('City not found, please select from list');
     } finally {
       setIsAnalyzingCity(false);
     }
@@ -3195,7 +3199,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
     const validatedCity = resolveCityFromInput(cityComboInput);
     if (!validatedCity) {
-      showToast('City not supported yet. Choose from list.');
+      showToast('City not found, please select from list');
       return;
     }
     const cleanCityName = validatedCity.city;
@@ -3233,6 +3237,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           name: user.name,
           propertyTitle: propertyName.trim() || 'Institutional Asset',
           city: cleanCityName,
+          city_id: validatedCity.city_id,
           priceUSD,
           rentUSD,
           downPaymentPct,
@@ -4867,7 +4872,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     )}
 
                     <div className="text-xs font-mono text-zinc-400">
-                      Estimated / Demo data - بيانات تقديرية • Consumes 1 analysis credit if valid city is found.
+                      Estimated / Demo data • Consumes 1 analysis credit if valid city is found.
                     </div>
 
                     <button
@@ -4882,7 +4887,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <span>Analyzing City...</span>
                         </>
                       ) : (
-                        <span>Analyze My City - حلل مدينتي</span>
+                        <span>Analyze My City</span>
                       )}
                     </button>
                   </div>
@@ -4908,6 +4913,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <input
                         id="td-asset-title"
                         type="text"
+                        lang="en"
                         value={propertyName}
                         onChange={(e) => {
                           setPropertyName(e.target.value);
@@ -4926,6 +4932,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           ref={cityComboInputRef}
                           id="td-target-city"
                           type="text"
+                          lang="en"
+                          dir="ltr"
+                          style={EN_INPUT_STYLE}
                           value={cityComboInput}
                           onFocus={() => setCityComboOpen(true)}
                           onBlur={() => setTimeout(() => setCityComboOpen(false), 180)}
@@ -4934,7 +4943,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             setCityComboOpen(true);
                             clearPendingRun();
                           }}
-                          placeholder="Type city... e.g. Muscat"
+                          placeholder="Type 1+ letter (e.g. M -> Muscat, Madrid...)"
                           autoComplete="off"
                           className="w-full pl-9 pr-8 py-2.5 rounded-xl bg-zinc-900 border border-white/15 focus:border-[#D4AF37] text-white text-sm font-mono outline-none"
                         />
@@ -4960,7 +4969,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <div className="absolute z-40 left-0 right-0 mt-1.5 max-h-60 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-[0_14px_40px_rgba(0,0,0,0.9)] divide-y divide-white/[0.06]">
                           {cityDropdownOptions.length === 0 ? (
                             <div className="px-3.5 py-3 text-xs font-mono text-rose-300">
-                              City not supported yet. Choose from list.
+                              City not found, please select from list
                             </div>
                           ) : (
                             cityDropdownOptions.map((c) => (
@@ -4977,7 +4986,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               >
                                 <span className="font-bold">{formatCityOptionLabel(c)}</span>
                                 <span className="text-[11px] text-[#D4AF37] shrink-0">
-                                  {c.avgCapRate}% Cap • {c.currency}
+                                  {c.avgCapRate}% Cap &bull; {c.currency}
                                 </span>
                               </button>
                             ))
@@ -4986,12 +4995,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       )}
 
                       {selectedCityEntry ? (
-                        <div className="text-[10px] font-mono text-emerald-400 mt-1 truncate">
+                        <div className="text-[10px] font-mono text-emerald-400 mt-1 truncate" style={EN_INPUT_STYLE}>
                           Market: {selectedCityEntry.city}, {selectedCityEntry.country} - Avg Cap Rate {selectedCityEntry.avgCapRate}% - Display in USD
                         </div>
                       ) : cityComboInput.trim() ? (
                         <div className="text-[10px] font-mono text-rose-400 mt-1">
-                          City not supported yet. Choose from list.
+                          City not found, please select from list
                         </div>
                       ) : null}
                     </div>
@@ -6450,8 +6459,12 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                                   </div>
                                 )}
                                 {m.replyByDate && (
-                                  <div className="text-[10px] text-amber-300">
-                                    Need reply by: {m.replyByDate}
+                                  <div className="text-[10px] text-amber-300" style={EN_INPUT_STYLE}>
+                                    Need reply by:{' '}
+                                    {(() => {
+                                      const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(m.replyByDate.trim());
+                                      return parts ? `${parts[2]}/${parts[3]}/${parts[1]}` : m.replyByDate;
+                                    })()}
                                   </div>
                                 )}
                                 <div className="whitespace-pre-wrap leading-relaxed">{m.text}</div>
@@ -6480,6 +6493,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                             type="date"
                             lang="en"
                             dir="ltr"
+                            placeholder="MM/DD/YYYY"
+                            style={EN_INPUT_STYLE}
                             value={analystReplyBy}
                             onChange={(e) => setAnalystReplyBy(e.target.value)}
                             className="flex-1 px-2.5 py-2 rounded-lg bg-black/60 border border-white/10 text-white text-xs font-mono outline-none"
@@ -6489,11 +6504,61 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                       <textarea
                         rows={2}
+                        lang="en"
                         value={analystMsgInput}
                         onChange={(e) => setAnalystMsgInput(e.target.value)}
                         placeholder="Ask your analyst about a deal, market, portfolio..."
                         className="w-full p-2.5 rounded-lg bg-black/50 border border-white/10 text-xs font-mono text-white outline-none focus:border-[#D4AF37]"
                       />
+
+                      {/* Fixed Non-Editable Direct Analyst Desk Contact Card */}
+                      <div
+                        className="p-3 rounded-xl bg-black/50 border border-[#D4AF37]/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs font-mono"
+                        style={EN_INPUT_STYLE}
+                      >
+                        <div className="flex flex-wrap items-center gap-3">
+                          <span className="inline-flex items-center gap-1.5 text-zinc-200">
+                            <Mail className="w-3.5 h-3.5 text-[#D4AF37]" />
+                            <a
+                              href="mailto:loomorastudios@gmail.com"
+                              className="hover:text-[#D4AF37] underline"
+                            >
+                              loomorastudios@gmail.com
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard?.writeText('loomorastudios@gmail.com');
+                                showToast('Copied loomorastudios@gmail.com');
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-white/10 hover:bg-[#D4AF37] hover:text-black text-[10px] font-bold text-zinc-300 cursor-pointer transition"
+                            >
+                              Copy
+                            </button>
+                          </span>
+                          <span className="inline-flex items-center gap-2 text-zinc-200">
+                            <a
+                              href="tel:+96878900731"
+                              dir="ltr"
+                              className="hover:text-emerald-300 font-bold"
+                            >
+                              +968 78900731
+                            </a>
+                            <a
+                              href="https://wa.me/96878900731"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500 hover:text-black text-[10px] font-bold transition"
+                            >
+                              WhatsApp
+                            </a>
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-zinc-400">
+                          Direct Institutional Analyst Desk
+                        </span>
+                      </div>
+
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-[11px] font-mono text-zinc-400">
                           Replies arrive directly in this chat + email notification.
@@ -6538,6 +6603,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <div className="relative">
                           <input
                             type="text"
+                            lang="en"
+                            dir="ltr"
                             value={wgTargetCity}
                             onFocus={() => setWgCityOpen(true)}
                             onBlur={() => setTimeout(() => setWgCityOpen(false), 180)}
@@ -6545,7 +6612,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               setWgTargetCity(e.target.value);
                               setWgCityOpen(true);
                             }}
-                            placeholder="Target City (type 2+ chars)"
+                            placeholder="Target City (type 1+ char)"
                             className="w-full px-3 py-2 rounded-lg bg-black/50 border border-white/10 text-white outline-none focus:border-emerald-400"
                           />
                           {wgCityOpen && wgCityOptions.length > 0 && (
@@ -6787,14 +6854,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         setDfCityComboInput(e.target.value);
                         setDfCityOpen(true);
                       }}
-                      placeholder="Type city... e.g. Muscat"
+                      placeholder="Type 1+ letter (e.g. M -> Muscat, Madrid...)"
+                      style={EN_INPUT_STYLE}
                       className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
                     />
                     {dfCityOpen && canDealFinder && (
                       <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
                         {dfCityOptions.length === 0 ? (
-                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
-                            City not supported yet. Try another spelling.
+                          <div className="px-3 py-2 text-xs font-mono text-rose-300">
+                            City not found, please select from list
                           </div>
                         ) : (
                           dfCityOptions.map((c) => (
@@ -6808,10 +6876,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               className="w-full text-left px-3 py-2 text-xs font-mono text-zinc-200 hover:bg-[#D4AF37] hover:text-black transition cursor-pointer flex items-center justify-between"
                             >
                               <span>{formatCityOptionLabel(c)}</span>
-                              <span className="text-[10px] opacity-75">Avg {c.avgCapRate}%</span>
+                              <span className="text-[10px] opacity-75">{c.avgCapRate}% Cap &bull; {c.currency}</span>
                             </button>
                           ))
                         )}
+                      </div>
+                    )}
+                    {dfCityComboInput.trim() && !resolveCityFromInput(dfCityComboInput) && !dfCityOpen && (
+                      <div className="text-[10px] font-mono text-rose-400 mt-1">
+                        City not found, please select from list
                       </div>
                     )}
                   </div>
@@ -7159,14 +7232,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         setFcCityComboInput(e.target.value);
                         setFcCityOpen(true);
                       }}
-                      placeholder="Type city... e.g. Muscat"
+                      placeholder="Type 1+ letter (e.g. M -> Muscat, Madrid...)"
+                      style={EN_INPUT_STYLE}
                       className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
                     />
                     {fcCityOpen && canMarketForecast && (
                       <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
                         {fcCityOptions.length === 0 ? (
-                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
-                            City not supported yet. Try another spelling.
+                          <div className="px-3 py-2 text-xs font-mono text-rose-300">
+                            City not found, please select from list
                           </div>
                         ) : (
                           fcCityOptions.map((c) => (
@@ -7180,10 +7254,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               className="w-full text-left px-3 py-2 text-xs font-mono text-zinc-200 hover:bg-[#D4AF37] hover:text-black transition cursor-pointer flex items-center justify-between"
                             >
                               <span>{formatCityOptionLabel(c)}</span>
-                              <span className="text-[10px] opacity-75">Avg {c.avgCapRate}%</span>
+                              <span className="text-[10px] opacity-75">{c.avgCapRate}% Cap &bull; {c.currency}</span>
                             </button>
                           ))
                         )}
+                      </div>
+                    )}
+                    {fcCityComboInput.trim() && !resolveCityFromInput(fcCityComboInput) && !fcCityOpen && (
+                      <div className="text-[10px] font-mono text-rose-400 mt-1">
+                        City not found, please select from list
                       </div>
                     )}
                   </div>
@@ -7564,14 +7643,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         setDdCityComboInput(e.target.value);
                         setDdCityOpen(true);
                       }}
-                      placeholder="Type city... e.g. Muscat"
+                      placeholder="Type 1+ letter (e.g. M -> Muscat, Madrid...)"
+                      style={EN_INPUT_STYLE}
                       className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white font-mono text-sm outline-none disabled:cursor-not-allowed"
                     />
                     {ddCityOpen && canDueDiligence && (
                       <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
                         {ddCityOptions.length === 0 ? (
-                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
-                            City not supported yet. Try another spelling.
+                          <div className="px-3 py-2 text-xs font-mono text-rose-300">
+                            City not found, please select from list
                           </div>
                         ) : (
                           ddCityOptions.map((c) => (
@@ -7585,7 +7665,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               className="w-full text-left px-3 py-2 text-xs font-mono text-zinc-200 hover:bg-[#D4AF37] hover:text-black transition cursor-pointer flex items-center justify-between"
                             >
                               <span>{formatCityOptionLabel(c)}</span>
-                              <span className="text-[10px] opacity-75">Avg {c.avgCapRate}%</span>
+                              <span className="text-[10px] opacity-75">{c.avgCapRate}% Cap &bull; {c.currency}</span>
                             </button>
                           ))
                         )}
@@ -8101,8 +8181,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     {optCityOpen && canPortfolioOptimizer && optSelectedCities.length < 3 && (
                       <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
                         {optCityOptions.length === 0 ? (
-                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
-                            City not supported yet. Try another spelling.
+                          <div className="px-3 py-2 text-xs font-mono text-rose-300">
+                            City not found, please select from list
                           </div>
                         ) : (
                           optCityOptions.map((c) => {
@@ -8456,8 +8536,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                     {advCityOpen && canInstitutionalAdvisor && (
                       <div className="absolute z-40 left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl bg-zinc-950 border border-[#D4AF37]/40 shadow-2xl">
                         {advCityOptions.length === 0 ? (
-                          <div className="px-3 py-2 text-xs font-mono text-zinc-400">
-                            City not supported yet. Try another spelling.
+                          <div className="px-3 py-2 text-xs font-mono text-rose-300">
+                            City not found, please select from list
                           </div>
                         ) : (
                           advCityOptions.map((c) => (
@@ -8949,7 +9029,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <div>
                           <div className="flex items-center justify-between mb-2">
                             <span className="px-2.5 py-1 rounded bg-amber-500/15 border border-amber-500/40 text-xs font-mono text-amber-300 font-bold">
-                              DEMO - تجريبي
+                              DEMO
                             </span>
                             <span className="text-xs font-mono text-zinc-400">{demo.city}</span>
                           </div>
@@ -9067,7 +9147,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                   <div className="pt-4 border-t border-white/[0.08] space-y-4">
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-mono font-bold text-zinc-300 uppercase">
-                        Reference Demo Benchmarks (DEMO - تجريبي)
+                        Reference Demo Benchmarks (DEMO)
                       </span>
                       <span className="text-xs font-mono text-zinc-500">
                         Always accessible • Not counted toward saved limit
@@ -9081,7 +9161,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         >
                           <div className="min-w-0">
                             <span className="text-[11px] font-mono text-amber-300 font-bold block">
-                              DEMO - تجريبي • {demo.city}
+                              DEMO &bull; {demo.city}
                             </span>
                             <div className="text-sm font-bold text-white truncate">{demo.property}</div>
                             <div className="text-sm font-mono text-[#D4AF37] font-bold">{demo.capRate}% Gross</div>
@@ -9159,7 +9239,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                       <div key={demo.id} className="glass-panel p-5 border border-amber-500/25 space-y-3">
                         <div className="flex items-center justify-between">
                           <span className="px-2.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 text-xs font-mono text-amber-300 font-bold">
-                            DEMO - تجريبي
+                            DEMO
                           </span>
                           <span className="text-xs font-mono text-zinc-400">{demo.city}</span>
                         </div>

@@ -23,6 +23,8 @@ import {
 } from 'recharts';
 import type { PropertyStudioDraft } from '../../types';
 import { downloadPropertyStudioPdf } from '../../utils/pdfExport';
+import { CityAutocomplete } from '../ui/CityAutocomplete';
+import { findCityEntry } from '../../../data/cities';
 
 interface PropertyStudioTabProps {
   userEmail: string;
@@ -88,6 +90,10 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
   );
   const [country, setCountry] = useState(persistedDraft?.country || 'Oman');
   const [city, setCity] = useState(persistedDraft?.city || 'Muscat');
+  const [cityId, setCityId] = useState<string>(
+    () => findCityEntry(persistedDraft?.city || 'Muscat')?.city_id || 'om-muscat'
+  );
+  const [cityError, setCityError] = useState<string | null>(null);
   const [areaDistrict, setAreaDistrict] = useState(
     persistedDraft?.areaDistrict || 'Al Mouj Waterfront District'
   );
@@ -114,10 +120,16 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
     persistedDraft?.targetAudience || 'Yield Investors & GCC Residency Buyers'
   );
   const [contactName, setContactName] = useState(
-    persistedDraft?.contactName || userName || userEmail.split('@')[0]
+    persistedDraft?.contactName || userName || userEmail.split('@')[0] || 'Loomora Studios'
   );
-  const [contactEmail, setContactEmail] = useState(persistedDraft?.contactEmail || userEmail);
-  const [contactPhone, setContactPhone] = useState(persistedDraft?.contactPhone || '+968 9000 0000');
+  const [contactEmail, setContactEmail] = useState(
+    persistedDraft?.contactEmail || userEmail || 'loomorastudios@gmail.com'
+  );
+  const [contactPhone, setContactPhone] = useState(
+    persistedDraft?.contactPhone === '+968 9000 0000' || !persistedDraft?.contactPhone
+      ? '+968 78900731'
+      : persistedDraft.contactPhone
+  );
   const [contactFirm, setContactFirm] = useState(persistedDraft?.contactFirm || 'AQARI Capital Sponsor');
 
   const [description, setDescription] = useState(persistedDraft?.description || '');
@@ -147,6 +159,13 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
   };
 
   const handleGenerate = async (useAiEnhance: boolean) => {
+    const matchedCity = findCityEntry(city, cityId);
+    if (!matchedCity) {
+      setCityError('City not found, please select from list');
+      setError('City not found, please select from list');
+      return;
+    }
+    setCityError(null);
     setIsGenerating(true);
     setError(null);
     setPdfNotice(null);
@@ -161,8 +180,9 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
           docType,
           isVirtual,
           title,
-          country,
-          city,
+          country: matchedCity.country,
+          city: matchedCity.city,
+          city_id: matchedCity.city_id,
           areaDistrict,
           propertyType,
           budgetUSD: budgetNum,
@@ -404,27 +424,42 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-zinc-300 block">Country</label>
-            <input
-              type="text"
-              value={country}
-              onChange={(e) => setCountry(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
+            <label className="text-xs text-zinc-300 block">City (Global 1,273+ Markets)</label>
+            <CityAutocomplete
+              value={city}
+              cityId={cityId}
+              onChangeValue={(val) => {
+                setCity(val);
+                setCityError(null);
+              }}
+              onSelectCity={(entry) => {
+                setCity(entry.city);
+                setCityId(entry.city_id);
+                setCountry(entry.country);
+                setCityError(null);
+              }}
+              onClearSelection={() => setCityId('')}
+              error={cityError}
+              placeholder="Type city (e.g. M -> Muscat, Madrid...)"
+              inputClassName="w-full pl-9 pr-9 py-2.5 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white text-sm outline-none"
             />
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-zinc-300 block">City</label>
+            <label className="text-xs text-zinc-300 block">Country (Auto-Filled)</label>
             <input
               type="text"
-              value={city}
-              onChange={(e) => setCity(e.target.value)}
-              className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
+              readOnly
+              lang="en"
+              dir="ltr"
+              value={country}
+              className="w-full px-3 py-2.5 rounded-xl bg-black/40 border border-white/10 text-zinc-300 text-sm outline-none"
             />
           </div>
           <div className="space-y-1">
             <label className="text-xs text-zinc-300 block">Area / District</label>
             <input
               type="text"
+              lang="en"
               value={areaDistrict}
               onChange={(e) => setAreaDistrict(e.target.value)}
               className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
@@ -448,8 +483,10 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
             <label className="text-xs text-zinc-300 block">Budget (USD)</label>
             <input
               type="number"
+              inputMode="numeric"
               lang="en"
               dir="ltr"
+              style={{ fontVariantNumeric: 'tabular-nums' }}
               value={budgetUSD}
               onChange={(e) => setBudgetUSD(e.target.value)}
               className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
@@ -459,8 +496,10 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
             <label className="text-xs text-zinc-300 block">Built-up / Land Area (m²)</label>
             <input
               type="number"
+              inputMode="numeric"
               lang="en"
               dir="ltr"
+              style={{ fontVariantNumeric: 'tabular-nums' }}
               value={areaSqM}
               onChange={(e) => setAreaSqM(e.target.value)}
               className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
@@ -471,6 +510,10 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
             <div className="grid grid-cols-2 gap-2">
               <input
                 type="number"
+                inputMode="numeric"
+                lang="en"
+                dir="ltr"
+                style={{ fontVariantNumeric: 'tabular-nums' }}
                 value={bedrooms}
                 onChange={(e) => setBedrooms(e.target.value)}
                 placeholder="Beds"
@@ -478,6 +521,10 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
               />
               <input
                 type="number"
+                inputMode="numeric"
+                lang="en"
+                dir="ltr"
+                style={{ fontVariantNumeric: 'tabular-nums' }}
                 value={bathrooms}
                 onChange={(e) => setBathrooms(e.target.value)}
                 placeholder="Baths"
@@ -489,8 +536,10 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
             <label className="text-xs text-zinc-300 block">Indicative Monthly Rent (USD/mo)</label>
             <input
               type="number"
+              inputMode="numeric"
               lang="en"
               dir="ltr"
+              style={{ fontVariantNumeric: 'tabular-nums' }}
               value={expectedMonthlyRentUSD}
               onChange={(e) => setExpectedMonthlyRentUSD(e.target.value)}
               className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
@@ -501,8 +550,10 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
             <input
               type="number"
               step="0.1"
+              inputMode="decimal"
               lang="en"
               dir="ltr"
+              style={{ fontVariantNumeric: 'tabular-nums' }}
               value={targetYieldPct}
               onChange={(e) => setTargetYieldPct(e.target.value)}
               className="w-full px-3 py-2.5 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
@@ -539,6 +590,7 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <input
                 type="text"
+                lang="en"
                 value={contactName}
                 onChange={(e) => setContactName(e.target.value)}
                 placeholder="Name"
@@ -546,6 +598,7 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
               />
               <input
                 type="text"
+                lang="en"
                 value={contactFirm}
                 onChange={(e) => setContactFirm(e.target.value)}
                 placeholder="Firm"
@@ -553,16 +606,22 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
               />
               <input
                 type="email"
+                lang="en"
+                dir="ltr"
                 value={contactEmail}
                 onChange={(e) => setContactEmail(e.target.value)}
                 placeholder="Email"
                 className="px-2.5 py-2 rounded-xl bg-black/50 border border-white/15 text-white text-xs"
               />
               <input
-                type="text"
+                type="tel"
+                inputMode="tel"
+                lang="en"
+                dir="ltr"
+                style={{ fontVariantNumeric: 'tabular-nums' }}
                 value={contactPhone}
                 onChange={(e) => setContactPhone(e.target.value)}
-                placeholder="Phone"
+                placeholder="+968 78900731"
                 className="px-2.5 py-2 rounded-xl bg-black/50 border border-white/15 text-white text-xs"
               />
             </div>
@@ -722,8 +781,28 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
             {locationNarrative && <p className="text-zinc-400">{locationNarrative}</p>}
             <div className="p-3 rounded-xl bg-white/[0.02] border border-white/10 flex flex-wrap gap-4 text-[11px] text-zinc-300">
               <span className="flex items-center gap-1.5"><UserIcon className="w-3.5 h-3.5 text-[#D4AF37]" /> {contactName}</span>
-              <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5 text-[#D4AF37]" /> {contactEmail}</span>
-              <span className="flex items-center gap-1.5"><Phone className="w-3.5 h-3.5 text-[#D4AF37]" /> {contactPhone}</span>
+              <a
+                href={`mailto:${contactEmail || 'loomorastudios@gmail.com'}`}
+                className="flex items-center gap-1.5 hover:text-[#D4AF37] transition"
+              >
+                <Mail className="w-3.5 h-3.5 text-[#D4AF37]" /> {contactEmail || 'loomorastudios@gmail.com'}
+              </a>
+              <a
+                href={`tel:${(contactPhone || '+968 78900731').replace(/[^+\d]/g, '')}`}
+                dir="ltr"
+                style={{ fontVariantNumeric: 'tabular-nums' }}
+                className="flex items-center gap-1.5 hover:text-emerald-300 transition"
+              >
+                <Phone className="w-3.5 h-3.5 text-[#D4AF37]" /> {contactPhone || '+968 78900731'}
+              </a>
+              <a
+                href="https://wa.me/96878900731"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-emerald-300 underline hover:text-emerald-200"
+              >
+                WhatsApp Direct
+              </a>
             </div>
           </div>
 

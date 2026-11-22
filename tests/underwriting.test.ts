@@ -1142,5 +1142,161 @@ test('Frontend paddleClient uses only NEXT_PUBLIC_ variables and maps live -> pr
   assert.equal(getPaddleEnvironment(), 'sandbox');
 });
 
+test('City autocomplete triggers at 1 character, resolves city_id, and rejects invalid free-text cities on backend', async (t) => {
+  const { searchCities, findCityEntry, getCityId } = await import('../data/cities');
+
+  const singleChar = searchCities('M', 20);
+  assert.ok(singleChar.length > 0, '1-char search for "M" must return matches');
+  assert.ok(singleChar.some((c) => c.city === 'Muscat' && c.city_id === 'om-muscat'));
+
+  const muscat = findCityEntry('Muscat (Oman OM)');
+  assert.ok(muscat);
+  assert.equal(getCityId(muscat!), 'om-muscat');
+  assert.equal(findCityEntry('', 'om-muscat')?.city, 'Muscat');
+
+  const fs = await import('node:fs');
+  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const sovEmail = `city_val_${Date.now()}@aqari.test`;
+  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
+  existing.users = existing.users || {};
+  existing.users[sovEmail] = {
+    email: sovEmail,
+    name: 'City Validation Test',
+    plan: 'enterprise',
+    analyses_total: 300,
+    analyses_left: 300,
+    analyses_used: 0,
+    license_start: Date.now() - 1000,
+    license_end: Date.now() + 30 * 86_400_000,
+    status: 'active',
+  };
+  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+
+  t.after(() => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      if (parsed?.users?.[sovEmail]) {
+        delete parsed.users[sovEmail];
+        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+      }
+    } catch {}
+  });
+
+  // Invalid city must return 400 with exact message on run-analysis, find-deals, get-forecast, run-file-analysis, studio-generate
+  for (const [action, extra] of [
+    ['run-analysis', { priceUSD: 650_000, rentUSD: 4_500 }],
+    ['find-deals', { budget: 650_000, minCapRate: 5 }],
+    ['get-forecast', { propertyType: 'Apartment', period: '12 months' }],
+    ['run-file-analysis', { priceUSD: 650_000, monthlyRentUSD: 4_500 }],
+    ['studio-generate', { budgetUSD: 680_000, useAiEnhance: false }],
+  ] as Array<[string, Record<string, any>]>) {
+    const invalidRes = await invokeApi({
+      action,
+      body: {
+        email: sovEmail,
+        city: 'FakeAtlantisCity',
+        ...extra,
+      },
+    });
+    assert.equal(invalidRes.statusCode, 400, `${action} must reject unlisted city with 400`);
+    assert.equal(invalidRes.data.error, 'City not found, please select from list');
+  }
+
+  // Valid city + city_id stores city_id in analysis & studio draft
+  const validAnalysis = await invokeApi({
+    action: 'run-analysis',
+    body: {
+      email: sovEmail,
+      city: 'Muscat',
+      city_id: 'om-muscat',
+      priceUSD: 680_000,
+      rentUSD: 4_650,
+    },
+  });
+  assert.equal(validAnalysis.statusCode, 200);
+  assert.equal(validAnalysis.data.inputs.city_id, 'om-muscat');
+
+  const validStudio = await invokeApi({
+    action: 'studio-generate',
+    body: {
+      email: sovEmail,
+      city: 'Dubai',
+      city_id: 'ae-dubai',
+      budgetUSD: 680_000,
+      areaSqM: 185,
+      bedrooms: 3,
+      bathrooms: 3,
+      expectedMonthlyRentUSD: 4_650,
+      useAiEnhance: false,
+    },
+  });
+  assert.equal(validStudio.statusCode, 200);
+  assert.equal(validStudio.data.draft.city_id, 'ae-dubai');
+  assert.equal(validStudio.data.draft.contactPhone, '+968 78900731');
+});
+
+test('Analyst message endpoint stores client message with replyByDate for admin and targets loomorastudios@gmail.com', async (t) => {
+  const fs = await import('node:fs');
+  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const clientEmail = `analyst_client_${Date.now()}@aqari.test`;
+  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
+  existing.users = existing.users || {};
+  existing.users[clientEmail] = {
+    email: clientEmail,
+    name: 'Sovereign Client',
+    plan: 'enterprise',
+    analyses_total: 300,
+    analyses_left: 300,
+    analyses_used: 0,
+    license_start: Date.now() - 1000,
+    license_end: Date.now() + 30 * 86_400_000,
+    status: 'active',
+  };
+  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+
+  t.after(() => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      if (parsed?.users?.[clientEmail]) {
+        delete parsed.users[clientEmail];
+        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+      }
+    } catch {}
+  });
+
+  const postRes = await invokeApi({
+    action: 'analyst-message',
+    method: 'POST',
+    body: {
+      email: clientEmail,
+      message: 'Please audit our Al Mouj waterfront villa cap rate.',
+      replyByDate: '12/01/2026',
+    },
+  });
+  assert.equal(postRes.statusCode, 200);
+  assert.equal(postRes.data.success, true);
+  assert.equal(postRes.data.recipient, 'loomorastudios@gmail.com');
+  assert.equal(postRes.data.thread.unreadForAdmin >= 1, true);
+  assert.equal(postRes.data.thread.messages.at(-1).replyByDate, '12/01/2026');
+});
+
+test('Server pricing & quota single source enforces 100 for PROFESSIONAL and 300 for SOVEREIGN', async () => {
+  const pricingRes = await invokeApi({
+    method: 'GET',
+    action: 'pricing',
+  });
+  assert.equal(pricingRes.statusCode, 200);
+  const plansMap = pricingRes.data.plansMap;
+  assert.equal(plansMap.free.analysesLimit, 3);
+  assert.equal(plansMap.starter.analysesLimit, 30);
+  assert.equal(plansMap.pro.analysesLimit, 100);
+  assert.equal(plansMap.enterprise.analysesLimit, 300);
+
+  const { PLANS } = await import('../lib/plans');
+  assert.equal(PLANS.pro.analysesLimit, 100);
+  assert.equal(PLANS.enterprise.analysesLimit, 300);
+});
+
+
 
 

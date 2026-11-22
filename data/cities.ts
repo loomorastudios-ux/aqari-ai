@@ -1,6 +1,7 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - Global Real Estate Markets Dataset
 
 export interface CityEntry {
+  city_id: string;
   city: string;
   country: string;
   countryCode: string;
@@ -8,6 +9,16 @@ export interface CityEntry {
   taxRate: number;
   visaNote: string;
   avgCapRate: number;
+}
+
+export function getCityId(entry: { city: string; countryCode: string }): string {
+  const slug = String(entry.city || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const cc = String(entry.countryCode || 'gl').trim().toLowerCase();
+  return `${cc}-${slug}`;
 }
 
 type CountrySpec = [country: string, code: string, currency: string, taxRate: number, visaNote: string];
@@ -1466,10 +1477,12 @@ for (const [city, countryKey, avgCapRate] of RAW_CITIES) {
   if (seenCities.has(norm)) continue;
   seenCities.add(norm);
   const spec = COUNTRIES[countryKey] || COUNTRIES.GL;
+  const countryCode = spec[1];
   CITIES.push({
+    city_id: getCityId({ city, countryCode }),
     city,
     country: spec[0],
-    countryCode: spec[1],
+    countryCode,
     currency: spec[2],
     taxRate: spec[3],
     visaNote: spec[4],
@@ -1478,19 +1491,35 @@ for (const [city, countryKey, avgCapRate] of RAW_CITIES) {
 }
 
 const CITY_BY_LOWER = new Map<string, CityEntry>();
+const CITY_BY_ID = new Map<string, CityEntry>();
 for (const c of CITIES) {
   CITY_BY_LOWER.set(c.city.toLowerCase(), c);
+  CITY_BY_ID.set(c.city_id.toLowerCase(), c);
 }
 
-export function findCityEntry(rawCity?: string | null): CityEntry | null {
-  const key = (rawCity || '').trim().toLowerCase();
-  if (!key) return null;
-  return CITY_BY_LOWER.get(key) || null;
+export function findCityEntry(rawCity?: string | null, cityId?: string | null): CityEntry | null {
+  const idKey = (cityId || '').trim().toLowerCase();
+  if (idKey && CITY_BY_ID.has(idKey)) {
+    return CITY_BY_ID.get(idKey) || null;
+  }
+  const raw = (rawCity || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (CITY_BY_LOWER.has(raw)) return CITY_BY_LOWER.get(raw) || null;
+  if (CITY_BY_ID.has(raw)) return CITY_BY_ID.get(raw) || null;
+  const beforeParen = raw.split('(')[0]?.trim();
+  if (beforeParen && CITY_BY_LOWER.has(beforeParen)) {
+    return CITY_BY_LOWER.get(beforeParen) || null;
+  }
+  const beforeComma = raw.split(',')[0]?.trim();
+  if (beforeComma && CITY_BY_LOWER.has(beforeComma)) {
+    return CITY_BY_LOWER.get(beforeComma) || null;
+  }
+  return null;
 }
 
 export function searchCities(query: string, limit = 30): CityEntry[] {
   const q = (query || '').trim().toLowerCase();
-  if (q.length < 2) return [];
+  if (q.length < 1) return [];
   const prefixMatches: CityEntry[] = [];
   const otherMatches: CityEntry[] = [];
   for (const c of CITIES) {

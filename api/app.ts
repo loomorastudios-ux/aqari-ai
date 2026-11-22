@@ -10,8 +10,8 @@ import { GoogleGenAI, Type } from '@google/genai';
 
 const PLANS = {
   STARTER: { price: 75, analyses: 30, name: 'STARTER' },
-  PROFESSIONAL: { price: 199, analyses: 150, name: 'PROFESSIONAL' },
-  SOVEREIGN: { price: 599, analyses: 500, name: 'SOVEREIGN' },
+  PROFESSIONAL: { price: 199, analyses: 100, name: 'PROFESSIONAL' },
+  SOVEREIGN: { price: 599, analyses: 300, name: 'SOVEREIGN' },
   ENTERPRISE: { price: 1499, analyses: 0, name: 'ENTERPRISE' },
 } as const;
 
@@ -196,7 +196,7 @@ const EXTRA_CREDIT_PACKS = [
   },
 ] as const;
 
-const PRICING_SCHEMA_VERSION = 4;
+const PRICING_SCHEMA_VERSION = 5;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_LAUNCH_END_DATE_MS = new Date('2026-11-28T23:59:59Z').getTime();
 const DEFAULT_LAUNCH_BADGE = 'LAUNCH OFFER - First 30 institutional seats';
@@ -360,7 +360,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
     whiteLabelMode: 'none',
     licensingDays: 30,
     features: [
-      '150 analyses / 30 days',
+      '100 analyses / 30 days',
       'Advanced financial + Equity Waterfall',
       'Advanced Monte Carlo (5,000) + Stress + Sensitivity',
       '30 Image / PDF extractions / mo',
@@ -428,7 +428,7 @@ const PLAN_DEFINITIONS: Record<PlanKey, PlanDefinition> = {
     whiteLabelMode: 'reports',
     licensingDays: 30,
     features: [
-      '500 analyses / 30 days',
+      '300 analyses / 30 days',
       'All financial + institutional modeling',
       '100 Image / PDF extractions / mo',
       '100 AI Listings / mo',
@@ -1784,12 +1784,14 @@ interface PersistedLastResults {
   } | null;
   deal_finder?: {
     inputs: {
+      city_id?: string;
       city: string;
       budget: number;
       minCapRate: number;
       propertyType: string;
       risk: string;
     };
+    city_id?: string;
     city: string;
     country: string;
     countryCode?: string;
@@ -1803,6 +1805,7 @@ interface PersistedLastResults {
   } | null;
   forecast?: {
     inputs: {
+      city_id?: string;
       city: string;
       propertyType: string;
       period: string;
@@ -1812,6 +1815,7 @@ interface PersistedLastResults {
   } | null;
   due_diligence?: {
     inputs: {
+      city_id?: string;
       city: string;
       propertyType: string;
       price: number;
@@ -1834,6 +1838,7 @@ interface PersistedLastResults {
   advisor?: {
     inputs: {
       question: string;
+      city_id?: string;
       city: string;
       budget: number;
     };
@@ -4198,6 +4203,7 @@ let cachedMarketResponse: LiveMarketResponse | null = null;
 let cachedMarketAt = 0;
 
 interface InlinedCityEntry {
+  city_id: string;
   city: string;
   country: string;
   countryCode: string;
@@ -4374,12 +4380,25 @@ const CITY_RAW: Array<[string, string, number]> = [
   ['Kingston ON','CA',5.9],['London ON','CA',6.1],['Windsor ON','CA',6.5],['Oshawa','CA',5.8],['Barrie','CA',5.7],['Guelph','CA',5.5],['Sudbury','CA',6.9],['Thunder Bay','CA',7.0],['Laval','CA',5.7],['Gatineau','CA',5.9],['Sherbrooke','CA',6.3],['Trois-Rivieres','CA',6.4],['St. Johns NL','CA',6.6],['Charlottetown','CA',6.2],['Fredericton','CA',6.5],['Saint John NB','CA',6.9],['Banff','CA',5.3],['Canmore','CA',5.4],['Whistler','CA',4.8],['Nanaimo','CA',5.6],['Kamloops','CA',6.0],['Red Deer','CA',6.8],['Lethbridge','CA',6.9],['Abbotsford','CA',5.1],['Coquitlam','CA',4.7],
 ];
 
+function buildInlinedCityId(city: string, countryCode: string): string {
+  const cc = (countryCode || 'gl').trim().toLowerCase();
+  const slug = (city || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  return `${cc}-${slug || 'city'}`;
+}
+
 const INLINED_CITIES_MAP = new Map<string, InlinedCityEntry>();
+const INLINED_CITIES_BY_ID = new Map<string, InlinedCityEntry>();
 for (const [city, countryKey, avgCapRate] of CITY_RAW) {
   const norm = city.trim().toLowerCase();
   if (INLINED_CITIES_MAP.has(norm)) continue;
   const spec = CITY_COUNTRIES[countryKey] || CITY_COUNTRIES.GL;
-  INLINED_CITIES_MAP.set(norm, {
+  const city_id = buildInlinedCityId(city, spec[1]);
+  const entry: InlinedCityEntry = {
+    city_id,
     city,
     country: spec[0],
     countryCode: spec[1],
@@ -4387,13 +4406,18 @@ for (const [city, countryKey, avgCapRate] of CITY_RAW) {
     taxRate: spec[3],
     visaNote: spec[4],
     avgCapRate,
-  });
+  };
+  INLINED_CITIES_MAP.set(norm, entry);
+  INLINED_CITIES_BY_ID.set(city_id, entry);
 }
 
-function findInlinedCity(rawCity?: string | null): InlinedCityEntry | null {
+function findInlinedCity(rawCity?: string | null, rawCityId?: string | null): InlinedCityEntry | null {
+  const cid = String(rawCityId || '').trim().toLowerCase();
+  if (cid && INLINED_CITIES_BY_ID.has(cid)) return INLINED_CITIES_BY_ID.get(cid)!;
   const raw = String(rawCity || '').trim();
   if (!raw) return null;
   const lower = raw.toLowerCase();
+  if (INLINED_CITIES_BY_ID.has(lower)) return INLINED_CITIES_BY_ID.get(lower)!;
   if (INLINED_CITIES_MAP.has(lower)) return INLINED_CITIES_MAP.get(lower)!;
   const strippedParen = raw.replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
   if (INLINED_CITIES_MAP.has(strippedParen)) return INLINED_CITIES_MAP.get(strippedParen)!;
@@ -5759,6 +5783,7 @@ export default async function handler(req: any, res: any) {
             'export',
             'portfolio',
             'analyst-chat',
+            'analyst-message',
             'whiteglove-request',
             'sovereign-request',
             'checkout',
@@ -6094,7 +6119,7 @@ export default async function handler(req: any, res: any) {
           if (!loginEmail || !loginEmail.includes('@')) {
             return res.status(200).json({
               success: false,
-              error: 'Please sign in first to verify your payment - سجل دخولك أولاً لتفعيل حسابك',
+              error: 'Please sign in first to verify your payment.',
             });
           }
 
@@ -6228,8 +6253,8 @@ export default async function handler(req: any, res: any) {
               findPlanPricing(pricing, tier.plan)?.features || PLAN_DEFINITIONS[tier.plan].features;
             const successMessage =
               tier.plan === 'pro'
-                ? 'تم الاشتراك بنجاح! تم تفعيل باقة Pro'
-                : `تم الاشتراك بنجاح! تم تفعيل باقة ${tier.planDisplay}`;
+                ? 'Subscription activated! Pro plan is now active.'
+                : `Subscription activated! ${tier.planDisplay} plan is now active.`;
 
             return res.status(200).json({
               success: true,
@@ -6261,7 +6286,7 @@ export default async function handler(req: any, res: any) {
             if (existingUsedOrder.login_email !== loginEmail) {
               return res.status(200).json({
                 success: false,
-                error: 'This order was already used - هذا الطلب تم استخدامه',
+                error: 'This order was already used by another account.',
               });
             }
 
@@ -6294,8 +6319,8 @@ export default async function handler(req: any, res: any) {
               findPlanPricing(pricing, usedPlanKey)?.features || PLAN_DEFINITIONS[usedPlanKey].features;
             const successMessage =
               usedPlanKey === 'pro'
-                ? 'تم الاشتراك بنجاح! تم تفعيل باقة Pro'
-                : `تم الاشتراك بنجاح! تم تفعيل باقة ${license.displayName}`;
+                ? 'Subscription activated! Pro plan is now active.'
+                : `Subscription activated! ${license.displayName} plan is now active.`;
             try {
               setSessionCookie(res, existingUser.email);
               if (existingUser.cancel_status !== 'refunded') {
@@ -6421,7 +6446,7 @@ export default async function handler(req: any, res: any) {
             if (latestClaimedByOther) {
               return res.status(200).json({
                 success: false,
-                error: 'This order was already used - هذا الطلب تم استخدامه',
+                error: 'This order was already used by another account.',
               });
             }
 
@@ -6708,11 +6733,12 @@ export default async function handler(req: any, res: any) {
         }
 
         const rawCityInput = String(body.city || '').trim();
-        const cityEntry = findInlinedCity(rawCityInput);
+        const rawCityId = String(body.city_id || body.cityId || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput, rawCityId);
         if (!cityEntry) {
           return res.status(400).json({
             success: false,
-            error: 'City not supported yet. Choose from list.',
+            error: 'City not found, please select from list',
             code: 'INVALID_CITY',
             city: rawCityInput,
           });
@@ -6831,6 +6857,7 @@ export default async function handler(req: any, res: any) {
         const analyzedAt = new Date().toISOString();
         const inputsPayload = {
           propertyTitle,
+          city_id: cityEntry.city_id,
           city,
           country: cityEntry.country,
           countryCode: cityEntry.countryCode,
@@ -6993,11 +7020,12 @@ export default async function handler(req: any, res: any) {
         }
 
         const rawCityInput = String(body.city || '').trim();
-        const cityEntry = findInlinedCity(rawCityInput);
+        const rawCityId = String(body.city_id || body.cityId || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput, rawCityId);
         if (!cityEntry) {
           return res.status(400).json({
             success: false,
-            error: 'City not supported yet. Choose from list.',
+            error: 'City not found, please select from list',
             code: 'INVALID_CITY',
             city: rawCityInput,
           });
@@ -7164,12 +7192,14 @@ export default async function handler(req: any, res: any) {
               ...(userRecord.last_results || {}),
               deal_finder: {
                 inputs: {
+                  city_id: cityEntry.city_id,
                   city: cityEntry.city,
                   budget,
                   minCapRate,
                   propertyType,
                   risk: riskLevel,
                 },
+                city_id: cityEntry.city_id,
                 city: cityEntry.city,
                 country: cityEntry.country,
                 countryCode: cityEntry.countryCode,
@@ -7192,6 +7222,7 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({
           success: true,
           created_at: dealCreatedAt,
+          city_id: cityEntry.city_id,
           city: cityEntry.city,
           country: cityEntry.country,
           countryCode: cityEntry.countryCode,
@@ -7285,11 +7316,12 @@ export default async function handler(req: any, res: any) {
         }
 
         const rawCityInput = String(body.city || '').trim();
-        const cityEntry = findInlinedCity(rawCityInput);
+        const rawCityId = String(body.city_id || body.cityId || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput, rawCityId);
         if (!cityEntry) {
           return res.status(400).json({
             success: false,
-            error: 'City not supported yet. Choose from list.',
+            error: 'City not found, please select from list',
             code: 'INVALID_CITY',
             city: rawCityInput,
           });
@@ -7395,6 +7427,7 @@ export default async function handler(req: any, res: any) {
 
         const forecast = {
           id: `fc_${Date.now()}`,
+          city_id: cityEntry.city_id,
           city: cityEntry.city,
           country: cityEntry.country,
           countryCode: cityEntry.countryCode,
@@ -7459,6 +7492,7 @@ export default async function handler(req: any, res: any) {
               ...(userRecord.last_results || {}),
               forecast: {
                 inputs: {
+                  city_id: cityEntry.city_id,
                   city: cityEntry.city,
                   propertyType,
                   period,
@@ -7562,11 +7596,12 @@ export default async function handler(req: any, res: any) {
         }
 
         const rawCityInput = String(body.city || '').trim();
-        const cityEntry = findInlinedCity(rawCityInput);
+        const rawCityId = String(body.city_id || body.cityId || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput, rawCityId);
         if (!cityEntry) {
           return res.status(400).json({
             success: false,
-            error: 'City not supported yet. Choose from list.',
+            error: 'City not found, please select from list',
             code: 'INVALID_CITY',
             city: rawCityInput,
           });
@@ -7814,6 +7849,7 @@ export default async function handler(req: any, res: any) {
 
         const result = {
           id: `dd_${Date.now()}`,
+          city_id: cityEntry.city_id,
           city: cityEntry.city,
           country: cityEntry.country,
           countryCode: cityEntry.countryCode,
@@ -7851,6 +7887,7 @@ export default async function handler(req: any, res: any) {
               ...(userRecord.last_results || {}),
               due_diligence: {
                 inputs: {
+                  city_id: cityEntry.city_id,
                   city: cityEntry.city,
                   propertyType,
                   price,
@@ -8217,11 +8254,12 @@ export default async function handler(req: any, res: any) {
         }
 
         const rawCityInput = String(body.city || '').trim();
-        const cityEntry = findInlinedCity(rawCityInput);
+        const rawCityId = String(body.city_id || body.cityId || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput, rawCityId);
         if (!cityEntry) {
           return res.status(400).json({
             success: false,
-            error: 'City not supported yet. Choose from list.',
+            error: 'City not found, please select from list',
             code: 'INVALID_CITY',
             city: rawCityInput,
           });
@@ -8310,6 +8348,7 @@ export default async function handler(req: any, res: any) {
         const result = {
           id: `adv_${Date.now()}`,
           question,
+          city_id: cityEntry.city_id,
           city: cityEntry.city,
           country: cityEntry.country,
           countryCode: cityEntry.countryCode,
@@ -8343,6 +8382,7 @@ export default async function handler(req: any, res: any) {
               advisor: {
                 inputs: {
                   question,
+                  city_id: cityEntry.city_id,
                   city: cityEntry.city,
                   budget,
                 },
@@ -8602,6 +8642,7 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'analyst-message':
       case 'analyst-chat': {
         const sessionEmail = getSessionEmailFromReq(req);
         const body = parsedBody;
@@ -8654,17 +8695,17 @@ export default async function handler(req: any, res: any) {
             replyByDate: body.replyByDate || undefined,
           };
           thread.status = 'Open';
-          thread.plan = 'SOVEREIGN';
+          thread.plan = license.displayName || 'SOVEREIGN';
           thread.updatedAt = now;
           thread.unreadForAdmin = Number(thread.unreadForAdmin || 0) + 1;
           thread.messages = [...(thread.messages || []), msg].slice(-200);
           await saveAnalystThreadToDb(thread);
 
           await dispatchEmailAlert({
-            to: getAdminEmail(),
+            to: 'loomorastudios@gmail.com',
             subject: `AQARI Analyst Desk: New question from ${email}`,
-            text: `Client: ${email} (SOVEREIGN)\n${
-              msg.replyByDate ? `Requested Reply By: ${msg.replyByDate}\n` : ''
+            text: `Client: ${email} (${thread.plan})\nDirect Desk Email: loomorastudios@gmail.com\nDirect Phone / WhatsApp: +968 78900731\n${
+              msg.replyByDate ? `Need Reply By: ${msg.replyByDate}\n` : ''
             }${msg.attachedAnalysisTitle ? `Attached Property: ${msg.attachedAnalysisTitle}\n` : ''}\nMessage:\n${text}`,
             eventType: 'analyst_question',
           }).catch(() => {});
@@ -8672,7 +8713,8 @@ export default async function handler(req: any, res: any) {
           return res.status(200).json({
             success: true,
             thread,
-            message: 'Sent - Analyst will reply within 24h',
+            recipient: 'loomorastudios@gmail.com',
+            message: 'Sent to Senior Analyst (loomorastudios@gmail.com) - Reply within 24h',
           });
         }
 
@@ -9604,7 +9646,7 @@ export default async function handler(req: any, res: any) {
 
       case 'city-search': {
         const q = getQueryParam(req, url, 'q').trim();
-        if (!q || q.length < 2) {
+        if (!q || q.length < 1) {
           return res.status(200).json({ success: true, suggestions: [] });
         }
         try {
@@ -9616,7 +9658,7 @@ export default async function handler(req: any, res: any) {
               signal: controller.signal,
               headers: {
                 'User-Agent': 'AqariTerminal/1.0 (https://aqari-ai-rho.vercel.app; loomorastudios@gmail.com)',
-                'Accept-Language': 'en,ar',
+                'Accept-Language': 'en',
               },
             }
           );
@@ -9671,9 +9713,9 @@ export default async function handler(req: any, res: any) {
         if (!email) {
           return res.status(401).json({ error: 'Authentication required to analyze a city' });
         }
-        if (!rawCity || rawCity.length < 2) {
+        if (!rawCity || rawCity.length < 1) {
           return res.status(400).json({
-            error: 'City not found, try another spelling - المدينة غير موجودة، جرب تهجئة ثانية',
+            error: 'City not found, please select from list',
           });
         }
 
@@ -9781,7 +9823,7 @@ export default async function handler(req: any, res: any) {
         if (!verifiedByNominatim || !resolvedCity) {
           return res.status(404).json({
             success: false,
-            error: 'City not found, try another spelling - المدينة غير موجودة، جرب تهجئة ثانية',
+            error: 'City not found, please select from list',
           });
         }
 
@@ -10522,6 +10564,7 @@ export default async function handler(req: any, res: any) {
           isImageOnly,
           propertyTitle: String(extracted.propertyTitle || `${matchedCity?.city || 'Uploaded'} Property Asset`),
           locationText: String(extracted.locationText || ''),
+          city_id: matchedCity?.city_id || undefined,
           city: matchedCity?.city || String(extracted.city || 'Muscat'),
           country: matchedCity?.country || String(extracted.country || 'Oman'),
           propertyType: (['Apartment', 'Villa', 'Commercial', 'Land', 'Hotel'].includes(
@@ -10644,7 +10687,17 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const cityEntry = findInlinedCity(String(body.city || 'Muscat')) || findInlinedCity('Muscat')!;
+        const rawCityInput = String(body.city || '').trim();
+        const rawCityId = String(body.city_id || body.cityId || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput, rawCityId);
+        if (!cityEntry) {
+          return res.status(400).json({
+            success: false,
+            error: 'City not found, please select from list',
+            code: 'INVALID_CITY',
+            city: rawCityInput,
+          });
+        }
         const priceUSD = parseEnglishNumberServer(body.priceUSD);
         const rentUSD = parseEnglishNumberServer(body.monthlyRentUSD ?? body.rentUSD);
         if (!Number.isFinite(priceUSD) || priceUSD <= 0 || !Number.isFinite(rentUSD) || rentUSD <= 0) {
@@ -10692,6 +10745,7 @@ export default async function handler(req: any, res: any) {
           isImageOnly: Boolean(body.isImageOnly),
           inputs: {
             propertyTitle: String(body.propertyTitle || `${cityEntry.city} Uploaded Property`),
+            city_id: cityEntry.city_id,
             city: cityEntry.city,
             country: cityEntry.country,
             propertyType: String(body.propertyType || 'Apartment'),
@@ -10856,8 +10910,19 @@ export default async function handler(req: any, res: any) {
             displayName: license.displayName,
           });
         }
-        const country = String(body.country || 'Oman').trim();
-        const city = String(body.city || 'Muscat').trim();
+        const rawCityInput = String(body.city || '').trim();
+        const rawCityId = String(body.city_id || body.cityId || '').trim();
+        const cityEntry = findInlinedCity(rawCityInput, rawCityId);
+        if (!cityEntry) {
+          return res.status(400).json({
+            success: false,
+            error: 'City not found, please select from list',
+            code: 'INVALID_CITY',
+            city: rawCityInput,
+          });
+        }
+        const country = cityEntry.country;
+        const city = cityEntry.city;
         const areaDistrict = String(body.areaDistrict || 'Prime Waterfront District').trim();
         const propertyType = String(body.propertyType || 'Apartment');
         const budgetUSD = Math.max(0, Number(body.budgetUSD || 0));
@@ -10945,6 +11010,7 @@ STRICT GUARDRAILS:
           docType,
           isVirtual,
           title,
+          city_id: cityEntry.city_id,
           country,
           city,
           areaDistrict,
@@ -10986,8 +11052,8 @@ STRICT GUARDRAILS:
           isRentYieldReliable,
           rentYieldBasisNote,
           contactName: String(body.contactName || userRecord.name || 'Sponsor Desk'),
-          contactEmail: String(body.contactEmail || userRecord.email),
-          contactPhone: String(body.contactPhone || ''),
+          contactEmail: String(body.contactEmail || userRecord.email || 'loomorastudios@gmail.com'),
+          contactPhone: String(body.contactPhone || '+968 78900731'),
           contactFirm: String(body.contactFirm || ''),
           aiEnhanced: body.useAiEnhance !== false,
           generatedAt: new Date().toISOString(),
@@ -12121,6 +12187,7 @@ Return JSON with:
             'export',
             'portfolio',
             'analyst-chat',
+            'analyst-message',
             'whiteglove-request',
             'sovereign-request',
             'checkout',

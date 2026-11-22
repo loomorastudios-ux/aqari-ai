@@ -51,7 +51,7 @@ export interface PaddleCreditCheckoutHandlers {
   onClose?: () => void;
 }
 
-export const PADDLE_PRO_SUCCESS_MESSAGE = 'تم الاشتراك بنجاح! تم تفعيل باقة Pro';
+export const PADDLE_PRO_SUCCESS_MESSAGE = 'Subscription activated! PRO plan is now active.';
 
 let paddleInstancePromise: Promise<Paddle | undefined> | null = null;
 let cachedPaddleInstance: Paddle | undefined;
@@ -298,7 +298,7 @@ async function handlePaddleEvent(event: PaddleEventData) {
       const successMsg =
         planKey === 'pro'
           ? PADDLE_PRO_SUCCESS_MESSAGE
-          : verifyData?.message || `تم الاشتراك بنجاح! تم تفعيل باقة ${verifyData?.plan || planKey}`;
+          : verifyData?.message || `Subscription activated! ${verifyData?.plan || planKey} plan is now active.`;
 
       if (typeof window !== 'undefined') {
         window.dispatchEvent(

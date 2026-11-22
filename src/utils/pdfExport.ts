@@ -447,8 +447,8 @@ export function downloadPropertyStudioPdf(params: PropertyStudioPdfInput): strin
       : null;
 
   const contactLines = [
-    `ADVISOR / SPONSOR: ${toPdfSafeAscii(params.contactName || 'AQARI Member')}${params.contactFirm ? ` (${toPdfSafeAscii(params.contactFirm)})` : ''}`,
-    `EMAIL: ${toPdfSafeAscii(params.contactEmail || 'N/A')} | PHONE: ${toPdfSafeAscii(params.contactPhone || 'On Request')}`,
+    `ADVISOR / SPONSOR: ${toPdfSafeAscii(params.contactName || 'Loomora Studios')}${params.contactFirm ? ` (${toPdfSafeAscii(params.contactFirm)})` : ''}`,
+    `EMAIL: ${toPdfSafeAscii(params.contactEmail || 'loomorastudios@gmail.com')} | PHONE: ${toPdfSafeAscii(params.contactPhone || '+968 78900731')}`,
     `TARGET AUDIENCE: ${toPdfSafeAscii(params.targetAudience)} | ASSET STATUS: ${params.isVirtual ? 'Virtual Concept (Not a real listing)' : 'Sponsor Provided Listing'}`,
   ];
 
@@ -549,10 +549,10 @@ export function downloadPropertyStudioPdf(params: PropertyStudioPdfInput): strin
   commonSections.push({
     heading: params.docType === 'listing' ? '5. SPONSOR CONTACT & LEGAL NOTICE' : '7. SPONSOR CONTACT & LEGAL NOTICE',
     keyValues: [
-      { label: 'Contact Name', value: toPdfSafeAscii(params.contactName || 'Sponsor Desk') },
-      { label: 'Organization / Firm', value: toPdfSafeAscii(params.contactFirm || 'Independent Sponsor') },
-      { label: 'Direct Email', value: toPdfSafeAscii(params.contactEmail || 'N/A') },
-      { label: 'Phone / WhatsApp', value: toPdfSafeAscii(params.contactPhone || 'On Request') },
+      { label: 'Contact Name', value: toPdfSafeAscii(params.contactName || 'Loomora Studios Desk') },
+      { label: 'Organization / Firm', value: toPdfSafeAscii(params.contactFirm || 'AQARI Capital Sponsor') },
+      { label: 'Direct Email', value: toPdfSafeAscii(params.contactEmail || 'loomorastudios@gmail.com') },
+      { label: 'Phone / WhatsApp', value: toPdfSafeAscii(params.contactPhone || '+968 78900731') },
     ],
     paragraphs: [
       'Notice: Figures marked Indicative are modeling estimates only and are NOT guaranteed returns. Verify all specifications, zoning, title deeds, and tax obligations with licensed counsel. Not legal/tax advice.',
@@ -566,7 +566,7 @@ export function downloadPropertyStudioPdf(params: PropertyStudioPdfInput): strin
         : `${studioBrand} | INVESTMENT MEMORANDUM`,
     docSubtitle: `${toPdfSafeAscii(params.title)} (${toPdfSafeAscii(params.city)}, ${toPdfSafeAscii(params.country)})`,
     watermark,
-    footer: `${studioBrand} | ${toPdfSafeAscii(params.contactEmail || 'aqari-ai')} | ${dateStr}`,
+    footer: `${studioBrand} | ${toPdfSafeAscii(params.contactEmail || 'loomorastudios@gmail.com')} | ${dateStr}`,
     virtualBanner,
     isWatermarked: Boolean(params.isWatermarked),
     branding: params.branding || null,

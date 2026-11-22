@@ -51,7 +51,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
       <button
         onClick={handleInstallClick}
         type="button"
-        title="Install AQARI Terminal App - ثبّت التطبيق"
+        title="Install AQARI Terminal App"
         aria-label="Install AQARI Terminal App"
         className={`w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-6 py-3 rounded-2xl bg-gradient-to-r from-[#D4AF37] via-[#F3E5AB] to-[#C99D28] hover:brightness-110 text-black font-bold text-sm font-mono tracking-wide transition cursor-pointer min-h-[48px] shadow-[0_0_20px_rgba(212,175,55,0.28)] active:scale-95 ${
           variant === 'footer' ? 'mx-auto' : ''
@@ -59,7 +59,6 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
       >
         <Download className="w-4 h-4 text-black shrink-0" />
         <span>Install AQARI Terminal App</span>
-        <span className="font-arabic font-semibold text-black/80 hidden sm:inline">• ثبّت التطبيق</span>
       </button>
 
       {showIOSModal && (
@@ -96,7 +95,7 @@ const IOSInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
           <div>
             <h3 className="text-base font-bold text-white">Install Aqari App</h3>
-            <p className="text-xs text-[#D4AF37] font-arabic font-medium">تثبيت تطبيق عقاري على جهازك</p>
+            <p className="text-xs text-[#D4AF37] font-mono">Add AQARI Global Terminal to your device</p>
           </div>
         </div>
 
@@ -133,7 +132,7 @@ const IOSInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                   <PlusSquare className="w-3 h-3" /> Add to Home Screen
                 </span>
               </div>
-              <p className="text-[11px] text-zinc-400 mt-0.5">"إضافة إلى الصفحة الرئيسية"</p>
+              <p className="text-[11px] text-zinc-400 mt-0.5">Select &quot;Add to Home Screen&quot; in the share menu</p>
             </div>
           </div>
 
@@ -153,7 +152,7 @@ const IOSInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           type="button"
           className="w-full py-3 rounded-xl bg-[#D4AF37] hover:bg-amber-400 text-black font-bold text-xs uppercase tracking-wider transition cursor-pointer min-h-[44px]"
         >
-          Got it / فهمت
+          Got it
         </button>
       </div>
     </div>

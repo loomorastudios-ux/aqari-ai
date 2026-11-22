@@ -243,6 +243,14 @@ export default function App() {
     window.scrollTo(0, 0);
   };
 
+  const handleGoToHomePricing = () => {
+    window.history.pushState({}, '', '/#pricing');
+    setRoute('landing');
+    window.setTimeout(() => {
+      document.getElementById('pricing')?.scrollIntoView({ behavior: 'smooth' });
+    }, 90);
+  };
+
   // Listen to hash and pathname changes
   useEffect(() => {
     const handleLocationChange = () => {
@@ -273,10 +281,23 @@ export default function App() {
         }
         return;
       }
+      if (hash === '#pricing') {
+        setRoute('landing');
+        window.setTimeout(() => {
+          document.getElementById('pricing')?.scrollIntoView({ behavior: 'smooth' });
+        }, 90);
+        return;
+      }
       if (path === '/' || hash === '#/landing' || hash === '' || hash === '#') {
         setRoute('landing');
       }
     };
+
+    if (window.location.pathname === '/' && window.location.hash === '#pricing') {
+      window.setTimeout(() => {
+        document.getElementById('pricing')?.scrollIntoView({ behavior: 'smooth' });
+      }, 150);
+    }
 
     window.addEventListener('hashchange', handleLocationChange);
     window.addEventListener('popstate', handleLocationChange);
@@ -599,7 +620,7 @@ export default function App() {
 
       if (!loginEmail) {
         setVerifyState('error');
-        setVerifyError('Please sign in first to activate your terminal - سجل دخولك أولاً لتفعيل حسابك');
+        setVerifyError('Please sign in first to activate your terminal.');
         return;
       }
 
@@ -665,11 +686,11 @@ export default function App() {
 
         const unlockBanner =
           verifiedPlan === 'pro'
-            ? 'تم الاشتراك بنجاح! تم تفعيل باقة Pro'
+            ? 'Subscription activated! PRO plan is now active.'
             : data?.message || `Welcome to ${planDisplay} — Payment Successful!`;
         const unlockToast =
           verifiedPlan === 'pro'
-            ? 'تم الاشتراك بنجاح! تم تفعيل باقة Pro'
+            ? 'Subscription activated! PRO plan is now active.'
             : `Welcome to AQARI ${planDisplay} - Unlocked for 30 Days!`;
         try {
           sessionStorage.setItem('aqari_unlock_msg', unlockBanner);
@@ -769,7 +790,7 @@ export default function App() {
       const { verifyData, meData, message } = detail;
       const fallbackEmail = String(verifyData?.login_email || user?.email || '').trim().toLowerCase();
       applyVerifiedUserPayload(verifyData, meData, fallbackEmail);
-      const successMsg = message || 'تم الاشتراك بنجاح! تم تفعيل باقة Pro';
+      const successMsg = message || 'Subscription activated! PRO plan is now active.';
       setUnlockSuccessMsg(successMsg);
       showTempToast(successMsg, 6000);
       setIsLimitOpen(false);
@@ -1575,7 +1596,7 @@ export default function App() {
                 <div className="w-12 h-12 rounded-full border-4 border-[#D4AF37]/25 border-t-[#D4AF37] animate-spin" />
               </div>
               <h1 className="text-2xl font-bold text-white tracking-tight">
-                Activating Your Terminal... - جاري تفعيل حسابك
+                Activating Your Terminal...
               </h1>
               <p className="text-sm font-mono text-zinc-200 leading-relaxed">
                 Please wait, verifying your payment with Paddle...
@@ -1589,7 +1610,7 @@ export default function App() {
                 ✓
               </div>
               <h1 className="text-2xl font-bold text-emerald-300 tracking-tight">
-                Activated - تم التفعيل
+                Activated
               </h1>
               <div className="p-4 rounded-2xl bg-emerald-950/50 border border-emerald-500/40 font-mono text-sm space-y-1.5 text-emerald-100">
                 <div>
@@ -1607,7 +1628,7 @@ export default function App() {
           {verifyState === 'error' && (
             <>
               <h1 className="text-2xl font-bold text-white tracking-tight">
-                Activating Your Terminal... - جاري تفعيل حسابك
+                Terminal Activation
               </h1>
               <div className="p-4 rounded-2xl bg-rose-950/60 border border-rose-500/50 text-left text-xs font-mono text-rose-200 leading-relaxed break-words">
                 {verifyError || 'Unable to verify checkout'}
@@ -1652,7 +1673,7 @@ export default function App() {
                   onClick={() => runAutoVerifyCheckout()}
                   className="w-full py-4 px-5 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-black text-sm font-mono uppercase tracking-wider transition cursor-pointer shadow-lg min-h-[52px]"
                 >
-                  Try Again - حاول مرة ثانية
+                  Try Again
                 </button>
                 <button
                   type="button"
@@ -1871,7 +1892,7 @@ export default function App() {
               marketLive={marketLive}
               onSignOut={handleSignOut}
               onGoToHome={handleGoToHome}
-              onGoToPricing={handleGoToPricing}
+              onGoToPricing={handleGoToHomePricing}
               onOpenRenewal={() => setIsRenewalOpen(true)}
               onUpdateUser={handleSaveUser}
               onOpenAuth={() => setIsAuthOpen(true)}
@@ -2099,13 +2120,9 @@ export default function App() {
         pricingData={pricingData}
         currentCurrency={currency}
         onTestUnlock={handleAdminTestUnlock}
-        onOpenPricing={() => {
-          const el = document.getElementById('pricing');
-          el?.scrollIntoView({ behavior: 'smooth' });
-        }}
+        onOpenPricing={handleGoToHomePricing}
         onRequestEnterpriseDemo={() => {
-          const el = document.getElementById('pricing');
-          el?.scrollIntoView({ behavior: 'smooth' });
+          handleGoToHomePricing();
           setTimeout(() => {
             window.dispatchEvent(new Event('aqari:open-enterprise-modal'));
           }, 250);
@@ -2120,6 +2137,7 @@ export default function App() {
         pricingData={pricingData}
         currentCurrency={currency}
         onOpenLegal={navigateLegal}
+        onOpenPricing={handleGoToHomePricing}
       />
 
       <AnalysisModal

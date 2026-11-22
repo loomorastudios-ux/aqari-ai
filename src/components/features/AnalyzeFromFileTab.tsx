@@ -22,6 +22,8 @@ import type {
 import { formatPrice } from '../../utils/formatters';
 import { downloadInstitutionalMemorandumPdf } from '../../utils/pdfExport';
 import { IrrNoiDscrChart } from '../charts/AqariRecharts';
+import { CityAutocomplete } from '../ui/CityAutocomplete';
+import { findCityEntry } from '../../../data/cities';
 
 interface AnalyzeFromFileTabProps {
   userEmail: string;
@@ -97,6 +99,8 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
   // Editable confirmation form fields
   const [propertyTitle, setPropertyTitle] = useState('');
   const [city, setCity] = useState('Muscat');
+  const [cityId, setCityId] = useState('om-muscat');
+  const [cityError, setCityError] = useState<string | null>(null);
   const [propertyType, setPropertyType] = useState('Apartment');
   const [areaSqM, setAreaSqM] = useState('');
   const [bedrooms, setBedrooms] = useState('');
@@ -144,7 +148,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
   const applyDraftToForm = (d: ExtractedFilePropertyDraft) => {
     setDraft(d);
     setPropertyTitle(d.propertyTitle || '');
-    setCity(d.city || 'Muscat');
+    const matchedCity = findCityEntry(d.city || 'Muscat');
+    setCity(matchedCity?.city || d.city || 'Muscat');
+    setCityId(matchedCity?.city_id || '');
+    setCityError(null);
     setPropertyType(d.propertyType || 'Apartment');
     setAreaSqM(d.areaSqM !== null ? String(d.areaSqM) : '');
     setBedrooms(d.bedrooms !== null ? String(d.bedrooms) : '');
@@ -208,6 +215,13 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
       onOpenRenewal();
       return;
     }
+    const matchedCity = findCityEntry(city, cityId);
+    if (!matchedCity) {
+      setCityError('City not found, please select from list');
+      setRunError('City not found, please select from list');
+      return;
+    }
+    setCityError(null);
     const pNum = Number(priceUSD);
     const rNum = Number(monthlyRentUSD);
     if (!Number.isFinite(pNum) || pNum <= 0 || !Number.isFinite(rNum) || rNum <= 0) {
@@ -237,8 +251,9 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
           login_email: userEmail,
           fileName: draft?.fileName || selectedFile?.fileName || 'Property File',
           isImageOnly: Boolean(draft?.isImageOnly ?? selectedFile?.mimeType.startsWith('image/')),
-          propertyTitle: propertyTitle.trim() || `${city} File Analysis`,
-          city,
+          propertyTitle: propertyTitle.trim() || `${matchedCity.city} File Analysis`,
+          city: matchedCity.city,
+          city_id: matchedCity.city_id,
           propertyType,
           areaSqM: Number(areaSqM) || 0,
           bedrooms: Number(bedrooms) || 0,
@@ -480,14 +495,24 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
                 <span>City / Market</span>
                 <ProvenanceBadge tag={provenance.city} />
               </div>
-              <input
-                type="text"
+              <CityAutocomplete
                 value={city}
-                onChange={(e) => {
-                  setCity(e.target.value);
+                cityId={cityId}
+                onChangeValue={(nextVal) => {
+                  setCity(nextVal);
+                  setCityError(null);
                   markConfirmed('city');
                 }}
-                className="w-full px-3 py-2 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
+                onSelectCity={(entry) => {
+                  setCity(entry.city);
+                  setCityId(entry.city_id);
+                  setCityError(null);
+                  markConfirmed('city');
+                }}
+                onClearSelection={() => setCityId('')}
+                error={cityError}
+                placeholder="Type city (e.g. M -> Muscat, Miami...)"
+                inputClassName="w-full pl-9 pr-9 py-2 rounded-xl bg-black/50 border border-white/15 focus:border-[#D4AF37] text-white text-sm outline-none"
               />
             </div>
 
@@ -519,8 +544,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
               </div>
               <input
                 type="number"
+                inputMode="numeric"
                 lang="en"
                 dir="ltr"
+                style={{ fontVariantNumeric: 'tabular-nums' }}
                 placeholder="Required — Confirm USD"
                 value={priceUSD}
                 onChange={(e) => {
@@ -540,8 +567,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
               </div>
               <input
                 type="number"
+                inputMode="numeric"
                 lang="en"
                 dir="ltr"
+                style={{ fontVariantNumeric: 'tabular-nums' }}
                 placeholder="Required — Confirm USD/mo"
                 value={monthlyRentUSD}
                 onChange={(e) => {
@@ -561,8 +590,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
               </div>
               <input
                 type="number"
+                inputMode="numeric"
                 lang="en"
                 dir="ltr"
+                style={{ fontVariantNumeric: 'tabular-nums' }}
                 value={areaSqM}
                 onChange={(e) => {
                   setAreaSqM(e.target.value);
@@ -580,6 +611,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
               <div className="grid grid-cols-2 gap-2">
                 <input
                   type="number"
+                  inputMode="numeric"
+                  lang="en"
+                  dir="ltr"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
                   placeholder="Beds"
                   value={bedrooms}
                   onChange={(e) => {
@@ -590,6 +625,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
                 />
                 <input
                   type="number"
+                  inputMode="numeric"
+                  lang="en"
+                  dir="ltr"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
                   placeholder="Baths"
                   value={bathrooms}
                   onChange={(e) => {
@@ -609,6 +648,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
               <div className="grid grid-cols-2 gap-2">
                 <input
                   type="number"
+                  inputMode="decimal"
+                  lang="en"
+                  dir="ltr"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
                   value={downPaymentPct}
                   onChange={(e) => setDownPaymentPct(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
@@ -616,6 +659,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
                 <input
                   type="number"
                   step="0.1"
+                  inputMode="decimal"
+                  lang="en"
+                  dir="ltr"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
                   value={interestRatePct}
                   onChange={(e) => setInterestRatePct(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl bg-black/50 border border-white/15 text-white text-sm"
@@ -631,6 +678,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
               <div className="grid grid-cols-3 gap-2">
                 <input
                   type="number"
+                  inputMode="decimal"
+                  lang="en"
+                  dir="ltr"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
                   value={operatingExpensePct}
                   onChange={(e) => setOperatingExpensePct(e.target.value)}
                   title="OPEX %"
@@ -638,6 +689,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
                 />
                 <input
                   type="number"
+                  inputMode="decimal"
+                  lang="en"
+                  dir="ltr"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
                   value={vacancyRatePct}
                   onChange={(e) => setVacancyRatePct(e.target.value)}
                   title="Vacancy %"
@@ -645,6 +700,10 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
                 />
                 <input
                   type="number"
+                  inputMode="numeric"
+                  lang="en"
+                  dir="ltr"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
                   value={hoaUSD}
                   onChange={(e) => {
                     setHoaUSD(e.target.value);

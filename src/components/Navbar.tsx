@@ -280,13 +280,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                 transition={{ duration: 0.15 }}
                 onClick={onOpenAuth}
                 className="relative inline-flex items-center justify-center p-0.5 overflow-hidden rounded-xl group cursor-pointer min-h-[38px] sm:min-h-[44px] shrink-0 border border-[#D4AF37]/60 hover:border-[#D4AF37]"
-                title="Sign in to Terminal - تسجيل الدخول"
+                title="Sign in to Terminal"
               >
                 <span className="w-full h-full bg-gradient-to-br from-[#D4AF37] via-[#C5A028] to-[#996515] group-hover:from-[#F3E5AB] group-hover:to-[#D4AF37] absolute opacity-20 group-hover:opacity-100 transition"></span>
                 <span className="relative px-2.5 sm:px-4 py-1.5 sm:py-2 transition-all ease-out bg-black rounded-[10px] group-hover:bg-opacity-0 duration-300 flex items-center gap-1.5 sm:gap-2">
                   <Sparkles className="w-3.5 h-3.5 text-[#D4AF37] group-hover:text-black transition shrink-0" />
                   <span className="text-xs font-bold text-white group-hover:text-black tracking-wide whitespace-nowrap">
-                    <span className="inline sm:hidden">Sign In / دخول</span>
+                    <span className="inline sm:hidden">Sign In</span>
                     <span className="hidden sm:inline">Sign in to Terminal</span>
                   </span>
                 </span>
@@ -414,7 +414,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#C5A028] text-black font-bold text-xs uppercase tracking-wider font-mono flex items-center justify-center gap-2 cursor-pointer shadow-md min-h-[44px]"
               >
                 <Sparkles className="w-4 h-4 text-black shrink-0" />
-                <span>Sign In to Terminal - تسجيل الدخول</span>
+                <span>Sign In to Terminal</span>
               </button>
             ) : (
               <button
@@ -426,7 +426,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className="w-full py-3 px-4 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 font-bold text-xs uppercase tracking-wider font-mono flex items-center justify-center gap-2 cursor-pointer min-h-[44px]"
               >
                 <LogOut className="w-4 h-4 text-rose-400 shrink-0" />
-                <span>Log Out / تسجيل الخروج</span>
+                <span>Log Out</span>
               </button>
             )}
 

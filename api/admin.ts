@@ -66,10 +66,10 @@ const PLANS: Record<
     displayName: 'PROFESSIONAL',
     originalPrice: 349,
     launchPrice: 199,
-    analysesLimit: 150,
+    analysesLimit: 100,
     savedLimit: 2000,
     features: [
-      '150 analyses / 30 days',
+      '100 analyses / 30 days',
       'Advanced financial + Equity Waterfall + MC 5,000',
       '30 Image / PDF extractions / mo • 20 AI Listings / mo',
       '30 PDFs + Memorandum PDF',
@@ -82,10 +82,10 @@ const PLANS: Record<
     displayName: 'SOVEREIGN',
     originalPrice: 999,
     launchPrice: 599,
-    analysesLimit: 500,
+    analysesLimit: 300,
     savedLimit: 5000,
     features: [
-      '500 analyses / 30 days',
+      '300 analyses / 30 days',
       '100 Image / PDF / mo • 100 AI Listings / mo • 100 PDFs / mo',
       'White Label Reports + Custom logo & colors',
       'Monte Carlo 10,000 cycles',
@@ -417,8 +417,8 @@ function hydrateUserRecord(raw: any, email: string) {
 
 function hydratePricingConfig(raw: any) {
   const def = createDefaultPricingConfig();
-  if (!raw || typeof raw !== 'object') return def;
-  const schemaCurrent = Number(raw.schemaVersion || 0) >= 4;
+  if (!raw || typeof raw !== 'object' || Number(raw.schemaVersion || 0) < 5) return def;
+  const schemaCurrent = Number(raw.schemaVersion || 0) >= 5;
   const plans: any = { ...def.plans };
   for (const k of ['free', 'starter', 'pro', 'enterprise', 'institutional'] as PlanKey[]) {
     const r = raw.plans?.[k];
@@ -447,13 +447,13 @@ function hydratePricingConfig(raw: any) {
         originalPrice: Number.isFinite(Number(r.originalPrice)) ? Number(r.originalPrice) : def.plans[k].originalPrice,
         launchPrice: Number.isFinite(Number(r.launchPrice)) ? Number(r.launchPrice) : def.plans[k].launchPrice,
         analysesLimit,
-        savedLimit: k === 'institutional' ? 0 : Math.min(analysesLimit, def.plans[k].savedLimit),
+        savedLimit: k === 'institutional' ? 0 : def.plans[k].savedLimit,
         features: normalizedFeatures.length > 0 ? normalizedFeatures : def.plans[k].features,
       };
     }
   }
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     launchDiscountActive: typeof raw.launchDiscountActive === 'boolean' ? raw.launchDiscountActive : def.launchDiscountActive,
     launchBadgeText: typeof raw.launchBadgeText === 'string' && raw.launchBadgeText.trim() ? raw.launchBadgeText : def.launchBadgeText,
     launchEndsAt: Number.isFinite(Number(raw.launchEndsAt)) ? Number(raw.launchEndsAt) : def.launchEndsAt,
