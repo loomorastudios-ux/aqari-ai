@@ -120,7 +120,7 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
     persistedDraft?.targetAudience || 'Yield Investors & GCC Residency Buyers'
   );
   const [contactName, setContactName] = useState(
-    persistedDraft?.contactName || userName || userEmail.split('@')[0] || 'Loomora Studios'
+    persistedDraft?.contactName || userName || 'loomorastudios'
   );
   const [contactEmail, setContactEmail] = useState(
     persistedDraft?.contactEmail || userEmail || 'loomorastudios@gmail.com'
@@ -770,8 +770,21 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
           </div>
           <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10">
             <div className="text-[10px] text-zinc-400 uppercase">Sponsor Contact</div>
-            <div className="text-sm font-bold text-white mt-1 truncate">{contactName}</div>
-            <div className="text-[10px] text-zinc-400 truncate">{contactFirm || contactEmail}</div>
+            <div className="text-sm font-bold text-white mt-1 truncate">{contactName || 'loomorastudios'}</div>
+            <a
+              href={`mailto:${contactEmail || 'loomorastudios@gmail.com'}`}
+              className="block text-[10px] text-zinc-300 hover:text-[#D4AF37] truncate transition"
+            >
+              {contactEmail || 'loomorastudios@gmail.com'}
+            </a>
+            <a
+              href={`tel:${(contactPhone || '+968 78900731').replace(/[^+\d]/g, '')}`}
+              dir="ltr"
+              style={{ fontVariantNumeric: 'tabular-nums' }}
+              className="block text-[10px] text-emerald-300 hover:text-emerald-200 truncate transition mt-0.5"
+            >
+              {contactPhone || '+968 78900731'}
+            </a>
           </div>
         </div>
 

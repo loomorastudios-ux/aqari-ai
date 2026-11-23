@@ -1944,6 +1944,9 @@ interface UsedOrderRecord {
   payment_email: string;
   plan: PlanKey;
   plan_display: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE' | string;
+  purchase_type?: 'plan' | 'credit_pack';
+  pack_id?: string;
+  credits?: number;
   analyses: number;
   amount: number;
   test_mode: boolean;
@@ -3160,6 +3163,9 @@ async function applyCreditPackToUser(params: {
     payment_email: email,
     plan: normalizePlanKey(userRecord.plan),
     plan_display: params.pack.label,
+    purchase_type: 'credit_pack',
+    pack_id: params.pack.id,
+    credits: params.pack.credits,
     analyses: params.pack.credits,
     amount: params.pack.priceUSD,
     test_mode: params.isTestMode,
@@ -4004,7 +4010,7 @@ function mapAmountOrPlanToOrderTier(
   meta?: { productName?: string; variantId?: string; productId?: string; rawAmountCents?: number }
 ): {
   plan: PlanKey;
-  planDisplay: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN';
+  planDisplay: 'STARTER' | 'PROFESSIONAL' | 'SOVEREIGN' | 'ENTERPRISE';
   analyses: number;
 } {
   let plan: PlanKey | null = null;
@@ -4024,7 +4030,8 @@ function mapAmountOrPlanToOrderTier(
 
   if (!plan && meta?.productName) {
     const s = meta.productName.toLowerCase();
-    if (s.includes('sovereign') || s.includes('enterprise') || s.includes('agency')) plan = 'enterprise';
+    if (s.includes('enterprise') || s.includes('institutional')) plan = 'institutional';
+    else if (s.includes('sovereign') || s.includes('agency')) plan = 'enterprise';
     else if (s.includes('professional') || /\bpro\b/.test(s)) plan = 'pro';
     else if (s.includes('starter')) plan = 'starter';
   }
@@ -4032,7 +4039,8 @@ function mapAmountOrPlanToOrderTier(
   if (!plan) {
     const fromCents = meta?.rawAmountCents ? planFromAmount(meta.rawAmountCents) : null;
     const fromAmt = fromCents || planFromAmount(amountOrCents);
-    if (fromAmt?.name === 'SOVEREIGN') plan = 'enterprise';
+    if (fromAmt?.name === 'ENTERPRISE') plan = 'institutional';
+    else if (fromAmt?.name === 'SOVEREIGN') plan = 'enterprise';
     else if (fromAmt?.name === 'STARTER') plan = 'starter';
     else if (fromAmt?.name === 'PROFESSIONAL') plan = 'pro';
   }
@@ -4043,6 +4051,13 @@ function mapAmountOrPlanToOrderTier(
 
   if (plan === 'starter') {
     return { plan: 'starter', planDisplay: PLANS.STARTER.name, analyses: PLANS.STARTER.analyses };
+  }
+  if (plan === 'institutional') {
+    return {
+      plan: 'institutional',
+      planDisplay: PLANS.ENTERPRISE.name,
+      analyses: PLANS.ENTERPRISE.analyses,
+    };
   }
   if (plan === 'enterprise') {
     return {
@@ -5141,7 +5156,10 @@ const CANCEL_REDIRECT = 'https://aqari-ai-rho.vercel.app/pricing?checkout=cancel
 
 function resolvePlanFromOrderAttributes(attrs: any, fallbackPlan?: PlanKey): PlanKey {
   const s = `${attrs?.first_order_item?.product_name || ''} ${attrs?.first_order_item?.variant_name || ''} ${attrs?.product_name || ''} ${attrs?.variant_name || ''} ${attrs?.metadata?.plan || ''}`.toLowerCase();
-  if (s.includes('sovereign') || s.includes('enterprise') || s.includes('agency')) {
+  if (s.includes('enterprise') || s.includes('institutional')) {
+    return 'institutional';
+  }
+  if (s.includes('sovereign') || s.includes('agency')) {
     return 'enterprise';
   }
   if (s.includes('professional') || /\bpro\b/.test(s)) {
@@ -5153,17 +5171,134 @@ function resolvePlanFromOrderAttributes(attrs: any, fallbackPlan?: PlanKey): Pla
 
   const rawCents = Number(attrs?.total ?? attrs?.subtotal ?? attrs?.amount ?? attrs?.first_order_item?.price ?? 0);
   const byCents = planFromAmount(rawCents);
+  if (byCents?.name === 'ENTERPRISE') return 'institutional';
   if (byCents?.name === 'SOVEREIGN') return 'enterprise';
   if (byCents?.name === 'STARTER') return 'starter';
   if (byCents?.name === 'PROFESSIONAL') return 'pro';
 
-  const totalUSD = rawCents > 1000 ? rawCents / 100 : rawCents;
+  const totalUSD = rawCents >= 1000 ? rawCents / 100 : rawCents;
   const byUsd = planFromAmount(totalUSD);
+  if (byUsd?.name === 'ENTERPRISE') return 'institutional';
   if (byUsd?.name === 'SOVEREIGN') return 'enterprise';
   if (byUsd?.name === 'STARTER') return 'starter';
   if (byUsd?.name === 'PROFESSIONAL') return 'pro';
 
   return fallbackPlan && fallbackPlan !== 'free' ? fallbackPlan : 'pro';
+}
+
+const LEGACY_SANDBOX_PRICE_ID_SERVER = 'pri_01m7qwqceh520nd4we9pg90f8m';
+
+function pickPaddlePriceFromEnv(keys: string[], liveDefault = ''): string {
+  for (const k of keys) {
+    const val = cleanEnvValue(getEnv(k));
+    if (val && val !== LEGACY_SANDBOX_PRICE_ID_SERVER && val.startsWith('pri_')) {
+      return val;
+    }
+  }
+  return liveDefault;
+}
+
+function resolvePaddleConfiguredPrices(isSandbox: boolean) {
+  return {
+    starter: pickPaddlePriceFromEnv(
+      [
+        'PADDLE_STARTER_PRICE',
+        'PADDLE_STARTER_PRICE_ID',
+        'NEXT_PUBLIC_PADDLE_STARTER_PRICE',
+        'NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID',
+      ],
+      !isSandbox ? 'pri_01m7tgfvteegdih2mx4hgyz1c' : ''
+    ),
+    pro: pickPaddlePriceFromEnv(
+      [
+        'PADDLE_PRO_PRICE',
+        'PADDLE_PRO_PRICE_ID',
+        'NEXT_PUBLIC_PADDLE_PRICE_ID',
+        'NEXT_PUBLIC_PADDLE_PRO_PRICE',
+        'NEXT_PUBLIC_PADDLE_PRO_PRICE_ID',
+      ],
+      !isSandbox ? 'pri_01m7tggqhjtgk9fxmmg6mbp5wy' : ''
+    ),
+    sovereign: pickPaddlePriceFromEnv(
+      [
+        'PADDLE_SOVEREIGN_PRICE',
+        'PADDLE_SOVEREIGN_PRICE_ID',
+        'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE',
+        'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID',
+      ],
+      !isSandbox ? 'pri_01m7tgj4pp767gacchp49k2qev' : ''
+    ),
+    enterprise: pickPaddlePriceFromEnv([
+      'PADDLE_ENTERPRISE_PRICE',
+      'PADDLE_ENTERPRISE_PRICE_ID',
+      'NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE',
+      'NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID',
+    ]),
+    credit25: pickPaddlePriceFromEnv([
+      'PADDLE_CREDIT_25_PRICE',
+      'PADDLE_CREDIT_25_PRICE_ID',
+      'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE',
+      'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID',
+    ]),
+    credit100: pickPaddlePriceFromEnv([
+      'PADDLE_CREDIT_100_PRICE',
+      'PADDLE_CREDIT_100_PRICE_ID',
+      'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE',
+      'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID',
+    ]),
+    credit500: pickPaddlePriceFromEnv([
+      'PADDLE_CREDIT_500_PRICE',
+      'PADDLE_CREDIT_500_PRICE_ID',
+      'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE',
+      'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID',
+    ]),
+  };
+}
+
+function parsePaddleAmountUSD(rawTotal: unknown, fallbackUSD = 0): number {
+  if (rawTotal === undefined || rawTotal === null || rawTotal === '') return fallbackUSD;
+  const numericVal = Number(rawTotal);
+  if (!Number.isFinite(numericVal) || numericVal <= 0) return fallbackUSD;
+  if (typeof rawTotal === 'string' && rawTotal.trim() !== '' && !rawTotal.includes('.')) {
+    return Number((numericVal / 100).toFixed(2));
+  }
+  return numericVal >= 1000 ? Number((numericVal / 100).toFixed(2)) : Number(numericVal.toFixed(2));
+}
+
+function resolveCreditPackMatch(params: {
+  itemPriceId?: string;
+  customPackId?: string;
+  purchaseType?: string;
+  productName?: string;
+  amountUSD?: number;
+  prices: ReturnType<typeof resolvePaddleConfiguredPrices>;
+}) {
+  const { itemPriceId, customPackId, purchaseType, productName, amountUSD, prices } = params;
+  if (itemPriceId) {
+    if (prices.credit25 && itemPriceId === prices.credit25) return EXTRA_CREDIT_PACKS[0];
+    if (prices.credit100 && itemPriceId === prices.credit100) return EXTRA_CREDIT_PACKS[1];
+    if (prices.credit500 && itemPriceId === prices.credit500) return EXTRA_CREDIT_PACKS[2];
+  }
+  if (customPackId) {
+    const byId = EXTRA_CREDIT_PACKS.find((p) => p.id === customPackId);
+    if (byId) return byId;
+  }
+  const isCreditFlag =
+    String(purchaseType || '').toLowerCase() === 'credit_pack' ||
+    String(productName || '').toLowerCase().includes('credit');
+  if (isCreditFlag) {
+    const pName = String(productName || '').toLowerCase();
+    if (pName.includes('500')) return EXTRA_CREDIT_PACKS[2];
+    if (pName.includes('100')) return EXTRA_CREDIT_PACKS[1];
+    if (pName.includes('25')) return EXTRA_CREDIT_PACKS[0];
+    if (typeof amountUSD === 'number' && amountUSD > 0) {
+      const roundedAmt = Math.round(amountUSD);
+      const byPrice = EXTRA_CREDIT_PACKS.find((p) => p.priceUSD === roundedAmt);
+      if (byPrice) return byPrice;
+      if (roundedAmt === 29) return EXTRA_CREDIT_PACKS[0];
+    }
+  }
+  return undefined;
 }
 
 function getQueryParam(req: any, url: URL, key: string): string {
@@ -6253,18 +6388,23 @@ export default async function handler(req: any, res: any) {
               findPlanPricing(pricing, tier.plan)?.features || PLAN_DEFINITIONS[tier.plan].features;
             const successMessage =
               tier.plan === 'pro'
-                ? 'Subscription activated! Pro plan is now active.'
-                : `Subscription activated! ${tier.planDisplay} plan is now active.`;
+                ? 'One-time 30-day PRO access activated! Pro plan is now active.'
+                : `One-time 30-day access activated! ${tier.planDisplay} plan is now active.`;
 
             return res.status(200).json({
               success: true,
               verified: true,
+              purchase_type: 'plan',
               message: successMessage,
               plan: tier.planDisplay,
               plan_name: tier.planDisplay,
               planKey: tier.plan,
               price: PLAN_DEFINITIONS[tier.plan].priceUSD,
-              analyses_left: tier.analyses,
+              analyses_left: license.analysesLeft,
+              credits_balance: dbUser.extra_credits || 0,
+              extra_credits: dbUser.extra_credits || 0,
+              purchase_date: dbUser.license_start ? new Date(dbUser.license_start).toISOString() : null,
+              expiry_date: dbUser.license_end ? new Date(dbUser.license_end).toISOString() : null,
               payment_email_for_log_only: params.paymentEmail || null,
               order_id: params.resolvedOrderId,
               transaction_id: params.resolvedOrderId,
@@ -6292,6 +6432,42 @@ export default async function handler(req: any, res: any) {
 
             let existingUser =
               (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
+
+            if (existingUsedOrder.purchase_type === 'credit_pack') {
+              const pack =
+                EXTRA_CREDIT_PACKS.find((p) => p.id === existingUsedOrder.pack_id) ||
+                EXTRA_CREDIT_PACKS.find((p) => p.priceUSD === Math.round(existingUsedOrder.amount || 0)) ||
+                EXTRA_CREDIT_PACKS[0];
+              const license = computeServerLicenseStatus(existingUser);
+              const features =
+                findPlanPricing(pricing, license.planKey)?.features || PLAN_DEFINITIONS[license.planKey].features;
+              return res.status(200).json({
+                success: true,
+                verified: true,
+                alreadyApplied: true,
+                purchase_type: 'credit_pack',
+                packId: pack.id,
+                pack,
+                creditsAdded: 0,
+                credits_balance: existingUser.extra_credits || 0,
+                extra_credits: existingUser.extra_credits || 0,
+                analyses_left: license.analysesLeft,
+                analyses_total: license.analysesLimit,
+                plan: license.displayName,
+                plan_name: license.displayName,
+                planKey: license.planKey,
+                purchase_date: existingUser.license_start ? new Date(existingUser.license_start).toISOString() : null,
+                expiry_date: existingUser.license_end ? new Date(existingUser.license_end).toISOString() : null,
+                transaction_id: existingUsedOrder.order_id,
+                order_id: existingUsedOrder.order_id,
+                login_email: existingUser.email,
+                message: `Credits verified (${pack.label}). Current credits balance: ${existingUser.extra_credits || 0} (Never expires).`,
+                user: existingUser,
+                license,
+                features,
+              });
+            }
+
             if (
               existingUser.cancel_status !== 'refunded' &&
               (existingUser.plan === 'free' ||
@@ -6319,8 +6495,8 @@ export default async function handler(req: any, res: any) {
               findPlanPricing(pricing, usedPlanKey)?.features || PLAN_DEFINITIONS[usedPlanKey].features;
             const successMessage =
               usedPlanKey === 'pro'
-                ? 'Subscription activated! Pro plan is now active.'
-                : `Subscription activated! ${license.displayName} plan is now active.`;
+                ? 'One-time 30-day PRO access activated! Pro plan is now active.'
+                : `One-time 30-day access activated! ${license.displayName} plan is now active.`;
             try {
               setSessionCookie(res, existingUser.email);
               if (existingUser.cancel_status !== 'refunded') {
@@ -6340,6 +6516,7 @@ export default async function handler(req: any, res: any) {
             return res.status(200).json({
               success: true,
               verified: true,
+              purchase_type: 'plan',
               message: successMessage,
               plan: license.displayName,
               plan_name: license.displayName,
@@ -6347,6 +6524,10 @@ export default async function handler(req: any, res: any) {
               price: PLAN_DEFINITIONS[license.planKey].priceUSD,
               analyses_left: license.analysesLeft,
               analyses_total: license.analysesLimit,
+              credits_balance: existingUser.extra_credits || 0,
+              extra_credits: existingUser.extra_credits || 0,
+              purchase_date: existingUser.license_start ? new Date(existingUser.license_start).toISOString() : null,
+              expiry_date: existingUser.license_end ? new Date(existingUser.license_end).toISOString() : null,
               payment_email_for_log_only: existingUsedOrder.payment_email || null,
               order_id: existingUsedOrder.order_id,
               transaction_id: existingUsedOrder.order_id,
@@ -6513,58 +6694,23 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          const rawGrandTotal = Number(
+          const rawTotalField =
             txnData?.details?.totals?.grand_total ??
-              txnData?.details?.totals?.total ??
-              txnData?.details?.totals?.subtotal ??
-              0
+            txnData?.details?.totals?.total ??
+            txnData?.details?.totals?.subtotal ??
+            0;
+          const rawGrandTotal = Number(rawTotalField);
+          const amountUSD = parsePaddleAmountUSD(
+            rawTotalField,
+            PLAN_DEFINITIONS[requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro'].launchPrice
           );
-          const amountUSD =
-            Number.isFinite(rawGrandTotal) && rawGrandTotal > 0
-              ? rawGrandTotal / 100
-              : PLAN_DEFINITIONS[requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro'].launchPrice;
 
-          const LEGACY_SANDBOX_PRICE_ID = 'pri_01m7qwqceh520nd4we9pg90f8m';
-          const rawProEnv = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
-          const proPriceId =
-            rawProEnv && rawProEnv !== LEGACY_SANDBOX_PRICE_ID
-              ? rawProEnv
-              : !paddleEnv.isSandbox
-              ? 'pri_01m7tggqhjtgk9fxmmg6mbp5wy'
-              : '';
-          const starterPriceId =
-            cleanEnvValue(
-              getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE') ||
-                getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')
-            ) || (!paddleEnv.isSandbox ? 'pri_01m7tgfvteegdih2mx4hgyz1c' : '');
-          const sovereignPriceId =
-            cleanEnvValue(
-              getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE') ||
-                getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')
-            ) || (!paddleEnv.isSandbox ? 'pri_01m7tgj4pp767gacchp49k2qev' : '');
+          const prices = resolvePaddleConfiguredPrices(paddleEnv.isSandbox);
           const firstItem = Array.isArray(txnData?.items) ? txnData.items[0] : null;
           const itemPriceId = String(firstItem?.price?.id || firstItem?.price_id || '').trim();
           const itemProductName = String(
             firstItem?.price?.name || firstItem?.product?.name || firstItem?.price?.description || ''
           ).trim();
-
-          let resolvedFallbackPlan: PlanKey = requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro';
-          if (proPriceId && itemPriceId === proPriceId) {
-            resolvedFallbackPlan = 'pro';
-          } else if (starterPriceId && itemPriceId === starterPriceId) {
-            resolvedFallbackPlan = 'starter';
-          } else if (sovereignPriceId && itemPriceId === sovereignPriceId) {
-            resolvedFallbackPlan = 'enterprise';
-          } else if (txnData?.custom_data?.plan) {
-            const cdPlan = normalizePlanKey(String(txnData.custom_data.plan));
-            if (cdPlan !== 'free') resolvedFallbackPlan = cdPlan;
-          } else if (itemProductName) {
-            resolvedFallbackPlan = resolvePlanFromOrderAttributes(
-              { product_name: itemProductName, amount: rawGrandTotal },
-              resolvedFallbackPlan
-            );
-          }
-
           const paymentEmail = String(
             txnData?.customer?.email ||
               txnData?.custom_data?.email ||
@@ -6574,6 +6720,95 @@ export default async function handler(req: any, res: any) {
           )
             .trim()
             .toLowerCase();
+
+          const matchedCreditPack = resolveCreditPackMatch({
+            itemPriceId,
+            customPackId: String(txnData?.custom_data?.packId || txnData?.custom_data?.pack_id || '').trim(),
+            purchaseType: String(txnData?.custom_data?.purchase_type || '').trim(),
+            productName: itemProductName,
+            amountUSD,
+            prices,
+          });
+
+          if (matchedCreditPack) {
+            const targetCreditEmail = loginEmail || paymentEmail;
+            const updatedCreditUser = await applyCreditPackToUser({
+              email: targetCreditEmail,
+              pack: matchedCreditPack,
+              orderId: String(txnData.id),
+              isTestMode: verifiedBaseUrl.includes('sandbox'),
+            });
+            await appendWebhookLogToDb({
+              order_id: String(txnData.id),
+              event: 'checkout_verify_credit_pack',
+              event_name: 'checkout_verify_credit_pack',
+              plan: normalizePlanKey(updatedCreditUser.plan),
+              email: targetCreditEmail,
+              payment_email: paymentEmail || targetCreditEmail,
+              created_at: txnData.created_at || new Date().toISOString(),
+              amount: matchedCreditPack.priceUSD,
+              currency: 'USD',
+              test_mode: verifiedBaseUrl.includes('sandbox'),
+              signature_valid: true,
+            }).catch(() => {});
+
+            const creditLicense = computeServerLicenseStatus(updatedCreditUser);
+            const creditFeatures =
+              findPlanPricing(pricing, creditLicense.planKey)?.features ||
+              PLAN_DEFINITIONS[creditLicense.planKey].features;
+            try {
+              setSessionCookie(res, updatedCreditUser.email);
+            } catch {}
+
+            return res.status(200).json({
+              success: true,
+              verified: true,
+              purchase_type: 'credit_pack',
+              packId: matchedCreditPack.id,
+              pack: matchedCreditPack,
+              creditsAdded: matchedCreditPack.credits,
+              credits_balance: updatedCreditUser.extra_credits || 0,
+              extra_credits: updatedCreditUser.extra_credits || 0,
+              analyses_left: creditLicense.analysesLeft,
+              analyses_total: creditLicense.analysesLimit,
+              plan: creditLicense.displayName,
+              plan_name: creditLicense.displayName,
+              planKey: creditLicense.planKey,
+              purchase_date: updatedCreditUser.license_start
+                ? new Date(updatedCreditUser.license_start).toISOString()
+                : null,
+              expiry_date: updatedCreditUser.license_end
+                ? new Date(updatedCreditUser.license_end).toISOString()
+                : null,
+              transaction_id: String(txnData.id),
+              order_id: String(txnData.id),
+              payment_provider: 'paddle',
+              login_email: updatedCreditUser.email,
+              message: `Added +${matchedCreditPack.credits} non-expiring AI credits (${matchedCreditPack.label}).`,
+              user: sanitizeUserForClient(updatedCreditUser),
+              license: creditLicense,
+              features: creditFeatures,
+            });
+          }
+
+          let resolvedFallbackPlan: PlanKey = requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro';
+          if (prices.pro && itemPriceId === prices.pro) {
+            resolvedFallbackPlan = 'pro';
+          } else if (prices.starter && itemPriceId === prices.starter) {
+            resolvedFallbackPlan = 'starter';
+          } else if (prices.sovereign && itemPriceId === prices.sovereign) {
+            resolvedFallbackPlan = 'enterprise';
+          } else if (prices.enterprise && itemPriceId === prices.enterprise) {
+            resolvedFallbackPlan = 'institutional';
+          } else if (txnData?.custom_data?.plan) {
+            const cdPlan = normalizePlanKey(String(txnData.custom_data.plan));
+            if (cdPlan !== 'free') resolvedFallbackPlan = cdPlan;
+          } else if (itemProductName) {
+            resolvedFallbackPlan = resolvePlanFromOrderAttributes(
+              { product_name: itemProductName, amount: rawGrandTotal },
+              resolvedFallbackPlan
+            );
+          }
 
           return await completeActivation({
             resolvedOrderId: String(txnData.id),
@@ -9062,8 +9297,10 @@ export default async function handler(req: any, res: any) {
         }
 
         const { plan, email, refundAcceptedAt } = parsedBody;
-        const validPlan: 'starter' | 'pro' | 'enterprise' =
-          plan === 'starter' || plan === 'pro' || plan === 'enterprise' ? plan : 'pro';
+        const validPlan: 'starter' | 'pro' | 'enterprise' | 'institutional' =
+          plan === 'starter' || plan === 'pro' || plan === 'enterprise' || plan === 'institutional'
+            ? plan
+            : 'pro';
 
         const pricing = getPricingPublicPayload();
         const planPricing = findPlanPricing(pricing, validPlan)!;
@@ -9082,30 +9319,15 @@ export default async function handler(req: any, res: any) {
         }
         const isTestMode = paddleEnv.isSandbox;
 
-        const LEGACY_SANDBOX_PRICE_ID = 'pri_01m7qwqceh520nd4we9pg90f8m';
-        const rawProEnv = cleanEnvValue(getEnv('NEXT_PUBLIC_PADDLE_PRICE_ID'));
-        const proPriceId =
-          rawProEnv && rawProEnv !== LEGACY_SANDBOX_PRICE_ID
-            ? rawProEnv
-            : !isTestMode
-            ? 'pri_01m7tggqhjtgk9fxmmg6mbp5wy'
-            : '';
-        const starterPriceId =
-          cleanEnvValue(
-            getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE') ||
-              getEnv('NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID')
-          ) || (!isTestMode ? 'pri_01m7tgfvteegdih2mx4hgyz1c' : '');
-        const sovereignPriceId =
-          cleanEnvValue(
-            getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE') ||
-              getEnv('NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID')
-          ) || (!isTestMode ? 'pri_01m7tgj4pp767gacchp49k2qev' : '');
+        const prices = resolvePaddleConfiguredPrices(isTestMode);
         const resolvedPriceId =
           validPlan === 'pro'
-            ? proPriceId
+            ? prices.pro
             : validPlan === 'starter'
-            ? starterPriceId
-            : sovereignPriceId;
+            ? prices.starter
+            : validPlan === 'institutional'
+            ? prices.enterprise
+            : prices.sovereign;
 
         if (email) {
           recordPendingCheckout({
@@ -9402,7 +9624,11 @@ export default async function handler(req: any, res: any) {
           req?.headers?.['paddle-signature'] || req?.headers?.['Paddle-Signature'] || ''
         ).trim();
         const rawBodyString =
-          typeof req?.body === 'string'
+          typeof req?.rawBody === 'string'
+            ? req.rawBody
+            : Buffer.isBuffer(req?.rawBody)
+            ? req.rawBody.toString('utf8')
+            : typeof req?.body === 'string'
             ? req.body
             : Buffer.isBuffer(req?.body)
             ? req.body.toString('utf8')
@@ -9451,10 +9677,10 @@ export default async function handler(req: any, res: any) {
 
         const eventName = String(
           parsedBody?.event_type || parsedBody?.event_name || parsedBody?.type || 'paddle.unknown'
-        );
+        ).trim();
         const dataObj = parsedBody?.data || parsedBody || {};
         const orderId = String(
-          dataObj?.id || dataObj?.transaction_id || dataObj?.subscription_id || `wh_${Date.now()}`
+          dataObj?.id || dataObj?.transaction_id || `wh_${Date.now()}`
         );
         const customerEmail = normalizeEmail(
           dataObj?.customer?.email ||
@@ -9463,59 +9689,63 @@ export default async function handler(req: any, res: any) {
             dataObj?.email ||
             ''
         );
+        const accountEmail = normalizeEmail(
+          dataObj?.custom_data?.login_email ||
+            dataObj?.custom_data?.email ||
+            dataObj?.customer?.email ||
+            dataObj?.email ||
+            ''
+        );
         const firstPriceId = String(
           dataObj?.items?.[0]?.price?.id || dataObj?.items?.[0]?.price_id || ''
-        );
-        const totalMinorOrUsd = Number(
-          dataObj?.details?.totals?.total ?? dataObj?.details?.totals?.subtotal ?? 0
-        );
-        const amountUSD =
-          totalMinorOrUsd > 1000 ? Number((totalMinorOrUsd / 100).toFixed(2)) : totalMinorOrUsd;
-
-        const credit25Price = cleanEnvValue(
-          getEnv('PADDLE_CREDIT_25_PRICE') || getEnv('NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE')
-        );
-        const credit100Price = cleanEnvValue(
-          getEnv('PADDLE_CREDIT_100_PRICE') || getEnv('NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE')
-        );
-        const credit500Price = cleanEnvValue(
-          getEnv('PADDLE_CREDIT_500_PRICE') || getEnv('NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE')
-        );
-        const customPackId = String(
-          dataObj?.custom_data?.packId || dataObj?.custom_data?.pack_id || ''
         ).trim();
-        const isCreditPurchaseFlag =
-          String(dataObj?.custom_data?.purchase_type || '').toLowerCase() === 'credit_pack';
-        let matchedCreditPack =
-          credit25Price && firstPriceId === credit25Price
-            ? EXTRA_CREDIT_PACKS[0]
-            : credit100Price && firstPriceId === credit100Price
-            ? EXTRA_CREDIT_PACKS[1]
-            : credit500Price && firstPriceId === credit500Price
-            ? EXTRA_CREDIT_PACKS[2]
-            : customPackId
-            ? EXTRA_CREDIT_PACKS.find((p) => p.id === customPackId)
-            : undefined;
-        if (!matchedCreditPack && isCreditPurchaseFlag) {
-          const roundedAmt = Math.round(amountUSD);
-          matchedCreditPack = EXTRA_CREDIT_PACKS.find((p) => p.priceUSD === roundedAmt);
-        }
-        const isCreditPackPurchase = Boolean(matchedCreditPack || isCreditPurchaseFlag);
-
-        const resolvedPlan =
-          firstPriceId === 'pri_01m7tgj4pp767gacchp49k2qev'
-            ? 'enterprise'
-            : firstPriceId === 'pri_01m7tggqhjtgk9fxmmg6mbp5wy'
-            ? 'pro'
-            : firstPriceId === 'pri_01m7tgfvteegdih2mx4hgyz1c'
-            ? 'starter'
-            : resolvePlanFromOrderAttributes(
-                { amount: amountUSD, metadata: dataObj?.custom_data },
-                'pro'
-              );
+        const firstProductName = String(
+          dataObj?.items?.[0]?.price?.name ||
+            dataObj?.items?.[0]?.product?.name ||
+            dataObj?.items?.[0]?.price?.description ||
+            ''
+        ).trim();
+        const rawTotalField =
+          dataObj?.details?.totals?.grand_total ??
+          dataObj?.details?.totals?.total ??
+          dataObj?.details?.totals?.subtotal ??
+          0;
+        const amountUSD = parsePaddleAmountUSD(rawTotalField, 0);
 
         const paddleEnv = resolvePaddleEnvironment();
         const isTestEnv = paddleEnv.isSandbox;
+        const prices = resolvePaddleConfiguredPrices(isTestEnv);
+
+        const matchedCreditPack = resolveCreditPackMatch({
+          itemPriceId: firstPriceId,
+          customPackId: String(dataObj?.custom_data?.packId || dataObj?.custom_data?.pack_id || '').trim(),
+          purchaseType: String(dataObj?.custom_data?.purchase_type || '').trim(),
+          productName: firstProductName,
+          amountUSD,
+          prices,
+        });
+        const isCreditPackPurchase = Boolean(matchedCreditPack);
+
+        const resolvedPlan: PlanKey =
+          prices.enterprise && firstPriceId === prices.enterprise
+            ? 'institutional'
+            : prices.sovereign && firstPriceId === prices.sovereign
+            ? 'enterprise'
+            : prices.pro && firstPriceId === prices.pro
+            ? 'pro'
+            : prices.starter && firstPriceId === prices.starter
+            ? 'starter'
+            : dataObj?.custom_data?.plan &&
+              normalizePlanKey(String(dataObj.custom_data.plan)) !== 'free'
+            ? normalizePlanKey(String(dataObj.custom_data.plan))
+            : resolvePlanFromOrderAttributes(
+                {
+                  product_name: firstProductName,
+                  amount: Number(rawTotalField || amountUSD),
+                  metadata: dataObj?.custom_data,
+                },
+                'pro'
+              );
 
         await appendWebhookLogToDb({
           order_id: orderId,
@@ -9524,7 +9754,7 @@ export default async function handler(req: any, res: any) {
           plan: isCreditPackPurchase
             ? (normalizeEmail(dataObj?.custom_data?.currentPlan) as PlanKey) || resolvedPlan
             : resolvedPlan,
-          email: customerEmail || 'unassigned@paddle-webhook',
+          email: accountEmail || customerEmail || 'unassigned@paddle-webhook',
           payment_email: customerEmail || undefined,
           amount: Number.isFinite(amountUSD) ? amountUSD : 0,
           currency: String(dataObj?.currency_code || 'USD').toUpperCase(),
@@ -9543,15 +9773,31 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        // One-time purchases only: fulfill strictly on transaction.completed (or transaction.paid).
+        const isOneTimeCompletedEvent =
+          eventName === 'transaction.completed' || eventName === 'transaction.paid';
+        if (!isOneTimeCompletedEvent) {
+          return res.status(200).json({
+            success: true,
+            received: true,
+            verified: true,
+            ignored: true,
+            event_type: eventName,
+            order_id: orderId,
+            reason: 'One-time fulfillment handles transaction.completed only.',
+          });
+        }
+
         let creditsAdded = 0;
-        if (
-          (eventName === 'transaction.completed' || eventName === 'transaction.paid') &&
-          customerEmail &&
-          customerEmail.includes('@')
-        ) {
+        let finalUserRecord: ServerUserRecord | null = null;
+        const targetEmail = accountEmail || customerEmail;
+
+        if (targetEmail && targetEmail.includes('@')) {
           if (isCreditPackPurchase && matchedCreditPack) {
             const usedRec = await getUsedOrderFromDb(orderId).catch(() => null);
-            const existingDb = await getUserFromDb(customerEmail).catch(() => null);
+            const { user: existingDb } = await readUserFromDbStatus(targetEmail).catch(() => ({
+              user: null,
+            }));
             const alreadyApplied = Boolean(
               usedRec ||
                 existingDb?.payments?.some(
@@ -9559,32 +9805,56 @@ export default async function handler(req: any, res: any) {
                 )
             );
             if (!alreadyApplied) {
-              await applyCreditPackToUser({
-                email: customerEmail,
+              finalUserRecord = await applyCreditPackToUser({
+                email: targetEmail,
                 pack: matchedCreditPack,
                 orderId,
                 isTestMode: isTestEnv,
               });
               creditsAdded = matchedCreditPack.credits;
+            } else {
+              finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
             }
           } else {
-            const existingDb = await getUserFromDb(customerEmail).catch(() => null);
+            const usedRec = await getUsedOrderFromDb(orderId).catch(() => null);
+            const { user: existingDb } = await readUserFromDbStatus(targetEmail).catch(() => ({
+              user: null,
+            }));
             const alreadyActivated = Boolean(
-              existingDb?.payments?.some(
-                (p: any) => normalizeOrderId(p?.order_id) === normalizeOrderId(orderId)
-              )
+              usedRec ||
+                existingDb?.payments?.some(
+                  (p: any) => normalizeOrderId(p?.order_id) === normalizeOrderId(orderId)
+                )
             );
             if (!alreadyActivated) {
+              const purchaseNow = Date.now();
               const activated = activatePaidPlanOnServer({
-                email: customerEmail,
+                email: targetEmail,
                 plan: resolvedPlan,
+                paymentTimestamp: purchaseNow,
                 orderId,
                 amountUSD: amountUSD > 0 ? amountUSD : undefined,
-                paymentCustomerEmail: customerEmail,
+                testMode: isTestEnv,
+                paymentCustomerEmail: customerEmail || targetEmail,
                 paymentProvider: 'paddle',
                 paymentIntentId: orderId,
               });
               await saveUserToDb(activated).catch(() => {});
+              await markOrderUsedInDb({
+                order_id: orderId,
+                login_email: targetEmail,
+                payment_email: customerEmail || targetEmail,
+                plan: resolvedPlan,
+                plan_display: PLAN_DEFINITIONS[resolvedPlan].displayName,
+                purchase_type: 'plan',
+                analyses: PLAN_DEFINITIONS[resolvedPlan].analysesLimit,
+                amount: amountUSD > 0 ? amountUSD : PLAN_DEFINITIONS[resolvedPlan].launchPrice,
+                test_mode: isTestEnv,
+                used_at: purchaseNow,
+              }).catch(() => {});
+              finalUserRecord = activated;
+            } else {
+              finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
             }
           }
         }
@@ -9595,13 +9865,25 @@ export default async function handler(req: any, res: any) {
           verified: true,
           event_type: eventName,
           order_id: orderId,
+          transaction_id: orderId,
           ...(isCreditPackPurchase && matchedCreditPack
             ? {
                 purchase_type: 'credit_pack',
                 packId: matchedCreditPack.id,
                 creditsAdded,
+                credits_balance: finalUserRecord?.extra_credits || 0,
               }
-            : { plan: resolvedPlan }),
+            : {
+                purchase_type: 'plan',
+                plan: resolvedPlan,
+                purchase_date: finalUserRecord?.license_start
+                  ? new Date(finalUserRecord.license_start).toISOString()
+                  : null,
+                expiry_date: finalUserRecord?.license_end
+                  ? new Date(finalUserRecord.license_end).toISOString()
+                  : null,
+                credits_balance: finalUserRecord?.extra_credits || 0,
+              }),
         });
       }
 

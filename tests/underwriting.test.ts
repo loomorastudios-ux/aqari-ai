@@ -1297,6 +1297,268 @@ test('Server pricing & quota single source enforces 100 for PROFESSIONAL and 300
   assert.equal(PLANS.enterprise.analysesLimit, 300);
 });
 
+test('One-time transaction.completed webhook sets purchase_date + 30d expiry_date for Plans, fulfills $19 Credits, and ignores subscription events', async (t) => {
+  const fs = await import('node:fs');
+  const crypto = await import('node:crypto');
+  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const buyerEmail = `wh_plan_${Date.now()}@aqari.test`;
+  const txnPlanId = `txn_plan_${Date.now()}`;
+  const txnCred19Id = `txn_c19_${Date.now()}`;
+
+  const prevSecret = process.env.PADDLE_WEBHOOK_SECRET;
+  const prevEnv = process.env.PADDLE_ENVIRONMENT;
+  const prevCredit25 = process.env.PADDLE_CREDIT_25_PRICE;
+  const prevEnt = process.env.PADDLE_ENTERPRISE_PRICE;
+  const testSecret = 'pdl_ntfset_one_time_test';
+  process.env.PADDLE_WEBHOOK_SECRET = testSecret;
+  process.env.PADDLE_ENVIRONMENT = 'live';
+  process.env.PADDLE_CREDIT_25_PRICE = 'pri_test_credit25_live';
+  process.env.PADDLE_ENTERPRISE_PRICE = 'pri_test_ent1499_live';
+
+  t.after(() => {
+    if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
+    else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
+    if (prevEnv === undefined) delete process.env.PADDLE_ENVIRONMENT;
+    else process.env.PADDLE_ENVIRONMENT = prevEnv;
+    if (prevCredit25 === undefined) delete process.env.PADDLE_CREDIT_25_PRICE;
+    else process.env.PADDLE_CREDIT_25_PRICE = prevCredit25;
+    if (prevEnt === undefined) delete process.env.PADDLE_ENTERPRISE_PRICE;
+    else process.env.PADDLE_ENTERPRISE_PRICE = prevEnt;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      if (parsed?.users?.[buyerEmail]) {
+        delete parsed.users[buyerEmail];
+      }
+      if (parsed?.used_orders?.[txnPlanId]) delete parsed.used_orders[txnPlanId];
+      if (parsed?.used_orders?.[txnCred19Id]) delete parsed.used_orders[txnCred19Id];
+      fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+    } catch {}
+  });
+
+  const sign = (body: string) => {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const h1 = crypto.createHmac('sha256', testSecret).update(`${ts}:${body}`).digest('hex');
+    return `ts=${ts};h1=${h1}`;
+  };
+
+  // 1. One-time Professional ($199) purchase via Live Price ID
+  const planBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: txnPlanId,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy', name: 'AQARI PROFESSIONAL' } }],
+      details: { totals: { total: '19900' } },
+      custom_data: { email: buyerEmail, login_email: buyerEmail },
+    },
+  });
+  const planWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sign(planBody) },
+    body: planBody,
+  });
+  assert.equal(planWh.statusCode, 200);
+  assert.equal(planWh.data.verified, true);
+  assert.equal(planWh.data.purchase_type, 'plan');
+  assert.equal(planWh.data.plan, 'pro');
+  assert.ok(planWh.data.purchase_date);
+  assert.ok(planWh.data.expiry_date);
+  const diffDays =
+    (new Date(planWh.data.expiry_date).getTime() - new Date(planWh.data.purchase_date).getTime()) /
+    (24 * 60 * 60 * 1000);
+  assert.equal(Math.round(diffDays), 30);
+
+  // 2. $19 +25 Credits Pack matched strictly by PADDLE_CREDIT_25_PRICE env var
+  const credBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: txnCred19Id,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_test_credit25_live', name: '+25 AI Credits' } }],
+      details: { totals: { total: '1900' } },
+      custom_data: { email: buyerEmail, login_email: buyerEmail },
+    },
+  });
+  const credWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sign(credBody) },
+    body: credBody,
+  });
+  assert.equal(credWh.statusCode, 200);
+  assert.equal(credWh.data.purchase_type, 'credit_pack');
+  assert.equal(credWh.data.packId, 'pack_25');
+  assert.equal(credWh.data.creditsAdded, 25);
+  assert.equal(credWh.data.credits_balance, 25);
+
+  // 3. Verify /app?checkout=success calling verify-payment on that same txnCred19Id preserves Pro plan and shows credits_balance=25
+  const verifyAfterCred = await invokeApi({
+    action: 'verify-payment',
+    method: 'POST',
+    body: {
+      login_email: buyerEmail,
+      transaction_id: txnCred19Id,
+    },
+  });
+  assert.equal(verifyAfterCred.statusCode, 200);
+  assert.equal(verifyAfterCred.data.success, true);
+  assert.equal(verifyAfterCred.data.purchase_type, 'credit_pack');
+  assert.equal(verifyAfterCred.data.planKey, 'pro');
+  assert.equal(verifyAfterCred.data.credits_balance, 25);
+
+  // 4. Subscription event must be ignored cleanly without auto-renew
+  const subBody = JSON.stringify({
+    event_type: 'subscription.updated',
+    data: { id: `sub_ign_${Date.now()}`, customer: { email: buyerEmail } },
+  });
+  const subWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sign(subBody) },
+    body: subBody,
+  });
+  assert.equal(subWh.statusCode, 200);
+  assert.equal(subWh.data.ignored, true);
+});
+
+test('verify-payment handles direct $19 Credit Pack transaction_id via Paddle API without overwriting existing plan', async (t) => {
+  const fs = await import('node:fs');
+  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const buyerEmail = `verify_c19_${Date.now()}@aqari.test`;
+  const txnDirectId = `txn_direct19_${Date.now()}`;
+
+  const prevApiKey = process.env.PADDLE_API_KEY;
+  const prevEnv = process.env.PADDLE_ENVIRONMENT;
+  const prevCredit25 = process.env.PADDLE_CREDIT_25_PRICE;
+  const prevFetch = globalThis.fetch;
+
+  process.env.PADDLE_API_KEY = 'pdl_live_test_key';
+  process.env.PADDLE_ENVIRONMENT = 'live';
+  process.env.PADDLE_CREDIT_25_PRICE = 'pri_direct_pack25';
+
+  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
+  existing.users = existing.users || {};
+  existing.users[buyerEmail] = {
+    email: buyerEmail,
+    name: 'Starter Buyer',
+    plan: 'starter',
+    analyses_total: 30,
+    analyses_left: 30,
+    analyses_used: 0,
+    extra_credits: 0,
+    license_start: Date.now() - 1000,
+    license_end: Date.now() + 30 * 86_400_000,
+    status: 'active',
+  };
+  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+
+  globalThis.fetch = (async (url: any, opts?: any) => {
+    const s = String(url);
+    if (s.includes(`/transactions/${txnDirectId}`)) {
+      return new Response(
+        JSON.stringify({
+          data: {
+            id: txnDirectId,
+            status: 'completed',
+            customer: { email: buyerEmail },
+            items: [{ price: { id: 'pri_direct_pack25', name: '+25 AI Credits' } }],
+            details: { totals: { total: '1900', grand_total: '1900' } },
+            custom_data: { purchase_type: 'credit_pack', packId: 'pack_25', email: buyerEmail },
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    return prevFetch(url, opts);
+  }) as typeof fetch;
+
+  t.after(() => {
+    globalThis.fetch = prevFetch;
+    if (prevApiKey === undefined) delete process.env.PADDLE_API_KEY;
+    else process.env.PADDLE_API_KEY = prevApiKey;
+    if (prevEnv === undefined) delete process.env.PADDLE_ENVIRONMENT;
+    else process.env.PADDLE_ENVIRONMENT = prevEnv;
+    if (prevCredit25 === undefined) delete process.env.PADDLE_CREDIT_25_PRICE;
+    else process.env.PADDLE_CREDIT_25_PRICE = prevCredit25;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      if (parsed?.users?.[buyerEmail]) delete parsed.users[buyerEmail];
+      if (parsed?.used_orders?.[txnDirectId]) delete parsed.used_orders[txnDirectId];
+      fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+    } catch {}
+  });
+
+  const verifyRes = await invokeApi({
+    action: 'verify-payment',
+    method: 'POST',
+    body: {
+      login_email: buyerEmail,
+      transaction_id: txnDirectId,
+    },
+  });
+  assert.equal(verifyRes.statusCode, 200);
+  assert.equal(verifyRes.data.success, true);
+  assert.equal(verifyRes.data.purchase_type, 'credit_pack');
+  assert.equal(verifyRes.data.creditsAdded, 25);
+  assert.equal(verifyRes.data.credits_balance, 25);
+  assert.equal(verifyRes.data.planKey, 'starter');
+  assert.equal(verifyRes.data.analyses_left, 55);
+});
+
+test('Frontend paddleClient resolves all 7 Price IDs via env vars and formats /app?checkout=success redirect URL', async (t) => {
+  const {
+    getPaddlePriceId,
+    getPaddleCreditPriceId,
+    getCheckoutSuccessUrl,
+  } = await import('../src/utils/paddleClient.ts');
+
+  const keys = [
+    'NEXT_PUBLIC_PADDLE_ENVIRONMENT',
+    'NEXT_PUBLIC_PADDLE_STARTER_PRICE',
+    'NEXT_PUBLIC_PADDLE_PRICE_ID',
+    'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE',
+    'NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE',
+    'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE',
+    'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE',
+    'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE',
+  ] as const;
+  const saved: Record<string, string | undefined> = {};
+  for (const k of keys) saved[k] = process.env[k];
+
+  t.after(() => {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = 'live';
+  process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE = 'pri_starter_1';
+  process.env.NEXT_PUBLIC_PADDLE_PRICE_ID = 'pri_pro_2';
+  process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE = 'pri_sov_3';
+  process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE = 'pri_ent_4';
+  process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE = 'pri_c25_5';
+  process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE = 'pri_c100_6';
+  process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE = 'pri_c500_7';
+
+  assert.equal(getPaddlePriceId('starter'), 'pri_starter_1');
+  assert.equal(getPaddlePriceId('pro'), 'pri_pro_2');
+  assert.equal(getPaddlePriceId('enterprise'), 'pri_sov_3');
+  assert.equal(getPaddlePriceId('institutional'), 'pri_ent_4');
+  assert.equal(getPaddleCreditPriceId('pack_25'), 'pri_c25_5');
+  assert.equal(getPaddleCreditPriceId('pack_100'), 'pri_c100_6');
+  assert.equal(getPaddleCreditPriceId('pack_500'), 'pri_c500_7');
+
+  assert.equal(
+    getCheckoutSuccessUrl('txn_01livecheck'),
+    'https://aqari-ai-rho.vercel.app/app?checkout=success&transaction_id=txn_01livecheck'
+  );
+});
+
+
 
 
 

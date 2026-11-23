@@ -192,6 +192,8 @@ export default function App() {
   const [verifiedSummary, setVerifiedSummary] = useState<{
     plan: string;
     analysesLeft: number | string;
+    purchaseType?: 'plan' | 'credit_pack';
+    creditsBalance?: number;
   } | null>(null);
   const [serverSynced, setServerSynced] = useState<boolean>(() => !getSessionUser());
   const [meError, setMeError] = useState<string | null>(null);
@@ -663,15 +665,21 @@ export default function App() {
           }
         } catch {}
 
-        const { planDisplay, analysesLeftVal, verifiedPlan } = applyVerifiedUserPayload(
+        const isCreditPackCheckout = data?.purchase_type === 'credit_pack';
+        const { planDisplay, analysesLeftVal, verifiedPlan, updatedUser } = applyVerifiedUserPayload(
           data,
           meData,
           loginEmail
         );
-        setVerifyingPlanName(planDisplay);
+        const summaryLabel = isCreditPackCheckout
+          ? String(data?.pack?.label || '+25 AI Credits')
+          : planDisplay;
+        setVerifyingPlanName(summaryLabel);
         setVerifiedSummary({
-          plan: planDisplay,
+          plan: summaryLabel,
           analysesLeft: analysesLeftVal,
+          purchaseType: isCreditPackCheckout ? 'credit_pack' : 'plan',
+          creditsBalance: updatedUser.creditsBalance ?? updatedUser.extraCredits ?? 0,
         });
         setVerifyState('activated');
 
@@ -684,14 +692,17 @@ export default function App() {
           });
         } catch {}
 
-        const unlockBanner =
-          verifiedPlan === 'pro'
-            ? 'Subscription activated! PRO plan is now active.'
-            : data?.message || `Welcome to ${planDisplay} — Payment Successful!`;
-        const unlockToast =
-          verifiedPlan === 'pro'
-            ? 'Subscription activated! PRO plan is now active.'
-            : `Welcome to AQARI ${planDisplay} - Unlocked for 30 Days!`;
+        const unlockBanner = isCreditPackCheckout
+          ? data?.message ||
+            `Added ${summaryLabel} — Credits Balance: ${updatedUser.creditsBalance ?? 0} (Never expires)`
+          : verifiedPlan === 'pro'
+          ? 'One-time 30-day PRO access activated! PRO plan is now active.'
+          : data?.message || `Welcome to ${planDisplay} — Payment Successful!`;
+        const unlockToast = isCreditPackCheckout
+          ? `${summaryLabel} added to your balance!`
+          : verifiedPlan === 'pro'
+          ? 'One-time 30-day PRO access activated!'
+          : `Welcome to AQARI ${planDisplay} - Unlocked for 30 Days!`;
         try {
           sessionStorage.setItem('aqari_unlock_msg', unlockBanner);
           sessionStorage.setItem('aqari_unlock_toast', unlockToast);
@@ -1614,8 +1625,15 @@ export default function App() {
               </h1>
               <div className="p-4 rounded-2xl bg-emerald-950/50 border border-emerald-500/40 font-mono text-sm space-y-1.5 text-emerald-100">
                 <div>
-                  Plan: <span className="text-[#D4AF37] font-bold">{verifiedSummary?.plan || verifyingPlanName}</span>
+                  {verifiedSummary?.purchaseType === 'credit_pack' ? 'Pack Added:' : 'Plan:'}{' '}
+                  <span className="text-[#D4AF37] font-bold">{verifiedSummary?.plan || verifyingPlanName}</span>
                 </div>
+                {verifiedSummary?.purchaseType === 'credit_pack' && (
+                  <div>
+                    Credits Balance:{' '}
+                    <span className="text-emerald-300 font-bold">{verifiedSummary?.creditsBalance ?? 0} credits (Never expires)</span>
+                  </div>
+                )}
                 <div>
                   Analyses Left:{' '}
                   <span className="text-white font-bold">{verifiedSummary?.analysesLeft ?? 'Loading...'}</span>

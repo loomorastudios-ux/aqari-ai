@@ -13,6 +13,7 @@ import {
 import { formatPrice } from '../utils/formatters';
 import {
   getPaddleEnvironment,
+  getPaddlePriceId,
   openPaddleCheckout,
   openPaddleCreditPackCheckout,
   CreditPackId,
@@ -205,7 +206,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     });
   }, [user?.email, pricingVersion]);
 
-  const handlePayPaddle = async (planId: 'starter' | 'pro' | 'enterprise') => {
+  const handlePayPaddle = async (planId: 'starter' | 'pro' | 'enterprise' | 'institutional') => {
     if (!user) {
       onOpenAuth();
       return;
@@ -937,6 +938,24 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                 {entSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
                 <span>Submit Enterprise Contract Request</span>
               </button>
+              {getPaddlePriceId('institutional') && (
+                <button
+                  type="button"
+                  disabled={loadingPlan === 'institutional'}
+                  onClick={() => {
+                    setShowEnterpriseModal(false);
+                    void handlePayPaddle('institutional');
+                  }}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-[#D4AF37] to-[#B8860B] hover:brightness-110 text-black font-mono font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  {loadingPlan === 'institutional' ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <CreditCard className="w-4 h-4" />
+                  )}
+                  <span>Pay $1,499 One-Time Enterprise Launch via Paddle</span>
+                </button>
+              )}
             </form>
 
             {/* Fixed Direct Contact AQARI Enterprise Desk Card (Uneditable) */}

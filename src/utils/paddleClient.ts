@@ -1,9 +1,9 @@
 import { initializePaddle, Paddle, PaddleEventData } from '@paddle/paddle-js';
 
-export type PaidPlanId = 'starter' | 'pro' | 'enterprise';
+export type PaidPlanId = 'starter' | 'pro' | 'enterprise' | 'institutional';
 export type CreditPackId = 'pack_25' | 'pack_100' | 'pack_500';
 
-export const LIVE_PADDLE_PRICE_IDS: Record<PaidPlanId, string> = {
+export const LIVE_PADDLE_PRICE_IDS: Record<'starter' | 'pro' | 'enterprise', string> = {
   starter: 'pri_01m7tgfvteegdih2mx4hgyz1c',
   pro: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy',
   enterprise: 'pri_01m7tgj4pp767gacchp49k2qev',
@@ -13,6 +13,7 @@ export const PADDLE_PRICE_ENV_KEYS: Record<PaidPlanId, string> = {
   starter: 'NEXT_PUBLIC_PADDLE_STARTER_PRICE',
   pro: 'NEXT_PUBLIC_PADDLE_PRICE_ID',
   enterprise: 'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE',
+  institutional: 'NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE',
 };
 
 export const PADDLE_CREDIT_PACK_ENV_KEYS: Record<CreditPackId, string> = {
@@ -102,15 +103,23 @@ export function getPaddlePriceId(plan: PaidPlanId): string {
   let procNextStarter = '';
   let procNextStarterAlt = '';
   let procNextPro = '';
+  let procNextProAlt = '';
+  let procNextProAlt2 = '';
   let procNextSovereign = '';
   let procNextSovereignAlt = '';
+  let procNextEnterprise = '';
+  let procNextEnterpriseAlt = '';
   try {
     if (typeof process !== 'undefined' && process.env) {
       procNextStarter = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE);
       procNextStarterAlt = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID);
       procNextPro = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_PRICE_ID);
+      procNextProAlt = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_PRO_PRICE);
+      procNextProAlt2 = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_PRO_PRICE_ID);
       procNextSovereign = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE);
       procNextSovereignAlt = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID);
+      procNextEnterprise = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE);
+      procNextEnterpriseAlt = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID);
     }
   } catch {}
 
@@ -141,8 +150,24 @@ export function getPaddlePriceId(plan: PaidPlanId): string {
     );
   }
 
+  if (plan === 'institutional') {
+    return pickPriceId([
+      cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE),
+      cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID),
+      procNextEnterprise,
+      procNextEnterpriseAlt,
+    ]);
+  }
+
   return pickPriceId(
-    [cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_PRICE_ID), procNextPro],
+    [
+      cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_PRICE_ID),
+      cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_PRO_PRICE),
+      cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_PRO_PRICE_ID),
+      procNextPro,
+      procNextProAlt,
+      procNextProAlt2,
+    ],
     liveFallback?.pro
   );
 }
@@ -153,24 +178,54 @@ export function getPaddleProPriceId(): string {
 
 export function getPaddleCreditPriceId(packId: CreditPackId): string {
   let proc25 = '';
+  let proc25Alt = '';
   let proc100 = '';
+  let proc100Alt = '';
   let proc500 = '';
+  let proc500Alt = '';
   try {
     if (typeof process !== 'undefined' && process.env) {
       proc25 = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE);
+      proc25Alt = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID);
       proc100 = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE);
+      proc100Alt = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID);
       proc500 = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE);
+      proc500Alt = cleanEnvStr(process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID);
     }
   } catch {}
 
   const candidates =
     packId === 'pack_25'
-      ? [cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE), proc25]
+      ? [
+          cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE),
+          cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID),
+          proc25,
+          proc25Alt,
+        ]
       : packId === 'pack_100'
-      ? [cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE), proc100]
-      : [cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE), proc500];
+      ? [
+          cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE),
+          cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID),
+          proc100,
+          proc100Alt,
+        ]
+      : [
+          cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE),
+          cleanEnvStr((import.meta as any).env?.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID),
+          proc500,
+          proc500Alt,
+        ];
 
   return pickPriceId(candidates);
+}
+
+export function getCheckoutSuccessUrl(transactionId?: string): string {
+  const origin =
+    typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : 'https://aqari-ai-rho.vercel.app';
+  const base = `${origin}/app?checkout=success`;
+  return transactionId ? `${base}&transaction_id=${encodeURIComponent(transactionId)}` : base;
 }
 
 async function handlePaddleEvent(event: PaddleEventData) {
@@ -254,6 +309,14 @@ async function handlePaddleEvent(event: PaddleEventData) {
           window.dispatchEvent(new CustomEvent('aqari:user-updated', { detail: creditData }));
         }
         handlers?.onVerified?.(creditData, meData);
+        if (typeof window !== 'undefined' && transactionId) {
+          const alreadyOnSuccess =
+            window.location.pathname === '/app' &&
+            new URLSearchParams(window.location.search).get('checkout') === 'success';
+          if (!alreadyOnSuccess) {
+            window.location.assign(getCheckoutSuccessUrl(transactionId));
+          }
+        }
         return;
       }
 
@@ -298,7 +361,7 @@ async function handlePaddleEvent(event: PaddleEventData) {
       const successMsg =
         planKey === 'pro'
           ? PADDLE_PRO_SUCCESS_MESSAGE
-          : verifyData?.message || `Subscription activated! ${verifyData?.plan || planKey} plan is now active.`;
+          : verifyData?.message || `One-time 30-day access activated! ${verifyData?.plan || planKey} plan is now active.`;
 
       if (typeof window !== 'undefined') {
         window.dispatchEvent(
@@ -316,6 +379,14 @@ async function handlePaddleEvent(event: PaddleEventData) {
         { ...verifyData, message: successMsg },
         meData
       );
+      if (typeof window !== 'undefined' && transactionId) {
+        const alreadyOnSuccess =
+          window.location.pathname === '/app' &&
+          new URLSearchParams(window.location.search).get('checkout') === 'success';
+        if (!alreadyOnSuccess) {
+          window.location.assign(getCheckoutSuccessUrl(transactionId));
+        }
+      }
     } catch (err: any) {
       console.error('[Paddle] Payment verification exception:', err);
       handlers?.onError?.(err?.message || 'Payment verification request failed.');
@@ -426,12 +497,14 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
       items: [{ priceId, quantity: 1 }],
       ...(handlers.email ? { customer: { email: handlers.email } } : {}),
       customData: {
+        purchase_type: 'plan',
         plan: targetPlan,
         ...(handlers.email ? { email: handlers.email, login_email: handlers.email } : {}),
       },
       settings: {
         displayMode: 'overlay',
         theme: 'dark',
+        successUrl: getCheckoutSuccessUrl(),
       },
     });
   } catch (openErr: any) {
@@ -496,6 +569,7 @@ export async function openPaddleCreditPackCheckout(
       settings: {
         displayMode: 'overlay',
         theme: 'dark',
+        successUrl: getCheckoutSuccessUrl(),
       },
     });
   } catch (openErr: any) {
