@@ -785,14 +785,13 @@ export default function App() {
       handleVerifyRedirectToken();
     }
 
-    if (getPaddleClientToken() && getPaddleEnvironment()) {
+    const paddleEnv = getPaddleEnvironment();
+    if (!paddleEnv) {
+      console.warn('Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT, set it to live in Vercel');
+    } else if (getPaddleClientToken()) {
       void getPaddleClient().catch((err) => {
-        console.error('[Paddle] Startup init failed:', err);
+        console.warn('[Paddle] Startup init warning:', err);
       });
-    } else if (getPaddleClientToken() && !getPaddleEnvironment()) {
-      console.error(
-        '[Paddle] Missing required environment variable: NEXT_PUBLIC_PADDLE_ENVIRONMENT (expected "live" or "sandbox").'
-      );
     }
 
     const handlePaddleVerified = (ev: Event) => {

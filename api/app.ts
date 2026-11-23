@@ -1448,33 +1448,28 @@ function cleanEnvValue(value?: string | null): string {
   return (value || '').replace(/^["']|["']$/g, '').trim();
 }
 
+function cleanPaddleApiKey(value?: string | null): string {
+  return cleanEnvValue(value)
+    .replace(/^(?:bearer|token|basic)\s+/i, '')
+    .replace(/[\r\n\t\s]+/g, '')
+    .trim();
+}
+
 function resolvePaddleEnvironment(): {
   configured: boolean;
   raw: string;
-  normalized: 'live' | 'sandbox' | null;
+  normalized: 'live' | null;
   baseUrl: string;
   isSandbox: boolean;
 } {
-  const raw = cleanEnvValue(getEnv('PADDLE_ENVIRONMENT') || getEnv('PADDLE_ENV')).toLowerCase();
-  if (!raw) {
-    return { configured: false, raw: '', normalized: null, baseUrl: '', isSandbox: false };
-  }
-  if (raw === 'live' || raw === 'production') {
+  const raw = cleanEnvValue(getEnv('PADDLE_ENVIRONMENT')).trim().toLowerCase();
+  if (raw === 'live') {
     return {
       configured: true,
-      raw,
+      raw: 'live',
       normalized: 'live',
       baseUrl: 'https://api.paddle.com',
       isSandbox: false,
-    };
-  }
-  if (raw === 'sandbox') {
-    return {
-      configured: true,
-      raw,
-      normalized: 'sandbox',
-      baseUrl: 'https://sandbox-api.paddle.com',
-      isSandbox: true,
     };
   }
   return { configured: false, raw, normalized: null, baseUrl: '', isSandbox: false };
@@ -6236,7 +6231,7 @@ export default async function handler(req: any, res: any) {
         } catch {}
 
         let orderId = '';
-        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+        const paddleApiKey = cleanPaddleApiKey(getEnv('PADDLE_API_KEY'));
         const paddleEnv = resolvePaddleEnvironment();
         const paddleBaseUrl = paddleEnv.baseUrl;
         const hasPaymentKey = Boolean(paddleApiKey);
@@ -9297,27 +9292,21 @@ export default async function handler(req: any, res: any) {
             return res.status(405).json({ error: 'Method not allowed' });
           }
 
-          const rawEnv =
-            cleanEnvValue(
-              getEnv('PADDLE_ENVIRONMENT') ||
-                getEnv('PADDLE_ENV') ||
-                getEnv('NEXT_PUBLIC_PADDLE_ENVIRONMENT')
-            ).toLowerCase() || 'live';
-
-          if (rawEnv !== 'live' && rawEnv !== 'production' && rawEnv !== 'sandbox') {
+          const rawEnv = cleanEnvValue(getEnv('PADDLE_ENVIRONMENT')).trim().toLowerCase();
+          if (!rawEnv) {
+            console.warn('Missing PADDLE_ENVIRONMENT, set it to live in Vercel');
+          } else if (rawEnv !== 'live') {
             console.error('CHECKOUT_ERROR', { reason: 'Invalid PADDLE_ENVIRONMENT', rawEnv });
             return res.status(400).json({
               success: false,
-              error: 'Missing Paddle config: PADDLE_ENVIRONMENT',
+              error: 'Missing Paddle config: PADDLE_ENVIRONMENT (must be "live")',
             });
           }
 
-          const isTestMode = rawEnv === 'sandbox';
-          const paddleBaseUrl = isTestMode
-            ? 'https://sandbox-api.paddle.com'
-            : 'https://api.paddle.com';
+          const isTestMode = false;
+          const paddleBaseUrl = 'https://api.paddle.com';
 
-          const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+          const paddleApiKey = cleanPaddleApiKey(getEnv('PADDLE_API_KEY'));
           if (!paddleApiKey) {
             console.error('CHECKOUT_ERROR', 'Missing Paddle config: PADDLE_API_KEY');
             return res.status(400).json({
@@ -9584,6 +9573,16 @@ export default async function handler(req: any, res: any) {
           });
 
           const paddleTxnJson: any = await paddleTxnRes.json().catch(() => null);
+          if (paddleTxnRes.status === 401) {
+            console.error('CHECKOUT_ERROR', {
+              status: 401,
+              detail: paddleTxnJson?.error?.detail || 'Paddle authentication failed',
+            });
+            return res.status(401).json({
+              success: false,
+              error: 'Paddle auth failed - check API key in Vercel',
+            });
+          }
           if (!paddleTxnRes.ok || !paddleTxnJson?.data?.id) {
             const paddleDetail =
               paddleTxnJson?.error?.detail ||
@@ -10710,7 +10709,7 @@ export default async function handler(req: any, res: any) {
         const refundedAmountUSD = Number(
           user.payments?.[0]?.amount || PLAN_DEFINITIONS[planKey].launchPrice || 0
         );
-        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+        const paddleApiKey = cleanPaddleApiKey(getEnv('PADDLE_API_KEY'));
         const paddleEnv = resolvePaddleEnvironment();
         const paddleBaseUrl = paddleEnv.baseUrl;
         let refundedAlready = false;
@@ -12478,7 +12477,7 @@ Return JSON with:
         }
 
         const rawOrderId = normalizeOrderId(String(body.transaction_id || body.transactionId || body.order_id || '').trim());
-        const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+        const paddleApiKey = cleanPaddleApiKey(getEnv('PADDLE_API_KEY'));
         const paddleEnv = resolvePaddleEnvironment();
 
         if (!paddleApiKey) {

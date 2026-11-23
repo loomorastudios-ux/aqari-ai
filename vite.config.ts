@@ -113,34 +113,55 @@ export default defineConfig(() => {
       'process.env.GOOGLE_CLIENT_ID': JSON.stringify(process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || ''),
       'process.env.GOOGLE_REDIRECT_URI': JSON.stringify(process.env.GOOGLE_REDIRECT_URI || process.env.VITE_GOOGLE_REDIRECT_URI || ''),
       'process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN || ''
+        (process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT || ''
+        (process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT || '').trim().toLowerCase()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_PRICE_ID': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || ''
+        (process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_PRO_PRICE': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_PRO_PRICE || process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_PRO_PRICE_ID': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_PRO_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_PRICE_ID || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE || process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || ''
+        (process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE || process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE || ''
+        (process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE || process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || ''
+        (process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE || process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE || ''
+        (process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE || process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || ''
+        (process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || ''
+        (process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE': JSON.stringify(
-        process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || ''
+        (process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || '').trim()
       ),
     },
     resolve: {

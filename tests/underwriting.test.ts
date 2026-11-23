@@ -1133,13 +1133,13 @@ test('Frontend paddleClient uses only NEXT_PUBLIC_ variables and maps live -> pr
   assert.equal(getPaddleEnvironment(), null);
 
   process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN = 'test_next_public_token_placeholder';
-  process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = 'live';
+  process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = ' LIVE ';
 
   assert.equal(getPaddleClientToken(), 'test_next_public_token_placeholder');
   assert.equal(getPaddleEnvironment(), 'production');
 
   process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = 'sandbox';
-  assert.equal(getPaddleEnvironment(), 'sandbox');
+  assert.equal(getPaddleEnvironment(), null);
 });
 
 test('City autocomplete triggers at 1 character, resolves city_id, and rejects invalid free-text cities on backend', async (t) => {
@@ -1649,10 +1649,34 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   });
   assert.equal(sandboxLegacyPriceRes.statusCode, 400);
 
+  // Reject non-live PADDLE_ENVIRONMENT
+  process.env.PADDLE_ENVIRONMENT = 'sandbox';
+  const badEnvRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: { plan: 'pro', email: 'buyer@aqari.test' },
+  });
+  assert.equal(badEnvRes.statusCode, 400);
+  process.env.PADDLE_ENVIRONMENT = 'live';
+
+  // Even if PADDLE_API_KEY was pasted with accidental "Bearer " prefix / whitespace, backend normalizes to exact "Bearer <key>"
+  process.env.PADDLE_API_KEY = '  Bearer   pdl_live_apikey_check\n ';
+
   let txnCounter = 0;
+  let capturedAuthHeader = '';
+  let simulate401 = false;
   globalThis.fetch = (async (url: any, opts?: any) => {
     const s = String(url);
     if (s === 'https://api.paddle.com/transactions' && opts?.method === 'POST') {
+      capturedAuthHeader = String(opts?.headers?.Authorization || '');
+      if (simulate401) {
+        return new Response(
+          JSON.stringify({
+            error: { type: 'request_error', code: 'authentication_malformed', detail: 'Authentication header included, but incorrectly formatted.' },
+          }),
+          { status: 401, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
       txnCounter += 1;
       const parsed = JSON.parse(String(opts.body || '{}'));
       const priceId = parsed?.items?.[0]?.price_id || 'unknown';
@@ -1692,10 +1716,22 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
     assert.equal(res.data.success, true);
     assert.equal(res.data.environment, 'production');
     assert.equal(res.data.priceId, item.expectedPriceId);
+    assert.equal(capturedAuthHeader, 'Bearer pdl_live_apikey_check');
     assert.ok(String(res.data.transactionId).startsWith('txn_01live_'));
     assert.match(String(res.data.checkoutUrl), /^https:\/\/checkout\.paddle\.com\/checkout\?_ptxn=/);
     assert.equal(res.data.url, res.data.checkoutUrl);
   }
+
+  // Paddle 401 returns clean 401 JSON message instead of 500
+  simulate401 = true;
+  const authFailRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: { plan: 'pro', email: 'buyer@aqari.test' },
+  });
+  assert.equal(authFailRes.statusCode, 401);
+  assert.equal(authFailRes.data.success, false);
+  assert.equal(authFailRes.data.error, 'Paddle auth failed - check API key in Vercel');
 });
 
 test('Local /assets JSON files replace raw.githubusercontent.com, SafeChartContainer guards 0x0, and index.html prevents default on beforeinstallprompt', async () => {
@@ -1726,6 +1762,11 @@ test('Local /assets JSON files replace raw.githubusercontent.com, SafeChartConta
   const indexHtml = fs.readFileSync(path.resolve('index.html'), 'utf8');
   assert.match(indexHtml, /beforeinstallprompt/);
   assert.match(indexHtml, /e\.preventDefault\(\)/);
+
+  const paddleClientSrc = fs.readFileSync(path.resolve('src/utils/paddleClient.ts'), 'utf8');
+  assert.equal(paddleClientSrc.includes('PADDLE_API_KEY'), false);
+  assert.equal(paddleClientSrc.includes('Authorization'), false);
+  assert.match(paddleClientSrc, /Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT, set it to live in Vercel/);
 });
 
 
