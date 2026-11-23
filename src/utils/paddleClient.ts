@@ -473,10 +473,28 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
     }),
   });
 
-  const checkoutData: any = await checkoutRes.json().catch(() => null);
+  const checkoutRawText = await checkoutRes.text();
+  let checkoutData: any = null;
+  try {
+    checkoutData = checkoutRawText ? JSON.parse(checkoutRawText) : null;
+  } catch {}
+
   if (!checkoutRes.ok || !checkoutData?.success) {
-    const msg = checkoutData?.error || `Checkout failed (${checkoutRes.status}).`;
-    console.error('[Paddle] /api/app?action=checkout error:', msg);
+    const paddleStatus = checkoutData?.paddleStatus ?? null;
+    const baseMsg = checkoutData?.error || checkoutRawText || `Checkout failed (${checkoutRes.status}).`;
+    const msg =
+      paddleStatus && !String(baseMsg).includes(String(paddleStatus))
+        ? `${baseMsg} (Paddle API status: ${paddleStatus})`
+        : baseMsg;
+    console.error(
+      '[Paddle] /api/app?action=checkout error:',
+      {
+        httpStatus: checkoutRes.status,
+        paddleStatus,
+        responseJson: checkoutData ?? checkoutRawText,
+      },
+      JSON.stringify(checkoutData ?? { rawText: checkoutRawText })
+    );
     throw new Error(msg);
   }
 
@@ -564,10 +582,29 @@ export async function openPaddleCreditPackCheckout(
     }),
   });
 
-  const checkoutData: any = await checkoutRes.json().catch(() => null);
+  const checkoutRawText = await checkoutRes.text();
+  let checkoutData: any = null;
+  try {
+    checkoutData = checkoutRawText ? JSON.parse(checkoutRawText) : null;
+  } catch {}
+
   if (!checkoutRes.ok || !checkoutData?.success) {
-    const msg = checkoutData?.error || `Credit pack checkout failed (${checkoutRes.status}).`;
-    console.error('[Paddle] /api/app?action=checkout credit error:', msg);
+    const paddleStatus = checkoutData?.paddleStatus ?? null;
+    const baseMsg =
+      checkoutData?.error || checkoutRawText || `Credit pack checkout failed (${checkoutRes.status}).`;
+    const msg =
+      paddleStatus && !String(baseMsg).includes(String(paddleStatus))
+        ? `${baseMsg} (Paddle API status: ${paddleStatus})`
+        : baseMsg;
+    console.error(
+      '[Paddle] /api/app?action=checkout credit error:',
+      {
+        httpStatus: checkoutRes.status,
+        paddleStatus,
+        responseJson: checkoutData ?? checkoutRawText,
+      },
+      JSON.stringify(checkoutData ?? { rawText: checkoutRawText })
+    );
     throw new Error(msg);
   }
 

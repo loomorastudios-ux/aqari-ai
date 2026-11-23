@@ -9572,14 +9572,23 @@ export default async function handler(req: any, res: any) {
             }),
           });
 
-          const paddleTxnJson: any = await paddleTxnRes.json().catch(() => null);
+          const paddleRawText = await paddleTxnRes.text();
+          let paddleTxnJson: any = null;
+          try {
+            paddleTxnJson = paddleRawText ? JSON.parse(paddleRawText) : null;
+          } catch {}
+
           if (paddleTxnRes.status === 401) {
             console.error('CHECKOUT_ERROR', {
-              status: 401,
-              detail: paddleTxnJson?.error?.detail || 'Paddle authentication failed',
+              paddleStatus: paddleTxnRes.status,
+              paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
             });
             return res.status(401).json({
               success: false,
+              paddleStatus: paddleTxnRes.status,
+              paddleCode: paddleTxnJson?.error?.code || null,
+              paddleDetail: paddleTxnJson?.error?.detail || paddleTxnJson?.error?.message || null,
+              paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
               error: 'Paddle auth failed - check API key in Vercel',
             });
           }
@@ -9587,15 +9596,24 @@ export default async function handler(req: any, res: any) {
             const paddleDetail =
               paddleTxnJson?.error?.detail ||
               paddleTxnJson?.error?.message ||
+              paddleRawText ||
               `Paddle transactions API returned ${paddleTxnRes.status}`;
             console.error('CHECKOUT_ERROR', {
-              status: paddleTxnRes.status,
+              paddleStatus: paddleTxnRes.status,
               detail: paddleDetail,
-              paddleError: paddleTxnJson?.error || null,
+              paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
             });
-            return res.status(400).json({
+            const outStatus =
+              paddleTxnRes.status >= 400 && paddleTxnRes.status < 600
+                ? paddleTxnRes.status
+                : 400;
+            return res.status(outStatus).json({
               success: false,
-              error: `Paddle checkout error: ${paddleDetail}`,
+              paddleStatus: paddleTxnRes.status,
+              paddleCode: paddleTxnJson?.error?.code || null,
+              paddleDetail,
+              paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
+              error: `Paddle checkout error (HTTP ${paddleTxnRes.status}): ${paddleDetail}`,
             });
           }
 

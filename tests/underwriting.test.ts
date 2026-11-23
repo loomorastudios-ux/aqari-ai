@@ -1722,7 +1722,7 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
     assert.equal(res.data.url, res.data.checkoutUrl);
   }
 
-  // Paddle 401 returns clean 401 JSON message instead of 500
+  // Paddle 401 returns clean 401 JSON message + exact paddleStatus & paddleError
   simulate401 = true;
   const authFailRes = await invokeApi({
     action: 'checkout',
@@ -1731,6 +1731,9 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   });
   assert.equal(authFailRes.statusCode, 401);
   assert.equal(authFailRes.data.success, false);
+  assert.equal(authFailRes.data.paddleStatus, 401);
+  assert.equal(authFailRes.data.paddleCode, 'authentication_malformed');
+  assert.ok(authFailRes.data.paddleError);
   assert.equal(authFailRes.data.error, 'Paddle auth failed - check API key in Vercel');
 });
 
