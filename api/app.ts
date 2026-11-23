@@ -1913,6 +1913,8 @@ interface ServerUserRecord {
   contract_end_date?: string | null;
   white_label_enabled?: boolean;
   custom_api_enabled?: boolean;
+  admin_locked?: boolean;
+  admin_lock_reason?: string | null;
 }
 
 interface WebhookLogEntry {
@@ -2003,6 +2005,7 @@ interface StoreShape {
   whiteglove_requests: any[];
   api_keys: Record<string, string>;
   enterprise_inquiries?: any[];
+  admin_audit_logs?: any[];
 }
 
 function buildStoredPlanEntry(k: PlanKey): StoredPlanConfig {
@@ -2074,6 +2077,7 @@ function getMemoryStore(): StoreShape {
       whiteglove_requests: [],
       api_keys: {},
       enterprise_inquiries: [],
+      admin_audit_logs: [],
     };
   }
   return memoryStoreCache;
@@ -2338,6 +2342,11 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     contract_end_date: contractEndDate,
     white_label_enabled: whiteLabelEnabled,
     custom_api_enabled: customApiEnabled,
+    admin_locked: Boolean(raw?.admin_locked),
+    admin_lock_reason:
+      typeof raw?.admin_lock_reason === 'string' && raw.admin_lock_reason.trim()
+        ? raw.admin_lock_reason.trim()
+        : null,
   };
 }
 
@@ -2438,6 +2447,9 @@ function loadStore(): StoreShape {
               : {},
           enterprise_inquiries: Array.isArray(parsed.enterprise_inquiries)
             ? parsed.enterprise_inquiries
+            : [],
+          admin_audit_logs: Array.isArray(parsed.admin_audit_logs)
+            ? parsed.admin_audit_logs
             : [],
         };
       }
@@ -2600,6 +2612,25 @@ function evaluateLockState(
   const msLeft = effectiveEnd && !packageExpired ? effectiveEnd - now : 0;
   const daysRemaining = effectiveEnd && !packageExpired ? Math.max(0, Math.ceil(msLeft / (24 * 60 * 60 * 1000))) : 0;
   const day29Reminder = Boolean(!isFreePlan && !packageExpired && effectiveEnd && daysRemaining === 1);
+
+  if (user.admin_locked) {
+    return {
+      locked: true,
+      reason: 'expired',
+      status: 'expired',
+      error:
+        user.admin_lock_reason ||
+        'Account locked by Admin. Contact support (loomorastudios@gmail.com).',
+      analysesLeft: 0,
+      planAnalysesLeft: 0,
+      creditsBalance,
+      packageExpired: true,
+      creditsOnlyMode: false,
+      day29Reminder: false,
+      expiryDateFormatted,
+      expiryBanner: user.admin_lock_reason || 'Account locked by Admin.',
+    };
+  }
 
   if (packageExpired) {
     if (creditsBalance > 0) {
@@ -4148,6 +4179,247 @@ async function markOrderUsedInDb(record: UsedOrderRecord): Promise<UsedOrderReco
   }
 
   return normalizedRecord;
+}
+
+function verifyAdminToken(req: any): boolean {
+  const expected = cleanEnvValue(getEnv('ADMIN_TOKEN'));
+  const rawHeader = req?.headers?.['x-admin-token'] ?? req?.headers?.['X-Admin-Token'] ?? '';
+  const provided = Array.isArray(rawHeader)
+    ? String(rawHeader[0] || '').trim()
+    : String(rawHeader || '').trim();
+  if (!expected || !provided) return false;
+  try {
+    const a = Buffer.from(provided, 'utf8');
+    const b = Buffer.from(expected, 'utf8');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+async function appendAdminAuditLogToDb(entry: {
+  action: string;
+  targetEmail?: string;
+  details?: Record<string, any>;
+  reason?: string;
+}): Promise<any> {
+  const log = {
+    id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    action: entry.action,
+    admin: 'admin-api',
+    targetEmail: entry.targetEmail ? normalizeEmail(entry.targetEmail) : null,
+    reason: entry.reason || '',
+    details: entry.details || {},
+  };
+
+  try {
+    const store = loadStore();
+    if (!Array.isArray(store.admin_audit_logs)) store.admin_audit_logs = [];
+    store.admin_audit_logs.unshift(log);
+    store.admin_audit_logs = store.admin_audit_logs.slice(0, 500);
+    persistStore(store);
+  } catch {}
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['LPUSH', 'aqari:admin_audit_logs:v1', JSON.stringify(log)]);
+      await kvCommand(['LTRIM', 'aqari:admin_audit_logs:v1', 0, 499]);
+    }
+  } catch {}
+
+  return log;
+}
+
+async function getAdminAuditLogsFromDb(limit = 200): Promise<any[]> {
+  const byId = new Map<string, any>();
+  const addItems = (items: any[]) => {
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const key = String(item.id || `${item.timestamp || ''}_${item.action || ''}`);
+      if (!byId.has(key)) byId.set(key, item);
+    }
+  };
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawItems = await kvCommand([
+        'LRANGE',
+        'aqari:admin_audit_logs:v1',
+        0,
+        Math.max(0, limit - 1),
+      ]);
+      if (Array.isArray(rawItems)) {
+        const parsed = rawItems
+          .map((item) => {
+            try {
+              return typeof item === 'string' ? JSON.parse(item) : item;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        addItems(parsed);
+      }
+    }
+  } catch {}
+
+  addItems(loadStore().admin_audit_logs || []);
+  return Array.from(byId.values())
+    .sort((a, b) => Date.parse(b.timestamp || '') - Date.parse(a.timestamp || ''))
+    .slice(0, limit);
+}
+
+async function getAllUsersFromAppDb(): Promise<ServerUserRecord[]> {
+  const map = new Map<string, ServerUserRecord>();
+  const store = loadStore();
+  for (const [k, v] of Object.entries(store.users || {})) {
+    const norm = normalizeEmail(k);
+    if (norm && v) {
+      map.set(norm, hydrateUserRecord(v, norm));
+    }
+  }
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
+      let idx: string[] = [];
+      if (Array.isArray(rawIdx)) {
+        idx = rawIdx.map(String);
+      } else if (typeof rawIdx === 'string') {
+        try {
+          const p = JSON.parse(rawIdx);
+          if (Array.isArray(p)) idx = p.map(String);
+        } catch {}
+      }
+      for (const rawEmail of idx) {
+        const norm = normalizeEmail(rawEmail);
+        if (!norm) continue;
+        const dbUser = await getUserFromDb(norm).catch(() => null);
+        if (dbUser) {
+          map.set(norm, dbUser);
+        }
+      }
+    }
+  } catch {}
+
+  return Array.from(map.values()).sort(
+    (a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0)
+  );
+}
+
+async function getEnterpriseInquiriesFromDb(): Promise<any[]> {
+  const byId = new Map<string, any>();
+  const addItems = (items: any[]) => {
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const key = String(item.id || `${item.email || ''}_${item.createdAt || ''}`);
+      if (!byId.has(key)) byId.set(key, item);
+    }
+  };
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', 'aqari:enterprise_inquiries:v1']);
+      let list: any[] = [];
+      if (Array.isArray(raw)) list = raw;
+      else if (typeof raw === 'string') {
+        try {
+          const p = JSON.parse(raw);
+          if (Array.isArray(p)) list = p;
+        } catch {}
+      }
+      addItems(list);
+    }
+  } catch {}
+
+  addItems(loadStore().enterprise_inquiries || []);
+  return Array.from(byId.values()).sort(
+    (a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
+  );
+}
+
+async function getAllOrdersFromDb(usersList?: ServerUserRecord[]): Promise<any[]> {
+  const byOrder = new Map<string, any>();
+  const store = loadStore();
+
+  const mergeEntry = (entry: any) => {
+    const id = normalizeOrderId(entry?.order_id);
+    if (!id) return;
+    const prev = byOrder.get(id) || {};
+    byOrder.set(id, {
+      ...prev,
+      ...entry,
+      order_id: id,
+    });
+  };
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const rawMap = await kvCommand(['GET', 'aqari:used_orders_map:v1']);
+      const map =
+        rawMap && typeof rawMap === 'string'
+          ? JSON.parse(rawMap)
+          : rawMap && typeof rawMap === 'object'
+          ? rawMap
+          : null;
+      if (map && typeof map === 'object') {
+        for (const rec of Object.values(map)) {
+          mergeEntry(rec);
+        }
+      }
+    }
+  } catch {}
+
+  for (const rec of Object.values(store.used_orders || {})) {
+    mergeEntry(rec);
+  }
+
+  const users = usersList || (await getAllUsersFromAppDb());
+  for (const u of users) {
+    for (const pay of u.payments || []) {
+      mergeEntry({
+        order_id: pay.order_id,
+        login_email: u.email,
+        payment_email: u.payment_customer_email || u.email,
+        plan: pay.plan,
+        amount: pay.amount,
+        currency: pay.currency || 'USD',
+        test_mode: Boolean(pay.test_mode),
+        timestamp: pay.timestamp,
+        used_at: pay.timestamp ? Date.parse(pay.timestamp) : undefined,
+      });
+    }
+  }
+
+  const webhookLogs = await getWebhookLogsFromDb(200);
+  for (const wh of webhookLogs) {
+    if (!wh?.order_id) continue;
+    mergeEntry({
+      order_id: wh.order_id,
+      login_email: wh.email,
+      payment_email: wh.payment_email || wh.email,
+      plan: wh.plan,
+      amount: wh.amount,
+      currency: wh.currency || 'USD',
+      test_mode: Boolean(wh.test_mode),
+      event_name: wh.event_name || wh.event,
+      timestamp: wh.timestamp || wh.created_at,
+      error: wh.error,
+    });
+  }
+
+  return Array.from(byOrder.values()).sort((a, b) => {
+    const tA = Number(a.used_at || Date.parse(a.timestamp || '') || 0);
+    const tB = Number(b.used_at || Date.parse(b.timestamp || '') || 0);
+    return tB - tA;
+  });
 }
 
 // =========================================================================
@@ -5861,6 +6133,20 @@ async function getUserOrgIdsDb(rawEmail: string): Promise<string[]> {
 // =========================================================================
 
 export default async function handler(req: any, res: any) {
+  res?.setHeader?.('Access-Control-Allow-Origin', '*');
+  res?.setHeader?.('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res?.setHeader?.(
+    'Access-Control-Allow-Headers',
+    'Content-Type, x-admin-token, Authorization'
+  );
+
+  if (req?.method === 'OPTIONS') {
+    if (typeof res?.end === 'function') {
+      return res.status(200).end();
+    }
+    return res.status(200).json({ ok: true });
+  }
+
   let action = '';
   try {
     let url: URL;
@@ -5935,6 +6221,12 @@ export default async function handler(req: any, res: any) {
             'cancel-subscription',
             'google-callback',
             'nextauth',
+            'admin-list',
+            'admin-reply',
+            'admin-verify-order',
+            'admin-extend',
+            'admin-add-credits',
+            'admin-lock',
           ],
         });
       }
@@ -9292,6 +9584,73 @@ export default async function handler(req: any, res: any) {
             return res.status(405).json({ error: 'Method not allowed' });
           }
 
+          const body = parsedBody || {};
+          const isRecordOnly = String(body.mode || '').trim().toLowerCase() === 'record';
+
+          if (isRecordOnly) {
+            const rawPlan = body.plan !== undefined && body.plan !== null ? String(body.plan).trim() : '';
+            const rawPackId =
+              body.packId !== undefined && body.packId !== null
+                ? String(body.packId).trim()
+                : body.pack_id !== undefined && body.pack_id !== null
+                ? String(body.pack_id).trim()
+                : '';
+            const requestedPriceId =
+              body.priceId !== undefined && body.priceId !== null
+                ? String(body.priceId).trim()
+                : body.price_id !== undefined && body.price_id !== null
+                ? String(body.price_id).trim()
+                : '';
+            const email = body.email ? String(body.email).trim().toLowerCase() : '';
+            const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
+            const pricing = getPricingPublicPayload();
+            const isLaunchPrice = Boolean(pricing.launchDiscountActive);
+            const validPlan: 'starter' | 'pro' | 'enterprise' | 'institutional' =
+              rawPlan === 'starter' ||
+              rawPlan === 'pro' ||
+              rawPlan === 'enterprise' ||
+              rawPlan === 'institutional'
+                ? rawPlan
+                : 'pro';
+            const resolvedPack = rawPackId
+              ? EXTRA_CREDIT_PACKS.find((p) => p.id === rawPackId)
+              : undefined;
+            const planPricing = findPlanPricing(pricing, validPlan);
+            const activePriceUSD = resolvedPack
+              ? resolvedPack.priceUSD
+              : planPricing
+              ? isLaunchPrice
+                ? planPricing.launchPrice
+                : planPricing.originalPrice
+              : 0;
+
+            if (email && !resolvedPack) {
+              recordPendingCheckout({
+                email,
+                plan: validPlan,
+                amountUSD: activePriceUSD,
+                isLaunchPrice,
+                testMode: false,
+                createdAt: Date.now(),
+              });
+            }
+
+            return res.status(200).json({
+              success: true,
+              mode: 'paddlejs_overlay',
+              provider: 'paddle',
+              environment: 'production',
+              purchaseType: resolvedPack ? 'credit_pack' : 'plan',
+              priceId: requestedPriceId || null,
+              ...(resolvedPack
+                ? { packId: resolvedPack.id, credits: resolvedPack.credits }
+                : { plan: validPlan }),
+              activePriceUSD,
+              refundAcceptedAt,
+              durationMs: Date.now() - startTime,
+            });
+          }
+
           const rawEnv = cleanEnvValue(getEnv('PADDLE_ENVIRONMENT')).trim().toLowerCase();
           if (!rawEnv) {
             console.warn('Missing PADDLE_ENVIRONMENT, set it to live in Vercel');
@@ -9346,7 +9705,6 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          const body = parsedBody || {};
           const rawPlan = body.plan !== undefined && body.plan !== null ? String(body.plan).trim() : '';
           const rawPackId =
             body.packId !== undefined && body.packId !== null
@@ -12724,6 +13082,453 @@ Return JSON with:
         });
       }
 
+      case 'admin-list': {
+        if (!verifyAdminToken(req)) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: invalid or missing x-admin-token',
+          });
+        }
+        const section = (
+          getQueryParam(req, url, 'section') ||
+          parsedBody?.section ||
+          'users'
+        )
+          .toString()
+          .trim()
+          .toLowerCase();
+
+        if (section === 'users') {
+          const allUsers = await getAllUsersFromAppDb();
+          const users = allUsers.map((u) => {
+            const planKey = normalizePlanKey(u.plan);
+            const planDef = PLAN_DEFINITIONS[planKey];
+            const license = computeServerLicenseStatus(u);
+            const lock = evaluateLockState(u);
+            return {
+              email: u.email,
+              name: u.name,
+              plan: planKey,
+              planDisplay: planDef.displayName,
+              status: lock.status,
+              admin_locked: Boolean(u.admin_locked),
+              admin_lock_reason: u.admin_lock_reason || null,
+              purchase_date: u.license_start ? new Date(u.license_start).toISOString() : null,
+              expiry_date:
+                planKey === 'free'
+                  ? null
+                  : u.license_end
+                  ? new Date(u.license_end).toISOString()
+                  : null,
+              license_start: u.license_start,
+              license_end: u.license_end,
+              days_left: license.daysLeft,
+              is_expired: license.isExpired,
+              credits_balance: Math.max(0, Number(u.extra_credits || 0)),
+              extra_credits: Math.max(0, Number(u.extra_credits || 0)),
+              analyses_used: Number(u.analyses_used || 0),
+              analyses_left: Number(lock.analysesLeft || 0),
+              analyses_total: Number(u.analyses_total || 0),
+              total_paid_usd: Number(u.total_paid_usd || 0),
+              last_order_id: u.last_order_id || null,
+              updated_at: u.updated_at || null,
+            };
+          });
+          return res.status(200).json({
+            success: true,
+            section: 'users',
+            items: users,
+            users,
+          });
+        }
+
+        if (section === 'analyst') {
+          const map = await getAnalystThreadsMap();
+          const threads = Object.values(map)
+            .filter((t: any) => t && t.email)
+            .sort((a: any, b: any) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+          return res.status(200).json({
+            success: true,
+            section: 'analyst',
+            items: threads,
+            threads,
+          });
+        }
+
+        if (section === 'enterprise') {
+          const inquiries = await getEnterpriseInquiriesFromDb();
+          return res.status(200).json({
+            success: true,
+            section: 'enterprise',
+            items: inquiries,
+            inquiries,
+          });
+        }
+
+        if (section === 'orders') {
+          const allUsers = await getAllUsersFromAppDb();
+          const orders = await getAllOrdersFromDb(allUsers);
+          return res.status(200).json({
+            success: true,
+            section: 'orders',
+            items: orders,
+            orders,
+          });
+        }
+
+        if (section === 'audit') {
+          const logs = await getAdminAuditLogsFromDb(200);
+          return res.status(200).json({
+            success: true,
+            section: 'audit',
+            items: logs,
+            logs,
+          });
+        }
+
+        return res.status(400).json({
+          success: false,
+          error: "Invalid section. Use 'users', 'analyst', 'enterprise', 'orders', or 'audit'.",
+        });
+      }
+
+      case 'admin-reply': {
+        if (!verifyAdminToken(req)) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: invalid or missing x-admin-token',
+          });
+        }
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody || {};
+        const targetEmail = normalizeEmail(body.email);
+        const text = String(body.message || body.text || '').trim().slice(0, 3000);
+        if (!targetEmail || !targetEmail.includes('@') || !text) {
+          return res.status(400).json({
+            success: false,
+            error: 'Valid client email and reply message are required.',
+          });
+        }
+
+        const thread = await getAnalystThreadFromDb(targetEmail);
+        const now = Date.now();
+        const msg = {
+          id: `msg_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          sender: 'admin',
+          senderEmail: getAdminEmail(),
+          text,
+          timestamp: new Date(now).toISOString(),
+          attachedAnalysisTitle: body.attachedAnalysisTitle || undefined,
+          attachedAnalysisSummary: body.attachedAnalysisSummary || undefined,
+          attachmentPdfNote: body.attachmentPdfNote || undefined,
+        };
+        thread.status = typeof body.status === 'string' && body.status.trim() ? body.status.trim() : 'Replied';
+        thread.updatedAt = now;
+        thread.unreadForAdmin = 0;
+        thread.unreadForClient = Number(thread.unreadForClient || 0) + 1;
+        thread.messages = [...(thread.messages || []), msg].slice(-200);
+        await saveAnalystThreadToDb(thread);
+
+        await dispatchEmailAlert({
+          to: targetEmail,
+          subject: 'AQARI Analyst Desk: Analyst replied to your question',
+          text: `Your AQARI Senior Analyst replied:\n\n${text}\n\nOpen AQARI Terminal Analyst Desk: https://aqari-ai-rho.vercel.app/app`,
+          eventType: 'admin_analyst_reply',
+        }).catch(() => {});
+
+        await appendAdminAuditLogToDb({
+          action: 'admin-reply',
+          targetEmail,
+          reason: body.reason || 'Analyst reply sent',
+          details: { messageId: msg.id, status: thread.status },
+        });
+
+        return res.status(200).json({
+          success: true,
+          thread,
+          message: 'Reply sent to client',
+        });
+      }
+
+      case 'admin-verify-order': {
+        if (!verifyAdminToken(req)) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: invalid or missing x-admin-token',
+          });
+        }
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody || {};
+        const targetEmail = normalizeEmail(body.email || body.login_email);
+        const orderId = normalizeOrderId(String(body.transaction_id || body.order_id || '').trim());
+        if (!targetEmail || !targetEmail.includes('@') || !orderId) {
+          return res.status(400).json({
+            success: false,
+            error: 'Valid target email and transaction_id / order_id are required.',
+          });
+        }
+
+        await getUserFromDb(targetEmail).catch(() => null);
+        const rawPackId = String(body.packId || body.pack_id || '').trim();
+        let updatedUser: ServerUserRecord;
+        let appliedLabel = '';
+
+        if (rawPackId) {
+          const pack = EXTRA_CREDIT_PACKS.find((p) => p.id === rawPackId);
+          if (!pack) {
+            return res.status(400).json({
+              success: false,
+              error: 'Invalid credit pack ID. Use pack_25, pack_100, or pack_500.',
+            });
+          }
+          updatedUser = await applyCreditPackToUser({
+            email: targetEmail,
+            pack,
+            orderId,
+            isTestMode: false,
+          });
+          appliedLabel = pack.label;
+        } else {
+          const requestedPlan = normalizePlanKey(body.plan || 'pro');
+          const planKey: PlanKey = requestedPlan === 'free' ? 'pro' : requestedPlan;
+          const pricing = getPricingPublicPayload();
+          const planPricing = findPlanPricing(pricing, planKey);
+          const amountUSD =
+            body.amount !== undefined && Number.isFinite(Number(body.amount))
+              ? Number(body.amount)
+              : planPricing?.activePrice ?? PLAN_DEFINITIONS[planKey].launchPrice;
+          updatedUser = activatePaidPlanOnServer({
+            email: targetEmail,
+            plan: planKey,
+            paymentTimestamp: Date.now(),
+            orderId,
+            amountUSD,
+            currency: 'USD',
+            testMode: false,
+            paymentCustomerEmail: targetEmail,
+            paymentProvider: 'paddle',
+            paymentIntentId: orderId,
+          });
+          await saveUserToDb(updatedUser);
+          await markOrderUsedInDb({
+            order_id: orderId,
+            login_email: targetEmail,
+            payment_email: targetEmail,
+            plan: planKey,
+            plan_display: PLAN_DEFINITIONS[planKey].displayName,
+            purchase_type: 'plan',
+            analyses: PLAN_DEFINITIONS[planKey].analysesLimit,
+            amount: amountUSD,
+            test_mode: false,
+            used_at: Date.now(),
+          });
+          appliedLabel = PLAN_DEFINITIONS[planKey].displayName;
+        }
+
+        await appendAdminAuditLogToDb({
+          action: 'admin-verify-order',
+          targetEmail,
+          reason: String(body.reason || `Verified order ${orderId}`),
+          details: { order_id: orderId, applied: appliedLabel },
+        });
+
+        return res.status(200).json({
+          success: true,
+          order_id: orderId,
+          applied: appliedLabel,
+          user: sanitizeUserForClient(updatedUser),
+          message: `Order ${orderId} verified and applied (${appliedLabel}).`,
+        });
+      }
+
+      case 'admin-extend': {
+        if (!verifyAdminToken(req)) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: invalid or missing x-admin-token',
+          });
+        }
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody || {};
+        const targetEmail = normalizeEmail(body.email);
+        const days = Math.max(1, Math.min(3650, Math.round(Number(body.days ?? 30))));
+        if (!targetEmail || !targetEmail.includes('@') || !Number.isFinite(days)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Valid target email and positive days are required.',
+          });
+        }
+
+        const existing =
+          (await getUserFromDb(targetEmail).catch(() => null)) ||
+          getOrCreateServerUser(targetEmail);
+        const now = Date.now();
+        const baseEnd = Math.max(now, Number(existing.license_end || 0));
+        const nextEnd = baseEnd + days * 24 * 60 * 60 * 1000;
+        const iso = new Date(now).toISOString();
+        const nextEndIso = new Date(nextEnd).toISOString();
+
+        const updated = updateServerUser(targetEmail, {
+          license_end: nextEnd,
+          status: 'active',
+          day29_email_sent: false,
+          expired_email_sent: false,
+          timeline: [
+            {
+              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: iso,
+              type: 'admin_plan_change' as const,
+              message: `Admin extended 30-day access by +${days} days (new expiry: ${nextEndIso})`,
+              actor: 'admin-api',
+            },
+            ...(existing.timeline || []),
+          ].slice(0, 200),
+        });
+        await saveUserToDb(updated);
+
+        await appendAdminAuditLogToDb({
+          action: 'admin-extend',
+          targetEmail,
+          reason: String(body.reason || `Extended +${days} days`),
+          details: { days, expiry_date: nextEndIso },
+        });
+
+        return res.status(200).json({
+          success: true,
+          days,
+          expiry_date: nextEndIso,
+          user: sanitizeUserForClient(updated),
+          message: `Extended ${targetEmail} by +${days} days.`,
+        });
+      }
+
+      case 'admin-add-credits': {
+        if (!verifyAdminToken(req)) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: invalid or missing x-admin-token',
+          });
+        }
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody || {};
+        const targetEmail = normalizeEmail(body.email);
+        const credits = Math.round(Number(body.credits ?? body.amount ?? 0));
+        if (!targetEmail || !targetEmail.includes('@') || !Number.isFinite(credits) || credits <= 0) {
+          return res.status(400).json({
+            success: false,
+            error: 'Valid target email and positive credits count are required.',
+          });
+        }
+
+        const existing =
+          (await getUserFromDb(targetEmail).catch(() => null)) ||
+          getOrCreateServerUser(targetEmail);
+        const now = Date.now();
+        const iso = new Date(now).toISOString();
+        const nextExtra = Math.max(0, Number(existing.extra_credits || 0)) + credits;
+        const lockBefore = evaluateLockState(existing, now);
+        const nextLeft = lockBefore.planAnalysesLeft + nextExtra;
+        const nextTotal = Math.max(0, Number(existing.analyses_total || 0)) + credits;
+
+        const updated = updateServerUser(targetEmail, {
+          extra_credits: nextExtra,
+          analyses_left: nextLeft,
+          analyses_total: nextTotal,
+          timeline: [
+            {
+              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: iso,
+              type: 'admin_plan_change' as const,
+              message: `Admin added +${credits} non-expiring credits (new balance: ${nextExtra})`,
+              actor: 'admin-api',
+            },
+            ...(existing.timeline || []),
+          ].slice(0, 200),
+        });
+        await saveUserToDb(updated);
+
+        await appendAdminAuditLogToDb({
+          action: 'admin-add-credits',
+          targetEmail,
+          reason: String(body.reason || `Added +${credits} credits`),
+          details: { credits_added: credits, credits_balance: nextExtra },
+        });
+
+        return res.status(200).json({
+          success: true,
+          credits_added: credits,
+          credits_balance: nextExtra,
+          user: sanitizeUserForClient(updated),
+          message: `Added +${credits} non-expiring credits to ${targetEmail}.`,
+        });
+      }
+
+      case 'admin-lock': {
+        if (!verifyAdminToken(req)) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: invalid or missing x-admin-token',
+          });
+        }
+        if (req.method !== 'POST') {
+          return res.status(405).json({ success: false, error: 'Method not allowed' });
+        }
+        const body = parsedBody || {};
+        const targetEmail = normalizeEmail(body.email);
+        if (!targetEmail || !targetEmail.includes('@')) {
+          return res.status(400).json({
+            success: false,
+            error: 'Valid target email is required.',
+          });
+        }
+        const existing =
+          (await getUserFromDb(targetEmail).catch(() => null)) ||
+          getOrCreateServerUser(targetEmail);
+        const locked = body.locked !== undefined ? Boolean(body.locked) : true;
+        const reason = String(body.reason || (locked ? 'Locked by Admin' : 'Unlocked by Admin')).trim();
+        const now = Date.now();
+        const iso = new Date(now).toISOString();
+
+        const updated = updateServerUser(targetEmail, {
+          admin_locked: locked,
+          admin_lock_reason: locked ? reason : null,
+          timeline: [
+            {
+              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: iso,
+              type: 'admin_plan_change' as const,
+              message: `Admin ${locked ? 'LOCKED' : 'UNLOCKED'} account (${reason})`,
+              actor: 'admin-api',
+            },
+            ...(existing.timeline || []),
+          ].slice(0, 200),
+        });
+        await saveUserToDb(updated);
+
+        await appendAdminAuditLogToDb({
+          action: 'admin-lock',
+          targetEmail,
+          reason,
+          details: { locked, credits_balance: updated.extra_credits || 0 },
+        });
+
+        return res.status(200).json({
+          success: true,
+          locked,
+          credits_balance: Math.max(0, Number(updated.extra_credits || 0)),
+          user: sanitizeUserForClient(updated),
+          message: locked ? `Account ${targetEmail} locked.` : `Account ${targetEmail} unlocked.`,
+        });
+      }
+
       default:
         return res.status(400).json({
           success: false,
@@ -12779,6 +13584,12 @@ Return JSON with:
             'report-issue',
             'cancel-subscription',
             'google-callback',
+            'admin-list',
+            'admin-reply',
+            'admin-verify-order',
+            'admin-extend',
+            'admin-add-credits',
+            'admin-lock',
           ],
         });
     }

@@ -1769,8 +1769,187 @@ test('Local /assets JSON files replace raw.githubusercontent.com, SafeChartConta
   const paddleClientSrc = fs.readFileSync(path.resolve('src/utils/paddleClient.ts'), 'utf8');
   assert.equal(paddleClientSrc.includes('PADDLE_API_KEY'), false);
   assert.equal(paddleClientSrc.includes('Authorization'), false);
+  assert.equal(paddleClientSrc.includes('api.paddle.com'), false);
+  assert.equal(paddleClientSrc.includes('checkout.paddle.com'), false);
   assert.match(paddleClientSrc, /Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT, set it to live in Vercel/);
+  assert.match(paddleClientSrc, /mode:\s*'record'/);
 });
+
+test('OPTIONS preflight returns 200 with CORS headers and no auth check; mode=record returns 200 without api.paddle.com', async (t) => {
+  const prevFetch = globalThis.fetch;
+  let calledExternalPaddle = false;
+  globalThis.fetch = (async (url: any, opts?: any) => {
+    if (String(url).includes('paddle.com')) {
+      calledExternalPaddle = true;
+    }
+    return prevFetch(url, opts);
+  }) as typeof fetch;
+
+  t.after(() => {
+    globalThis.fetch = prevFetch;
+  });
+
+  const optRes = await invokeApi({
+    action: 'admin-list',
+    method: 'OPTIONS',
+    query: { section: 'users' },
+  });
+  assert.equal(optRes.statusCode, 200);
+  assert.equal(optRes.headers['Access-Control-Allow-Origin'], '*');
+  assert.equal(optRes.headers['Access-Control-Allow-Methods'], 'GET, POST, OPTIONS');
+  assert.equal(
+    optRes.headers['Access-Control-Allow-Headers'],
+    'Content-Type, x-admin-token, Authorization'
+  );
+
+  const recRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: {
+      mode: 'record',
+      plan: 'pro',
+      priceId: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy',
+      email: 'directcheckout@aqari.test',
+    },
+  });
+  assert.equal(recRes.statusCode, 200);
+  assert.equal(recRes.data.success, true);
+  assert.equal(recRes.data.mode, 'paddlejs_overlay');
+  assert.equal(calledExternalPaddle, false);
+  assert.equal(recRes.headers['Access-Control-Allow-Origin'], '*');
+});
+
+test('Admin API enforces x-admin-token === ADMIN_TOKEN and returns real stored data across all actions', async (t) => {
+  const prevToken = process.env.ADMIN_TOKEN;
+  const adminToken = 'aqari_super_secret_admin_token_2026';
+  process.env.ADMIN_TOKEN = adminToken;
+
+  t.after(() => {
+    if (prevToken === undefined) delete process.env.ADMIN_TOKEN;
+    else process.env.ADMIN_TOKEN = prevToken;
+  });
+
+  // 1. Missing or invalid token -> 401 with CORS headers
+  const missingHdr = await invokeApi({
+    action: 'admin-list',
+    method: 'GET',
+    query: { section: 'users' },
+  });
+  assert.equal(missingHdr.statusCode, 401);
+  assert.equal(missingHdr.headers['Access-Control-Allow-Origin'], '*');
+
+  const wrongHdr = await invokeApi({
+    action: 'admin-lock',
+    method: 'POST',
+    headers: { 'x-admin-token': 'wrong-token' },
+    body: { email: 'someone@aqari.test', locked: true },
+  });
+  assert.equal(wrongHdr.statusCode, 401);
+
+  const targetEmail = `admin_target_${Date.now()}@aqari.test`;
+  const orderId = `txn_admin_${Date.now()}`;
+
+  // 2. admin-verify-order activates plan & records order
+  const verifyRes = await invokeApi({
+    action: 'admin-verify-order',
+    method: 'POST',
+    headers: { 'x-admin-token': adminToken },
+    body: {
+      email: targetEmail,
+      transaction_id: orderId,
+      plan: 'pro',
+      amount: 199,
+      reason: 'Manual Paddle verification test',
+    },
+  });
+  assert.equal(verifyRes.statusCode, 200);
+  assert.equal(verifyRes.data.success, true);
+  assert.equal(verifyRes.data.user.plan, 'pro');
+
+  // 3. admin-extend adds days to expiry
+  const beforeEnd = Number(verifyRes.data.user.license_end || Date.now());
+  const extendRes = await invokeApi({
+    action: 'admin-extend',
+    method: 'POST',
+    headers: { 'x-admin-token': adminToken },
+    body: { email: targetEmail, days: 15, reason: 'Comp extension' },
+  });
+  assert.equal(extendRes.statusCode, 200);
+  assert.equal(extendRes.data.success, true);
+  assert.ok(Number(extendRes.data.user.license_end) >= beforeEnd + 14 * 86_400_000);
+
+  // 4. admin-add-credits adds non-expiring credits
+  const addCredRes = await invokeApi({
+    action: 'admin-add-credits',
+    method: 'POST',
+    headers: { 'x-admin-token': adminToken },
+    body: { email: targetEmail, credits: 50, reason: 'Bonus credits' },
+  });
+  assert.equal(addCredRes.statusCode, 200);
+  assert.equal(addCredRes.data.credits_balance, 50);
+
+  // 5. admin-lock locks account WITHOUT wiping non-expiring credits
+  const lockRes = await invokeApi({
+    action: 'admin-lock',
+    method: 'POST',
+    headers: { 'x-admin-token': adminToken },
+    body: { email: targetEmail, locked: true, reason: 'Compliance hold' },
+  });
+  assert.equal(lockRes.statusCode, 200);
+  assert.equal(lockRes.data.locked, true);
+  assert.equal(lockRes.data.credits_balance, 50);
+  assert.equal(lockRes.data.user.status, 'expired');
+
+  // Unlock preserves 50 non-expiring credits
+  const unlockRes = await invokeApi({
+    action: 'admin-lock',
+    method: 'POST',
+    headers: { 'x-admin-token': adminToken },
+    body: { email: targetEmail, locked: false, reason: 'Cleared hold' },
+  });
+  assert.equal(unlockRes.statusCode, 200);
+  assert.equal(unlockRes.data.locked, false);
+  assert.equal(unlockRes.data.credits_balance, 50);
+  assert.equal(unlockRes.data.user.status, 'active');
+
+  // 6. admin-reply writes to analyst thread
+  const replyRes = await invokeApi({
+    action: 'admin-reply',
+    method: 'POST',
+    headers: { 'x-admin-token': adminToken },
+    body: { email: targetEmail, message: 'We have completed your underwriting review.' },
+  });
+  assert.equal(replyRes.statusCode, 200);
+  assert.equal(replyRes.data.success, true);
+  assert.ok(Array.isArray(replyRes.data.thread.messages));
+
+  // 7. Submit a real enterprise inquiry and inspect all 5 admin-list sections
+  const entRes = await invokeApi({
+    action: 'enterprise-inquiry',
+    method: 'POST',
+    body: {
+      companyName: 'Oman Sovereign HoldCo',
+      email: targetEmail,
+      seats: 25,
+      assetsCount: 250,
+    },
+  });
+  assert.equal(entRes.statusCode, 200);
+
+  for (const section of ['users', 'analyst', 'enterprise', 'orders', 'audit']) {
+    const listRes = await invokeApi({
+      action: 'admin-list',
+      method: 'GET',
+      headers: { 'x-admin-token': adminToken },
+      query: { section },
+    });
+    assert.equal(listRes.statusCode, 200);
+    assert.equal(listRes.data.success, true);
+    assert.ok(Array.isArray(listRes.data.items));
+    assert.ok(listRes.data.items.length >= 1, `Expected real items in section=${section}`);
+  }
+});
+
 
 
 
