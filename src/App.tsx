@@ -785,13 +785,13 @@ export default function App() {
       handleVerifyRedirectToken();
     }
 
-    const paddleEnv = getPaddleEnvironment();
-    if (!paddleEnv) {
-      console.warn('Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT, set it to live in Vercel');
-    } else if (getPaddleClientToken()) {
+    getPaddleEnvironment();
+    if (getPaddleClientToken()) {
       void getPaddleClient().catch((err) => {
         console.warn('[Paddle] Startup init warning:', err);
       });
+    } else {
+      console.warn('Missing VITE_PADDLE_CLIENT_TOKEN / NEXT_PUBLIC_PADDLE_CLIENT_TOKEN');
     }
 
     const handlePaddleVerified = (ev: Event) => {

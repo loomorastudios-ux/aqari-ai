@@ -5471,6 +5471,8 @@ function resolvePaddleConfiguredPrices(isSandbox: boolean) {
       [
         'PADDLE_STARTER_PRICE',
         'PADDLE_STARTER_PRICE_ID',
+        'VITE_PADDLE_STARTER_PRICE',
+        'VITE_PADDLE_STARTER_PRICE_ID',
         'NEXT_PUBLIC_PADDLE_STARTER_PRICE',
         'NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID',
       ],
@@ -5480,6 +5482,9 @@ function resolvePaddleConfiguredPrices(isSandbox: boolean) {
       [
         'PADDLE_PRO_PRICE',
         'PADDLE_PRO_PRICE_ID',
+        'VITE_PADDLE_PRICE_ID',
+        'VITE_PADDLE_PRO_PRICE',
+        'VITE_PADDLE_PRO_PRICE_ID',
         'NEXT_PUBLIC_PADDLE_PRICE_ID',
         'NEXT_PUBLIC_PADDLE_PRO_PRICE',
         'NEXT_PUBLIC_PADDLE_PRO_PRICE_ID',
@@ -5490,6 +5495,8 @@ function resolvePaddleConfiguredPrices(isSandbox: boolean) {
       [
         'PADDLE_SOVEREIGN_PRICE',
         'PADDLE_SOVEREIGN_PRICE_ID',
+        'VITE_PADDLE_SOVEREIGN_PRICE',
+        'VITE_PADDLE_SOVEREIGN_PRICE_ID',
         'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE',
         'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID',
       ],
@@ -5498,24 +5505,32 @@ function resolvePaddleConfiguredPrices(isSandbox: boolean) {
     enterprise: pickPaddlePriceFromEnv([
       'PADDLE_ENTERPRISE_PRICE',
       'PADDLE_ENTERPRISE_PRICE_ID',
+      'VITE_PADDLE_ENTERPRISE_PRICE',
+      'VITE_PADDLE_ENTERPRISE_PRICE_ID',
       'NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE',
       'NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID',
     ]),
     credit25: pickPaddlePriceFromEnv([
       'PADDLE_CREDIT_25_PRICE',
       'PADDLE_CREDIT_25_PRICE_ID',
+      'VITE_PADDLE_CREDIT_25_PRICE',
+      'VITE_PADDLE_CREDIT_25_PRICE_ID',
       'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE',
       'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID',
     ]),
     credit100: pickPaddlePriceFromEnv([
       'PADDLE_CREDIT_100_PRICE',
       'PADDLE_CREDIT_100_PRICE_ID',
+      'VITE_PADDLE_CREDIT_100_PRICE',
+      'VITE_PADDLE_CREDIT_100_PRICE_ID',
       'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE',
       'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID',
     ]),
     credit500: pickPaddlePriceFromEnv([
       'PADDLE_CREDIT_500_PRICE',
       'PADDLE_CREDIT_500_PRICE_ID',
+      'VITE_PADDLE_CREDIT_500_PRICE',
+      'VITE_PADDLE_CREDIT_500_PRICE_ID',
       'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE',
       'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID',
     ]),
@@ -9686,6 +9701,7 @@ export default async function handler(req: any, res: any) {
 
           const paddleClientToken = cleanEnvValue(
             getEnv('PADDLE_CLIENT_SIDE_TOKEN') ||
+              getEnv('VITE_PADDLE_CLIENT_TOKEN') ||
               getEnv('NEXT_PUBLIC_PADDLE_CLIENT_TOKEN') ||
               getEnv('PADDLE_CLIENT_TOKEN')
           );

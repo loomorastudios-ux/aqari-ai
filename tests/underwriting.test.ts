@@ -1109,12 +1109,13 @@ test('Backend Paddle endpoints fail closed without test-key fallback when env va
   assert.match(String(buyCreditsRes.data.error), /PADDLE_API_KEY/);
 });
 
-test('Frontend paddleClient uses only NEXT_PUBLIC_ variables and maps live -> production', async (t) => {
+test('Frontend paddleClient reads VITE_ then NEXT_PUBLIC_ variables and defaults environment to live', async (t) => {
   const { getPaddleClientToken, getPaddleEnvironment } = await import('../src/utils/paddleClient.ts');
 
   const prevNextToken = process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN;
   const prevNextEnv = process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT;
   const prevViteToken = process.env.VITE_PADDLE_CLIENT_TOKEN;
+  const prevViteEnv = process.env.VITE_PADDLE_ENVIRONMENT;
 
   t.after(() => {
     if (prevNextToken === undefined) delete process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN;
@@ -1123,23 +1124,36 @@ test('Frontend paddleClient uses only NEXT_PUBLIC_ variables and maps live -> pr
     else process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = prevNextEnv;
     if (prevViteToken === undefined) delete process.env.VITE_PADDLE_CLIENT_TOKEN;
     else process.env.VITE_PADDLE_CLIENT_TOKEN = prevViteToken;
+    if (prevViteEnv === undefined) delete process.env.VITE_PADDLE_ENVIRONMENT;
+    else process.env.VITE_PADDLE_ENVIRONMENT = prevViteEnv;
   });
 
+  // 1. Missing env defaults cleanly to 'live' -> 'production' (never null / never blocks checkout)
+  delete process.env.VITE_PADDLE_CLIENT_TOKEN;
+  delete process.env.VITE_PADDLE_ENVIRONMENT;
   delete process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN;
   delete process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT;
-  process.env.VITE_PADDLE_CLIENT_TOKEN = 'legacy_vite_should_be_ignored';
 
   assert.equal(getPaddleClientToken(), '');
-  assert.equal(getPaddleEnvironment(), null);
-
-  process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN = 'test_next_public_token_placeholder';
-  process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = ' LIVE ';
-
-  assert.equal(getPaddleClientToken(), 'test_next_public_token_placeholder');
   assert.equal(getPaddleEnvironment(), 'production');
 
-  process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = 'sandbox';
-  assert.equal(getPaddleEnvironment(), null);
+  // 2. VITE_ takes priority over NEXT_PUBLIC_
+  process.env.VITE_PADDLE_CLIENT_TOKEN = 'vite_client_tok_priority';
+  process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN = 'next_client_tok_fallback';
+  process.env.VITE_PADDLE_ENVIRONMENT = ' LIVE ';
+  assert.equal(getPaddleClientToken(), 'vite_client_tok_priority');
+  assert.equal(getPaddleEnvironment(), 'production');
+
+  // 3. Falls back to NEXT_PUBLIC_ when VITE_ is absent
+  delete process.env.VITE_PADDLE_CLIENT_TOKEN;
+  delete process.env.VITE_PADDLE_ENVIRONMENT;
+  process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = ' LIVE ';
+  assert.equal(getPaddleClientToken(), 'next_client_tok_fallback');
+  assert.equal(getPaddleEnvironment(), 'production');
+
+  // 4. Explicit sandbox sets sandbox
+  process.env.VITE_PADDLE_ENVIRONMENT = ' sandbox ';
+  assert.equal(getPaddleEnvironment(), 'sandbox');
 });
 
 test('City autocomplete triggers at 1 character, resolves city_id, and rejects invalid free-text cities on backend', async (t) => {
@@ -1767,11 +1781,15 @@ test('Local /assets JSON files replace raw.githubusercontent.com, SafeChartConta
   assert.match(indexHtml, /e\.preventDefault\(\)/);
 
   const paddleClientSrc = fs.readFileSync(path.resolve('src/utils/paddleClient.ts'), 'utf8');
+  const appSrc = fs.readFileSync(path.resolve('src/App.tsx'), 'utf8');
   assert.equal(paddleClientSrc.includes('PADDLE_API_KEY'), false);
   assert.equal(paddleClientSrc.includes('Authorization'), false);
   assert.equal(paddleClientSrc.includes('api.paddle.com'), false);
   assert.equal(paddleClientSrc.includes('checkout.paddle.com'), false);
-  assert.match(paddleClientSrc, /Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT, set it to live in Vercel/);
+  assert.equal(paddleClientSrc.includes('Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT'), false);
+  assert.equal(appSrc.includes('Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT'), false);
+  assert.match(paddleClientSrc, /import\.meta\.env\.VITE_PADDLE_ENVIRONMENT/);
+  assert.match(paddleClientSrc, /import\.meta\.env\.VITE_PADDLE_CLIENT_TOKEN/);
   assert.match(paddleClientSrc, /mode:\s*'record'/);
 });
 
