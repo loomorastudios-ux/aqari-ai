@@ -9967,6 +9967,7 @@ export default async function handler(req: any, res: any) {
             });
           }
           if (!paddleTxnRes.ok || !paddleTxnJson?.data?.id) {
+            const paddleCode = String(paddleTxnJson?.error?.code || '').trim();
             const paddleDetail =
               paddleTxnJson?.error?.detail ||
               paddleTxnJson?.error?.message ||
@@ -9974,6 +9975,7 @@ export default async function handler(req: any, res: any) {
               `Paddle transactions API returned ${paddleTxnRes.status}`;
             console.error('CHECKOUT_ERROR', {
               paddleStatus: paddleTxnRes.status,
+              paddleCode: paddleCode || null,
               detail: paddleDetail,
               paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
             });
@@ -9981,13 +9983,17 @@ export default async function handler(req: any, res: any) {
               paddleTxnRes.status >= 400 && paddleTxnRes.status < 600
                 ? paddleTxnRes.status
                 : 400;
+            const friendlyError =
+              paddleCode === 'transaction_default_checkout_url_not_set'
+                ? 'Checkout settings missing in Paddle, contact support loomorastudios@gmail.com'
+                : `Paddle checkout error (HTTP ${paddleTxnRes.status}): ${paddleDetail}`;
             return res.status(outStatus).json({
               success: false,
               paddleStatus: paddleTxnRes.status,
-              paddleCode: paddleTxnJson?.error?.code || null,
+              paddleCode: paddleCode || null,
               paddleDetail,
               paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
-              error: `Paddle checkout error (HTTP ${paddleTxnRes.status}): ${paddleDetail}`,
+              error: friendlyError,
             });
           }
 

@@ -1791,6 +1791,27 @@ test('Local /assets JSON files replace raw.githubusercontent.com, SafeChartConta
   assert.match(paddleClientSrc, /import\.meta\.env\.VITE_PADDLE_ENVIRONMENT/);
   assert.match(paddleClientSrc, /import\.meta\.env\.VITE_PADDLE_CLIENT_TOKEN/);
   assert.match(paddleClientSrc, /mode:\s*'record'/);
+  assert.match(paddleClientSrc, /successUrl:\s*'https:\/\/aqari-ai-rho\.vercel\.app\/app\?checkout=success'/);
+  assert.match(paddleClientSrc, /locale:\s*'en'/);
+
+  const { formatPaddleCheckoutErrorMessage, getCheckoutSuccessUrl } = await import(
+    '../src/utils/paddleClient.ts'
+  );
+  assert.equal(
+    getCheckoutSuccessUrl(),
+    'https://aqari-ai-rho.vercel.app/app?checkout=success'
+  );
+  assert.equal(
+    formatPaddleCheckoutErrorMessage({
+      code: 'transaction_default_checkout_url_not_set',
+      detail: 'Default checkout URL is not configured.',
+    }),
+    'Checkout settings missing in Paddle, contact support loomorastudios@gmail.com'
+  );
+  assert.equal(
+    formatPaddleCheckoutErrorMessage('Error: transaction_default_checkout_url_not_set'),
+    'Checkout settings missing in Paddle, contact support loomorastudios@gmail.com'
+  );
 });
 
 test('OPTIONS preflight returns 200 with CORS headers and no auth check; mode=record returns 200 without api.paddle.com', async (t) => {

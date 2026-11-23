@@ -273,12 +273,57 @@ export function getPaddleCreditPriceId(packId: CreditPackId): string {
   return pickPriceId(candidates);
 }
 
+export const PADDLE_CHECKOUT_SUCCESS_URL = 'https://aqari-ai-rho.vercel.app/app?checkout=success';
+export const PADDLE_DEFAULT_CHECKOUT_SETTINGS = {
+  successUrl: PADDLE_CHECKOUT_SUCCESS_URL,
+  displayMode: 'overlay' as const,
+  theme: 'dark' as const,
+  locale: 'en',
+};
+export const PADDLE_MISSING_SETTINGS_ERROR =
+  'Checkout settings missing in Paddle, contact support loomorastudios@gmail.com';
+
+export function formatPaddleCheckoutErrorMessage(
+  raw: unknown,
+  fallback = 'Paddle checkout encountered an error.'
+): string {
+  const serialized =
+    typeof raw === 'string'
+      ? raw
+      : raw && typeof raw === 'object'
+      ? [
+          (raw as any).code,
+          (raw as any).error?.code,
+          (raw as any).detail,
+          (raw as any).error?.detail,
+          (raw as any).message,
+          JSON.stringify(raw),
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : String(raw || '');
+  const lower = serialized.toLowerCase();
+  if (
+    lower.includes('transaction_default_checkout_url_not_set') ||
+    lower.includes('default checkout url') ||
+    lower.includes('default payment link')
+  ) {
+    return PADDLE_MISSING_SETTINGS_ERROR;
+  }
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  if (raw && typeof raw === 'object') {
+    const detail =
+      (raw as any).detail ||
+      (raw as any).error?.detail ||
+      (raw as any).message ||
+      (raw as any).error?.message;
+    if (typeof detail === 'string' && detail.trim()) return detail.trim();
+  }
+  return fallback;
+}
+
 export function getCheckoutSuccessUrl(transactionId?: string): string {
-  const origin =
-    typeof window !== 'undefined' && window.location?.origin
-      ? window.location.origin
-      : 'https://aqari-ai-rho.vercel.app';
-  const base = `${origin}/app?checkout=success`;
+  const base = PADDLE_CHECKOUT_SUCCESS_URL;
   return transactionId ? `${base}&transaction_id=${encodeURIComponent(transactionId)}` : base;
 }
 
@@ -293,10 +338,10 @@ async function handlePaddleEvent(event: PaddleEventData) {
   if (event.name === 'checkout.error' || event.name === 'checkout.failed' || (event as any)?.error) {
     console.error('[Paddle] Checkout error event:', event);
     const rawError = (event as any)?.error || (event as any)?.detail || event;
-    const detail =
-      (typeof rawError === 'object'
-        ? rawError?.detail || rawError?.message || JSON.stringify(rawError)
-        : String(rawError)) || 'Paddle checkout encountered an error.';
+    const detail = formatPaddleCheckoutErrorMessage(
+      rawError,
+      'Paddle checkout encountered an error.'
+    );
     activeHandlers?.onError?.(detail);
     return;
   }
@@ -466,6 +511,14 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
       environment,
       token,
       eventCallback: handlePaddleEvent,
+      checkout: {
+        settings: {
+          successUrl: 'https://aqari-ai-rho.vercel.app/app?checkout=success',
+          displayMode: 'overlay',
+          theme: 'dark',
+          locale: 'en',
+        },
+      },
     })
       .then((paddle) => {
         if (!paddle) {
@@ -479,7 +532,7 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
       .catch((err) => {
         console.error('[Paddle] initializePaddle error:', err);
         paddleInstancePromise = null;
-        throw err;
+        throw new Error(formatPaddleCheckoutErrorMessage(err, 'Failed to initialize Paddle Checkout.'));
       });
   }
 
@@ -551,14 +604,15 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
         ...(handlers.email ? { email: handlers.email, login_email: handlers.email } : {}),
       },
       settings: {
+        successUrl: 'https://aqari-ai-rho.vercel.app/app?checkout=success',
         displayMode: 'overlay',
         theme: 'dark',
-        successUrl: getCheckoutSuccessUrl(),
+        locale: 'en',
       },
     });
   } catch (openErr: any) {
     console.error('[Paddle] Paddle.Checkout.open failed:', openErr);
-    throw openErr;
+    throw new Error(formatPaddleCheckoutErrorMessage(openErr, 'Unable to open Paddle Checkout.'));
   }
 }
 
@@ -638,13 +692,14 @@ export async function openPaddleCreditPackCheckout(
         ...(handlers.email ? { email: handlers.email, login_email: handlers.email } : {}),
       },
       settings: {
+        successUrl: 'https://aqari-ai-rho.vercel.app/app?checkout=success',
         displayMode: 'overlay',
         theme: 'dark',
-        successUrl: getCheckoutSuccessUrl(),
+        locale: 'en',
       },
     });
   } catch (openErr: any) {
     console.error('[Paddle] Credit pack Checkout.open failed:', openErr);
-    throw openErr;
+    throw new Error(formatPaddleCheckoutErrorMessage(openErr, 'Unable to open Paddle Checkout.'));
   }
 }
