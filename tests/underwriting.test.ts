@@ -1086,9 +1086,9 @@ test('Backend Paddle endpoints fail closed without test-key fallback when env va
     method: 'POST',
     body: { plan: 'pro', email: 'buyer@aqari.test' },
   });
-  assert.equal(checkoutRes.statusCode, 500);
+  assert.equal(checkoutRes.statusCode, 400);
   assert.equal(checkoutRes.data.success, false);
-  assert.match(String(checkoutRes.data.error), /PADDLE_ENVIRONMENT/);
+  assert.match(String(checkoutRes.data.error), /Missing Paddle config: PADDLE_API_KEY/);
 
   const verifyRes = await invokeApi({
     action: 'verify-payment',
@@ -1556,6 +1556,176 @@ test('Frontend paddleClient resolves all 7 Price IDs via env vars and formats /a
     getCheckoutSuccessUrl('txn_01livecheck'),
     'https://aqari-ai-rho.vercel.app/app?checkout=success&transaction_id=txn_01livecheck'
   );
+});
+
+test('/api/app?action=checkout validates config with 400, blocks sandbox creds in live, and returns 200 checkoutUrl for all 7 items', async (t) => {
+  const envKeys = [
+    'PADDLE_ENVIRONMENT',
+    'PADDLE_ENV',
+    'NEXT_PUBLIC_PADDLE_ENVIRONMENT',
+    'PADDLE_API_KEY',
+    'PADDLE_CLIENT_SIDE_TOKEN',
+    'NEXT_PUBLIC_PADDLE_CLIENT_TOKEN',
+    'PADDLE_STARTER_PRICE',
+    'PADDLE_PRO_PRICE',
+    'PADDLE_SOVEREIGN_PRICE',
+    'PADDLE_ENTERPRISE_PRICE',
+    'PADDLE_CREDIT_25_PRICE',
+    'PADDLE_CREDIT_100_PRICE',
+    'PADDLE_CREDIT_500_PRICE',
+  ] as const;
+
+  const saved: Record<string, string | undefined> = {};
+  for (const k of envKeys) saved[k] = process.env[k];
+  const prevFetch = globalThis.fetch;
+
+  t.after(() => {
+    globalThis.fetch = prevFetch;
+    for (const k of envKeys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  // 1. Default PADDLE_ENVIRONMENT to live; missing PADDLE_CLIENT_SIDE_TOKEN -> 400
+  delete process.env.PADDLE_ENVIRONMENT;
+  delete process.env.PADDLE_ENV;
+  delete process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT;
+  delete process.env.PADDLE_CLIENT_SIDE_TOKEN;
+  delete process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN;
+  process.env.PADDLE_API_KEY = 'pdl_live_apikey_check';
+
+  const missingTokenRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: { plan: 'pro', email: 'buyer@aqari.test' },
+  });
+  assert.equal(missingTokenRes.statusCode, 400);
+  assert.match(String(missingTokenRes.data.error), /Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN/);
+
+  // 2. Block sandbox key and sandbox token in live mode -> 400
+  process.env.PADDLE_API_KEY = 'pdl_sdbx_key_should_fail_in_live';
+  process.env.PADDLE_CLIENT_SIDE_TOKEN = 'live_client_tok_123';
+  const sdbxKeyRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: { plan: 'pro', email: 'buyer@aqari.test' },
+  });
+  assert.equal(sdbxKeyRes.statusCode, 400);
+  assert.match(String(sdbxKeyRes.data.error), /PADDLE_API_KEY/);
+
+  process.env.PADDLE_API_KEY = 'pdl_live_apikey_check';
+  process.env.PADDLE_CLIENT_SIDE_TOKEN = 'test_sandbox_client_token';
+  const sdbxTokRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: { plan: 'pro', email: 'buyer@aqari.test' },
+  });
+  assert.equal(sdbxTokRes.statusCode, 400);
+  assert.match(String(sdbxTokRes.data.error), /PADDLE_CLIENT_SIDE_TOKEN/);
+
+  // 3. Configure all 7 live prices + live credentials -> reject disallowed price, succeed for all 7
+  process.env.PADDLE_CLIENT_SIDE_TOKEN = 'live_valid_client_token';
+  process.env.PADDLE_STARTER_PRICE = 'pri_live_starter_75';
+  process.env.PADDLE_PRO_PRICE = 'pri_live_pro_199';
+  process.env.PADDLE_SOVEREIGN_PRICE = 'pri_live_sov_599';
+  process.env.PADDLE_ENTERPRISE_PRICE = 'pri_live_ent_1499';
+  process.env.PADDLE_CREDIT_25_PRICE = 'pri_live_c25_19';
+  process.env.PADDLE_CREDIT_100_PRICE = 'pri_live_c100_59';
+  process.env.PADDLE_CREDIT_500_PRICE = 'pri_live_c500_249';
+
+  const disallowedPriceRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: { plan: 'pro', priceId: 'pri_hacker_invalid', email: 'buyer@aqari.test' },
+  });
+  assert.equal(disallowedPriceRes.statusCode, 400);
+  assert.match(String(disallowedPriceRes.data.error), /Price ID/);
+
+  const sandboxLegacyPriceRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: { plan: 'pro', priceId: 'pri_01m7qwqceh520nd4we9pg90f8m', email: 'buyer@aqari.test' },
+  });
+  assert.equal(sandboxLegacyPriceRes.statusCode, 400);
+
+  let txnCounter = 0;
+  globalThis.fetch = (async (url: any, opts?: any) => {
+    const s = String(url);
+    if (s === 'https://api.paddle.com/transactions' && opts?.method === 'POST') {
+      txnCounter += 1;
+      const parsed = JSON.parse(String(opts.body || '{}'));
+      const priceId = parsed?.items?.[0]?.price_id || 'unknown';
+      const txnId = `txn_01live_${txnCounter}`;
+      return new Response(
+        JSON.stringify({
+          data: {
+            id: txnId,
+            status: 'draft',
+            items: [{ price_id: priceId, quantity: 1 }],
+            checkout: { url: `https://checkout.paddle.com/checkout?_ptxn=${txnId}` },
+          },
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    return prevFetch(url, opts);
+  }) as typeof fetch;
+
+  const sevenItems: Array<{ body: Record<string, any>; expectedPriceId: string }> = [
+    { body: { plan: 'starter', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_starter_75' },
+    { body: { plan: 'pro', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_pro_199' },
+    { body: { plan: 'enterprise', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_sov_599' },
+    { body: { plan: 'institutional', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_ent_1499' },
+    { body: { packId: 'pack_25', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_c25_19' },
+    { body: { packId: 'pack_100', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_c100_59' },
+    { body: { packId: 'pack_500', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_c500_249' },
+  ];
+
+  for (const item of sevenItems) {
+    const res = await invokeApi({
+      action: 'checkout',
+      method: 'POST',
+      body: item.body,
+    });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.data.success, true);
+    assert.equal(res.data.environment, 'production');
+    assert.equal(res.data.priceId, item.expectedPriceId);
+    assert.ok(String(res.data.transactionId).startsWith('txn_01live_'));
+    assert.match(String(res.data.checkoutUrl), /^https:\/\/checkout\.paddle\.com\/checkout\?_ptxn=/);
+    assert.equal(res.data.url, res.data.checkoutUrl);
+  }
+});
+
+test('Local /assets JSON files replace raw.githubusercontent.com, SafeChartContainer guards 0x0, and index.html prevents default on beforeinstallprompt', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+
+  const configRaw = fs.readFileSync(path.resolve('public/assets/config.json'), 'utf8');
+  const marketRaw = fs.readFileSync(path.resolve('public/assets/market.json'), 'utf8');
+  const configJson = JSON.parse(configRaw);
+  const marketJson = JSON.parse(marketRaw);
+  assert.equal(configJson.prices?.starter, 75);
+  assert.equal(configJson.prices?.pro, 199);
+  assert.equal(configJson.prices?.enterprise, 599);
+  assert.equal(configJson.prices?.institutional, 1499);
+  assert.ok(Array.isArray(marketJson.markets));
+
+  const constantsSrc = fs.readFileSync(path.resolve('src/constants.ts'), 'utf8');
+  assert.match(constantsSrc, /\/assets\/config\.json/);
+  assert.match(constantsSrc, /\/assets\/market\.json/);
+  assert.equal(constantsSrc.includes('raw.githubusercontent.com'), false);
+
+  const safeChartSrc = fs.readFileSync(path.resolve('src/components/charts/SafeChartContainer.tsx'), 'utf8');
+  assert.match(safeChartSrc, /ResizeObserver/);
+  assert.match(safeChartSrc, /minWidth = 280/);
+  assert.match(safeChartSrc, /minHeight = 240/);
+  assert.match(safeChartSrc, /aspect=\{undefined\}/);
+
+  const indexHtml = fs.readFileSync(path.resolve('index.html'), 'utf8');
+  assert.match(indexHtml, /beforeinstallprompt/);
+  assert.match(indexHtml, /e\.preventDefault\(\)/);
 });
 
 

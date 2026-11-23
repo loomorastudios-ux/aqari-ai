@@ -15,7 +15,6 @@ import {
   Award,
 } from 'lucide-react';
 import {
-  ResponsiveContainer,
   BarChart,
   Bar,
   XAxis,
@@ -24,6 +23,7 @@ import {
   CartesianGrid,
   Legend,
 } from 'recharts';
+import { SafeChartContainer } from '../charts/SafeChartContainer';
 import type { CurrencyCode, PortfolioAssetPostPurchase, SavedAnalysis } from '../../types';
 import { formatPrice } from '../../utils/formatters';
 
@@ -419,8 +419,8 @@ export const PortfolioIntelligencePanel: React.FC<PortfolioIntelligencePanelProp
                   {formatPrice(summary?.rentVarianceMonthlyUSD || 0, currentCurrency)}/mo
                 </span>
               </div>
-              <div className="h-56 w-full">
-                <ResponsiveContainer width="100%" height="100%">
+              <div className="min-h-[240px] h-[240px] w-full">
+                <SafeChartContainer minWidth={280} minHeight={240}>
                   <BarChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                     <XAxis dataKey="name" stroke="#9ca3af" fontSize={10} />
@@ -432,7 +432,7 @@ export const PortfolioIntelligencePanel: React.FC<PortfolioIntelligencePanelProp
                     <Bar dataKey="ForecastRent" name="Forecast ($/mo)" fill="#71717a" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="ActualRent" name="Actual ($/mo)" fill="#D4AF37" radius={[4, 4, 0, 0]} />
                   </BarChart>
-                </ResponsiveContainer>
+                </SafeChartContainer>
               </div>
             </div>
           </div>

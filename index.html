@@ -26,6 +26,13 @@
       if (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app') && window.location.hostname !== 'aqari-ai-rho.vercel.app') {
         window.location.replace('https://aqari-ai-rho.vercel.app' + window.location.pathname + window.location.search);
       }
+      if (typeof window !== 'undefined') {
+        window.__aqariDeferredPrompt = null;
+        window.addEventListener('beforeinstallprompt', function (e) {
+          e.preventDefault();
+          window.__aqariDeferredPrompt = e;
+        });
+      }
     </script>
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <style>

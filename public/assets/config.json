@@ -1,0 +1,20 @@
+{
+  "prices": {
+    "starter": 75,
+    "pro": 199,
+    "enterprise": 599,
+    "institutional": 1499
+  },
+  "discount": {
+    "active": true,
+    "percent": 40,
+    "code": "LAUNCH40",
+    "banner": "LAUNCH OFFER - First 30 institutional seats"
+  },
+  "announcement": {
+    "active": false,
+    "text": "New: Dubai Marina & Muscat Al Mouj analysis live",
+    "type": "info"
+  },
+  "maintenance": false
+}

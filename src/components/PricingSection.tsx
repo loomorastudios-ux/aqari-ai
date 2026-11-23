@@ -55,13 +55,6 @@ interface PricingSectionProps {
   isStandalonePage?: boolean;
 }
 
-interface CachedCheckout {
-  url: string;
-  timestamp: number;
-  pricingVersion: number;
-}
-const checkoutPrefetchCache: Record<string, CachedCheckout> = {};
-
 export const PricingSection: React.FC<PricingSectionProps> = ({
   currentCurrency,
   pricingData: externalPricing,
@@ -141,7 +134,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     setTimeout(() => setSuccessToast(null), 8000);
   };
 
-  const pricingVersion = livePricing?.updatedAt || 0;
   const launchActive = livePricing?.launchDiscountActive ?? true;
   const launchBadgeText = livePricing?.launchBadgeText || DEFAULT_LAUNCH_BADGE;
   const daysRemaining = livePricing?.daysRemaining ?? 7;
@@ -151,60 +143,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
     month: 'short',
     day: 'numeric',
   });
-
-  const getPrefetchKey = (plan: 'starter' | 'pro' | 'enterprise') =>
-    `${user?.email?.toLowerCase() || 'anon'}:${plan}:${pricingVersion}`;
-
-  const prefetchPlan = async (plan: 'starter' | 'pro' | 'enterprise') => {
-    const cacheKey = getPrefetchKey(plan);
-    const cached = checkoutPrefetchCache[cacheKey];
-    if (
-      cached &&
-      cached.pricingVersion === pricingVersion &&
-      Date.now() - cached.timestamp < 5 * 60 * 1000
-    ) {
-      return cached.url;
-    }
-
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
-
-      const res = await fetch('/api/app?action=checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          plan,
-          email: user?.email || '',
-          userId: user?.id || user?.googleId || 'guest',
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data.url) {
-          checkoutPrefetchCache[cacheKey] = {
-            url: data.url,
-            timestamp: Date.now(),
-            pricingVersion,
-          };
-          return data.url;
-        }
-      }
-    } catch {
-      // Prefetch fails silently
-    }
-    return null;
-  };
-
-  useEffect(() => {
-    const plans: Array<'starter' | 'pro' | 'enterprise'> = ['starter', 'pro', 'enterprise'];
-    plans.forEach((p) => {
-      prefetchPlan(p);
-    });
-  }, [user?.email, pricingVersion]);
 
   const handlePayPaddle = async (planId: 'starter' | 'pro' | 'enterprise' | 'institutional') => {
     if (!user) {
@@ -556,11 +494,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
           return (
             <div
               key={tier.id}
-              onMouseEnter={() => {
-                if (tier.id === 'starter' || tier.id === 'pro' || tier.id === 'enterprise') {
-                  prefetchPlan(tier.id);
-                }
-              }}
               className={`glass-panel relative rounded-[24px] p-5 flex flex-col justify-between transition-all duration-300 ${
                 tier.popular
                   ? 'border-[#D4AF37] shadow-[0_0_50px_rgba(212,175,55,0.22)] bg-white/[0.05] xl:-translate-y-2'

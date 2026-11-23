@@ -9291,73 +9291,350 @@ export default async function handler(req: any, res: any) {
       }
 
       case 'checkout': {
-        const startTime = Date.now();
-        if (req.method !== 'POST') {
-          return res.status(405).json({ error: 'Method not allowed' });
-        }
+        try {
+          const startTime = Date.now();
+          if (req.method !== 'POST') {
+            return res.status(405).json({ error: 'Method not allowed' });
+          }
 
-        const { plan, email, refundAcceptedAt } = parsedBody;
-        const validPlan: 'starter' | 'pro' | 'enterprise' | 'institutional' =
-          plan === 'starter' || plan === 'pro' || plan === 'enterprise' || plan === 'institutional'
-            ? plan
-            : 'pro';
+          const rawEnv =
+            cleanEnvValue(
+              getEnv('PADDLE_ENVIRONMENT') ||
+                getEnv('PADDLE_ENV') ||
+                getEnv('NEXT_PUBLIC_PADDLE_ENVIRONMENT')
+            ).toLowerCase() || 'live';
 
-        const pricing = getPricingPublicPayload();
-        const planPricing = findPlanPricing(pricing, validPlan)!;
-        const isLaunchPrice = Boolean(pricing.launchDiscountActive);
-        const activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
+          if (rawEnv !== 'live' && rawEnv !== 'production' && rawEnv !== 'sandbox') {
+            console.error('CHECKOUT_ERROR', { reason: 'Invalid PADDLE_ENVIRONMENT', rawEnv });
+            return res.status(400).json({
+              success: false,
+              error: 'Missing Paddle config: PADDLE_ENVIRONMENT',
+            });
+          }
 
-        const paddleEnv = resolvePaddleEnvironment();
-        if (!paddleEnv.configured) {
-          console.error(
-            '[Paddle Checkout] Missing or invalid environment variable: PADDLE_ENVIRONMENT (expected "live" or "sandbox").'
+          const isTestMode = rawEnv === 'sandbox';
+          const paddleBaseUrl = isTestMode
+            ? 'https://sandbox-api.paddle.com'
+            : 'https://api.paddle.com';
+
+          const paddleApiKey = cleanEnvValue(getEnv('PADDLE_API_KEY'));
+          if (!paddleApiKey) {
+            console.error('CHECKOUT_ERROR', 'Missing Paddle config: PADDLE_API_KEY');
+            return res.status(400).json({
+              success: false,
+              error: 'Missing Paddle config: PADDLE_API_KEY',
+            });
+          }
+          if (
+            !isTestMode &&
+            (paddleApiKey.startsWith('pdl_sdbx') || paddleApiKey.toLowerCase().includes('sandbox'))
+          ) {
+            console.error('CHECKOUT_ERROR', 'Sandbox PADDLE_API_KEY blocked in live mode');
+            return res.status(400).json({
+              success: false,
+              error: 'Missing Paddle config: PADDLE_API_KEY (sandbox key not allowed in live mode)',
+            });
+          }
+
+          const paddleClientToken = cleanEnvValue(
+            getEnv('PADDLE_CLIENT_SIDE_TOKEN') ||
+              getEnv('NEXT_PUBLIC_PADDLE_CLIENT_TOKEN') ||
+              getEnv('PADDLE_CLIENT_TOKEN')
           );
+          if (!paddleClientToken) {
+            console.error('CHECKOUT_ERROR', 'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN');
+            return res.status(400).json({
+              success: false,
+              error: 'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN',
+            });
+          }
+          if (!isTestMode && paddleClientToken.startsWith('test_')) {
+            console.error('CHECKOUT_ERROR', 'Sandbox client token blocked in live mode');
+            return res.status(400).json({
+              success: false,
+              error:
+                'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN (sandbox token not allowed in live mode)',
+            });
+          }
+
+          const body = parsedBody || {};
+          const rawPlan = body.plan !== undefined && body.plan !== null ? String(body.plan).trim() : '';
+          const rawPackId =
+            body.packId !== undefined && body.packId !== null
+              ? String(body.packId).trim()
+              : body.pack_id !== undefined && body.pack_id !== null
+              ? String(body.pack_id).trim()
+              : '';
+          const requestedPriceId =
+            body.priceId !== undefined && body.priceId !== null
+              ? String(body.priceId).trim()
+              : body.price_id !== undefined && body.price_id !== null
+              ? String(body.price_id).trim()
+              : '';
+          const email = body.email ? String(body.email).trim().toLowerCase() : '';
+          const userId = body.userId ? String(body.userId).trim() : '';
+          const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
+
+          const prices = resolvePaddleConfiguredPrices(isTestMode);
+          const pricing = getPricingPublicPayload();
+          const isLaunchPrice = Boolean(pricing.launchDiscountActive);
+
+          const allowedPlanPrices: Record<
+            'starter' | 'pro' | 'enterprise' | 'institutional',
+            string
+          > = {
+            starter: prices.starter,
+            pro: prices.pro,
+            enterprise: prices.sovereign,
+            institutional: prices.enterprise,
+          };
+
+          const allowedPackPrices: Record<'pack_25' | 'pack_100' | 'pack_500', string> = {
+            pack_25: prices.credit25,
+            pack_100: prices.credit100,
+            pack_500: prices.credit500,
+          };
+
+          const allAllowedPriceIds = new Set(
+            [
+              ...Object.values(allowedPlanPrices),
+              ...Object.values(allowedPackPrices),
+            ].filter((id) => Boolean(id && id.startsWith('pri_')))
+          );
+
+          if (
+            requestedPriceId &&
+            !isTestMode &&
+            requestedPriceId === LEGACY_SANDBOX_PRICE_ID_SERVER
+          ) {
+            console.error('CHECKOUT_ERROR', 'Sandbox Price ID rejected in live mode', {
+              requestedPriceId,
+            });
+            return res.status(400).json({
+              success: false,
+              error: 'Missing Paddle config: Price ID (sandbox price not allowed in live mode)',
+            });
+          }
+
+          let isCreditPack = false;
+          let resolvedPack: (typeof EXTRA_CREDIT_PACKS)[number] | undefined;
+          let validPlan: 'starter' | 'pro' | 'enterprise' | 'institutional' = 'pro';
+          let resolvedPriceId = '';
+          let activePriceUSD = 0;
+          let originalPrice = 0;
+          let launchPrice = 0;
+
+          if (rawPackId) {
+            if (
+              rawPackId !== 'pack_25' &&
+              rawPackId !== 'pack_100' &&
+              rawPackId !== 'pack_500'
+            ) {
+              return res.status(400).json({
+                success: false,
+                error: 'Invalid Paddle config: Price ID (unknown credit pack)',
+              });
+            }
+            isCreditPack = true;
+            resolvedPack = EXTRA_CREDIT_PACKS.find((p) => p.id === rawPackId)!;
+            resolvedPriceId = allowedPackPrices[rawPackId];
+            if (!resolvedPriceId || !resolvedPriceId.startsWith('pri_')) {
+              console.error('CHECKOUT_ERROR', `Missing Paddle config: Price ID (${rawPackId})`);
+              return res.status(400).json({
+                success: false,
+                error: `Missing Paddle config: Price ID (${rawPackId})`,
+              });
+            }
+            if (requestedPriceId && requestedPriceId !== resolvedPriceId) {
+              console.error('CHECKOUT_ERROR', 'Price ID mismatch for credit pack', {
+                rawPackId,
+                requestedPriceId,
+              });
+              return res.status(400).json({
+                success: false,
+                error: 'Invalid Paddle config: Price ID not in allowed list',
+              });
+            }
+            activePriceUSD = resolvedPack.priceUSD;
+            originalPrice = resolvedPack.priceUSD;
+            launchPrice = resolvedPack.priceUSD;
+          } else {
+            if (rawPlan) {
+              if (
+                rawPlan !== 'starter' &&
+                rawPlan !== 'pro' &&
+                rawPlan !== 'enterprise' &&
+                rawPlan !== 'institutional'
+              ) {
+                return res.status(400).json({
+                  success: false,
+                  error: 'Invalid Paddle config: Price ID (unknown plan)',
+                });
+              }
+              validPlan = rawPlan;
+            } else if (requestedPriceId) {
+              if (!allAllowedPriceIds.has(requestedPriceId)) {
+                console.error('CHECKOUT_ERROR', 'Requested Price ID not in allowed list', {
+                  requestedPriceId,
+                });
+                return res.status(400).json({
+                  success: false,
+                  error: 'Invalid Paddle config: Price ID not in allowed list',
+                });
+              }
+              const matchedPackKey = (
+                Object.keys(allowedPackPrices) as Array<'pack_25' | 'pack_100' | 'pack_500'>
+              ).find((k) => allowedPackPrices[k] === requestedPriceId);
+              if (matchedPackKey) {
+                isCreditPack = true;
+                resolvedPack = EXTRA_CREDIT_PACKS.find((p) => p.id === matchedPackKey)!;
+                resolvedPriceId = requestedPriceId;
+                activePriceUSD = resolvedPack.priceUSD;
+                originalPrice = resolvedPack.priceUSD;
+                launchPrice = resolvedPack.priceUSD;
+              } else {
+                const matchedPlanKey = (
+                  Object.keys(allowedPlanPrices) as Array<
+                    'starter' | 'pro' | 'enterprise' | 'institutional'
+                  >
+                ).find((k) => allowedPlanPrices[k] === requestedPriceId);
+                if (!matchedPlanKey) {
+                  return res.status(400).json({
+                    success: false,
+                    error: 'Invalid Paddle config: Price ID not in allowed list',
+                  });
+                }
+                validPlan = matchedPlanKey;
+              }
+            }
+
+            if (!isCreditPack) {
+              resolvedPriceId = allowedPlanPrices[validPlan];
+              if (!resolvedPriceId || !resolvedPriceId.startsWith('pri_')) {
+                console.error('CHECKOUT_ERROR', `Missing Paddle config: Price ID (${validPlan})`);
+                return res.status(400).json({
+                  success: false,
+                  error: `Missing Paddle config: Price ID (${validPlan})`,
+                });
+              }
+              if (requestedPriceId && requestedPriceId !== resolvedPriceId) {
+                console.error('CHECKOUT_ERROR', 'Price ID mismatch for plan', {
+                  validPlan,
+                  requestedPriceId,
+                });
+                return res.status(400).json({
+                  success: false,
+                  error: 'Invalid Paddle config: Price ID not in allowed list',
+                });
+              }
+              const planPricing = findPlanPricing(pricing, validPlan)!;
+              originalPrice = planPricing.originalPrice;
+              launchPrice = planPricing.launchPrice;
+              activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
+            }
+          }
+
+          if (!allAllowedPriceIds.has(resolvedPriceId)) {
+            console.error('CHECKOUT_ERROR', 'Resolved Price ID not in allowed list', {
+              resolvedPriceId,
+            });
+            return res.status(400).json({
+              success: false,
+              error: 'Invalid Paddle config: Price ID not in allowed list',
+            });
+          }
+
+          if (email && !isCreditPack) {
+            recordPendingCheckout({
+              email,
+              plan: validPlan,
+              amountUSD: activePriceUSD,
+              isLaunchPrice,
+              testMode: isTestMode,
+              createdAt: Date.now(),
+            });
+          }
+
+          const customData: Record<string, any> = isCreditPack
+            ? {
+                purchase_type: 'credit_pack',
+                packId: resolvedPack!.id,
+                credits: resolvedPack!.credits,
+                ...(email ? { email, login_email: email } : {}),
+                ...(userId ? { userId } : {}),
+              }
+            : {
+                purchase_type: 'plan',
+                plan: validPlan,
+                ...(email ? { email, login_email: email } : {}),
+                ...(userId ? { userId } : {}),
+              };
+
+          const paddleTxnRes = await fetch(`${paddleBaseUrl}/transactions`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${paddleApiKey}`,
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            body: JSON.stringify({
+              items: [{ price_id: resolvedPriceId, quantity: 1 }],
+              custom_data: customData,
+            }),
+          });
+
+          const paddleTxnJson: any = await paddleTxnRes.json().catch(() => null);
+          if (!paddleTxnRes.ok || !paddleTxnJson?.data?.id) {
+            const paddleDetail =
+              paddleTxnJson?.error?.detail ||
+              paddleTxnJson?.error?.message ||
+              `Paddle transactions API returned ${paddleTxnRes.status}`;
+            console.error('CHECKOUT_ERROR', {
+              status: paddleTxnRes.status,
+              detail: paddleDetail,
+              paddleError: paddleTxnJson?.error || null,
+            });
+            return res.status(400).json({
+              success: false,
+              error: `Paddle checkout error: ${paddleDetail}`,
+            });
+          }
+
+          const transactionId = String(paddleTxnJson.data.id);
+          const apiCheckoutUrl = cleanEnvValue(paddleTxnJson?.data?.checkout?.url);
+          const fallbackPaddleCheckoutUrl = `${
+            isTestMode ? 'https://sandbox-buy.paddle.com' : 'https://buy.paddle.com'
+          }/checkout?_ptxn=${encodeURIComponent(transactionId)}`;
+          const checkoutUrl = apiCheckoutUrl || fallbackPaddleCheckoutUrl;
+
+          const duration = Date.now() - startTime;
+          return res.status(200).json({
+            success: true,
+            provider: 'paddle',
+            environment: isTestMode ? 'sandbox' : 'production',
+            purchaseType: isCreditPack ? 'credit_pack' : 'plan',
+            priceId: resolvedPriceId,
+            transactionId,
+            checkoutUrl,
+            url: checkoutUrl,
+            success_url: `${SUCCESS_REDIRECT}&transaction_id=${encodeURIComponent(transactionId)}`,
+            cancel_url: CANCEL_REDIRECT,
+            testMode: isTestMode,
+            durationMs: duration,
+            ...(isCreditPack ? { packId: resolvedPack!.id, credits: resolvedPack!.credits } : { plan: validPlan }),
+            activePriceUSD,
+            originalPrice,
+            launchPrice,
+            isLaunchPrice,
+            refundAcceptedAt,
+          });
+        } catch (error: any) {
+          console.error('CHECKOUT_ERROR', error);
           return res.status(500).json({
             success: false,
-            error: 'Missing required server environment variable: PADDLE_ENVIRONMENT.',
+            error: error?.message || 'Unexpected checkout error.',
           });
         }
-        const isTestMode = paddleEnv.isSandbox;
-
-        const prices = resolvePaddleConfiguredPrices(isTestMode);
-        const resolvedPriceId =
-          validPlan === 'pro'
-            ? prices.pro
-            : validPlan === 'starter'
-            ? prices.starter
-            : validPlan === 'institutional'
-            ? prices.enterprise
-            : prices.sovereign;
-
-        if (email) {
-          recordPendingCheckout({
-            email,
-            plan: validPlan,
-            amountUSD: activePriceUSD,
-            isLaunchPrice,
-            testMode: isTestMode,
-            createdAt: Date.now(),
-          });
-        }
-
-        const duration = Date.now() - startTime;
-        return res.status(200).json({
-          success: true,
-          provider: 'paddle',
-          environment: isTestMode ? 'sandbox' : 'production',
-          priceId: resolvedPriceId,
-          url: '/#pricing',
-          success_url: SUCCESS_REDIRECT,
-          cancel_url: CANCEL_REDIRECT,
-          testMode: isTestMode,
-          durationMs: duration,
-          plan: validPlan,
-          activePriceUSD,
-          originalPrice: planPricing.originalPrice,
-          launchPrice: planPricing.launchPrice,
-          isLaunchPrice,
-          refundAcceptedAt: refundAcceptedAt || new Date().toISOString(),
-        });
       }
 
       case 'session': {

@@ -208,7 +208,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
             {savedSuccess && (
               <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-mono flex items-center gap-2">
                 <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>Config updated locally. To push to all users worldwide, copy the JSON below to your GitHub config.json.</span>
+                <span>Config updated locally. To push globally, update /assets/config.json or server pricing admin config.</span>
               </div>
             )}
 

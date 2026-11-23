@@ -13,7 +13,6 @@ import {
   User as UserIcon,
 } from 'lucide-react';
 import {
-  ResponsiveContainer,
   BarChart,
   Bar,
   XAxis,
@@ -21,6 +20,7 @@ import {
   Tooltip as RechartsTooltip,
   CartesianGrid,
 } from 'recharts';
+import { SafeChartContainer } from '../charts/SafeChartContainer';
 import type { PropertyStudioDraft } from '../../types';
 import { downloadPropertyStudioPdf } from '../../utils/pdfExport';
 import { CityAutocomplete } from '../ui/CityAutocomplete';
@@ -819,11 +819,11 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
             </div>
           </div>
 
-          <div className="h-48 w-full bg-black/40 rounded-xl border border-white/10 p-3">
+          <div className="min-h-[268px] w-full bg-black/40 rounded-xl border border-white/10 p-3">
             <div className="text-[10px] font-mono text-zinc-400 uppercase mb-1">
               Indicative Yield Comparison (%) — Not Guaranteed
             </div>
-            <ResponsiveContainer width="100%" height="88%">
+            <SafeChartContainer minWidth={280} minHeight={240} height={240}>
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="metric" stroke="#9ca3af" fontSize={10} />
@@ -833,7 +833,7 @@ export const PropertyStudioTab: React.FC<PropertyStudioTabProps> = ({
                 />
                 <Bar dataKey="pct" fill="#D4AF37" radius={[6, 6, 0, 0]} />
               </BarChart>
-            </ResponsiveContainer>
+            </SafeChartContainer>
           </div>
         </div>
       </div>

@@ -1,8 +1,8 @@
 import { CurrencyCode, PropertyListing, RemoteConfig, MarketMatrixRow, PlanFeatureConfig } from './types';
 import muscatEnterpriseVillaImg from './assets/images/muscat_al_mouj_villa_1795257355401.jpg';
 
-export const CONFIG_URL = "https://raw.githubusercontent.com/azzam-shmale/aqari-config/main/config.json";
-export const MARKET_DATA_URL = "https://raw.githubusercontent.com/azzam-shmale/aqari-config/main/market.json";
+export const CONFIG_URL = "/assets/config.json";
+export const MARKET_DATA_URL = "/assets/market.json";
 export const EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD";
 
 // USD Only display across AQARI Terminal

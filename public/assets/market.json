@@ -1,0 +1,13 @@
+{
+  "updatedDate": "2026-04-01",
+  "source": "AQARI Local Benchmark Registry",
+  "markets": [
+    { "city": "Muscat", "country": "Oman", "avgGrossYield": 8.4, "basePriceSqMUSD": 1612 },
+    { "city": "Dubai", "country": "UAE", "avgGrossYield": 8.8, "basePriceSqMUSD": 4120 },
+    { "city": "Riyadh", "country": "Saudi Arabia", "avgGrossYield": 8.8, "basePriceSqMUSD": 2250 },
+    { "city": "Miami", "country": "United States", "avgGrossYield": 6.7, "basePriceSqMUSD": 8400 },
+    { "city": "London", "country": "United Kingdom", "avgGrossYield": 4.8, "basePriceSqMUSD": 14200 },
+    { "city": "New York", "country": "United States", "avgGrossYield": 4.6, "basePriceSqMUSD": 16800 },
+    { "city": "Singapore", "country": "Singapore", "avgGrossYield": 3.9, "basePriceSqMUSD": 18400 }
+  ]
+}

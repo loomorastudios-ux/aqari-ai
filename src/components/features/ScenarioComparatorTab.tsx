@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Scale, Loader2, RefreshCw } from 'lucide-react';
 import {
-  ResponsiveContainer,
   BarChart,
   Bar,
   XAxis,
@@ -10,6 +9,7 @@ import {
   CartesianGrid,
   Legend,
 } from 'recharts';
+import { SafeChartContainer } from '../charts/SafeChartContainer';
 import type {
   CurrencyCode,
   SavedAnalysis,
@@ -367,8 +367,8 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
             <div className="text-xs font-mono font-bold text-[#D4AF37] uppercase">
               Yield, IRR &amp; Liquidity Benchmark Comparison
             </div>
-            <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+            <div className="min-h-[256px] h-64 w-full">
+              <SafeChartContainer minWidth={280} minHeight={240}>
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                   <XAxis dataKey="name" stroke="#9ca3af" fontSize={10} />
@@ -381,7 +381,7 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
                   <Bar dataKey="CashOnCash" name="Cash-on-Cash (%)" fill="#34d399" radius={[4, 4, 0, 0]} />
                   <Bar dataKey="IRR5Yr" name="5-Yr IRR (%)" fill="#a78bfa" radius={[4, 4, 0, 0]} />
                 </BarChart>
-              </ResponsiveContainer>
+              </SafeChartContainer>
             </div>
           </div>
         </>

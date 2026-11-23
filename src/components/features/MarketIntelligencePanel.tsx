@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Globe2, TrendingUp, Percent, Activity, ShieldAlert, Loader2 } from 'lucide-react';
 import {
-  ResponsiveContainer,
   LineChart,
   Line,
   XAxis,
@@ -9,6 +8,7 @@ import {
   Tooltip as RechartsTooltip,
   CartesianGrid,
 } from 'recharts';
+import { SafeChartContainer } from '../charts/SafeChartContainer';
 import type { CurrencyCode, GlobalMarketIntelCity } from '../../types';
 import { formatPrice } from '../../utils/formatters';
 
@@ -186,8 +186,8 @@ export const MarketIntelligencePanel: React.FC<MarketIntelligencePanelProps> = (
                 Source: {selected.historicalSource} • Updated: {selected.historicalDate}
               </div>
             </div>
-            <div className="h-56 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+            <div className="min-h-[240px] h-[240px] w-full">
+              <SafeChartContainer minWidth={280} minHeight={240}>
                 <LineChart data={selected.historicalPriceIndex}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                   <XAxis dataKey="year" stroke="#9ca3af" fontSize={11} />
@@ -204,7 +204,7 @@ export const MarketIntelligencePanel: React.FC<MarketIntelligencePanelProps> = (
                     dot={{ r: 4, fill: '#D4AF37' }}
                   />
                 </LineChart>
-              </ResponsiveContainer>
+              </SafeChartContainer>
             </div>
           </div>
         </>

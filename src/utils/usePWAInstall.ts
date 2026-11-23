@@ -6,7 +6,12 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 export function usePWAInstall() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(() => {
+    if (typeof window !== 'undefined' && (window as any).__aqariDeferredPrompt) {
+      return (window as any).__aqariDeferredPrompt as BeforeInstallPromptEvent;
+    }
+    return null;
+  });
   const [isInstalled, setIsInstalled] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
 
@@ -24,13 +29,19 @@ export function usePWAInstall() {
       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     setIsIOS(isIOSDevice);
 
+    if ((window as any).__aqariDeferredPrompt && !deferredPrompt) {
+      setDeferredPrompt((window as any).__aqariDeferredPrompt as BeforeInstallPromptEvent);
+    }
+
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
+      (window as any).__aqariDeferredPrompt = e;
       setDeferredPrompt(e as BeforeInstallPromptEvent);
     };
 
     const handleAppInstalled = () => {
       setIsInstalled(true);
+      (window as any).__aqariDeferredPrompt = null;
       setDeferredPrompt(null);
     };
 

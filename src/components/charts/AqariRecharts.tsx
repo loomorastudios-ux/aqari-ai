@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
 import {
-  ResponsiveContainer,
   ComposedChart,
   BarChart,
   Bar,
@@ -17,6 +16,7 @@ import {
 import { CurrencyCode, DealFinderDeal } from '../../types';
 import { formatPrice } from '../../utils/formatters';
 import { ChartReveal } from '../ui/motion-primitives';
+import { SafeChartContainer } from './SafeChartContainer';
 
 const GOLD = '#D4AF37';
 const EMERALD = '#34d399';
@@ -134,8 +134,8 @@ export const NoiCashflowChart: React.FC<SplitUnderwritingChartProps> = (props) =
           NOI ({props.currency}) • Net Cashflow ({props.currency})
         </span>
       </div>
-      <div className="h-[225px] w-full" dir="ltr">
-        <ResponsiveContainer width="100%" height="100%" minWidth={220}>
+      <div className="min-h-[240px] h-[240px] w-full" dir="ltr">
+        <SafeChartContainer minWidth={280} minHeight={240}>
           <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
             <XAxis
@@ -176,7 +176,7 @@ export const NoiCashflowChart: React.FC<SplitUnderwritingChartProps> = (props) =
               animationDuration={650}
             />
           </BarChart>
-        </ResponsiveContainer>
+        </SafeChartContainer>
       </div>
     </ChartReveal>
   );
@@ -202,8 +202,8 @@ export const IrrDscrChart: React.FC<SplitUnderwritingChartProps> = (props) => {
           IRR Note: {props.irrError}
         </div>
       )}
-      <div className="h-[225px] w-full" dir="ltr">
-        <ResponsiveContainer width="100%" height="100%" minWidth={220}>
+      <div className="min-h-[240px] h-[240px] w-full" dir="ltr">
+        <SafeChartContainer minWidth={280} minHeight={240}>
           <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
             <XAxis
@@ -267,7 +267,7 @@ export const IrrDscrChart: React.FC<SplitUnderwritingChartProps> = (props) => {
               />
             )}
           </ComposedChart>
-        </ResponsiveContainer>
+        </SafeChartContainer>
       </div>
     </ChartReveal>
   );
@@ -329,8 +329,8 @@ export const MarketComparisonChart: React.FC<MarketComparisonChartProps> = ({
         <span className="font-bold uppercase text-white">{title}</span>
         {subtitle && <span className="text-[10px] text-[#D4AF37]">{subtitle}</span>}
       </div>
-      <div className="h-[225px] w-full" dir="ltr">
-        <ResponsiveContainer width="100%" height="100%" minWidth={240}>
+      <div className="min-h-[240px] h-[240px] w-full" dir="ltr">
+        <SafeChartContainer minWidth={280} minHeight={240}>
           <BarChart data={chartData} margin={{ top: 8, right: 10, left: 0, bottom: 4 }}>
             <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
             <XAxis
@@ -373,7 +373,7 @@ export const MarketComparisonChart: React.FC<MarketComparisonChartProps> = ({
               animationDuration={650}
             />
           </BarChart>
-        </ResponsiveContainer>
+        </SafeChartContainer>
       </div>
     </ChartReveal>
   );
@@ -446,8 +446,8 @@ export const RiskScenarioChart: React.FC<RiskScenarioChartProps> = ({
           </span>
           <span className="text-[10px] text-emerald-300">Cap Rate &amp; Cash-on-Cash %</span>
         </div>
-        <div className="h-[205px] w-full" dir="ltr">
-          <ResponsiveContainer width="100%" height="100%" minWidth={240}>
+        <div className="min-h-[240px] h-[240px] w-full" dir="ltr">
+          <SafeChartContainer minWidth={280} minHeight={240}>
             <AreaChart data={sensitivityData} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
               <defs>
                 <linearGradient id="aqariGoldGrad" x1="0" y1="0" x2="0" y2="1">
@@ -494,7 +494,7 @@ export const RiskScenarioChart: React.FC<RiskScenarioChartProps> = ({
                 animationDuration={650}
               />
             </AreaChart>
-          </ResponsiveContainer>
+          </SafeChartContainer>
         </div>
       </ChartReveal>
     );
@@ -511,8 +511,8 @@ export const RiskScenarioChart: React.FC<RiskScenarioChartProps> = ({
             Composite Score: {overallRiskScore}/100
           </span>
         </div>
-        <div className="h-[205px] w-full" dir="ltr">
-          <ResponsiveContainer width="100%" height="100%" minWidth={240}>
+        <div className="min-h-[240px] h-[240px] w-full" dir="ltr">
+          <SafeChartContainer minWidth={280} minHeight={240}>
             <BarChart data={auditData} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
               <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
               <XAxis
@@ -546,7 +546,7 @@ export const RiskScenarioChart: React.FC<RiskScenarioChartProps> = ({
                 ))}
               </Bar>
             </BarChart>
-          </ResponsiveContainer>
+          </SafeChartContainer>
         </div>
       </ChartReveal>
     );
@@ -570,7 +570,7 @@ export const MonteCarloDistributionChart: React.FC<MonteCarloDistributionChartPr
   irrBins = [],
 }) => {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 pt-1">
       <ChartReveal className="rounded-xl border border-white/10 bg-black/50 p-3 space-y-1.5">
         <div className="flex items-center justify-between text-[10px] font-mono">
           <span className="font-bold uppercase text-white">
@@ -578,8 +578,8 @@ export const MonteCarloDistributionChart: React.FC<MonteCarloDistributionChartPr
           </span>
           <span className="text-[#D4AF37]">% of Trials</span>
         </div>
-        <div className="h-[170px] w-full" dir="ltr">
-          <ResponsiveContainer width="100%" height="100%" minWidth={180}>
+        <div className="min-h-[240px] h-[240px] w-full" dir="ltr">
+          <SafeChartContainer minWidth={280} minHeight={240}>
             <BarChart data={dscrBins} margin={{ top: 6, right: 6, left: -14, bottom: 0 }}>
               <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
               <XAxis
@@ -611,7 +611,7 @@ export const MonteCarloDistributionChart: React.FC<MonteCarloDistributionChartPr
                 ))}
               </Bar>
             </BarChart>
-          </ResponsiveContainer>
+          </SafeChartContainer>
         </div>
       </ChartReveal>
 
@@ -623,8 +623,8 @@ export const MonteCarloDistributionChart: React.FC<MonteCarloDistributionChartPr
             </span>
             <span className="text-emerald-400">% of Trials</span>
           </div>
-          <div className="h-[170px] w-full" dir="ltr">
-            <ResponsiveContainer width="100%" height="100%" minWidth={180}>
+          <div className="min-h-[240px] h-[240px] w-full" dir="ltr">
+            <SafeChartContainer minWidth={280} minHeight={240}>
               <BarChart data={irrBins} margin={{ top: 6, right: 6, left: -14, bottom: 0 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
                 <XAxis
@@ -656,7 +656,7 @@ export const MonteCarloDistributionChart: React.FC<MonteCarloDistributionChartPr
                   ))}
                 </Bar>
               </BarChart>
-            </ResponsiveContainer>
+            </SafeChartContainer>
           </div>
         </ChartReveal>
       )}
@@ -712,8 +712,8 @@ export const ForecastTrajectoryChart: React.FC<ForecastTrajectoryChartProps> = (
           Left Axis: Cap Rate (%) • Right Axis: Rent &amp; Price Index (Base 100)
         </span>
       </div>
-      <div className="h-[225px] w-full" dir="ltr">
-        <ResponsiveContainer width="100%" height="100%" minWidth={240}>
+      <div className="min-h-[240px] h-[240px] w-full" dir="ltr">
+        <SafeChartContainer minWidth={280} minHeight={240}>
           <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid stroke="rgba(255,255,255,0.07)" strokeDasharray="3 3" />
             <XAxis
@@ -780,7 +780,7 @@ export const ForecastTrajectoryChart: React.FC<ForecastTrajectoryChartProps> = (
               animationDuration={480}
             />
           </ComposedChart>
-        </ResponsiveContainer>
+        </SafeChartContainer>
       </div>
     </ChartReveal>
   );

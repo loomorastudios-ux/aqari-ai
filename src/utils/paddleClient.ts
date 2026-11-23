@@ -442,55 +442,61 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
   const targetPlan = handlers.plan || 'pro';
   activeHandlers = { ...handlers, plan: targetPlan, purchaseType: 'subscription' };
 
-  const token = getPaddleClientToken();
-  if (!token) {
-    const msg = 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN';
-    console.error('[Paddle]', msg);
+  const localPriceId = getPaddlePriceId(targetPlan);
+  const checkoutRes = await fetch('/api/app?action=checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      plan: targetPlan,
+      ...(localPriceId ? { priceId: localPriceId } : {}),
+      email: handlers.email || '',
+      userId: handlers.userId || 'guest',
+      refundAcceptedAt: handlers.refundAcceptedAt || new Date().toISOString(),
+    }),
+  });
+
+  const checkoutData: any = await checkoutRes.json().catch(() => null);
+  if (!checkoutRes.ok || !checkoutData?.success) {
+    const msg = checkoutData?.error || `Checkout failed (${checkoutRes.status}).`;
+    console.error('[Paddle] /api/app?action=checkout error:', msg);
     throw new Error(msg);
   }
 
-  const environment = getPaddleEnvironment();
-  if (!environment) {
-    const msg = 'Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT (expected "live" or "sandbox")';
-    console.error('[Paddle]', msg);
-    throw new Error(msg);
-  }
-
+  const priceId = cleanEnvStr(checkoutData?.priceId) || localPriceId;
   const expectedPriceKey = PADDLE_PRICE_ENV_KEYS[targetPlan] || 'NEXT_PUBLIC_PADDLE_PRICE_ID';
-  const priceId = getPaddlePriceId(targetPlan);
   if (!priceId || !priceId.startsWith('pri_')) {
     const msg = `Missing ${expectedPriceKey}: Paddle Price ID for ${targetPlan} is not configured.`;
     console.error('[Paddle]', msg, { plan: targetPlan });
     throw new Error(msg);
   }
 
+  const token = getPaddleClientToken();
+  const environment = getPaddleEnvironment();
   let paddle: Paddle | undefined;
-  try {
-    paddle = await getPaddleClient();
-  } catch (initErr: any) {
-    console.error('[Paddle] Failed to initialize Paddle client:', initErr);
-    throw new Error(initErr?.message || 'Failed to initialize Paddle Checkout.');
+  if (token && environment) {
+    try {
+      paddle = await getPaddleClient();
+    } catch (initErr: any) {
+      console.error('[Paddle] Failed to initialize Paddle client:', initErr);
+      if (!checkoutData?.checkoutUrl?.startsWith('https://')) {
+        throw new Error(initErr?.message || 'Failed to initialize Paddle Checkout.');
+      }
+    }
   }
 
   if (!paddle) {
-    const msg = 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN or NEXT_PUBLIC_PADDLE_ENVIRONMENT.';
+    const hostedUrl = cleanEnvStr(checkoutData?.checkoutUrl || checkoutData?.url);
+    if (hostedUrl && hostedUrl.startsWith('https://') && hostedUrl.includes('paddle.com')) {
+      window.location.assign(hostedUrl);
+      return;
+    }
+    const msg = !token
+      ? 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN'
+      : 'Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT (expected "live" or "sandbox")';
     console.error('[Paddle]', msg);
     throw new Error(msg);
   }
-
-  fetch('/api/app?action=checkout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body: JSON.stringify({
-      plan: targetPlan,
-      email: handlers.email || '',
-      userId: handlers.userId || 'guest',
-      refundAcceptedAt: handlers.refundAcceptedAt || new Date().toISOString(),
-    }),
-  }).catch((err) => {
-    console.warn('[Paddle] Background checkout pre-log warning:', err);
-  });
 
   try {
     paddle.Checkout.open({
@@ -527,31 +533,58 @@ export async function openPaddleCreditPackCheckout(
     onClose: handlers.onClose,
   };
 
-  const token = getPaddleClientToken();
-  if (!token) {
-    const msg = 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN';
-    console.error('[Paddle]', msg);
-    throw new Error(msg);
-  }
+  const localPriceId = getPaddleCreditPriceId(handlers.packId);
+  const checkoutRes = await fetch('/api/app?action=checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({
+      packId: handlers.packId,
+      ...(localPriceId ? { priceId: localPriceId } : {}),
+      email: handlers.email || '',
+      userId: handlers.userId || 'guest',
+      refundAcceptedAt: handlers.refundAcceptedAt || new Date().toISOString(),
+    }),
+  });
 
-  const environment = getPaddleEnvironment();
-  if (!environment) {
-    const msg = 'Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT (expected "live" or "sandbox")';
-    console.error('[Paddle]', msg);
+  const checkoutData: any = await checkoutRes.json().catch(() => null);
+  if (!checkoutRes.ok || !checkoutData?.success) {
+    const msg = checkoutData?.error || `Credit pack checkout failed (${checkoutRes.status}).`;
+    console.error('[Paddle] /api/app?action=checkout credit error:', msg);
     throw new Error(msg);
   }
 
   const expectedKey = PADDLE_CREDIT_PACK_ENV_KEYS[handlers.packId];
-  const priceId = getPaddleCreditPriceId(handlers.packId);
+  const priceId = cleanEnvStr(checkoutData?.priceId) || localPriceId;
   if (!priceId || !priceId.startsWith('pri_')) {
     const msg = `Missing ${expectedKey}: One-time Paddle Price ID for ${handlers.packId} is not configured.`;
     console.error('[Paddle]', msg, { packId: handlers.packId });
     throw new Error(msg);
   }
 
-  const paddle = await getPaddleClient();
+  const token = getPaddleClientToken();
+  const environment = getPaddleEnvironment();
+  let paddle: Paddle | undefined;
+  if (token && environment) {
+    try {
+      paddle = await getPaddleClient();
+    } catch (initErr: any) {
+      console.error('[Paddle] Failed to initialize Paddle client for credit pack:', initErr);
+      if (!checkoutData?.checkoutUrl?.startsWith('https://')) {
+        throw new Error(initErr?.message || 'Failed to initialize Paddle Checkout.');
+      }
+    }
+  }
+
   if (!paddle) {
-    const msg = 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN or NEXT_PUBLIC_PADDLE_ENVIRONMENT.';
+    const hostedUrl = cleanEnvStr(checkoutData?.checkoutUrl || checkoutData?.url);
+    if (hostedUrl && hostedUrl.startsWith('https://') && hostedUrl.includes('paddle.com')) {
+      window.location.assign(hostedUrl);
+      return;
+    }
+    const msg = !token
+      ? 'Missing NEXT_PUBLIC_PADDLE_CLIENT_TOKEN'
+      : 'Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT (expected "live" or "sandbox")';
     console.error('[Paddle]', msg);
     throw new Error(msg);
   }
