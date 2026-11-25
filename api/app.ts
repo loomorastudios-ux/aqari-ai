@@ -133,6 +133,11 @@ interface PricingPublicPayload {
   updatedAt: number;
   plans: DynamicPlanPublic[] | Record<PlanKey, DynamicPlanPublic>;
   plansMap?: Record<PlanKey, DynamicPlanPublic>;
+  paddleCreditPriceIds?: {
+    pack_25?: string | null;
+    pack_100?: string | null;
+    pack_500?: string | null;
+  };
 }
 
 interface ComputedLicenseStatus {
@@ -1325,13 +1330,86 @@ function findPlanPricing(
   return payload.plans?.[key];
 }
 
-function formatDateDDMMYYYY(ms?: number | null): string | null {
+function getShortPlanName(planKey: PlanKey): string {
+  switch (planKey) {
+    case 'starter':
+      return 'STARTER';
+    case 'pro':
+      return 'PRO';
+    case 'enterprise':
+      return 'SOVEREIGN';
+    case 'institutional':
+      return 'ENTERPRISE';
+    default:
+      return 'FREE';
+  }
+}
+
+function formatDateMMDDYYYY(ms?: number | null): string | null {
   if (!ms || !Number.isFinite(ms)) return null;
   const d = new Date(ms);
-  const dd = String(d.getUTCDate()).padStart(2, '0');
+  if (Number.isNaN(d.getTime())) return null;
   const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
   const yyyy = d.getUTCFullYear();
-  return `${dd}/${mm}/${yyyy}`;
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+function formatDateDDMMYYYY(ms?: number | null): string | null {
+  return formatDateMMDDYYYY(ms);
+}
+
+function evaluatePlanPurchaseRule(
+  user: Partial<ServerUserRecord> | null | undefined,
+  targetPlan: PlanKey,
+  now = Date.now()
+): {
+  allowed: boolean;
+  code?: 'SAME_PLAN_ACTIVE';
+  error?: string;
+  isSwitch: boolean;
+  previousPlan: PlanKey;
+  untilDate?: string | null;
+} {
+  if (!user || !user.plan) {
+    return { allowed: true, isSwitch: false, previousPlan: 'free' };
+  }
+  const currentPlan = normalizePlanKey(user.plan);
+  if (currentPlan === 'free' || user.cancel_status === 'refunded' || user.admin_locked) {
+    return { allowed: true, isSwitch: false, previousPlan: currentPlan };
+  }
+  const contractEndParsed =
+    currentPlan === 'institutional' && user.contract_end_date
+      ? Date.parse(user.contract_end_date)
+      : NaN;
+  const effectiveEnd =
+    currentPlan === 'institutional' && Number.isFinite(contractEndParsed)
+      ? contractEndParsed
+      : typeof user.license_end === 'number' && Number.isFinite(user.license_end)
+      ? user.license_end
+      : null;
+  const isCurrentlyActive = Boolean(effectiveEnd !== null && now < effectiveEnd);
+  if (!isCurrentlyActive) {
+    return { allowed: true, isSwitch: false, previousPlan: currentPlan };
+  }
+  if (currentPlan === targetPlan) {
+    const untilDate = formatDateMMDDYYYY(effectiveEnd) || 'expiry';
+    const shortPlan = getShortPlanName(currentPlan);
+    return {
+      allowed: false,
+      code: 'SAME_PLAN_ACTIVE',
+      error: `You already own ${shortPlan} until ${untilDate}. You can buy a different plan to switch, or wait until expiry.`,
+      isSwitch: false,
+      previousPlan: currentPlan,
+      untilDate,
+    };
+  }
+  return {
+    allowed: true,
+    isSwitch: true,
+    previousPlan: currentPlan,
+    untilDate: formatDateMMDDYYYY(effectiveEnd),
+  };
 }
 
 function computeLicenseStatus(params: {
@@ -1944,6 +2022,8 @@ interface UsedOrderRecord {
   purchase_type?: 'plan' | 'credit_pack';
   pack_id?: string;
   credits?: number;
+  switched_from_plan?: PlanKey | null;
+  switched_message?: string | null;
   analyses: number;
   amount: number;
   test_mode: boolean;
@@ -2245,7 +2325,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     ? contractEndParsed
     : licenseEndVal;
 
-  const packageExpired = Boolean(!isFreePlan && effectiveEnd && now > effectiveEnd);
+  const packageExpired = Boolean(!isFreePlan && effectiveEnd && now >= effectiveEnd);
   const hydratedStatus: 'active' | 'expired' | 'exhausted' = packageExpired
     ? 'expired'
     : analysesLeft + (extraCredits > analysesLeft ? 0 : 0) <= 0 && extraCredits <= 0
@@ -2554,6 +2634,8 @@ function getPricingPublicPayload(): PricingPublicPayload {
     plansMap[k] = entry;
     plansList.push(entry);
   }
+  const paddleEnv = resolvePaddleEnvironment();
+  const creditPrices = resolvePaddleConfiguredPrices(paddleEnv.isSandbox);
   return {
     success: true,
     schemaVersion: PRICING_SCHEMA_VERSION,
@@ -2564,6 +2646,11 @@ function getPricingPublicPayload(): PricingPublicPayload {
     updatedAt: cfg.updatedAt,
     plans: plansList,
     plansMap,
+    paddleCreditPriceIds: {
+      pack_25: creditPrices.credit25 || null,
+      pack_100: creditPrices.credit100 || null,
+      pack_500: creditPrices.credit500 || null,
+    },
   };
 }
 
@@ -2607,8 +2694,8 @@ function evaluateLockState(
     : quotas.isEnterprise && quotas.contractEndMs !== null
     ? quotas.contractEndMs
     : user.license_end;
-  const packageExpired = Boolean(!isFreePlan && effectiveEnd && now > effectiveEnd);
-  const expiryDateFormatted = isFreePlan ? null : formatDateDDMMYYYY(effectiveEnd);
+  const packageExpired = Boolean(!isFreePlan && effectiveEnd && now >= effectiveEnd);
+  const expiryDateFormatted = isFreePlan ? null : formatDateMMDDYYYY(effectiveEnd);
   const msLeft = effectiveEnd && !packageExpired ? effectiveEnd - now : 0;
   const daysRemaining = effectiveEnd && !packageExpired ? Math.max(0, Math.ceil(msLeft / (24 * 60 * 60 * 1000))) : 0;
   const day29Reminder = Boolean(!isFreePlan && !packageExpired && effectiveEnd && daysRemaining === 1);
@@ -3049,6 +3136,25 @@ function activatePaidPlanOnServer(params: {
         ...existing.payments,
       ];
 
+  const previousPlan = normalizePlanKey(existing.plan);
+  const previousEndMs =
+    previousPlan === 'institutional' && existing.contract_end_date
+      ? Date.parse(existing.contract_end_date)
+      : existing.license_end ?? 0;
+  const wasActiveDifferentPlan = Boolean(
+    previousPlan !== 'free' &&
+      previousPlan !== params.plan &&
+      previousEndMs &&
+      Number.isFinite(previousEndMs) &&
+      now < previousEndMs &&
+      existing.cancel_status !== 'refunded'
+  );
+  const switchTimelineMsg = wasActiveDifferentPlan
+    ? `Switched to ${getShortPlanName(params.plan)}. ${getShortPlanName(previousPlan)} features closed. - Payment #${orderId} (${params.testMode ? 'TEST' : 'LIVE'})`
+    : `Activated ${planCfg.displayName} $${amount} - Payment #${orderId} (${
+        params.testMode ? 'TEST' : 'LIVE'
+      })${resolvedLockedLaunch ? ` - Locked Launch Price $${resolvedLockedLaunch}` : ''}`;
+
   const timeline = alreadyRecorded
     ? existing.timeline
     : [
@@ -3056,9 +3162,7 @@ function activatePaidPlanOnServer(params: {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: iso,
           type: 'purchase' as const,
-          message: `Activated ${planCfg.displayName} $${amount} - Payment #${orderId} (${
-            params.testMode ? 'TEST' : 'LIVE'
-          })${resolvedLockedLaunch ? ` - Locked Launch Price $${resolvedLockedLaunch}` : ''}`,
+          message: switchTimelineMsg,
           actor: existing.email,
         },
         ...existing.timeline,
@@ -3073,6 +3177,11 @@ function activatePaidPlanOnServer(params: {
     params.plan === 'institutional'
       ? Math.max(0, Number(existing.custom_portfolio_limit || 0))
       : planCfg.savedLimit;
+
+  const isSwitchingPlan = previousPlan !== params.plan;
+  const keepApiKey = planCfg.apiDailyLimit > 0 ? existing.api_key_token : null;
+  const keepApiLast4 = planCfg.apiDailyLimit > 0 ? existing.api_key_last4 : null;
+  const keepBranding = planCfg.capabilities.customBrandingPdf ? existing.branding : null;
 
   return updateServerUser(params.email, {
     name: params.name || existing.name,
@@ -3101,6 +3210,27 @@ function activatePaidPlanOnServer(params: {
     payment_intent_id: params.paymentIntentId || orderId,
     day29_email_sent: false,
     expired_email_sent: false,
+    ...(isSwitchingPlan && params.plan !== 'institutional'
+      ? {
+          custom_analyses_limit: null,
+          custom_image_pdf_limit: null,
+          custom_listings_limit: null,
+          custom_portfolio_limit: null,
+          custom_seats: null,
+          custom_storage_gb: null,
+          sla_level: null,
+          contract_end_date: null,
+          white_label_enabled: false,
+          custom_api_enabled: false,
+        }
+      : {}),
+    ...(isSwitchingPlan
+      ? {
+          api_key_token: keepApiKey ?? null,
+          api_key_last4: keepApiLast4 ?? null,
+          branding: keepBranding ?? null,
+        }
+      : {}),
     total_paid_usd: alreadyRecorded ? existing.total_paid_usd : existing.total_paid_usd + amount,
     refund_policy_accepted_at:
       params.refundPolicyAcceptedAt || existing.refund_policy_accepted_at || iso,
@@ -5513,26 +5643,35 @@ function resolvePaddleConfiguredPrices(isSandbox: boolean) {
     credit25: pickPaddlePriceFromEnv([
       'PADDLE_CREDIT_25_PRICE',
       'PADDLE_CREDIT_25_PRICE_ID',
+      'PADDLE_CREDIT_25',
       'VITE_PADDLE_CREDIT_25_PRICE',
       'VITE_PADDLE_CREDIT_25_PRICE_ID',
+      'VITE_PADDLE_CREDIT_25',
       'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE',
       'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID',
+      'NEXT_PUBLIC_PADDLE_CREDIT_25',
     ]),
     credit100: pickPaddlePriceFromEnv([
       'PADDLE_CREDIT_100_PRICE',
       'PADDLE_CREDIT_100_PRICE_ID',
+      'PADDLE_CREDIT_100',
       'VITE_PADDLE_CREDIT_100_PRICE',
       'VITE_PADDLE_CREDIT_100_PRICE_ID',
+      'VITE_PADDLE_CREDIT_100',
       'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE',
       'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID',
+      'NEXT_PUBLIC_PADDLE_CREDIT_100',
     ]),
     credit500: pickPaddlePriceFromEnv([
       'PADDLE_CREDIT_500_PRICE',
       'PADDLE_CREDIT_500_PRICE_ID',
+      'PADDLE_CREDIT_500',
       'VITE_PADDLE_CREDIT_500_PRICE',
       'VITE_PADDLE_CREDIT_500_PRICE_ID',
+      'VITE_PADDLE_CREDIT_500',
       'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE',
       'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID',
+      'NEXT_PUBLIC_PADDLE_CREDIT_500',
     ]),
   };
 }
@@ -6626,6 +6765,13 @@ export default async function handler(req: any, res: any) {
             const now = Date.now();
             let dbUser =
               (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
+
+            const ruleCheck = evaluatePlanPurchaseRule(dbUser, tier.plan, now);
+            const switchedFromPlan = ruleCheck.isSwitch ? ruleCheck.previousPlan : null;
+            const switchMessage = switchedFromPlan
+              ? `Switched to ${getShortPlanName(tier.plan)}. ${getShortPlanName(switchedFromPlan)} features closed.`
+              : null;
+
             dbUser = activatePaidPlanOnServer({
               email: loginEmail,
               name: dbUser?.name,
@@ -6649,6 +6795,9 @@ export default async function handler(req: any, res: any) {
               payment_email: params.paymentEmail || 'unknown',
               plan: tier.plan,
               plan_display: tier.planDisplay,
+              purchase_type: 'plan',
+              switched_from_plan: switchedFromPlan,
+              switched_message: switchMessage,
               analyses: tier.analyses,
               amount: params.amountUSD,
               test_mode: params.testMode,
@@ -6689,14 +6838,17 @@ export default async function handler(req: any, res: any) {
             const features =
               findPlanPricing(pricing, tier.plan)?.features || PLAN_DEFINITIONS[tier.plan].features;
             const successMessage =
-              tier.plan === 'pro'
+              switchMessage ||
+              (tier.plan === 'pro'
                 ? 'One-time 30-day PRO access activated! Pro plan is now active.'
-                : `One-time 30-day access activated! ${tier.planDisplay} plan is now active.`;
+                : `One-time 30-day access activated! ${tier.planDisplay} plan is now active.`);
 
             return res.status(200).json({
               success: true,
               verified: true,
               purchase_type: 'plan',
+              switched: Boolean(switchedFromPlan),
+              previousPlan: switchedFromPlan,
               message: successMessage,
               plan: tier.planDisplay,
               plan_name: tier.planDisplay,
@@ -6707,6 +6859,7 @@ export default async function handler(req: any, res: any) {
               extra_credits: dbUser.extra_credits || 0,
               purchase_date: dbUser.license_start ? new Date(dbUser.license_start).toISOString() : null,
               expiry_date: dbUser.license_end ? new Date(dbUser.license_end).toISOString() : null,
+              expiryDateFormatted: formatDateMMDDYYYY(dbUser.license_end),
               payment_email_for_log_only: params.paymentEmail || null,
               order_id: params.resolvedOrderId,
               transaction_id: params.resolvedOrderId,
@@ -6795,10 +6948,15 @@ export default async function handler(req: any, res: any) {
             const license = computeServerLicenseStatus(existingUser);
             const features =
               findPlanPricing(pricing, usedPlanKey)?.features || PLAN_DEFINITIONS[usedPlanKey].features;
+            const switchedFromPlan = existingUsedOrder.switched_from_plan || null;
+            const switchMessage = existingUsedOrder.switched_message || (switchedFromPlan
+              ? `Switched to ${getShortPlanName(usedPlanKey)}. ${getShortPlanName(switchedFromPlan)} features closed.`
+              : null);
             const successMessage =
-              usedPlanKey === 'pro'
+              switchMessage ||
+              (usedPlanKey === 'pro'
                 ? 'One-time 30-day PRO access activated! Pro plan is now active.'
-                : `One-time 30-day access activated! ${license.displayName} plan is now active.`;
+                : `One-time 30-day access activated! ${license.displayName} plan is now active.`);
             try {
               setSessionCookie(res, existingUser.email);
               if (existingUser.cancel_status !== 'refunded') {
@@ -6819,6 +6977,8 @@ export default async function handler(req: any, res: any) {
               success: true,
               verified: true,
               purchase_type: 'plan',
+              switched: Boolean(switchedFromPlan),
+              previousPlan: switchedFromPlan,
               message: successMessage,
               plan: license.displayName,
               plan_name: license.displayName,
@@ -6830,6 +6990,7 @@ export default async function handler(req: any, res: any) {
               extra_credits: existingUser.extra_credits || 0,
               purchase_date: existingUser.license_start ? new Date(existingUser.license_start).toISOString() : null,
               expiry_date: existingUser.license_end ? new Date(existingUser.license_end).toISOString() : null,
+              expiryDateFormatted: formatDateMMDDYYYY(existingUser.license_end),
               payment_email_for_log_only: existingUsedOrder.payment_email || null,
               order_id: existingUsedOrder.order_id,
               transaction_id: existingUsedOrder.order_id,
@@ -9616,7 +9777,9 @@ export default async function handler(req: any, res: any) {
                 : body.price_id !== undefined && body.price_id !== null
                 ? String(body.price_id).trim()
                 : '';
-            const email = body.email ? String(body.email).trim().toLowerCase() : '';
+            const email = normalizeEmail(
+              getSessionEmailFromReq(req) || body.login_email || body.email || ''
+            );
             const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
             const pricing = getPricingPublicPayload();
             const isLaunchPrice = Boolean(pricing.launchDiscountActive);
@@ -9630,6 +9793,23 @@ export default async function handler(req: any, res: any) {
             const resolvedPack = rawPackId
               ? EXTRA_CREDIT_PACKS.find((p) => p.id === rawPackId)
               : undefined;
+
+            if (!resolvedPack && email) {
+              const { user: hydratedDb } = await readUserFromDbStatus(email).catch(() => ({ user: null }));
+              const existingUser = hydratedDb || getServerUserByEmail(email);
+              const ruleCheck = evaluatePlanPurchaseRule(existingUser, validPlan);
+              if (!ruleCheck.allowed) {
+                return res.status(409).json({
+                  success: false,
+                  blocked: true,
+                  code: ruleCheck.code,
+                  currentPlan: ruleCheck.previousPlan,
+                  expiryDateFormatted: ruleCheck.untilDate || null,
+                  error: ruleCheck.error,
+                });
+              }
+            }
+
             const planPricing = findPlanPricing(pricing, validPlan);
             const activePriceUSD = resolvedPack
               ? resolvedPack.priceUSD
@@ -9734,7 +9914,9 @@ export default async function handler(req: any, res: any) {
               : body.price_id !== undefined && body.price_id !== null
               ? String(body.price_id).trim()
               : '';
-          const email = body.email ? String(body.email).trim().toLowerCase() : '';
+          const email = normalizeEmail(
+            getSessionEmailFromReq(req) || body.login_email || body.email || ''
+          );
           const userId = body.userId ? String(body.userId).trim() : '';
           const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
 
@@ -9905,6 +10087,22 @@ export default async function handler(req: any, res: any) {
               success: false,
               error: 'Invalid Paddle config: Price ID not in allowed list',
             });
+          }
+
+          if (!isCreditPack && email) {
+            const { user: hydratedDb } = await readUserFromDbStatus(email).catch(() => ({ user: null }));
+            const existingUser = hydratedDb || getServerUserByEmail(email);
+            const ruleCheck = evaluatePlanPurchaseRule(existingUser, validPlan);
+            if (!ruleCheck.allowed) {
+              return res.status(409).json({
+                success: false,
+                blocked: true,
+                code: ruleCheck.code,
+                currentPlan: ruleCheck.previousPlan,
+                expiryDateFormatted: ruleCheck.untilDate || null,
+                error: ruleCheck.error,
+              });
+            }
           }
 
           if (email && !isCreditPack) {
@@ -10464,44 +10662,55 @@ export default async function handler(req: any, res: any) {
 
         let creditsAdded = 0;
         let finalUserRecord: ServerUserRecord | null = null;
+        let duplicateIgnored = false;
+        let samePlanBlocked = false;
+        let samePlanBlockedError: string | undefined;
+        let switchedFromPlan: PlanKey | null = null;
+        let switchMessage: string | null = null;
         const targetEmail = accountEmail || customerEmail;
 
-        if (targetEmail && targetEmail.includes('@')) {
-          if (isCreditPackPurchase && matchedCreditPack) {
-            const usedRec = await getUsedOrderFromDb(orderId).catch(() => null);
+        // Rule E: Always check duplicate transaction_id globally before applying plans or credits
+        const existingUsedGlobal = await getUsedOrderFromDb(orderId).catch(() => null);
+        if (existingUsedGlobal) {
+          duplicateIgnored = true;
+          if (targetEmail && targetEmail.includes('@')) {
             const { user: existingDb } = await readUserFromDbStatus(targetEmail).catch(() => ({
               user: null,
             }));
-            const alreadyApplied = Boolean(
-              usedRec ||
-                existingDb?.payments?.some(
-                  (p: any) => normalizeOrderId(p?.order_id) === normalizeOrderId(orderId)
-                )
-            );
-            if (!alreadyApplied) {
-              finalUserRecord = await applyCreditPackToUser({
-                email: targetEmail,
-                pack: matchedCreditPack,
-                orderId,
-                isTestMode: isTestEnv,
-              });
-              creditsAdded = matchedCreditPack.credits;
-            } else {
-              finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
-            }
+            finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
+          }
+        } else if (targetEmail && targetEmail.includes('@')) {
+          const { user: existingDb } = await readUserFromDbStatus(targetEmail).catch(() => ({
+            user: null,
+          }));
+          const alreadyInPayments = Boolean(
+            existingDb?.payments?.some(
+              (p: any) => normalizeOrderId(p?.order_id) === normalizeOrderId(orderId)
+            )
+          );
+          if (alreadyInPayments) {
+            duplicateIgnored = true;
+            finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
+          } else if (isCreditPackPurchase && matchedCreditPack) {
+            finalUserRecord = await applyCreditPackToUser({
+              email: targetEmail,
+              pack: matchedCreditPack,
+              orderId,
+              isTestMode: isTestEnv,
+            });
+            creditsAdded = matchedCreditPack.credits;
           } else {
-            const usedRec = await getUsedOrderFromDb(orderId).catch(() => null);
-            const { user: existingDb } = await readUserFromDbStatus(targetEmail).catch(() => ({
-              user: null,
-            }));
-            const alreadyActivated = Boolean(
-              usedRec ||
-                existingDb?.payments?.some(
-                  (p: any) => normalizeOrderId(p?.order_id) === normalizeOrderId(orderId)
-                )
-            );
-            if (!alreadyActivated) {
-              const purchaseNow = Date.now();
+            const purchaseNow = Date.now();
+            const ruleCheck = evaluatePlanPurchaseRule(existingDb, resolvedPlan, purchaseNow);
+            if (!ruleCheck.allowed) {
+              samePlanBlocked = true;
+              samePlanBlockedError = ruleCheck.error;
+              finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
+            } else {
+              switchedFromPlan = ruleCheck.isSwitch ? ruleCheck.previousPlan : null;
+              switchMessage = switchedFromPlan
+                ? `Switched to ${getShortPlanName(resolvedPlan)}. ${getShortPlanName(switchedFromPlan)} features closed.`
+                : null;
               const activated = activatePaidPlanOnServer({
                 email: targetEmail,
                 plan: resolvedPlan,
@@ -10521,14 +10730,14 @@ export default async function handler(req: any, res: any) {
                 plan: resolvedPlan,
                 plan_display: PLAN_DEFINITIONS[resolvedPlan].displayName,
                 purchase_type: 'plan',
+                switched_from_plan: switchedFromPlan,
+                switched_message: switchMessage,
                 analyses: PLAN_DEFINITIONS[resolvedPlan].analysesLimit,
                 amount: amountUSD > 0 ? amountUSD : PLAN_DEFINITIONS[resolvedPlan].launchPrice,
                 test_mode: isTestEnv,
                 used_at: purchaseNow,
               }).catch(() => {});
               finalUserRecord = activated;
-            } else {
-              finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
             }
           }
         }
@@ -10537,6 +10746,11 @@ export default async function handler(req: any, res: any) {
           success: true,
           received: true,
           verified: true,
+          duplicate: duplicateIgnored,
+          ignored: duplicateIgnored || samePlanBlocked,
+          ...(samePlanBlocked
+            ? { blocked: true, code: 'SAME_PLAN_ACTIVE', reason: samePlanBlockedError }
+            : {}),
           event_type: eventName,
           order_id: orderId,
           transaction_id: orderId,
@@ -10549,13 +10763,17 @@ export default async function handler(req: any, res: any) {
               }
             : {
                 purchase_type: 'plan',
-                plan: resolvedPlan,
+                plan: finalUserRecord ? normalizePlanKey(finalUserRecord.plan) : resolvedPlan,
+                switched: Boolean(switchedFromPlan),
+                previousPlan: switchedFromPlan,
+                ...(switchMessage ? { message: switchMessage } : {}),
                 purchase_date: finalUserRecord?.license_start
                   ? new Date(finalUserRecord.license_start).toISOString()
                   : null,
                 expiry_date: finalUserRecord?.license_end
                   ? new Date(finalUserRecord.license_end).toISOString()
                   : null,
+                expiryDateFormatted: formatDateMMDDYYYY(finalUserRecord?.license_end),
                 credits_balance: finalUserRecord?.extra_credits || 0,
               }),
         });

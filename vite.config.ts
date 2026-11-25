@@ -166,32 +166,50 @@ export default defineConfig(() => {
       'process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID': JSON.stringify(
         (process.env.VITE_PADDLE_ENTERPRISE_PRICE_ID || process.env.VITE_PADDLE_ENTERPRISE_PRICE || process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE || '').trim()
       ),
+      'process.env.VITE_PADDLE_CREDIT_25': JSON.stringify(
+        (process.env.VITE_PADDLE_CREDIT_25 || process.env.VITE_PADDLE_CREDIT_25_PRICE || process.env.VITE_PADDLE_CREDIT_25_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_CREDIT_25': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_CREDIT_25 || process.env.VITE_PADDLE_CREDIT_25 || process.env.VITE_PADDLE_CREDIT_25_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || '').trim()
+      ),
       'process.env.VITE_PADDLE_CREDIT_25_PRICE': JSON.stringify(
-        (process.env.VITE_PADDLE_CREDIT_25_PRICE || process.env.VITE_PADDLE_CREDIT_25_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID || '').trim()
+        (process.env.VITE_PADDLE_CREDIT_25_PRICE || process.env.VITE_PADDLE_CREDIT_25_PRICE_ID || process.env.VITE_PADDLE_CREDIT_25 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25 || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE': JSON.stringify(
-        (process.env.VITE_PADDLE_CREDIT_25_PRICE || process.env.VITE_PADDLE_CREDIT_25_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID || '').trim()
+        (process.env.VITE_PADDLE_CREDIT_25_PRICE || process.env.VITE_PADDLE_CREDIT_25_PRICE_ID || process.env.VITE_PADDLE_CREDIT_25 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25 || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID': JSON.stringify(
-        (process.env.VITE_PADDLE_CREDIT_25_PRICE_ID || process.env.VITE_PADDLE_CREDIT_25_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || '').trim()
+        (process.env.VITE_PADDLE_CREDIT_25_PRICE_ID || process.env.VITE_PADDLE_CREDIT_25_PRICE || process.env.VITE_PADDLE_CREDIT_25 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_25 || '').trim()
+      ),
+      'process.env.VITE_PADDLE_CREDIT_100': JSON.stringify(
+        (process.env.VITE_PADDLE_CREDIT_100 || process.env.VITE_PADDLE_CREDIT_100_PRICE || process.env.VITE_PADDLE_CREDIT_100_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_CREDIT_100': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_CREDIT_100 || process.env.VITE_PADDLE_CREDIT_100 || process.env.VITE_PADDLE_CREDIT_100_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || '').trim()
       ),
       'process.env.VITE_PADDLE_CREDIT_100_PRICE': JSON.stringify(
-        (process.env.VITE_PADDLE_CREDIT_100_PRICE || process.env.VITE_PADDLE_CREDIT_100_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID || '').trim()
+        (process.env.VITE_PADDLE_CREDIT_100_PRICE || process.env.VITE_PADDLE_CREDIT_100_PRICE_ID || process.env.VITE_PADDLE_CREDIT_100 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100 || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE': JSON.stringify(
-        (process.env.VITE_PADDLE_CREDIT_100_PRICE || process.env.VITE_PADDLE_CREDIT_100_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID || '').trim()
+        (process.env.VITE_PADDLE_CREDIT_100_PRICE || process.env.VITE_PADDLE_CREDIT_100_PRICE_ID || process.env.VITE_PADDLE_CREDIT_100 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100 || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID': JSON.stringify(
-        (process.env.VITE_PADDLE_CREDIT_100_PRICE_ID || process.env.VITE_PADDLE_CREDIT_100_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || '').trim()
+        (process.env.VITE_PADDLE_CREDIT_100_PRICE_ID || process.env.VITE_PADDLE_CREDIT_100_PRICE || process.env.VITE_PADDLE_CREDIT_100 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_100 || '').trim()
+      ),
+      'process.env.VITE_PADDLE_CREDIT_500': JSON.stringify(
+        (process.env.VITE_PADDLE_CREDIT_500 || process.env.VITE_PADDLE_CREDIT_500_PRICE || process.env.VITE_PADDLE_CREDIT_500_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID || '').trim()
+      ),
+      'process.env.NEXT_PUBLIC_PADDLE_CREDIT_500': JSON.stringify(
+        (process.env.NEXT_PUBLIC_PADDLE_CREDIT_500 || process.env.VITE_PADDLE_CREDIT_500 || process.env.VITE_PADDLE_CREDIT_500_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || '').trim()
       ),
       'process.env.VITE_PADDLE_CREDIT_500_PRICE': JSON.stringify(
-        (process.env.VITE_PADDLE_CREDIT_500_PRICE || process.env.VITE_PADDLE_CREDIT_500_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID || '').trim()
+        (process.env.VITE_PADDLE_CREDIT_500_PRICE || process.env.VITE_PADDLE_CREDIT_500_PRICE_ID || process.env.VITE_PADDLE_CREDIT_500 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500 || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE': JSON.stringify(
-        (process.env.VITE_PADDLE_CREDIT_500_PRICE || process.env.VITE_PADDLE_CREDIT_500_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID || '').trim()
+        (process.env.VITE_PADDLE_CREDIT_500_PRICE || process.env.VITE_PADDLE_CREDIT_500_PRICE_ID || process.env.VITE_PADDLE_CREDIT_500 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500 || '').trim()
       ),
       'process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID': JSON.stringify(
-        (process.env.VITE_PADDLE_CREDIT_500_PRICE_ID || process.env.VITE_PADDLE_CREDIT_500_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || '').trim()
+        (process.env.VITE_PADDLE_CREDIT_500_PRICE_ID || process.env.VITE_PADDLE_CREDIT_500_PRICE || process.env.VITE_PADDLE_CREDIT_500 || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE || process.env.NEXT_PUBLIC_PADDLE_CREDIT_500 || '').trim()
       ),
     },
     resolve: {

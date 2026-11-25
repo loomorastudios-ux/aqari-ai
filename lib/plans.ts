@@ -99,6 +99,26 @@ export interface PricingPublicPayload {
   updatedAt: number;
   plans: DynamicPlanPublic[] | Record<PlanKey, DynamicPlanPublic>;
   plansMap?: Record<PlanKey, DynamicPlanPublic>;
+  paddleCreditPriceIds?: {
+    pack_25?: string | null;
+    pack_100?: string | null;
+    pack_500?: string | null;
+  };
+}
+
+export function getShortPlanLabel(planKey: PlanKey): string {
+  switch (planKey) {
+    case 'starter':
+      return 'STARTER';
+    case 'pro':
+      return 'PRO';
+    case 'enterprise':
+      return 'SOVEREIGN';
+    case 'institutional':
+      return 'ENTERPRISE';
+    default:
+      return 'FREE';
+  }
 }
 
 export type CreditActionKey =

@@ -34,6 +34,7 @@ export interface PaddleCheckoutHandlers {
   plan?: PaidPlanId;
   purchaseType?: 'subscription' | 'credit_pack';
   packId?: CreditPackId;
+  priceId?: string;
   email?: string;
   userId?: string;
   refundAcceptedAt?: string;
@@ -58,6 +59,37 @@ let paddleInstancePromise: Promise<Paddle | undefined> | null = null;
 let cachedPaddleInstance: Paddle | undefined;
 let activeHandlers: PaddleCheckoutHandlers | null = null;
 let isVerifyingTransaction = false;
+let backendCreditPriceIds: Partial<Record<CreditPackId, string>> = {};
+
+export function setBackendCreditPriceIds(
+  ids?: { pack_25?: string | null; pack_100?: string | null; pack_500?: string | null } | null
+): void {
+  if (!ids || typeof ids !== 'object') return;
+  const next: Partial<Record<CreditPackId, string>> = {};
+  for (const key of ['pack_25', 'pack_100', 'pack_500'] as CreditPackId[]) {
+    const val = typeof ids[key] === 'string' ? ids[key]!.trim() : '';
+    if (val && val.startsWith('pri_') && val !== LEGACY_SANDBOX_PRICE_ID) {
+      next[key] = val;
+    }
+  }
+  backendCreditPriceIds = next;
+}
+
+export function getCreditPackDisabledTooltip(packId: CreditPackId): string {
+  if (packId === 'pack_25') return 'Credits pack 25 coming soon - use +100 / +500';
+  if (packId === 'pack_100') return 'Credits pack 100 coming soon - use +25 / +500';
+  return 'Credits pack 500 coming soon - use +25 / +100';
+}
+
+export function formatPaddleDateMMDDYYYY(ms?: number | null): string {
+  if (!ms || !Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const yyyy = d.getUTCFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+}
 
 function cleanEnvStr(val: unknown): string {
   const s = typeof val === 'string' ? val.trim() : '';
@@ -210,67 +242,53 @@ export function getPaddleProPriceId(): string {
 }
 
 export function getPaddleCreditPriceId(packId: CreditPackId): string {
-  const meta25 = cleanEnvStr(
-    (import.meta.env &&
-      (import.meta.env.VITE_PADDLE_CREDIT_25_PRICE ||
-        import.meta.env.VITE_PADDLE_CREDIT_25_PRICE_ID ||
-        import.meta.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE ||
-        import.meta.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID)) ||
-      ''
-  );
-  const meta100 = cleanEnvStr(
-    (import.meta.env &&
-      (import.meta.env.VITE_PADDLE_CREDIT_100_PRICE ||
-        import.meta.env.VITE_PADDLE_CREDIT_100_PRICE_ID ||
-        import.meta.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE ||
-        import.meta.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID)) ||
-      ''
-  );
-  const meta500 = cleanEnvStr(
-    (import.meta.env &&
-      (import.meta.env.VITE_PADDLE_CREDIT_500_PRICE ||
-        import.meta.env.VITE_PADDLE_CREDIT_500_PRICE_ID ||
-        import.meta.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE ||
-        import.meta.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID)) ||
-      ''
-  );
-
-  let proc25 = '';
-  let proc100 = '';
-  let proc500 = '';
+  const envMeta = (import.meta.env || {}) as Record<string, any>;
+  let envProc: Record<string, any> = {};
   try {
-    proc25 = cleanEnvStr(
-      process.env.VITE_PADDLE_CREDIT_25_PRICE ||
-        process.env.VITE_PADDLE_CREDIT_25_PRICE_ID ||
-        process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE ||
-        process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID
-    );
-  } catch {}
-  try {
-    proc100 = cleanEnvStr(
-      process.env.VITE_PADDLE_CREDIT_100_PRICE ||
-        process.env.VITE_PADDLE_CREDIT_100_PRICE_ID ||
-        process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE ||
-        process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID
-    );
-  } catch {}
-  try {
-    proc500 = cleanEnvStr(
-      process.env.VITE_PADDLE_CREDIT_500_PRICE ||
-        process.env.VITE_PADDLE_CREDIT_500_PRICE_ID ||
-        process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE ||
-        process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID
-    );
+    envProc = (process.env || {}) as Record<string, any>;
   } catch {}
 
-  const candidates =
-    packId === 'pack_25'
-      ? [meta25, proc25]
-      : packId === 'pack_100'
-      ? [meta100, proc100]
-      : [meta500, proc500];
+  const readEnv = (key: string): string => cleanEnvStr(envMeta[key] || envProc[key]);
 
-  return pickPriceId(candidates);
+  if (packId === 'pack_25') {
+    const resolved = pickPriceId([
+      readEnv('VITE_PADDLE_CREDIT_25_PRICE'),
+      readEnv('NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE'),
+      readEnv('VITE_PADDLE_CREDIT_25'),
+      readEnv('NEXT_PUBLIC_PADDLE_CREDIT_25'),
+      readEnv('VITE_PADDLE_CREDIT_25_PRICE_ID'),
+      readEnv('NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID'),
+      readEnv('PADDLE_CREDIT_25_PRICE'),
+      readEnv('PADDLE_CREDIT_25'),
+    ]);
+    return resolved || backendCreditPriceIds.pack_25 || '';
+  }
+
+  if (packId === 'pack_100') {
+    const resolved = pickPriceId([
+      readEnv('VITE_PADDLE_CREDIT_100_PRICE'),
+      readEnv('NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE'),
+      readEnv('VITE_PADDLE_CREDIT_100'),
+      readEnv('NEXT_PUBLIC_PADDLE_CREDIT_100'),
+      readEnv('VITE_PADDLE_CREDIT_100_PRICE_ID'),
+      readEnv('NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID'),
+      readEnv('PADDLE_CREDIT_100_PRICE'),
+      readEnv('PADDLE_CREDIT_100'),
+    ]);
+    return resolved || backendCreditPriceIds.pack_100 || '';
+  }
+
+  const resolved = pickPriceId([
+    readEnv('VITE_PADDLE_CREDIT_500_PRICE'),
+    readEnv('NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE'),
+    readEnv('VITE_PADDLE_CREDIT_500'),
+    readEnv('NEXT_PUBLIC_PADDLE_CREDIT_500'),
+    readEnv('VITE_PADDLE_CREDIT_500_PRICE_ID'),
+    readEnv('NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID'),
+    readEnv('PADDLE_CREDIT_500_PRICE'),
+    readEnv('PADDLE_CREDIT_500'),
+  ]);
+  return resolved || backendCreditPriceIds.pack_500 || '';
 }
 
 export const PADDLE_CHECKOUT_SUCCESS_URL = 'https://aqari-ai-rho.vercel.app/app?checkout=success';
@@ -332,6 +350,27 @@ async function handlePaddleEvent(event: PaddleEventData) {
 
   if (event.name === 'checkout.closed') {
     activeHandlers?.onClose?.();
+    return;
+  }
+
+  if (
+    event.name === 'checkout.loaded' ||
+    event.name === 'checkout.items.updated' ||
+    event.name === 'checkout.updated'
+  ) {
+    const lockedPriceId = activeHandlers?.priceId;
+    const eventItems = Array.isArray((event.data as any)?.items) ? (event.data as any).items : [];
+    const needsClamp =
+      Boolean(lockedPriceId) &&
+      (eventItems.length > 1 ||
+        eventItems.some(
+          (item: any) => Number(item?.quantity ?? 1) !== 1 || item?.price_id !== lockedPriceId
+        ));
+    if (needsClamp && lockedPriceId && cachedPaddleInstance?.Checkout?.updateItems) {
+      try {
+        cachedPaddleInstance.Checkout.updateItems([{ priceId: lockedPriceId, quantity: 1 }]);
+      } catch {}
+    }
     return;
   }
 
@@ -458,9 +497,12 @@ async function handlePaddleEvent(event: PaddleEventData) {
 
       const planKey = String(verifyData?.planKey || handlers?.plan || 'pro');
       const successMsg =
-        planKey === 'pro'
+        verifyData?.switched && verifyData?.message
+          ? String(verifyData.message)
+          : planKey === 'pro'
           ? PADDLE_PRO_SUCCESS_MESSAGE
-          : verifyData?.message || `One-time 30-day access activated! ${verifyData?.plan || planKey} plan is now active.`;
+          : verifyData?.message ||
+            `One-time 30-day access activated! ${verifyData?.plan || planKey} plan is now active.`;
 
       if (typeof window !== 'undefined') {
         window.dispatchEvent(
@@ -541,8 +583,6 @@ export async function getPaddleClient(): Promise<Paddle | undefined> {
 
 export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Promise<void> {
   const targetPlan = handlers.plan || 'pro';
-  activeHandlers = { ...handlers, plan: targetPlan, purchaseType: 'subscription' };
-
   const environment = getPaddleEnvironment();
   const token = getPaddleClientToken();
   if (!token) {
@@ -564,6 +604,39 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
     throw new Error(msg);
   }
 
+  activeHandlers = { ...handlers, plan: targetPlan, purchaseType: 'subscription', priceId };
+
+  // Server-enforced entitlement check (Rule A: block buying same active plan before expiry)
+  if (typeof fetch === 'function') {
+    let blockedError = '';
+    try {
+      const precheckRes = await fetch('/api/app?action=checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          mode: 'record',
+          plan: targetPlan,
+          priceId,
+          email: handlers.email || '',
+          userId: handlers.userId || 'guest',
+          refundAcceptedAt: handlers.refundAcceptedAt || new Date().toISOString(),
+        }),
+      });
+      const precheckData = await precheckRes.json().catch(() => null);
+      if (precheckRes && !precheckRes.ok && (precheckRes.status === 409 || precheckRes.status === 403 || precheckData?.code === 'SAME_PLAN_ACTIVE')) {
+        blockedError = String(
+          precheckData?.error || 'You already own this plan until expiry. You can buy a different plan to switch.'
+        );
+      }
+    } catch {
+      // Allow Paddle.js checkout if precheck network request cannot complete offline
+    }
+    if (blockedError) {
+      throw new Error(blockedError);
+    }
+  }
+
   let paddle: Paddle | undefined;
   try {
     paddle = await getPaddleClient();
@@ -576,22 +649,6 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
     const msg = 'Failed to initialize Paddle Checkout. Check VITE_PADDLE_CLIENT_TOKEN / NEXT_PUBLIC_PADDLE_CLIENT_TOKEN.';
     console.warn('[Paddle]', msg);
     throw new Error(msg);
-  }
-
-  if (typeof fetch === 'function') {
-    fetch('/api/app?action=checkout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({
-        mode: 'record',
-        plan: targetPlan,
-        priceId,
-        email: handlers.email || '',
-        userId: handlers.userId || 'guest',
-        refundAcceptedAt: handlers.refundAcceptedAt || new Date().toISOString(),
-      }),
-    }).catch(() => {});
   }
 
   try {
@@ -619,17 +676,6 @@ export async function openPaddleCheckout(handlers: PaddleCheckoutHandlers): Prom
 export async function openPaddleCreditPackCheckout(
   handlers: PaddleCreditCheckoutHandlers
 ): Promise<void> {
-  activeHandlers = {
-    purchaseType: 'credit_pack',
-    packId: handlers.packId,
-    email: handlers.email,
-    userId: handlers.userId,
-    refundAcceptedAt: handlers.refundAcceptedAt,
-    onVerified: handlers.onVerified,
-    onError: handlers.onError,
-    onClose: handlers.onClose,
-  };
-
   const environment = getPaddleEnvironment();
   const token = getPaddleClientToken();
   if (!token) {
@@ -643,13 +689,27 @@ export async function openPaddleCreditPackCheckout(
     throw new Error(msg);
   }
 
-  const expectedKey = PADDLE_CREDIT_PACK_ENV_KEYS[handlers.packId];
   const priceId = getPaddleCreditPriceId(handlers.packId);
   if (!priceId || !priceId.startsWith('pri_') || priceId === LEGACY_SANDBOX_PRICE_ID) {
-    const msg = `Missing ${expectedKey}: One-time Paddle Price ID for ${handlers.packId} is not configured.`;
-    console.warn('[Paddle]', msg, { packId: handlers.packId });
-    throw new Error(msg);
+    console.warn('[Paddle] Credit pack Price ID unavailable:', {
+      packId: handlers.packId,
+      tooltip: getCreditPackDisabledTooltip(handlers.packId),
+    });
+    handlers.onClose?.();
+    return;
   }
+
+  activeHandlers = {
+    purchaseType: 'credit_pack',
+    packId: handlers.packId,
+    priceId,
+    email: handlers.email,
+    userId: handlers.userId,
+    refundAcceptedAt: handlers.refundAcceptedAt,
+    onVerified: handlers.onVerified,
+    onError: handlers.onError,
+    onClose: handlers.onClose,
+  };
 
   let paddle: Paddle | undefined;
   try {

@@ -9,11 +9,16 @@ import {
   CREDIT_COSTS,
   DEFAULT_LAUNCH_END_DATE_MS,
   findPlanPricing,
+  getShortPlanLabel,
 } from '../../lib/plans';
 import { formatPrice } from '../utils/formatters';
 import {
   getPaddleEnvironment,
   getPaddlePriceId,
+  getPaddleCreditPriceId,
+  getCreditPackDisabledTooltip,
+  setBackendCreditPriceIds,
+  formatPaddleDateMMDDYYYY,
   openPaddleCheckout,
   openPaddleCreditPackCheckout,
   CreditPackId,
@@ -94,6 +99,9 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   useEffect(() => {
     if (externalPricing) {
       setLivePricing(externalPricing);
+      if (externalPricing.paddleCreditPriceIds) {
+        setBackendCreditPriceIds(externalPricing.paddleCreditPriceIds);
+      }
     }
   }, [externalPricing]);
 
@@ -103,6 +111,9 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       if (res.ok) {
         const data: PricingPublicPayload = await res.json();
         setLivePricing(data);
+        if (data?.paddleCreditPriceIds) {
+          setBackendCreditPriceIds(data.paddleCreditPriceIds);
+        }
       }
     } catch {
       // Fall back gracefully if offline
@@ -123,6 +134,14 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       window.removeEventListener('aqari:open-enterprise-modal', onOpenEnterprise);
     };
   }, []);
+
+  useEffect(() => {
+    for (const pack of EXTRA_CREDIT_PACKS) {
+      if (!getPaddleCreditPriceId(pack.id as CreditPackId)) {
+        console.warn(`[Paddle] Missing credit price ID for ${pack.id}: ${getCreditPackDisabledTooltip(pack.id as CreditPackId)}`);
+      }
+    }
+  }, [livePricing]);
 
   const showError = (msg: string) => {
     setErrorToast(msg);
@@ -147,6 +166,13 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   const handlePayPaddle = async (planId: 'starter' | 'pro' | 'enterprise' | 'institutional') => {
     if (!user) {
       onOpenAuth();
+      return;
+    }
+
+    if (hasActivePaidPlan && currentPlanKey === planId) {
+      showError(
+        `You already own ${getShortPlanLabel(planId)} until ${activeUntilMMDD || 'expiry'}. You can buy a different plan to switch, or wait until expiry.`
+      );
       return;
     }
 
@@ -313,9 +339,20 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       ? user.plan
       : 'free'
     : null;
-  const hasActivePaidPlan = Boolean(
-    user && currentPlanKey && currentPlanKey !== 'free' && user.subscriptionStatus !== 'expired'
+  const expiryMs = user?.subscriptionEndsAt ?? user?.subscriptionExpiry ?? null;
+  const isPaidPlanExpired = Boolean(
+    user &&
+      currentPlanKey &&
+      currentPlanKey !== 'free' &&
+      (user.subscriptionStatus === 'expired' ||
+        user.packageExpired ||
+        (expiryMs !== null && Date.now() >= expiryMs))
   );
+  const hasActivePaidPlan = Boolean(
+    user && currentPlanKey && currentPlanKey !== 'free' && !isPaidPlanExpired
+  );
+  const activeUntilMMDD =
+    user?.expiryDateFormatted || (expiryMs ? formatPaddleDateMMDDYYYY(expiryMs) : '');
 
   const tiers: Array<{
     id: PlanKey;
@@ -359,9 +396,14 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       analysesLimitText: `${starter.analysesLimit} Analyses / 30 days`,
       icon: <Building2 className="w-5 h-5 text-zinc-300" />,
       features: starter.features,
-      ctaLabel: hasActivePaidPlan
-        ? `Renew / Switch STARTER (${formatPrice(starter.activePrice, currentCurrency)})`
-        : `Buy STARTER (${formatPrice(starter.activePrice, currentCurrency)})`,
+      ctaLabel:
+        hasActivePaidPlan && currentPlanKey === 'starter'
+          ? activeUntilMMDD
+            ? `Current Plan - Active until ${activeUntilMMDD}`
+            : 'Current Plan'
+          : hasActivePaidPlan
+          ? `Switch to STARTER (${formatPrice(starter.activePrice, currentCurrency)})`
+          : `Buy STARTER (${formatPrice(starter.activePrice, currentCurrency)})`,
     },
     {
       id: 'pro',
@@ -375,9 +417,14 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       analysesLimitText: `${pro.analysesLimit} Analyses / 30 days`,
       icon: <Zap className="w-5 h-5 text-[#D4AF37]" />,
       features: pro.features,
-      ctaLabel: hasActivePaidPlan
-        ? `Renew / Switch PRO (${formatPrice(pro.activePrice, currentCurrency)})`
-        : `Buy PRO (${formatPrice(pro.activePrice, currentCurrency)})`,
+      ctaLabel:
+        hasActivePaidPlan && currentPlanKey === 'pro'
+          ? activeUntilMMDD
+            ? `Current Plan - Active until ${activeUntilMMDD}`
+            : 'Current Plan'
+          : hasActivePaidPlan
+          ? `Switch to PRO (${formatPrice(pro.activePrice, currentCurrency)})`
+          : `Buy PRO (${formatPrice(pro.activePrice, currentCurrency)})`,
     },
     {
       id: 'enterprise',
@@ -391,9 +438,14 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       analysesLimitText: `${enterprise.analysesLimit} Analyses / 30 days`,
       icon: <Crown className="w-5 h-5 text-purple-400" />,
       features: enterprise.features,
-      ctaLabel: hasActivePaidPlan
-        ? `Renew / Switch SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`
-        : `Buy SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`,
+      ctaLabel:
+        hasActivePaidPlan && currentPlanKey === 'enterprise'
+          ? activeUntilMMDD
+            ? `Current Plan - Active until ${activeUntilMMDD}`
+            : 'Current Plan'
+          : hasActivePaidPlan
+          ? `Switch to SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`
+          : `Buy SOVEREIGN (${formatPrice(enterprise.activePrice, currentCurrency)})`,
     },
     {
       id: 'institutional',
@@ -485,7 +537,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
           const isCurrentPlan = Boolean(
             user &&
               currentPlanKey === tier.id &&
-              (tier.id === 'free' || user.subscriptionStatus !== 'expired')
+              (tier.id === 'free' || hasActivePaidPlan)
           );
           const isLoadingThis = loadingPlan === tier.id;
           const showLaunchStrike =
@@ -632,8 +684,8 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                     </>
                   ) : isCurrentPlan ? (
                     <>
-                      <Check className="w-4 h-4 text-emerald-400" />
-                      <span>Current Plan</span>
+                      <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span className="truncate">{tier.ctaLabel}</span>
                     </>
                   ) : (
                     <>
@@ -678,13 +730,21 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 shrink-0">
             {EXTRA_CREDIT_PACKS.map((pack) => {
               const isBuying = buyingPackId === pack.id;
+              const packPriceId = getPaddleCreditPriceId(pack.id as CreditPackId);
+              const isPackAvailable = Boolean(packPriceId);
+              const disabledTooltip = getCreditPackDisabledTooltip(pack.id as CreditPackId);
               return (
                 <button
                   key={pack.id}
                   type="button"
-                  disabled={isBuying}
+                  disabled={isBuying || !isPackAvailable}
+                  title={!isPackAvailable ? disabledTooltip : `One-time Paddle Checkout (${pack.label})`}
                   onClick={() => handleBuyCreditPack(pack.id as CreditPackId)}
-                  className="p-3.5 rounded-xl bg-black/50 hover:bg-[#D4AF37]/15 border border-white/10 hover:border-[#D4AF37]/60 transition text-left cursor-pointer group"
+                  className={`p-3.5 rounded-xl border text-left transition group ${
+                    isPackAvailable
+                      ? 'bg-black/50 hover:bg-[#D4AF37]/15 border-white/10 hover:border-[#D4AF37]/60 cursor-pointer'
+                      : 'bg-black/30 border-white/5 opacity-60 cursor-not-allowed'
+                  }`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-mono font-black text-white">{pack.label}</span>
@@ -692,9 +752,13 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                       {formatPrice(pack.priceUSD, currentCurrency)}
                     </span>
                   </div>
-                  <div className="text-[10px] font-mono text-zinc-400 mt-1 group-hover:text-zinc-200 flex items-center justify-between">
-                    <span>{pack.badge || 'One-time Paddle checkout • Never expires'}</span>
-                    {isBuying ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRight className="w-3 h-3" />}
+                  <div className="text-[10px] font-mono text-zinc-400 mt-1 group-hover:text-zinc-200 flex items-center justify-between gap-2">
+                    <span>
+                      {isPackAvailable
+                        ? pack.badge || 'One-time Paddle checkout • Never expires'
+                        : disabledTooltip}
+                    </span>
+                    {isBuying ? <Loader2 className="w-3 h-3 animate-spin shrink-0" /> : <ArrowRight className="w-3 h-3 shrink-0" />}
                   </div>
                 </button>
               );

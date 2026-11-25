@@ -1989,6 +1989,296 @@ test('Admin API enforces x-admin-token === ADMIN_TOKEN and returns real stored d
   }
 });
 
+test('Server enforces single active plan (Rule A block, Rule B switch & feature close, Rule C expired re-buy, Rule D independent credits, Rule E duplicate txn_id, and Credit 25 fallback)', async (t) => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const crypto = await import('node:crypto');
+  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const buyerEmail = `entitle_${Date.now()}@aqari.test`;
+  const txnPro = `txn_rule_pro_${Date.now()}`;
+  const txnDupPro = `txn_rule_pro_dup_${Date.now()}`;
+  const txnCred = `txn_rule_cred_${Date.now()}`;
+  const txnSov = `txn_rule_sov_${Date.now()}`;
+  const txnStarter = `txn_rule_start_${Date.now()}`;
+
+  const prevSecret = process.env.PADDLE_WEBHOOK_SECRET;
+  const prevEnv = process.env.PADDLE_ENVIRONMENT;
+  const prevCredit25 = process.env.PADDLE_CREDIT_25_PRICE;
+  const prevViteC25 = process.env.VITE_PADDLE_CREDIT_25;
+  const prevNextC25 = process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE;
+  const testSecret = 'pdl_ntfset_entitle_rules_test';
+  process.env.PADDLE_WEBHOOK_SECRET = testSecret;
+  process.env.PADDLE_ENVIRONMENT = 'live';
+  process.env.PADDLE_CREDIT_25_PRICE = 'pri_backend_c25_19';
+
+  t.after(() => {
+    if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
+    else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
+    if (prevEnv === undefined) delete process.env.PADDLE_ENVIRONMENT;
+    else process.env.PADDLE_ENVIRONMENT = prevEnv;
+    if (prevCredit25 === undefined) delete process.env.PADDLE_CREDIT_25_PRICE;
+    else process.env.PADDLE_CREDIT_25_PRICE = prevCredit25;
+    if (prevViteC25 === undefined) delete process.env.VITE_PADDLE_CREDIT_25;
+    else process.env.VITE_PADDLE_CREDIT_25 = prevViteC25;
+    if (prevNextC25 === undefined) delete process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE;
+    else process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE = prevNextC25;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      if (parsed?.users?.[buyerEmail]) delete parsed.users[buyerEmail];
+      for (const oid of [txnPro, txnDupPro, txnCred, txnSov, txnStarter]) {
+        if (parsed?.used_orders?.[oid]) delete parsed.used_orders[oid];
+      }
+      fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+    } catch {}
+  });
+
+  const sign = (body: string) => {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const h1 = crypto.createHmac('sha256', testSecret).update(`${ts}:${body}`).digest('hex');
+    return `ts=${ts};h1=${h1}`;
+  };
+
+  // 1. Activate PRO ($199) via transaction.completed webhook
+  const proBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: txnPro,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy', name: 'AQARI PROFESSIONAL' }, quantity: 1 }],
+      details: { totals: { total: '19900' } },
+      custom_data: { email: buyerEmail, login_email: buyerEmail, plan: 'pro' },
+    },
+  });
+  const proWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sign(proBody) },
+    body: proBody,
+  });
+  assert.equal(proWh.statusCode, 200);
+  assert.equal(proWh.data.plan, 'pro');
+  const proExpiryIso = proWh.data.expiry_date;
+  const proExpiryFormatted = proWh.data.expiryDateFormatted;
+  assert.match(String(proExpiryFormatted), /^\d{2}\/\d{2}\/\d{4}$/);
+
+  // Rule A: Re-buying PRO while PRO is active -> BLOCKED at checkout (409) AND webhook
+  const blockCheckout = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: {
+      mode: 'record',
+      plan: 'pro',
+      priceId: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy',
+      email: buyerEmail,
+    },
+  });
+  assert.equal(blockCheckout.statusCode, 409);
+  assert.equal(blockCheckout.data.code, 'SAME_PLAN_ACTIVE');
+  assert.equal(
+    blockCheckout.data.error,
+    `You already own PRO until ${proExpiryFormatted}. You can buy a different plan to switch, or wait until expiry.`
+  );
+
+  const dupPlanWhBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: txnDupPro,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy', name: 'AQARI PROFESSIONAL' }, quantity: 1 }],
+      details: { totals: { total: '19900' } },
+      custom_data: { email: buyerEmail, login_email: buyerEmail, plan: 'pro' },
+    },
+  });
+  const blockedWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sign(dupPlanWhBody) },
+    body: dupPlanWhBody,
+  });
+  assert.equal(blockedWh.statusCode, 200);
+  assert.equal(blockedWh.data.blocked, true);
+  assert.equal(blockedWh.data.ignored, true);
+
+  // Rule D: Buying +25 Credits while PRO is active -> ALLOWED, plan & expiry unchanged, credits added
+  const credCheckout = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: {
+      mode: 'record',
+      packId: 'pack_25',
+      priceId: 'pri_backend_c25_19',
+      email: buyerEmail,
+    },
+  });
+  assert.equal(credCheckout.statusCode, 200);
+
+  const credBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: txnCred,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_backend_c25_19', name: '+25 AI Credits' }, quantity: 1 }],
+      details: { totals: { total: '1900' } },
+      custom_data: { purchase_type: 'credit_pack', packId: 'pack_25', email: buyerEmail, login_email: buyerEmail },
+    },
+  });
+  const credWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sign(credBody) },
+    body: credBody,
+  });
+  assert.equal(credWh.statusCode, 200);
+  assert.equal(credWh.data.creditsAdded, 25);
+  assert.equal(credWh.data.credits_balance, 25);
+
+  // Rule E: Duplicate credit transaction_id ignored completely (no double credits)
+  const dupCredWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sign(credBody) },
+    body: credBody,
+  });
+  assert.equal(dupCredWh.statusCode, 200);
+  assert.equal(dupCredWh.data.duplicate, true);
+  assert.equal(dupCredWh.data.ignored, true);
+  assert.equal(dupCredWh.data.creditsAdded, 0);
+
+  const meAfterCred = await invokeApi({
+    method: 'GET',
+    action: 'me',
+    query: { login_email: buyerEmail },
+  });
+  assert.equal(meAfterCred.data.planKey, 'pro');
+  assert.equal(new Date(meAfterCred.data.expiry_date).toISOString(), proExpiryIso);
+  assert.equal(meAfterCred.data.credits_balance, 25);
+
+  // Rule B: Buy SOVEREIGN while PRO is active -> ALLOWED, replaces plan & expiry, closes PRO features, preserves 25 credits
+  const switchCheckout = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: {
+      mode: 'record',
+      plan: 'enterprise',
+      priceId: 'pri_01m7tgj4pp767gacchp49k2qev',
+      email: buyerEmail,
+    },
+  });
+  assert.equal(switchCheckout.statusCode, 200);
+
+  const sovBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: txnSov,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_01m7tgj4pp767gacchp49k2qev', name: 'AQARI SOVEREIGN' }, quantity: 1 }],
+      details: { totals: { total: '59900' } },
+      custom_data: { email: buyerEmail, login_email: buyerEmail, plan: 'enterprise' },
+    },
+  });
+  const sovWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sign(sovBody) },
+    body: sovBody,
+  });
+  assert.equal(sovWh.statusCode, 200);
+  assert.equal(sovWh.data.plan, 'enterprise');
+  assert.equal(sovWh.data.switched, true);
+  assert.equal(sovWh.data.message, 'Switched to SOVEREIGN. PRO features closed.');
+  assert.equal(sovWh.data.credits_balance, 25);
+
+  // Verify-payment after webhook preserves switch message & shows Sovereign 300 + 25 credits
+  const verifySwitch = await invokeApi({
+    action: 'verify-payment',
+    method: 'POST',
+    body: { login_email: buyerEmail, transaction_id: txnSov },
+  });
+  assert.equal(verifySwitch.statusCode, 200);
+  assert.equal(verifySwitch.data.switched, true);
+  assert.equal(verifySwitch.data.message, 'Switched to SOVEREIGN. PRO features closed.');
+  assert.equal(verifySwitch.data.planKey, 'enterprise');
+  assert.equal(verifySwitch.data.analyses_left, 325);
+
+  // Switch down to STARTER closes SOVEREIGN-only features immediately (global optimizer blocked)
+  const starterBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: txnStarter,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_01m7tgfvteegdih2mx4hgyz1c', name: 'AQARI STARTER' }, quantity: 1 }],
+      details: { totals: { total: '7500' } },
+      custom_data: { email: buyerEmail, login_email: buyerEmail, plan: 'starter' },
+    },
+  });
+  const starterWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': sign(starterBody) },
+    body: starterBody,
+  });
+  assert.equal(starterWh.statusCode, 200);
+  assert.equal(starterWh.data.plan, 'starter');
+  assert.equal(starterWh.data.message, 'Switched to STARTER. SOVEREIGN features closed.');
+
+  const blockedOpt = await invokeApi({
+    action: 'optimize-portfolio',
+    method: 'POST',
+    body: { email: buyerEmail, portfolio: [] },
+  });
+  assert.equal(blockedOpt.statusCode, 403);
+
+  // Rule C: Expired plan can re-buy SAME plan (STARTER)
+  const parsedStore = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+  parsedStore.users[buyerEmail].license_end = Date.now() - 60_000;
+  fs.writeFileSync(storePath, JSON.stringify(parsedStore, null, 2), 'utf8');
+
+  const expiredRebuyRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    body: {
+      mode: 'record',
+      plan: 'starter',
+      priceId: 'pri_01m7tgfvteegdih2mx4hgyz1c',
+      email: buyerEmail,
+    },
+  });
+  assert.equal(expiredRebuyRes.statusCode, 200);
+
+  // FIX 3 + FIX 1 checks: /api/app?action=pricing exposes paddleCreditPriceIds fallback; frontend resolves VITE_PADDLE_CREDIT_25 & backend fallback; quantity=1 lock
+  const pricingRes = await invokeApi({ method: 'GET', action: 'pricing' });
+  assert.equal(pricingRes.statusCode, 200);
+  assert.equal(pricingRes.data.paddleCreditPriceIds?.pack_25, 'pri_backend_c25_19');
+
+  const {
+    getPaddleCreditPriceId,
+    setBackendCreditPriceIds,
+    getCreditPackDisabledTooltip,
+  } = await import('../src/utils/paddleClient.ts');
+
+  delete process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE;
+  delete process.env.VITE_PADDLE_CREDIT_25_PRICE;
+  delete process.env.VITE_PADDLE_CREDIT_25;
+  setBackendCreditPriceIds(null);
+  assert.equal(getCreditPackDisabledTooltip('pack_25'), 'Credits pack 25 coming soon - use +100 / +500');
+
+  setBackendCreditPriceIds(pricingRes.data.paddleCreditPriceIds);
+  assert.equal(getPaddleCreditPriceId('pack_25'), 'pri_backend_c25_19');
+
+  setBackendCreditPriceIds(null);
+  process.env.VITE_PADDLE_CREDIT_25 = 'pri_vite_short_c25';
+  assert.equal(getPaddleCreditPriceId('pack_25'), 'pri_vite_short_c25');
+
+  const paddleClientSrc = fs.readFileSync(path.resolve('src/utils/paddleClient.ts'), 'utf8');
+  assert.match(paddleClientSrc, /items:\s*\[\{\s*priceId,\s*quantity:\s*1\s*\}\]/);
+  assert.match(paddleClientSrc, /updateItems\(\[\{\s*priceId:\s*lockedPriceId,\s*quantity:\s*1\s*\}\]\)/);
+});
+
 
 
 

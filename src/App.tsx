@@ -497,7 +497,12 @@ export default function App() {
       apiKey: meData?.api_key ?? null,
       apiKeyLast4: meData?.api_key_last4 ?? existing?.apiKeyLast4 ?? null,
       subscriptionPlan: verifiedPlan,
-      subscriptionStatus: 'active',
+      subscriptionStatus:
+        verifiedPlan === 'free'
+          ? 'free'
+          : Boolean(meData?.package_expired ?? data?.package_expired)
+          ? 'expired'
+          : 'active',
       subscriptionStartAt: licenseStartVal,
       subscriptionEndsAt: licenseEndVal,
       subscriptionExpiry: licenseEndVal,
@@ -695,11 +700,15 @@ export default function App() {
         const unlockBanner = isCreditPackCheckout
           ? data?.message ||
             `Added ${summaryLabel} — Credits Balance: ${updatedUser.creditsBalance ?? 0} (Never expires)`
+          : data?.switched && data?.message
+          ? String(data.message)
           : verifiedPlan === 'pro'
           ? 'One-time 30-day PRO access activated! PRO plan is now active.'
           : data?.message || `Welcome to ${planDisplay} — Payment Successful!`;
         const unlockToast = isCreditPackCheckout
           ? `${summaryLabel} added to your balance!`
+          : data?.switched && data?.message
+          ? String(data.message)
           : verifiedPlan === 'pro'
           ? 'One-time 30-day PRO access activated!'
           : `Welcome to AQARI ${planDisplay} - Unlocked for 30 Days!`;
