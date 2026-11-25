@@ -192,6 +192,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const loadPricingControl = async () => {
     try {
       const res = await fetch('/api/admin?action=pricing', { credentials: 'include' });
+      if (res.status === 403 || res.status === 401) {
+        onRedirectHome('Access denied: Owner admin access only');
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         if (data?.pricing) hydratePricingDrafts(data.pricing);
@@ -205,7 +209,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     try {
       const res = await fetch('/api/admin?action=users', { credentials: 'include' });
       if (res.status === 403 || res.status === 401) {
-        onRedirectHome('403 Forbidden: Owner admin access only');
+        onRedirectHome('Access denied: Owner admin access only');
         return;
       }
       if (res.ok) {
@@ -223,6 +227,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const loadAnalystInbox = async () => {
     try {
       const res = await fetch('/api/admin?action=analyst-inbox', { credentials: 'include' });
+      if (res.status === 403 || res.status === 401) {
+        onRedirectHome('Access denied: Owner admin access only');
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setAnalystThreads(Array.isArray(data?.threads) ? data.threads : []);
@@ -503,9 +511,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   useEffect(() => {
-    const em = (currentUser?.email || '').toLowerCase();
-    if (!em || (em !== 'loomorastudios@gmail.com' && em !== 'azzamalshmale@gmail.com')) {
-      onRedirectHome('403 Forbidden: Restricted to loomorastudios@gmail.com');
+    if (!currentUser?.email) {
+      onRedirectHome('Access denied: Sign in with your Admin account');
       return;
     }
     loadUsers();

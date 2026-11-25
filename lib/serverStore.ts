@@ -1,4 +1,5 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -97,6 +98,52 @@ export interface ServerUserRecord {
   refund_policy_accepted_at: string | null;
   locked_launch_price: number | null;
   payment_customer_email: string | null;
+  // Security lock & extra credits / enterprise overrides
+  extra_credits?: number;
+  analyses_total?: number;
+  analyses_left?: number;
+  max_saved?: number;
+  status?: 'active' | 'expired' | 'exhausted' | 'locked';
+  locked?: boolean;
+  locked_reason?: string | null;
+  locked_at?: number | null;
+  custom_analyses_limit?: number | null;
+  custom_image_pdf_limit?: number | null;
+  custom_listings_limit?: number | null;
+  custom_portfolio_limit?: number | null;
+  custom_seats?: number | null;
+  custom_storage_gb?: number | null;
+  sla_level?: string | null;
+  contract_end_date?: string | null;
+  white_label_enabled?: boolean;
+  custom_api_enabled?: boolean;
+  successful_analyses?: number;
+  has_reported_issue?: boolean;
+  issue_description?: string | null;
+  issue_status?: string;
+  issue_reported_at?: number | null;
+  issue_resolved_at?: number | null;
+  cancel_status?: string;
+}
+
+export interface ServerSessionRecord {
+  sessionId: string;
+  email: string;
+  name?: string;
+  picture?: string;
+  verifiedViaGoogle: boolean;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface AdminAuditLogEntry {
+  id: string;
+  timestamp: string;
+  adminEmail: string;
+  targetEmail: string;
+  action: string;
+  details: string;
+  ip: string;
 }
 
 export interface WebhookLogEntry {
@@ -222,6 +269,8 @@ export interface WhiteGloveRequestRecord {
 
 interface StoreShape {
   users: Record<string, ServerUserRecord>;
+  sessions: Record<string, ServerSessionRecord>;
+  auditLog: AdminAuditLogEntry[];
   webhook_logs: WebhookLogEntry[];
   failed_webhooks: FailedWebhookLog[];
   email_logs: EmailLogEntry[];
@@ -292,6 +341,15 @@ function createDefaultPricingConfig(): StoredPricingConfig {
 }
 
 function getStoreFile(): string {
+  const override = process.env.AQARI_STORE_FILE;
+  if (override && override.trim()) {
+    return override.trim();
+  }
+  if (!process.env.VERCEL) {
+    try {
+      return path.join(process.cwd(), '.aqari-data', 'aqari_terminal_store_v1.json');
+    } catch {}
+  }
   try {
     return path.join('/tmp', 'aqari_terminal_store_v1.json');
   } catch {
@@ -305,6 +363,8 @@ function getMemoryStore(): StoreShape {
   if (!memoryStoreCache) {
     memoryStoreCache = {
       users: {},
+      sessions: {},
+      auditLog: [],
       webhook_logs: [],
       failed_webhooks: [],
       email_logs: [],
@@ -348,6 +408,31 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     locked_launch_price:
       typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
     payment_customer_email: raw?.payment_customer_email ? String(raw.payment_customer_email).toLowerCase() : null,
+    extra_credits: Math.max(0, Number(raw?.extra_credits ?? 0)),
+    analyses_total: typeof raw?.analyses_total === 'number' ? raw.analyses_total : undefined,
+    analyses_left: typeof raw?.analyses_left === 'number' ? raw.analyses_left : undefined,
+    max_saved: typeof raw?.max_saved === 'number' ? raw.max_saved : undefined,
+    status: raw?.status,
+    locked: Boolean(raw?.locked),
+    locked_reason: raw?.locked_reason ?? null,
+    locked_at: typeof raw?.locked_at === 'number' ? raw.locked_at : null,
+    custom_analyses_limit: raw?.custom_analyses_limit ?? null,
+    custom_image_pdf_limit: raw?.custom_image_pdf_limit ?? null,
+    custom_listings_limit: raw?.custom_listings_limit ?? null,
+    custom_portfolio_limit: raw?.custom_portfolio_limit ?? null,
+    custom_seats: raw?.custom_seats ?? null,
+    custom_storage_gb: raw?.custom_storage_gb ?? null,
+    sla_level: raw?.sla_level ?? null,
+    contract_end_date: raw?.contract_end_date ?? null,
+    white_label_enabled: Boolean(raw?.white_label_enabled),
+    custom_api_enabled: Boolean(raw?.custom_api_enabled),
+    successful_analyses: typeof raw?.successful_analyses === 'number' ? raw.successful_analyses : 0,
+    has_reported_issue: Boolean(raw?.has_reported_issue),
+    issue_description: raw?.issue_description ?? null,
+    issue_status: raw?.issue_status ?? 'none',
+    issue_reported_at: raw?.issue_reported_at ?? null,
+    issue_resolved_at: raw?.issue_resolved_at ?? null,
+    cancel_status: raw?.cancel_status ?? 'none',
   };
 }
 
@@ -407,6 +492,11 @@ function loadStore(): StoreShape {
         }
         memoryStoreCache = {
           users,
+          sessions:
+            parsed.sessions && typeof parsed.sessions === 'object' && !Array.isArray(parsed.sessions)
+              ? parsed.sessions
+              : {},
+          auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
           webhook_logs: Array.isArray(parsed.webhook_logs) ? parsed.webhook_logs : [],
           failed_webhooks: Array.isArray(parsed.failed_webhooks) ? parsed.failed_webhooks : [],
           email_logs: Array.isArray(parsed.email_logs) ? parsed.email_logs : [],
@@ -441,7 +531,12 @@ function loadStore(): StoreShape {
 function persistStore(store: StoreShape): void {
   memoryStoreCache = store;
   try {
-    fs.writeFileSync(getStoreFile(), JSON.stringify(store, null, 2), 'utf8');
+    const filePath = getStoreFile();
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, JSON.stringify(store, null, 2), 'utf8');
   } catch {
     // Ignore read-only filesystem errors
   }
@@ -1504,4 +1599,226 @@ export async function findUsersByOrderId(orderId: string): Promise<string[]> {
     }
   }
   return Array.from(new Set(affected.filter(Boolean)));
+}
+
+// =========================================================================
+// PERSISTENT SESSIONS (Phase 2 / Phase 3) & APPEND-ONLY ADMIN AUDIT LOGS
+// =========================================================================
+
+const AUDIT_KV_KEY = 'aqari:audit_logs:v1';
+
+export async function saveSessionToDb(session: ServerSessionRecord): Promise<ServerSessionRecord> {
+  const store = loadStore();
+  if (!store.sessions || typeof store.sessions !== 'object') {
+    store.sessions = {};
+  }
+  store.sessions[session.sessionId] = session;
+  persistStore(store);
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const ttlSec = Math.max(60, Math.ceil((session.expiresAt - Date.now()) / 1000));
+      await kvCommand(['SET', `aqari:session:${session.sessionId}`, JSON.stringify(session), 'EX', ttlSec]);
+    }
+  } catch (err) {
+    console.error('[DB] Failed writing session to KV:', err);
+  }
+  return session;
+}
+
+export async function getSessionFromDb(sessionId: string): Promise<ServerSessionRecord | null> {
+  if (!sessionId || typeof sessionId !== 'string') return null;
+  const cleanId = sessionId.trim();
+  if (!cleanId) return null;
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', `aqari:session:${cleanId}`]);
+      if (raw) {
+        const parsed = (typeof raw === 'string' ? JSON.parse(raw) : raw) as ServerSessionRecord;
+        if (parsed && parsed.sessionId === cleanId) {
+          if (parsed.expiresAt <= Date.now()) {
+            await deleteSessionFromDb(cleanId);
+            return null;
+          }
+          const store = loadStore();
+          if (!store.sessions) store.sessions = {};
+          store.sessions[cleanId] = parsed;
+          persistStore(store);
+          return parsed;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[DB] Failed reading session from KV:', err);
+  }
+
+  const store = loadStore();
+  const local = store.sessions?.[cleanId];
+  if (!local) return null;
+  if (local.expiresAt <= Date.now()) {
+    delete store.sessions[cleanId];
+    persistStore(store);
+    return null;
+  }
+  return local;
+}
+
+export async function deleteSessionFromDb(sessionId: string): Promise<void> {
+  if (!sessionId || typeof sessionId !== 'string') return;
+  const cleanId = sessionId.trim();
+  if (!cleanId) return;
+
+  try {
+    const store = loadStore();
+    if (store.sessions && store.sessions[cleanId]) {
+      delete store.sessions[cleanId];
+      persistStore(store);
+    }
+  } catch {}
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['DEL', `aqari:session:${cleanId}`]);
+    }
+  } catch (err) {
+    console.error('[DB] Failed deleting session from KV:', err);
+  }
+}
+
+export async function deleteServerUserFromDb(rawEmail: string): Promise<boolean> {
+  const email = normalizeEmail(rawEmail);
+  if (!email) return false;
+  const store = loadStore();
+  const existed = Boolean(store.users[email]);
+  if (existed) {
+    delete store.users[email];
+    persistStore(store);
+  }
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['DEL', `aqari:user:${email}`]);
+      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
+      const idx: string[] = Array.isArray(rawIdx)
+        ? rawIdx.map(String)
+        : typeof rawIdx === 'string'
+        ? JSON.parse(rawIdx)
+        : [];
+      const nextIdx = idx.filter((em) => normalizeEmail(em) !== email);
+      await kvCommand(['SET', 'aqari:users_index:v1', JSON.stringify(nextIdx)]);
+    }
+  } catch (err) {
+    console.error('[DB] Failed deleting user from KV:', err);
+  }
+  return existed;
+}
+
+/**
+ * APPEND-ONLY ADMIN AUDIT LOG
+ * No update or delete operations exist on auditLog records.
+ */
+export async function logAdminAction(params: {
+  adminEmail: string;
+  targetEmail: string;
+  action: string;
+  details: string | Record<string, any>;
+  ip: string;
+  timestamp?: string;
+}): Promise<AdminAuditLogEntry> {
+  const entry: AdminAuditLogEntry = {
+    id: `aud_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+    timestamp: params.timestamp || new Date().toISOString(),
+    adminEmail: normalizeEmail(params.adminEmail) || 'unknown',
+    targetEmail: normalizeEmail(params.targetEmail) || 'system',
+    action: String(params.action || 'unknown').trim(),
+    details:
+      typeof params.details === 'string'
+        ? params.details
+        : JSON.stringify(params.details ?? {}),
+    ip: String(params.ip || '127.0.0.1').trim(),
+  };
+
+  // Persist to durable local/disk store (never trimmed to lose entries; append-only)
+  const store = loadStore();
+  if (!Array.isArray(store.auditLog)) {
+    store.auditLog = [];
+  }
+  store.auditLog.unshift(entry);
+  persistStore(store);
+
+  // Persist to primary KV store (append-only LPUSH, never LTRIM/DEL/SET)
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['LPUSH', AUDIT_KV_KEY, JSON.stringify(entry)]);
+    }
+  } catch (err) {
+    console.error('[AUDIT] Failed appending admin audit entry to KV:', err);
+  }
+
+  return entry;
+}
+
+export async function getAuditLogsFromDb(params?: {
+  page?: number;
+  limit?: number;
+}): Promise<{
+  logs: AdminAuditLogEntry[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}> {
+  const page = Math.max(1, Math.floor(Number(params?.page || 1) || 1));
+  const limit = Math.min(100, Math.max(1, Math.floor(Number(params?.limit || 50) || 50)));
+  const start = (page - 1) * limit;
+  const stop = start + limit - 1;
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const totalRaw = await kvCommand(['LLEN', AUDIT_KV_KEY]);
+      const total = Math.max(0, Number(totalRaw || 0));
+      if (total > 0) {
+        const rawItems = await kvCommand(['LRANGE', AUDIT_KV_KEY, start, stop]);
+        const logs: AdminAuditLogEntry[] = (Array.isArray(rawItems) ? rawItems : [])
+          .map((item) => {
+            try {
+              return typeof item === 'string' ? JSON.parse(item) : item;
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean)
+          .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+        return {
+          logs,
+          total,
+          page,
+          limit,
+          totalPages: Math.max(1, Math.ceil(total / limit)),
+        };
+      }
+    }
+  } catch (err) {
+    console.error('[AUDIT] Failed reading audit logs from KV:', err);
+  }
+
+  const store = loadStore();
+  const all = [...(Array.isArray(store.auditLog) ? store.auditLog : [])].sort(
+    (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)
+  );
+  const total = all.length;
+  const logs = all.slice(start, start + limit);
+  return {
+    logs,
+    total,
+    page,
+    limit,
+    totalPages: Math.max(1, Math.ceil(total / limit)),
+  };
 }

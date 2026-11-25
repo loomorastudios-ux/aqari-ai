@@ -2,6 +2,12 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { requireAdmin } from '../lib/auth';
+import {
+  logAdminAction,
+  getAuditLogsFromDb,
+  deleteServerUserFromDb,
+} from '../lib/serverStore';
 
 // =========================================================================
 // 1. INLINED PLANS, SECURITY & ENV HELPERS (Zero external ../lib imports)
@@ -165,74 +171,57 @@ function cleanEnvValue(value?: string | null): string {
   return (value || '').replace(/^["']|["']$/g, '').trim();
 }
 
-function getAdminEmail(): string {
-  return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'loomorastudios@gmail.com').toLowerCase();
-}
-
-function getSessionSecret(): string {
-  return (
-    cleanEnvValue(getEnv('SESSION_SECRET')) ||
-    cleanEnvValue(getEnv('NEXTAUTH_SECRET')) ||
-    cleanEnvValue(getEnv('GOOGLE_CLIENT_SECRET')) ||
-    'aqari-terminal-sovereign-hmac-2026'
-  );
-}
-
-function isAdminEmail(email?: string | null): boolean {
-  const norm = (email || '').trim().toLowerCase();
-  if (!norm) return false;
-  return norm === getAdminEmail() || norm === 'loomorastudios@gmail.com' || norm === 'azzamalshmale@gmail.com';
-}
-
-function parseCookies(cookieHeader?: string | null): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!cookieHeader) return out;
-  for (const part of cookieHeader.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx > 0) {
-      const key = part.slice(0, idx).trim();
-      const val = part.slice(idx + 1).trim();
-      try {
-        out[key] = decodeURIComponent(val);
-      } catch {
-        out[key] = val;
-      }
-    }
+function getClientIp(req: any): string {
+  const xff = req?.headers?.['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.length > 0) {
+    return xff.split(',')[0].trim();
   }
-  return out;
+  return req?.socket?.remoteAddress || '127.0.0.1';
 }
 
-function verifySessionToken(token?: string | null): string | null {
-  if (!token || !token.includes('.')) return null;
-  const [payload, sig] = token.split('.');
-  if (!payload || !sig) return null;
-  try {
-    const expected = crypto
-      .createHmac('sha256', getSessionSecret())
-      .update(payload)
-      .digest('base64url');
-    const a = Buffer.from(sig);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (!decoded?.email || (decoded.exp && Date.now() > decoded.exp)) return null;
-    return String(decoded.email).trim().toLowerCase();
-  } catch {
+function isStrictValidEmail(email: any): boolean {
+  if (typeof email !== 'string') return false;
+  const clean = email.trim().toLowerCase();
+  if (!clean || clean.length > 254) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(clean);
+}
+
+function parseStrictPlanKey(raw: any): PlanKey | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  if (lower === 'free') return 'free';
+  if (lower === 'starter' || lower === 'standard') return 'starter';
+  if (lower === 'pro' || lower === 'professional') return 'pro';
+  if (lower === 'sovereign') return 'enterprise';
+  if (trimmed === 'ENTERPRISE' || lower === 'institutional' || lower === 'enterprise_contract' || lower === 'contract' || lower === 'custom_enterprise') {
+    return 'institutional';
+  }
+  if (lower === 'enterprise') return 'enterprise';
+  return null;
+}
+
+function parseStrictCreditsInt(raw: any, opts?: { allowZero?: boolean }): number | null {
+  if (raw === null || raw === undefined || raw === '' || typeof raw === 'boolean' || typeof raw === 'object') {
     return null;
   }
+  const num = Number(raw);
+  const min = opts?.allowZero ? 0 : 1;
+  if (!Number.isFinite(num) || !Number.isInteger(num) || num < min || num > 10000) {
+    return null;
+  }
+  return num;
 }
 
-function getSessionEmailFromReq(req: any): string | null {
-  const cookies = parseCookies(req?.headers?.cookie || '');
-  const fromCookie = verifySessionToken(cookies[SESSION_COOKIE_NAME]);
-  if (fromCookie) return fromCookie;
-
-  const authHeader = req?.headers?.authorization || '';
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    const bearerEmail = verifySessionToken(authHeader.slice(7).trim());
-    if (bearerEmail) return bearerEmail;
+function parseStrictAmount(raw: any, opts?: { allowZero?: boolean }): number | null {
+  if (raw === null || raw === undefined || raw === '' || typeof raw === 'boolean' || typeof raw === 'object') {
+    return null;
   }
-  return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return null;
+  if (opts?.allowZero ? num < 0 : num <= 0) return null;
+  return num;
 }
 
 // =========================================================================
@@ -240,6 +229,15 @@ function getSessionEmailFromReq(req: any): string | null {
 // =========================================================================
 
 function getStoreFile(): string {
+  const override = process.env.AQARI_STORE_FILE;
+  if (override && override.trim()) {
+    return override.trim();
+  }
+  if (!process.env.VERCEL) {
+    try {
+      return path.join(process.cwd(), '.aqari-data', 'aqari_terminal_store_v1.json');
+    } catch {}
+  }
   try {
     return path.join('/tmp', 'aqari_terminal_store_v1.json');
   } catch {
@@ -270,6 +268,8 @@ function getMemoryStore() {
   if (!memoryStoreCache) {
     memoryStoreCache = {
       users: {},
+      sessions: {},
+      auditLog: [],
       webhook_logs: [],
       failed_webhooks: [],
       email_logs: [],
@@ -385,6 +385,9 @@ function hydrateUserRecord(raw: any, email: string) {
     payment_intent_id: raw?.payment_intent_id ? String(raw.payment_intent_id) : null,
     payment_customer_email: raw?.payment_customer_email ? String(raw.payment_customer_email).toLowerCase() : null,
     status: raw?.status || (analysesLeft <= 0 ? 'exhausted' : 'active'),
+    locked: Boolean(raw?.locked),
+    locked_reason: raw?.locked_reason ?? null,
+    locked_at: typeof raw?.locked_at === 'number' ? raw.locked_at : null,
     has_reported_issue: Boolean(raw?.has_reported_issue),
     issue_reported_at: typeof raw?.issue_reported_at === 'number' ? raw.issue_reported_at : null,
     issue_resolved_at: typeof raw?.issue_resolved_at === 'number' ? raw.issue_resolved_at : null,
@@ -476,6 +479,11 @@ function loadStore() {
         }
         memoryStoreCache = {
           users,
+          sessions:
+            parsed.sessions && typeof parsed.sessions === 'object' && !Array.isArray(parsed.sessions)
+              ? parsed.sessions
+              : {},
+          auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
           webhook_logs: Array.isArray(parsed.webhook_logs) ? parsed.webhook_logs : [],
           failed_webhooks: Array.isArray(parsed.failed_webhooks) ? parsed.failed_webhooks : [],
           email_logs: Array.isArray(parsed.email_logs) ? parsed.email_logs : [],
@@ -497,7 +505,12 @@ function loadStore() {
 function persistStore(store: any): void {
   memoryStoreCache = store;
   try {
-    fs.writeFileSync(getStoreFile(), JSON.stringify(store, null, 2), 'utf8');
+    const filePath = getStoreFile();
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(filePath, JSON.stringify(store, null, 2), 'utf8');
   } catch {}
 }
 
@@ -1646,18 +1659,23 @@ export default async function handler(req: any, res: any) {
       .trim()
       .toLowerCase();
 
-    const sessionEmail = getSessionEmailFromReq(req);
-    if (!isAdminEmail(sessionEmail)) {
-      return res.status(403).json({
-        error: 'Forbidden: Admin access restricted to owner account',
-        code: 'ADMIN_FORBIDDEN',
+    // SERVER-SIDE ADMIN AUTHORIZATION GUARD (runs before EVERY action)
+    const adminAuth = await requireAdmin(req);
+    if (!adminAuth.ok) {
+      return res.status(adminAuth.status).json({
+        error: adminAuth.error,
+        code: adminAuth.code,
       });
     }
+    const sessionEmail = adminAuth.user.email;
+    const clientIp = getClientIp(req);
 
     res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
 
     switch (action) {
-      case 'users': {
+      case 'users':
+      case 'getusers':
+      case 'getallusers': {
         if (req.method !== 'GET') {
           return res.status(405).json({ error: 'Method not allowed' });
         }
@@ -1803,12 +1821,54 @@ export default async function handler(req: any, res: any) {
       }
 
       case 'pricing-update':
-      case 'update_plan': {
+      case 'update_plan':
+      case 'changeprice': {
         if (req.method !== 'POST') {
           return res.status(405).json({ error: 'Method not allowed' });
         }
         const body = req.body || {};
-        const planKey = normalizePlanKey(body.planKey || body.plan);
+        const planKey = parseStrictPlanKey(body.planKey ?? body.plan);
+        if (!planKey) {
+          return res.status(400).json({
+            error: 'Invalid plan. Allowed plans: FREE, STARTER, PRO, SOVEREIGN, ENTERPRISE',
+          });
+        }
+
+        let validatedOriginalPrice: number | undefined;
+        if (body.originalPrice !== undefined) {
+          const parsed = parseStrictAmount(body.originalPrice, { allowZero: true });
+          if (parsed === null) {
+            return res.status(400).json({ error: 'originalPrice must be a valid non-negative number' });
+          }
+          validatedOriginalPrice = parsed;
+        }
+
+        let validatedLaunchPrice: number | undefined;
+        if (body.launchPrice !== undefined || body.price !== undefined) {
+          const parsed = parseStrictAmount(body.launchPrice ?? body.price, { allowZero: true });
+          if (parsed === null) {
+            return res.status(400).json({ error: 'launchPrice must be a valid non-negative number' });
+          }
+          validatedLaunchPrice = parsed;
+        }
+
+        let validatedAnalysesLimit: number | undefined;
+        if (body.analysesLimit !== undefined) {
+          const num = Number(body.analysesLimit);
+          if (
+            body.analysesLimit === '' ||
+            typeof body.analysesLimit === 'boolean' ||
+            !Number.isFinite(num) ||
+            !Number.isInteger(num) ||
+            num < 0 ||
+            num > 1000000
+          ) {
+            return res.status(400).json({ error: 'analysesLimit must be a valid non-negative integer' });
+          }
+          validatedAnalysesLimit = num;
+        }
+
+        const prevPricing = findPlanPricing(getPricingPublicPayload(), planKey);
         const features = Array.isArray(body.features)
           ? body.features.map((s: any) => String(s))
           : typeof body.features === 'string'
@@ -1820,11 +1880,20 @@ export default async function handler(req: any, res: any) {
 
         const result = updateServerPlanPricing({
           planKey,
-          originalPrice: body.originalPrice !== undefined ? Number(body.originalPrice) : undefined,
-          launchPrice: body.launchPrice !== undefined ? Number(body.launchPrice) : undefined,
-          analysesLimit: body.analysesLimit !== undefined ? Number(body.analysesLimit) : undefined,
+          originalPrice: validatedOriginalPrice,
+          launchPrice: validatedLaunchPrice,
+          analysesLimit: validatedAnalysesLimit,
           features,
-          adminEmail: sessionEmail!,
+          adminEmail: sessionEmail,
+        });
+
+        const nextPricing = findPlanPricing(result.pricing, planKey);
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail: `plan:${planKey}`,
+          action: action === 'changeprice' ? 'changePrice' : 'pricing-update',
+          details: `Plan ${planKey}: original $${prevPricing?.originalPrice ?? 0} -> $${nextPricing?.originalPrice ?? 0}, launch $${prevPricing?.launchPrice ?? 0} -> $${nextPricing?.launchPrice ?? 0}, limit ${prevPricing?.analysesLimit ?? 0} -> ${nextPricing?.analysesLimit ?? 0}`,
+          ip: clientIp,
         });
 
         return res.status(200).json({
@@ -1841,12 +1910,29 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ error: 'Method not allowed' });
         }
         const body = req.body || {};
+        let validatedCountdownDays: number | undefined;
+        if (body.countdownDays !== undefined) {
+          const num = parseStrictAmount(body.countdownDays, { allowZero: true });
+          if (num === null || num > 3650) {
+            return res.status(400).json({ error: 'countdownDays must be between 0 and 3650' });
+          }
+          validatedCountdownDays = num;
+        }
+        const prevDiscount = getPricingPublicPayload().launchDiscountActive;
         const result = updateLaunchDiscountSettings({
           launchDiscountActive:
             typeof body.launchDiscountActive === 'boolean' ? body.launchDiscountActive : undefined,
           launchBadgeText: typeof body.launchBadgeText === 'string' ? body.launchBadgeText : undefined,
-          countdownDays: body.countdownDays !== undefined ? Number(body.countdownDays) : undefined,
-          adminEmail: sessionEmail!,
+          countdownDays: validatedCountdownDays,
+          adminEmail: sessionEmail,
+        });
+
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail: 'system:pricing',
+          action: 'toggle-discount',
+          details: `launchDiscountActive: ${prevDiscount} -> ${result.pricing.launchDiscountActive}, badge="${result.pricing.launchBadgeText}"`,
+          ip: clientIp,
         });
 
         return res.status(200).json({
@@ -1859,7 +1945,9 @@ export default async function handler(req: any, res: any) {
 
       case 'user':
       case 'change-plan':
-      case 'refund-decision': {
+      case 'updateplan':
+      case 'refund-decision':
+      case 'refund': {
         const rawEmail = (
           getQueryParam(req, url, 'email') ||
           req.params?.email ||
@@ -1868,8 +1956,13 @@ export default async function handler(req: any, res: any) {
         )
           .toString()
           .trim();
-        const targetEmail = decodeURIComponent(rawEmail).toLowerCase();
-        if (!targetEmail || !targetEmail.includes('@')) {
+        let targetEmail = '';
+        try {
+          targetEmail = decodeURIComponent(rawEmail).toLowerCase();
+        } catch {
+          targetEmail = rawEmail.toLowerCase();
+        }
+        if (!isStrictValidEmail(targetEmail)) {
           return res.status(400).json({ error: 'Valid target user email is required' });
         }
 
@@ -1893,49 +1986,78 @@ export default async function handler(req: any, res: any) {
         if (req.method === 'POST') {
           const body = req.body || {};
           const op = (
-            action === 'change-plan'
+            action === 'change-plan' || action === 'updateplan'
               ? 'change_plan'
-              : action === 'refund-decision'
+              : action === 'refund-decision' || action === 'refund'
               ? 'refund_decision'
-              : body.operation || body.subAction || (body.newPlan ? 'change_plan' : body.status ? 'refund_decision' : '')
+              : body.operation || body.subAction || (body.newPlan || body.plan ? 'change_plan' : body.status ? 'refund_decision' : '')
           )
             .toString()
             .trim();
 
           if (op === 'change_plan') {
-            await getServerUserFromDb(targetEmail);
-            const reason = (body.reason || '').toString().trim();
+            const existingUser = await getServerUserFromDb(targetEmail);
+            const reason = (body.reason || (action === 'updateplan' ? 'Admin plan update' : '')).toString().trim();
             if (!reason) {
               return res.status(400).json({
                 error: 'Mandatory audit reason is required to modify a user plan',
               });
             }
-            const newPlan = normalizePlanKey(body.newPlan);
+            const parsedPlan = parseStrictPlanKey(body.newPlan ?? body.plan);
+            if (!parsedPlan) {
+              return res.status(400).json({
+                error: 'Invalid plan. Allowed plans: FREE, STARTER, PRO, SOVEREIGN, ENTERPRISE',
+              });
+            }
+            const prevPlan = existingUser.plan;
             const updated = adminChangeUserPlan({
               email: targetEmail,
-              newPlan,
+              newPlan: parsedPlan,
               reason,
-              adminEmail: sessionEmail!,
+              adminEmail: sessionEmail,
             });
             await saveServerUserToDb(updated);
+            await logAdminAction({
+              adminEmail: sessionEmail,
+              targetEmail,
+              action: 'updatePlan',
+              details: `plan: ${prevPlan} -> ${updated.plan} (reason: ${reason})`,
+              ip: clientIp,
+            });
             return res.status(200).json({ success: true, user: updated });
           }
 
           if (op === 'update_enterprise_limits') {
-            await getServerUserFromDb(targetEmail);
+            const existingUser = await getServerUserFromDb(targetEmail);
             const reason = (body.reason || '').toString().trim();
             if (!reason) {
               return res.status(400).json({
                 error: 'Mandatory audit reason is required to update Enterprise limits or extra credits',
               });
             }
+            if (body.extra_credits !== undefined) {
+              const validCredits = parseStrictCreditsInt(body.extra_credits, { allowZero: true });
+              if (validCredits === null) {
+                return res.status(400).json({
+                  error: 'extra_credits must be an integer between 0 and 10000',
+                });
+              }
+            }
+            const prevCredits = Math.max(0, Number(existingUser.extra_credits || 0));
             const updated = adminUpdateEnterpriseLimits({
               email: targetEmail,
               body,
               reason,
-              adminEmail: sessionEmail!,
+              adminEmail: sessionEmail,
             });
             await saveServerUserToDb(updated);
+            await logAdminAction({
+              adminEmail: sessionEmail,
+              targetEmail,
+              action: 'updateEnterpriseLimits',
+              details: `extra_credits: ${prevCredits} -> ${updated.extra_credits ?? 0}, analyses_limit=${updated.custom_analyses_limit ?? 'unset'} (reason: ${reason})`,
+              ip: clientIp,
+            });
             const license = computeServerLicenseStatus(updated);
             return res.status(200).json({
               success: true,
@@ -1950,16 +2072,38 @@ export default async function handler(req: any, res: any) {
           }
 
           if (op === 'refund_decision') {
-            await getServerUserFromDb(targetEmail);
-            const status =
-              body.status === 'approved' ? 'approved' : body.status === 'pending' ? 'pending' : 'denied';
+            const existingUser = await getServerUserFromDb(targetEmail);
+            const rawStatus = body.status !== undefined ? String(body.status).trim().toLowerCase() : (action === 'refund' ? 'approved' : 'denied');
+            if (!['pending', 'approved', 'denied'].includes(rawStatus)) {
+              return res.status(400).json({ error: 'Invalid refund status. Allowed: pending, approved, denied' });
+            }
+            if (body.amount !== undefined || body.amountUSD !== undefined) {
+              const amt = parseStrictAmount(body.amount ?? body.amountUSD);
+              if (amt === null) {
+                return res.status(400).json({ error: 'Refund amount must be a positive number > 0' });
+              }
+            }
+            const status = rawStatus as 'pending' | 'approved' | 'denied';
+            const prevStatus = existingUser.refund_status || 'none';
+            const prevPlan = existingUser.plan;
             const updated = recordRefundDecision({
               email: targetEmail,
               status,
-              notes: (body.notes || '').toString().trim(),
-              actorEmail: sessionEmail!,
+              notes: (body.notes || body.reason || '').toString().trim(),
+              actorEmail: sessionEmail,
             });
+            if (action === 'refund' && status === 'approved') {
+              updated.plan = 'free';
+              updated.license_end = Date.now();
+            }
             await saveServerUserToDb(updated);
+            await logAdminAction({
+              adminEmail: sessionEmail,
+              targetEmail,
+              action: 'refund',
+              details: `refund_status: ${prevStatus} -> ${status}, plan: ${prevPlan} -> ${updated.plan}`,
+              ip: clientIp,
+            });
             return res.status(200).json({ success: true, user: updated });
           }
 
@@ -1967,6 +2111,292 @@ export default async function handler(req: any, res: any) {
         }
 
         return res.status(405).json({ error: 'Method not allowed' });
+      }
+
+      case 'extendplan': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const body = req.body || {};
+        const targetEmail = String(body.email || getQueryParam(req, url, 'email') || '').trim().toLowerCase();
+        if (!isStrictValidEmail(targetEmail)) {
+          return res.status(400).json({ error: 'Valid target user email is required' });
+        }
+        const rawDays = Number(body.days);
+        if (!Number.isFinite(rawDays) || !Number.isInteger(rawDays) || rawDays < 1 || rawDays > 3650) {
+          return res.status(400).json({ error: 'days must be an integer between 1 and 3650' });
+        }
+        const existingUser = await getServerUserFromDb(targetEmail);
+        const now = Date.now();
+        const prevEnd = existingUser.license_end || now;
+        const baseEnd = Math.max(now, prevEnd);
+        const nextEnd = baseEnd + rawDays * 24 * 60 * 60 * 1000;
+        const timelineEntry = {
+          id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: new Date(now).toISOString(),
+          type: 'admin_plan_change',
+          message: `Admin extended license by ${rawDays} days (${new Date(prevEnd).toISOString()} -> ${new Date(nextEnd).toISOString()}) - By: ${sessionEmail}`,
+          actor: sessionEmail,
+        };
+        const updated = updateServerUser(targetEmail, {
+          license_end: nextEnd,
+          status: existingUser.locked ? 'locked' : 'active',
+          day29_email_sent: false,
+          expired_email_sent: false,
+          timeline: [timelineEntry, ...(existingUser.timeline || [])].slice(0, 200),
+        });
+        await saveServerUserToDb(updated);
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail,
+          action: 'extendPlan',
+          details: `license_end: ${new Date(prevEnd).toISOString()} -> ${new Date(nextEnd).toISOString()} (+${rawDays} days)`,
+          ip: clientIp,
+        });
+        return res.status(200).json({ success: true, user: updated });
+      }
+
+      case 'addcredits':
+      case 'removecredits': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const body = req.body || {};
+        const targetEmail = String(body.email || getQueryParam(req, url, 'email') || '').trim().toLowerCase();
+        if (!isStrictValidEmail(targetEmail)) {
+          return res.status(400).json({ error: 'Valid target user email is required' });
+        }
+        const delta = parseStrictCreditsInt(body.credits ?? body.amount, { allowZero: false });
+        if (delta === null) {
+          return res.status(400).json({ error: 'credits must be an integer between 1 and 10000' });
+        }
+        const existingUser = await getServerUserFromDb(targetEmail);
+        const prevCredits = Math.max(0, Number(existingUser.extra_credits || 0));
+        const nextCredits = action === 'addcredits' ? prevCredits + delta : Math.max(0, prevCredits - delta);
+        const planKey = normalizePlanKey(existingUser.plan);
+        const baseLimit =
+          planKey === 'institutional'
+            ? Math.max(0, Number(existingUser.custom_analyses_limit ?? 0))
+            : PLANS[planKey].analysesLimit;
+        const used = Math.max(0, Number(existingUser.analyses_used || 0));
+        const nextTotal = baseLimit + nextCredits;
+        const nextLeft = Math.max(0, nextTotal - used);
+        const now = Date.now();
+        const timelineEntry = {
+          id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: new Date(now).toISOString(),
+          type: 'admin_enterprise_override',
+          message: `Admin ${action === 'addcredits' ? 'added' : 'removed'} ${delta} extra credits (${prevCredits} -> ${nextCredits}) - By: ${sessionEmail}`,
+          actor: sessionEmail,
+        };
+        const updated = updateServerUser(targetEmail, {
+          extra_credits: nextCredits,
+          analyses_total: nextTotal,
+          analyses_left: nextLeft,
+          timeline: [timelineEntry, ...(existingUser.timeline || [])].slice(0, 200),
+        });
+        await saveServerUserToDb(updated);
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail,
+          action: action === 'addcredits' ? 'addCredits' : 'removeCredits',
+          details: `extra_credits: ${prevCredits} -> ${nextCredits} (delta=${action === 'addcredits' ? '+' : '-'}${delta})`,
+          ip: clientIp,
+        });
+        return res.status(200).json({ success: true, user: updated });
+      }
+
+      case 'lockuser':
+      case 'unlockuser': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const body = req.body || {};
+        const targetEmail = String(body.email || getQueryParam(req, url, 'email') || '').trim().toLowerCase();
+        if (!isStrictValidEmail(targetEmail)) {
+          return res.status(400).json({ error: 'Valid target user email is required' });
+        }
+        const locking = action === 'lockuser';
+        if (locking && targetEmail === sessionEmail) {
+          return res.status(400).json({ error: 'Admin cannot lock their own active admin account' });
+        }
+        const existingUser = await getServerUserFromDb(targetEmail);
+        const prevLocked = Boolean(existingUser.locked);
+        const now = Date.now();
+        const reason = String(body.reason || (locking ? 'Locked by admin' : 'Unlocked by admin')).trim();
+        const timelineEntry = {
+          id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: new Date(now).toISOString(),
+          type: 'admin_plan_change',
+          message: `Admin ${locking ? 'LOCKED' : 'UNLOCKED'} account - Reason: ${reason} - By: ${sessionEmail}`,
+          actor: sessionEmail,
+        };
+        const updated = updateServerUser(targetEmail, {
+          locked: locking,
+          locked_reason: locking ? reason : null,
+          locked_at: locking ? now : null,
+          status: locking ? 'locked' : 'active',
+          timeline: [timelineEntry, ...(existingUser.timeline || [])].slice(0, 200),
+        });
+        await saveServerUserToDb(updated);
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail,
+          action: locking ? 'lockUser' : 'unlockUser',
+          details: `locked: ${prevLocked} -> ${locking} (reason: ${reason})`,
+          ip: clientIp,
+        });
+        return res.status(200).json({ success: true, user: updated });
+      }
+
+      case 'deleteuser': {
+        if (req.method !== 'POST' && req.method !== 'DELETE') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const body = req.body || {};
+        const targetEmail = String(body.email || getQueryParam(req, url, 'email') || '').trim().toLowerCase();
+        if (!isStrictValidEmail(targetEmail)) {
+          return res.status(400).json({ error: 'Valid target user email is required' });
+        }
+        if (targetEmail === sessionEmail) {
+          return res.status(400).json({ error: 'Admin cannot delete their own account' });
+        }
+        const existingUser = await getServerUserFromDb(targetEmail);
+        const prevPlan = existingUser.plan;
+        const localStore = loadStore();
+        const existedLocally = Boolean(localStore.users?.[targetEmail]);
+        if (existedLocally) {
+          delete localStore.users[targetEmail];
+          persistStore(localStore);
+        }
+        const deletedDb = await deleteServerUserFromDb(targetEmail);
+        const deleted = existedLocally || deletedDb;
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail,
+          action: 'deleteUser',
+          details: `user deleted (previous plan: ${prevPlan}, existedInDb=${deleted})`,
+          ip: clientIp,
+        });
+        return res.status(200).json({ success: true, email: targetEmail, deleted });
+      }
+
+      case 'verifyorder': {
+        if (req.method !== 'POST') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const body = req.body || {};
+        const targetEmail = String(body.email || '').trim().toLowerCase();
+        const orderId = String(body.orderId || body.order_id || '').trim();
+        const planKey = parseStrictPlanKey(body.plan ?? body.newPlan);
+        const amountUSD = parseStrictAmount(body.amountUSD ?? body.amount);
+        if (!isStrictValidEmail(targetEmail)) {
+          return res.status(400).json({ error: 'Valid target user email is required' });
+        }
+        if (!orderId) {
+          return res.status(400).json({ error: 'orderId is required' });
+        }
+        if (!planKey) {
+          return res.status(400).json({ error: 'Invalid plan. Allowed plans: FREE, STARTER, PRO, SOVEREIGN, ENTERPRISE' });
+        }
+        if (amountUSD === null) {
+          return res.status(400).json({ error: 'amountUSD must be a valid positive number > 0' });
+        }
+
+        const existingUser = await getServerUserFromDb(targetEmail);
+        const prevPlan = existingUser.plan;
+        const now = Date.now();
+        const iso = new Date(now).toISOString();
+        const planCfg = PLANS[planKey];
+        const paymentEntry = {
+          id: `pay_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: iso,
+          order_id: orderId,
+          plan: planKey,
+          amount: amountUSD,
+          currency: 'USD',
+          test_mode: false,
+          refund_policy_accepted_at: iso,
+        };
+        const timelineEntry = {
+          id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: iso,
+          type: 'purchase',
+          message: `Admin verified Order #${orderId} (${planCfg.displayName} $${amountUSD}) - By: ${sessionEmail}`,
+          actor: sessionEmail,
+        };
+        const updated = updateServerUser(targetEmail, {
+          plan: planKey,
+          license_start: now,
+          license_end: now + THIRTY_DAYS_MS,
+          analyses_used: 0,
+          analyses_total: planCfg.analysesLimit + Math.max(0, Number(existingUser.extra_credits || 0)),
+          analyses_left: planCfg.analysesLimit + Math.max(0, Number(existingUser.extra_credits || 0)),
+          total_paid_usd: Number(existingUser.total_paid_usd || 0) + amountUSD,
+          payments: [paymentEntry, ...(existingUser.payments || [])],
+          timeline: [timelineEntry, ...(existingUser.timeline || [])].slice(0, 200),
+        });
+        await saveServerUserToDb(updated);
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail,
+          action: 'verifyOrder',
+          details: `order=${orderId}, plan: ${prevPlan} -> ${planKey}, amount=$${amountUSD}`,
+          ip: clientIp,
+        });
+        return res.status(200).json({ success: true, user: updated });
+      }
+
+      case 'getpayments': {
+        if (req.method !== 'GET') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const filterEmail = getQueryParam(req, url, 'email').trim().toLowerCase();
+        const allUsers = await getAllServerUsersFromDb();
+        const payments = allUsers
+          .filter((u: any) => !filterEmail || u.email.toLowerCase() === filterEmail)
+          .flatMap((u: any) =>
+            (Array.isArray(u.payments) ? u.payments : []).map((p: any) => ({
+              ...p,
+              userEmail: u.email,
+              userName: u.name,
+            }))
+          )
+          .sort((a: any, b: any) => Date.parse(b.timestamp || '') - Date.parse(a.timestamp || ''));
+        return res.status(200).json({
+          success: true,
+          total: payments.length,
+          payments,
+        });
+      }
+
+      case 'auditlog':
+      case 'getauditlog': {
+        if (req.method !== 'GET') {
+          return res.status(405).json({
+            error: 'Audit logs are strictly append-only and read-only (GET only)',
+          });
+        }
+        const pageParam = getQueryParam(req, url, 'page');
+        const limitParam = getQueryParam(req, url, 'limit');
+        const page = pageParam ? Number(pageParam) : 1;
+        const limit = limitParam ? Number(limitParam) : 50;
+        if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+          return res.status(400).json({ error: 'Invalid pagination params (page >= 1, limit 1..100)' });
+        }
+        const auditResult = await getAuditLogsFromDb({ page, limit });
+        return res.status(200).json({
+          success: true,
+          ...auditResult,
+        });
+      }
+
+      case 'deleteauditlog':
+      case 'editauditlog':
+      case 'updateauditlog': {
+        return res.status(403).json({
+          error: 'Forbidden: Audit logs are strictly append-only and cannot be modified or deleted',
+        });
       }
 
       case 'export': {
@@ -2115,6 +2545,14 @@ export default async function handler(req: any, res: any) {
           type: 'test_day29',
         });
 
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail: email,
+          action: 'test-email-day29',
+          details: `plan=${planKey}, deliveryStatus=${delivery.status}`,
+          ip: clientIp,
+        });
+
         return res.status(200).json({
           success: true,
           message: `Day-29 renewal email processed for ${email}`,
@@ -2188,6 +2626,14 @@ export default async function handler(req: any, res: any) {
         thread.messages = [...(thread.messages || []), msg].slice(-200);
         await saveAnalystThreadToDb(thread);
 
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail,
+          action: 'analyst-reply',
+          details: `Replied to analyst thread (${text.length} chars)`,
+          ip: clientIp,
+        });
+
         const delivery = await dispatchEmail({
           to: targetEmail,
           subject: 'AQARI Analyst Desk: Analyst replied to your question',
@@ -2209,12 +2655,20 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ error: 'Method not allowed' });
         }
         const targetEmail = String(req.body?.email || '').trim().toLowerCase();
-        if (!targetEmail) return res.status(400).json({ error: 'Client email required' });
+        if (!isStrictValidEmail(targetEmail)) return res.status(400).json({ error: 'Valid client email required' });
         const thread = await getAnalystThreadFromDb(targetEmail);
+        const prevStatus = thread.status || 'Open';
         thread.status = 'Closed';
         thread.unreadForAdmin = 0;
         thread.updatedAt = Date.now();
         await saveAnalystThreadToDb(thread);
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail,
+          action: 'analyst-close',
+          details: `thread status: ${prevStatus} -> Closed`,
+          ip: clientIp,
+        });
         return res.status(200).json({ success: true, thread });
       }
 
@@ -2331,6 +2785,13 @@ export default async function handler(req: any, res: any) {
         };
         all[idx] = updatedRequest;
         await saveWhiteGloveRequestsToDb(all);
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail: reqItem.email || requestId,
+          action: 'whiteglove-deliver',
+          details: `request=${requestId}, status: ${reqItem.status || 'Pending'} -> Done (${normalizedProps.length} properties)`,
+          ip: clientIp,
+        });
 
         const deliveryEmail = await dispatchEmail({
           to: reqItem.email,
@@ -2418,6 +2879,13 @@ export default async function handler(req: any, res: any) {
           timeline: [timelineEntry, ...(targetUser.timeline || [])].slice(0, 200),
         });
         await saveServerUserToDb(updated);
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail,
+          action: 'resolve-issue',
+          details: `issue_status: ${targetUser.issue_status || 'open'} -> resolved`,
+          ip: clientIp,
+        });
 
         await dispatchEmail({
           to: targetEmail,
@@ -2452,13 +2920,27 @@ export default async function handler(req: any, res: any) {
           error: `Unknown admin action '${action}'`,
           supportedActions: [
             'users',
+            'getUsers',
+            'getAllUsers',
             'stats',
             'pricing',
             'pricing-update',
+            'changePrice',
             'toggle-discount',
             'user',
             'change-plan',
+            'updatePlan',
+            'extendPlan',
+            'addCredits',
+            'removeCredits',
+            'lockUser',
+            'unlockUser',
+            'deleteUser',
+            'verifyOrder',
             'refund-decision',
+            'refund',
+            'getPayments',
+            'auditLog',
             'export',
             'test-email-day29',
             'analyst-inbox',
@@ -2476,6 +2958,6 @@ export default async function handler(req: any, res: any) {
     }
   } catch (err: any) {
     console.error(`/api/admin?action=${action} error:`, err);
-    return res.status(200).json({ success: false, error: err?.message || 'Admin API error' });
+    return res.status(500).json({ success: false, error: err?.message || 'Admin API error' });
   }
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { RemoteConfig } from '../types';
 import { CONFIG_URL } from '../constants';
 import { getPaddleEnvironment } from '../utils/paddleClient';
@@ -35,8 +35,8 @@ export const AdminModal: React.FC<AdminModalProps> = ({
   onTestUnlock,
 }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [passwordInput, setPasswordInput] = useState('');
-  const [authError, setAuthError] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Form State
   const [starterPrice, setStarterPrice] = useState(config.prices.starter);
@@ -57,16 +57,45 @@ export const AdminModal: React.FC<AdminModalProps> = ({
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [copiedSuccess, setCopiedSuccess] = useState(false);
 
+  const verifyServerAdminSession = async () => {
+    setCheckingAuth(true);
+    setAuthError(null);
+    try {
+      const res = await fetch('/api/admin?action=stats', { credentials: 'include' });
+      if (res.ok) {
+        setIsAuthenticated(true);
+        setAuthError(null);
+      } else {
+        setIsAuthenticated(false);
+        const data = await res.json().catch(() => ({}));
+        setAuthError(
+          res.status === 401
+            ? 'Access denied — Please sign in with your Google Admin account.'
+            : data?.error || 'Access denied — Admin authorization required.'
+        );
+      }
+    } catch {
+      setIsAuthenticated(false);
+      setAuthError('Unable to verify server admin session.');
+    } finally {
+      setCheckingAuth(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) {
+      setIsAuthenticated(false);
+      setAuthError(null);
+      return;
+    }
+    verifyServerAdminSession();
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
-  const handlePasswordSubmit = (e: React.FormEvent) => {
+  const handleVerifySubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (passwordInput === 'aqari2026') {
-      setIsAuthenticated(true);
-      setAuthError(false);
-    } else {
-      setAuthError(true);
-    }
+    verifyServerAdminSession();
   };
 
   const handleSave = () => {
@@ -151,34 +180,23 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                 Terminal Admin Console
               </h3>
               <p className="text-xs text-zinc-400 mt-1 font-mono">
-                Enter master administrative passcode to configure live pricing and remote broadcasts.
+                Server-verified Google Admin session required to access terminal administrative controls.
               </p>
             </div>
 
-            <form onSubmit={handlePasswordSubmit} className="max-w-xs mx-auto space-y-3">
-              <input
-                type="password"
-                required
-                value={passwordInput}
-                onChange={(e) => {
-                  setPasswordInput(e.target.value);
-                  setAuthError(false);
-                }}
-                placeholder="Master Passcode (aqari2026)"
-                className="w-full px-4 py-2.5 rounded-xl bg-white/[0.04] border border-white/10 focus:border-[#D4AF37] text-white text-xs font-mono text-center tracking-widest outline-none"
-              />
-
+            <form onSubmit={handleVerifySubmit} className="max-w-xs mx-auto space-y-3">
               {authError && (
                 <div className="text-xs text-rose-400 font-mono">
-                  Incorrect passcode. Hint: aqari2026
+                  {authError}
                 </div>
               )}
 
               <button
                 type="submit"
-                className="w-full py-2.5 px-4 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono tracking-wider transition cursor-pointer"
+                disabled={checkingAuth}
+                className="w-full py-2.5 px-4 rounded-xl bg-[#D4AF37] hover:brightness-110 text-black font-bold text-xs font-mono tracking-wider transition cursor-pointer disabled:opacity-60"
               >
-                Authenticate & Unlock
+                {checkingAuth ? 'Verifying Session...' : 'Verify Admin Session'}
               </button>
             </form>
           </div>
