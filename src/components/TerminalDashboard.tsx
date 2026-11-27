@@ -845,25 +845,38 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       sellingCostsPct?: number;
       noExitValue?: boolean;
     };
-    capRate: number;
-    cashOnCash: number;
+    capRate: number | null;
+    capRateReason?: string | null;
+    grossYieldPct?: number | null;
+    netYieldPct?: number | null;
+    cashOnCash: number | null;
+    cashOnCashReason?: string | null;
     irr5Yr: number | null;
     irrStatus?: 'ok' | 'negative_cashflows' | 'no_exit_value' | 'insufficient_data';
     irrError?: string | null;
     dscr: string | null;
     dscrNumeric?: number | null;
+    dscrReason?: string | null;
+    ltvPct?: number | null;
+    equityMultiple?: number | null;
+    roiPct?: number | null;
+    appreciationUSD?: number | null;
     monthlyCashflowUSD: number | null;
+    monthlyCashflowReason?: string | null;
+    annualCashflowUSD?: number | null;
     monthlyMortgageUSD: number | null;
-    netOperatingIncomeUSD: number;
-    annualGrossRentUSD: number;
-    annualOPEXUSD: number;
-    annualDebtServiceUSD: number;
+    netOperatingIncomeUSD: number | null;
+    noiReason?: string | null;
+    annualGrossRentUSD: number | null;
+    annualOPEXUSD: number | null;
+    annualDebtServiceUSD: number | null;
     downPaymentUSD: number;
     loanAmountUSD?: number;
     closingCostsUSD?: number;
     totalEquityInvestedUSD?: number;
-    exitGrossValueUSD?: number;
-    netExitProceedsUSD?: number;
+    exitGrossValueUSD?: number | null;
+    netExitProceedsUSD?: number | null;
+    assumptions?: string[];
     noiBreakdown?: {
       grossRentAnnualUSD: number;
       vacancyLossUSD: number;
@@ -876,7 +889,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       hoaUSD: number;
       totalExpensesUSD: number;
       noiUSD: number;
-    };
+    } | null;
     yearByYear?: Array<{
       year: number;
       grossRentUSD: number;
@@ -894,9 +907,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     sensitivity: Array<{
       deltaPct: number;
       rentUSD: number;
-      capRate: number;
-      cashOnCash: number;
-      monthlyCashflowUSD: number;
+      capRate: number | null;
+      cashOnCash: number | null;
+      monthlyCashflowUSD: number | null;
     }> | null;
     monteCarlo: {
       cycles: number;
@@ -906,28 +919,29 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       positiveCashflowPct: number;
       probNegativeCashflowPct?: number;
       probValueDeclinePct?: number;
-      meanDscr: number;
-      minDscr: number;
-      maxDscr: number;
-      dscrP10: number;
-      dscrP50: number;
-      dscrP90: number;
+      meanDscr: number | null;
+      minDscr: number | null;
+      maxDscr: number | null;
+      dscrP10: number | null;
+      dscrP50: number | null;
+      dscrP90: number | null;
       irrP10?: number | null;
       irrP50?: number | null;
       irrP90?: number | null;
       irrMean?: number | null;
       irrCalculablePct?: number;
-      rateShockCoC: number;
-      vacancySurgeNetYield: number;
+      rateShockCoC: number | null;
+      vacancySurgeNetYield: number | null;
       combinedStress?: {
         label: string;
         shockedRatePct: number;
         rentDropPct: number;
         vacancyPct: number;
-        noiUSD: number;
-        annualCashflowUSD: number;
-        cocPct: number;
-        dscr: string;
+        noiUSD: number | null;
+        annualCashflowUSD: number | null;
+        cocPct: number | null;
+        dscr: string | null;
+        dscrReason?: string | null;
         irr5Yr: number | null;
         irrError: string | null;
       };
@@ -954,28 +968,29 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     positiveCashflowPct: number;
     probNegativeCashflowPct?: number;
     probValueDeclinePct?: number;
-    meanDscr: number;
-    minDscr: number;
-    maxDscr: number;
-    dscrP10: number;
-    dscrP50: number;
-    dscrP90: number;
+    meanDscr: number | null;
+    minDscr: number | null;
+    maxDscr: number | null;
+    dscrP10: number | null;
+    dscrP50: number | null;
+    dscrP90: number | null;
     irrP10?: number | null;
     irrP50?: number | null;
     irrP90?: number | null;
     irrMean?: number | null;
     irrCalculablePct?: number;
-    rateShockCoC: number;
-    vacancySurgeNetYield: number;
+    rateShockCoC: number | null;
+    vacancySurgeNetYield: number | null;
     combinedStress?: {
       label: string;
       shockedRatePct: number;
       rentDropPct: number;
       vacancyPct: number;
-      noiUSD: number;
-      annualCashflowUSD: number;
-      cocPct: number;
-      dscr: string;
+      noiUSD: number | null;
+      annualCashflowUSD: number | null;
+      cocPct: number | null;
+      dscr: string | null;
+      dscrReason?: string | null;
       irr5Yr: number | null;
       irrError: string | null;
     };
@@ -2815,8 +2830,8 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       `Est. Monthly Rent: ${formatPrice(deal.rent, 'USD')}/mo`,
       `Unlevered Cap Rate: ${deal.capRate}%`,
       `Cash-on-Cash Return: ${deal.cashOnCash}%`,
-      `5-Year Equity IRR: ${deal.irr}%`,
-      `Debt Service Coverage Ratio (DSCR): ${deal.dscr}x`,
+      `5-Year Equity IRR: ${deal.irr !== null && deal.irr !== undefined ? `${deal.irr}%` : 'Not available'}`,
+      `Debt Service Coverage Ratio (DSCR): ${deal.dscr ? `${deal.dscr}x` : 'Not available: No debt'}`,
       `Est. Monthly Cashflow: ${formatPrice(deal.monthlyCashflow, 'USD')}`,
     ];
     try {
@@ -2961,7 +2976,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
           attachedAnalysisId: attachedObj?.id || undefined,
           attachedAnalysisTitle: attachedObj ? `${attachedObj.property} (${attachedObj.city})` : undefined,
           attachedAnalysisSummary: attachedObj
-            ? `Price: $${attachedObj.price.toLocaleString('en-US')} | Cap: ${attachedObj.capRate}% | IRR: ${attachedObj.irr}% | DSCR: ${attachedObj.dscr}x`
+            ? `Price: $${attachedObj.price.toLocaleString('en-US')} | Cap: ${attachedObj.capRate}% | IRR: ${attachedObj.irr !== null ? `${attachedObj.irr}%` : 'N/A'} | DSCR: ${attachedObj.dscr ? `${attachedObj.dscr}x` : 'No debt'}`
             : undefined,
           replyByDate: analystReplyBy.trim() || undefined,
         }),
@@ -3471,13 +3486,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       city: runResult.inputs.city || city,
       price: runResult.inputs.priceUSD,
       rent: runResult.inputs.rentUSD,
-      noi: runResult.netOperatingIncomeUSD,
-      capRate: runResult.capRate,
-      cashOnCash: runResult.cashOnCash,
+      noi: runResult.netOperatingIncomeUSD ?? 0,
+      capRate: runResult.capRate ?? 0,
+      cashOnCash: runResult.cashOnCash ?? 0,
       irr: runResult.irr5Yr,
       dscr: runResult.dscr ?? null,
       monthlyCashflow: runResult.monthlyCashflowUSD ?? 0,
-      riskScore: runResult.capRate > 7 ? 'AAA' : 'AA',
+      riskScore: runResult.capRate !== null && runResult.capRate > 7 ? 'AAA' : 'AA',
       date: Date.now(),
       imageUrl: propertyImageUrl,
       notes: `${runResult.inputs.downPaymentPct}% down, ${runResult.inputs.interestRatePct}% rate, ${runResult.inputs.operatingExpensePct}% OPEX`,
@@ -3692,13 +3707,13 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       city: report.inputs.city || 'Muscat',
       price: report.inputs.priceUSD,
       rent: report.inputs.rentUSD,
-      noi: report.results.netOperatingIncomeUSD,
-      capRate: report.results.capRate,
-      cashOnCash: report.results.cashOnCash,
+      noi: report.results.netOperatingIncomeUSD ?? 0,
+      capRate: report.results.capRate ?? 0,
+      cashOnCash: report.results.cashOnCash ?? 0,
       irr: report.results.irr5Yr,
       dscr: report.results.dscr ?? null,
       monthlyCashflow: report.results.monthlyCashflowUSD ?? 0,
-      riskScore: report.results.capRate > 7 ? 'AAA' : 'AA',
+      riskScore: report.results.capRate !== null && report.results.capRate > 7 ? 'AAA' : 'AA',
       date: Date.now(),
       imageUrl: PROPERTY_LISTINGS[0].imageUrl,
       notes: `Source File: ${report.fileName} | ${report.inputs.downPaymentPct}% down, ${report.inputs.interestRatePct}% rate`,
@@ -3762,14 +3777,19 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       valuationUSD: r.inputs.priceUSD,
       monthlyRentUSD: r.inputs.rentUSD,
       noiUSD: r.netOperatingIncomeUSD,
+      noiReason: r.noiReason ?? undefined,
       capRate: r.capRate,
+      capRateReason: r.capRateReason ?? undefined,
       cashOnCash: r.cashOnCash,
+      cashOnCashReason: r.cashOnCashReason ?? undefined,
       irr5Yr: r.irr5Yr,
       irrError: r.irrError,
       dscr: r.dscr ?? null,
+      dscrReason: r.dscrReason ?? undefined,
       monthlyCashflowUSD: r.monthlyCashflowUSD,
+      monthlyCashflowReason: r.monthlyCashflowReason ?? undefined,
       riskScore:
-        r.capRate >= 7.5 && (r.dscrNumeric ?? 0) >= 1.35
+        r.capRate !== null && r.capRate >= 7.5 && (r.dscrNumeric ?? 0) >= 1.35
           ? 'AAA Institutional Grade'
           : 'Moderate Sensitivity',
       downPaymentPct: r.inputs.downPaymentPct,
@@ -3777,7 +3797,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
       closingCostsPct: r.inputs.closingCostsPct ?? closingCostsPct,
       loanAmountUSD: r.loanAmountUSD ?? Math.max(0, r.inputs.priceUSD - r.downPaymentUSD),
       totalEquityInvestedUSD: r.totalEquityInvestedUSD ?? r.downPaymentUSD,
-      noiBreakdown: r.noiBreakdown,
+      noiBreakdown: r.noiBreakdown ?? undefined,
       yearByYear: r.yearByYear,
       marketBenchmarks: {
         avgGrossYield: cityBench?.avgGrossYield ?? selectedCityEntry?.avgCapRate,
@@ -3788,6 +3808,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
         updatedDate: cityBench?.updatedDate || '2026-04-01',
       },
       monteCarlo: mc || null,
+      assumptions: r.assumptions,
       warnings: r.warnings || [],
       notes: `${r.inputs.downPaymentPct}% Equity Down | ${r.inputs.interestRatePct}% Interest Rate | ${r.inputs.operatingExpensePct}% OPEX`,
       isWatermarked: license.planKey === 'free',
@@ -5705,10 +5726,20 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <TooltipTrigger asChild>
                             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] cursor-help">
                               <div className="text-[10px] font-mono uppercase text-zinc-400">Unlevered Cap Rate</div>
-                              <div className="text-2xl font-black font-mono text-[#D4AF37] mt-1">
-                                <CountUpNumber value={Number(runResult.capRate) || 0} decimals={2} suffix="%" />
+                              <div className={`font-black font-mono mt-1 ${runResult.capRate !== null ? 'text-2xl text-[#D4AF37]' : 'text-sm text-amber-300'}`}>
+                                {runResult.capRate !== null ? (
+                                  <CountUpNumber value={runResult.capRate} decimals={2} suffix="%" />
+                                ) : (
+                                  <span>Not available</span>
+                                )}
                               </div>
-                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">NOI: {formatPrice(runResult.netOperatingIncomeUSD, currentCurrency)}/yr</div>
+                              <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
+                                {runResult.capRate === null
+                                  ? `Not available: ${runResult.capRateReason || 'Invalid inputs'}`
+                                  : runResult.netOperatingIncomeUSD !== null
+                                  ? `NOI: ${formatPrice(runResult.netOperatingIncomeUSD, currentCurrency)}/yr`
+                                  : `NOI: Not available (${runResult.noiReason || 'Invalid inputs'})`}
+                              </div>
                             </div>
                           </TooltipTrigger>
                           <TooltipContent>Net Operating Income divided by Purchase Price</TooltipContent>
@@ -5718,11 +5749,25 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <TooltipTrigger asChild>
                             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] cursor-help">
                               <div className="text-[10px] font-mono uppercase text-zinc-400">Cash-on-Cash Return</div>
-                              <div className={`text-2xl font-black font-mono mt-1 ${runResult.cashOnCash >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                <CountUpNumber value={Number(runResult.cashOnCash) || 0} decimals={2} suffix="%" />
+                              <div
+                                className={`font-black font-mono mt-1 ${
+                                  runResult.cashOnCash === null
+                                    ? 'text-sm text-amber-300'
+                                    : runResult.cashOnCash >= 0
+                                    ? 'text-2xl text-emerald-400'
+                                    : 'text-2xl text-rose-400'
+                                }`}
+                              >
+                                {runResult.cashOnCash !== null ? (
+                                  <CountUpNumber value={runResult.cashOnCash} decimals={2} suffix="%" />
+                                ) : (
+                                  <span>Not available</span>
+                                )}
                               </div>
                               <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
-                                Equity: {formatPrice(runResult.totalEquityInvestedUSD ?? runResult.downPaymentUSD, currentCurrency)}
+                                {runResult.cashOnCash === null
+                                  ? `Not available: ${runResult.cashOnCashReason || 'Invalid equity basis'}`
+                                  : `Equity: ${formatPrice(runResult.totalEquityInvestedUSD ?? runResult.downPaymentUSD, currentCurrency)}`}
                               </div>
                             </div>
                           </TooltipTrigger>
@@ -5735,7 +5780,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               <TooltipTrigger asChild>
                                 <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] cursor-help">
                                   <div className="text-[10px] font-mono uppercase text-zinc-400">5-Year Equity IRR</div>
-                                  <div className={`text-2xl font-black font-mono mt-1 ${runResult.irr5Yr !== null ? 'text-purple-400' : 'text-amber-300'}`}>
+                                  <div className={`font-black font-mono mt-1 ${runResult.irr5Yr !== null ? 'text-2xl text-purple-400' : 'text-sm text-amber-300'}`}>
                                     {runResult.irr5Yr !== null ? (
                                       <CountUpNumber
                                         value={Number(runResult.irr5Yr)}
@@ -5743,13 +5788,15 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                                         suffix="%"
                                       />
                                     ) : (
-                                      <span>N/A</span>
+                                      <span>Not available</span>
                                     )}
                                   </div>
                                   <div className="text-[9px] text-zinc-400 font-mono mt-0.5">
                                     {runResult.irr5Yr === null && runResult.irrError
-                                      ? runResult.irrError
-                                      : `DSCR: ${runResult.dscr ?? '--'}x`}
+                                      ? `Not available: ${runResult.irrError}`
+                                      : runResult.dscr
+                                      ? `DSCR: ${runResult.dscr}x`
+                                      : `DSCR: Not available (${runResult.dscrReason || 'No debt'})`}
                                   </div>
                                 </div>
                               </TooltipTrigger>
@@ -5760,14 +5807,30 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               <TooltipTrigger asChild>
                                 <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.06] cursor-help">
                                   <div className="text-[10px] font-mono uppercase text-zinc-400">Monthly Net Cashflow</div>
-                                  <div className={`text-2xl font-black font-mono mt-1 ${(runResult.monthlyCashflowUSD ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                    <CountUpNumber
-                                      value={Math.round(runResult.monthlyCashflowUSD ?? 0)}
-                                      prefix={(runResult.monthlyCashflowUSD ?? 0) < 0 ? '-$' : '$'}
-                                      formatLocale
-                                    />
+                                  <div
+                                    className={`font-black font-mono mt-1 ${
+                                      runResult.monthlyCashflowUSD === null
+                                        ? 'text-sm text-amber-300'
+                                        : runResult.monthlyCashflowUSD >= 0
+                                        ? 'text-2xl text-emerald-400'
+                                        : 'text-2xl text-rose-400'
+                                    }`}
+                                  >
+                                    {runResult.monthlyCashflowUSD !== null ? (
+                                      <CountUpNumber
+                                        value={Math.round(runResult.monthlyCashflowUSD)}
+                                        prefix={runResult.monthlyCashflowUSD < 0 ? '-$' : '$'}
+                                        formatLocale
+                                      />
+                                    ) : (
+                                      <span>Not available</span>
+                                    )}
                                   </div>
-                                  <div className="text-[9px] text-zinc-500 font-mono mt-0.5">Debt/yr: {formatPrice(runResult.annualDebtServiceUSD, currentCurrency)}</div>
+                                  <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
+                                    {runResult.monthlyCashflowUSD === null
+                                      ? `Not available: ${runResult.monthlyCashflowReason || 'Invalid inputs'}`
+                                      : `Debt/yr: ${formatPrice(runResult.annualDebtServiceUSD ?? 0, currentCurrency)}`}
+                                  </div>
                                 </div>
                               </TooltipTrigger>
                               <TooltipContent>Monthly Net Operating Income minus Debt Service</TooltipContent>
@@ -5794,19 +5857,14 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
 
                       {/* Full Itemized NOI Breakdown Waterfall */}
                       {(() => {
-                        const nb = runResult.noiBreakdown || {
-                          grossRentAnnualUSD: runResult.annualGrossRentUSD,
-                          vacancyLossUSD: 0,
-                          effectiveGrossIncomeUSD: runResult.annualGrossRentUSD,
-                          baseOpexUSD: runResult.annualOPEXUSD,
-                          managementFeeUSD: 0,
-                          propertyTaxUSD: 0,
-                          insuranceUSD: 0,
-                          maintenanceReserveUSD: 0,
-                          hoaUSD: 0,
-                          totalExpensesUSD: runResult.annualOPEXUSD,
-                          noiUSD: runResult.netOperatingIncomeUSD,
-                        };
+                        const nb = runResult.noiBreakdown;
+                        if (!nb) {
+                          return (
+                            <div className="p-3.5 rounded-xl bg-black/40 border border-white/[0.08] text-[11px] font-mono text-amber-300">
+                              Annual NOI Breakdown Waterfall: Not available ({runResult.noiReason || 'Invalid inputs'})
+                            </div>
+                          );
+                        }
                         return (
                           <div className="p-3.5 rounded-xl bg-black/40 border border-white/[0.08] space-y-1.5 text-[11px] font-mono">
                             <div className="text-[10px] uppercase text-[#D4AF37] font-bold pb-1 border-b border-white/[0.06]">
@@ -6009,9 +6067,17 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                               >
                                 <TableCell className="py-2">{sc.deltaPct > 0 ? `+${sc.deltaPct}% Bull` : sc.deltaPct < 0 ? `${sc.deltaPct}% Bear` : 'Base (0%)'}</TableCell>
                                 <TableCell className="py-2">{formatPrice(sc.rentUSD, currentCurrency)}</TableCell>
-                                <TableCell className="py-2 text-[#D4AF37]">{sc.capRate}%</TableCell>
-                                <TableCell className="py-2 text-emerald-400">{sc.cashOnCash}%</TableCell>
-                                <TableCell className="py-2">{formatPrice(sc.monthlyCashflowUSD, currentCurrency)}</TableCell>
+                                <TableCell className="py-2 text-[#D4AF37]">
+                                  {sc.capRate !== null ? `${sc.capRate}%` : 'Not available'}
+                                </TableCell>
+                                <TableCell className="py-2 text-emerald-400">
+                                  {sc.cashOnCash !== null ? `${sc.cashOnCash}%` : 'Not available'}
+                                </TableCell>
+                                <TableCell className="py-2">
+                                  {sc.monthlyCashflowUSD !== null
+                                    ? formatPrice(sc.monthlyCashflowUSD, currentCurrency)
+                                    : 'Not available'}
+                                </TableCell>
                               </TableRow>
                             ))}
                           </TableBody>
@@ -6166,7 +6232,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                         <div className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.08]">
                           <div className="text-[10px] text-zinc-400">DSCR P10 / P50 / P90</div>
                           <div className="text-xs font-bold text-[#D4AF37] mt-1">
-                            {monteCarloResult.dscrP10}x / {monteCarloResult.dscrP50}x / {monteCarloResult.dscrP90}x
+                            {monteCarloResult.dscrP10 !== null ? `${monteCarloResult.dscrP10}x` : 'N/A'} /{' '}
+                            {monteCarloResult.dscrP50 !== null ? `${monteCarloResult.dscrP50}x` : 'N/A'} /{' '}
+                            {monteCarloResult.dscrP90 !== null ? `${monteCarloResult.dscrP90}x` : 'N/A'}
                           </div>
                         </div>
                       </div>
@@ -6194,22 +6262,34 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
                             <div>
                               <span className="text-zinc-400 block">Stressed NOI</span>
-                              <span className="text-white font-bold">{formatPrice(monteCarloResult.combinedStress.noiUSD, currentCurrency)}</span>
+                              <span className="text-white font-bold">
+                                {monteCarloResult.combinedStress.noiUSD !== null
+                                  ? formatPrice(monteCarloResult.combinedStress.noiUSD, currentCurrency)
+                                  : 'Not available'}
+                              </span>
                             </div>
                             <div>
                               <span className="text-zinc-400 block">Stressed CoC</span>
-                              <span className="text-white font-bold">{monteCarloResult.combinedStress.cocPct}%</span>
+                              <span className="text-white font-bold">
+                                {monteCarloResult.combinedStress.cocPct !== null
+                                  ? `${monteCarloResult.combinedStress.cocPct}%`
+                                  : 'Not available'}
+                              </span>
                             </div>
                             <div>
                               <span className="text-zinc-400 block">Stressed DSCR</span>
-                              <span className="text-cyan-300 font-bold">{monteCarloResult.combinedStress.dscr}x</span>
+                              <span className="text-cyan-300 font-bold">
+                                {monteCarloResult.combinedStress.dscr
+                                  ? `${monteCarloResult.combinedStress.dscr}x`
+                                  : `Not available: ${monteCarloResult.combinedStress.dscrReason || 'No debt'}`}
+                              </span>
                             </div>
                             <div>
                               <span className="text-zinc-400 block">Stressed IRR</span>
                               <span className="text-amber-300 font-bold">
                                 {monteCarloResult.combinedStress.irr5Yr !== null
                                   ? `${monteCarloResult.combinedStress.irr5Yr}%`
-                                  : 'N/A'}
+                                  : `Not available${monteCarloResult.combinedStress.irrError ? `: ${monteCarloResult.combinedStress.irrError}` : ''}`}
                               </span>
                             </div>
                           </div>

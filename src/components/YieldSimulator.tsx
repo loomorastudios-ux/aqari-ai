@@ -104,25 +104,32 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
       return {
         deltaPct,
         rentUSD: adjustedRentUSD,
-        capRate: scRes.capRate.toFixed(2),
-        cashflowUSD: scRes.monthlyCashflowUSD * 12,
-        coc: scRes.cashOnCash.toFixed(2),
+        capRate: scRes.capRate !== null ? scRes.capRate.toFixed(2) : null,
+        cashflowUSD: scRes.annualCashflowUSD,
+        coc: scRes.cashOnCash !== null ? scRes.cashOnCash.toFixed(2) : null,
       };
     });
     return {
       annGross: res.annualGrossRentUSD,
       annOpex: res.annualOPEXUSD,
       noi: res.netOperatingIncomeUSD,
-      cap: res.capRate.toFixed(2),
+      noiReason: res.noiReason,
+      cap: res.capRate !== null ? res.capRate.toFixed(2) : null,
+      capReason: res.capRateReason,
       annDebt: res.annualDebtServiceUSD,
-      annCf: res.monthlyCashflowUSD * 12,
-      coc: res.cashOnCash.toFixed(2),
-      dscrVal: res.dscr ?? '∞',
+      annCf: res.annualCashflowUSD,
+      cfReason: res.monthlyCashflowReason,
+      coc: res.cashOnCash !== null ? res.cashOnCash.toFixed(2) : null,
+      cocReason: res.cashOnCashReason,
+      dscrVal: res.dscr,
+      dscrReason: res.dscrReason,
       irrVal: res.irr5Yr !== null ? res.irr5Yr.toFixed(1) : null,
       irrError: res.irrError,
       warnings: res.warnings,
-      rateShockCoC: rateShockRes.cashOnCash.toFixed(2),
-      vacSurgeCap: vacShockRes.capRate.toFixed(2),
+      rateShockCoC: rateShockRes.cashOnCash !== null ? rateShockRes.cashOnCash.toFixed(2) : null,
+      rateShockReason: rateShockRes.cashOnCashReason,
+      vacSurgeCap: vacShockRes.capRate !== null ? vacShockRes.capRate.toFixed(2) : null,
+      vacSurgeReason: vacShockRes.capRateReason,
       sensitivityScenarios,
     };
   };
@@ -438,7 +445,7 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 Unlevered Cap Rate
               </div>
               <div className="text-3xl font-black font-mono text-[#D4AF37] mt-1">
-                {sim ? `${sim.cap}%` : '--'}
+                {!sim ? '--' : sim.cap !== null ? `${sim.cap}%` : `Not available: ${sim.capReason || 'Unavailable'}`}
               </div>
               <div className="text-[10px] text-zinc-500 font-mono mt-1">
                 NOI / Purchase Price
@@ -450,9 +457,9 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                 Cash-on-Cash Return
               </div>
               <div className={`text-3xl font-black font-mono mt-1 ${
-                !sim ? 'text-zinc-500' : parseFloat(sim.coc) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                !sim || sim.coc === null ? 'text-zinc-500' : parseFloat(sim.coc) >= 0 ? 'text-emerald-400' : 'text-rose-400'
               }`}>
-                {sim ? `${sim.coc}%` : '--'}
+                {!sim ? '--' : sim.coc !== null ? `${sim.coc}%` : `Not available: ${sim.cocReason || 'Unavailable'}`}
               </div>
               <div className="text-[10px] text-zinc-500 font-mono mt-1">
                 Net Cash / Equity Invested
@@ -464,29 +471,31 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
           <div className="space-y-2.5 text-xs font-mono">
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-400">Gross Annual Revenue:</span>
-              <span className="text-white font-semibold">{sim ? formatPrice(sim.annGross, 'USD') : '--'}</span>
+              <span className="text-white font-semibold">{!sim ? '--' : sim.annGross !== null ? formatPrice(sim.annGross, 'USD') : 'Not available'}</span>
             </div>
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-400">Operating Expenses &amp; Vacancy:</span>
-              <span className="text-rose-400 font-semibold">{sim ? `-${formatPrice(sim.annOpex, 'USD')}` : '--'}</span>
+              <span className="text-rose-400 font-semibold">{!sim ? '--' : sim.annOpex !== null ? `-${formatPrice(sim.annOpex, 'USD')}` : 'Not available'}</span>
             </div>
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-300 font-bold">Net Operating Income (NOI):</span>
-              <span className="text-[#D4AF37] font-bold">{sim ? formatPrice(sim.noi, 'USD') : '--'}</span>
+              <span className="text-[#D4AF37] font-bold">{!sim ? '--' : sim.noi !== null ? formatPrice(sim.noi, 'USD') : `Not available: ${sim.noiReason || 'Unavailable'}`}</span>
             </div>
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-400">Annual Debt Service (P&amp;I):</span>
-              <span className="text-rose-400 font-semibold">{sim ? `-${formatPrice(sim.annDebt, 'USD')}` : '--'}</span>
+              <span className="text-rose-400 font-semibold">{!sim ? '--' : sim.annDebt !== null ? `-${formatPrice(sim.annDebt, 'USD')}` : 'Not available'}</span>
             </div>
             <div className="flex justify-between py-1.5 border-b border-white/[0.05]">
               <span className="text-zinc-300 font-bold">Net Annual Cashflow:</span>
-              <span className={`font-bold ${!sim ? 'text-zinc-500' : sim.annCf >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {sim ? formatPrice(sim.annCf, 'USD') : '--'}
+              <span className={`font-bold ${!sim || sim.annCf === null ? 'text-zinc-500' : sim.annCf >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {!sim ? '--' : sim.annCf !== null ? formatPrice(sim.annCf, 'USD') : `Not available: ${sim.cfReason || 'Unavailable'}`}
               </span>
             </div>
             <div className="flex justify-between py-1.5">
               <span className="text-zinc-400">Debt Service Coverage (DSCR):</span>
-              <span className="text-cyan-400 font-bold">{sim ? `${sim.dscrVal}x` : '--'}</span>
+              <span className="text-cyan-400 font-bold">
+                {!sim ? '--' : sim.dscrVal !== null ? `${sim.dscrVal}x` : `Not available: ${sim.dscrReason || 'No debt'}`}
+              </span>
             </div>
           </div>
 
@@ -539,8 +548,8 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
                           {sc.deltaPct > 0 ? `+${sc.deltaPct}% Bull` : sc.deltaPct < 0 ? `${sc.deltaPct}% Bear` : 'Base (0%)'}
                         </td>
                         <td className="py-1.5">{formatPrice(sc.rentUSD, 'USD')}</td>
-                        <td className="py-1.5 text-[#D4AF37] font-semibold">{sc.capRate}%</td>
-                        <td className="py-1.5 text-emerald-400 font-semibold">{sc.coc}%</td>
+                        <td className="py-1.5 text-[#D4AF37] font-semibold">{sc.capRate !== null ? `${sc.capRate}%` : 'Not available'}</td>
+                        <td className="py-1.5 text-emerald-400 font-semibold">{sc.coc !== null ? `${sc.coc}%` : 'Not available'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -562,11 +571,15 @@ export const YieldSimulator: React.FC<YieldSimulatorProps> = ({
               <div className="grid grid-cols-2 gap-2 text-[11px] font-mono pt-1">
                 <div className="p-2 rounded bg-black/50 border border-white/5">
                   <span className="text-zinc-400 block">+200bps Rate Shock:</span>
-                  <span className="text-white font-bold">{sim.rateShockCoC}% CoC</span>
+                  <span className="text-white font-bold">
+                    {sim.rateShockCoC !== null ? `${sim.rateShockCoC}% CoC` : `Not available: ${sim.rateShockReason || 'Unavailable'}`}
+                  </span>
                 </div>
                 <div className="p-2 rounded bg-black/50 border border-white/5">
                   <span className="text-zinc-400 block">15% Vacancy Surge:</span>
-                  <span className="text-white font-bold">{sim.vacSurgeCap}% Cap</span>
+                  <span className="text-white font-bold">
+                    {sim.vacSurgeCap !== null ? `${sim.vacSurgeCap}% Cap` : `Not available: ${sim.vacSurgeReason || 'Unavailable'}`}
+                  </span>
                 </div>
               </div>
               {sim.warnings.length > 0 && (

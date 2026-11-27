@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { User, AnalystThread, WhiteGloveRequest } from '../types';
 import { PricingPublicPayload, PlanKey, findPlanPricing } from '../../lib/plans';
 import { CITIES, findCityEntry, searchCities, CityEntry } from '../../data/cities';
+import { calculateUnderwriting, computePortfolioAggregation } from '../../lib/underwriting';
 import { downloadWhiteGlovePdf } from '../utils/pdfExport';
 import { parseEnglishNumber, sanitizeEnglishDecimal } from '../utils/formatters';
 import {
@@ -377,30 +378,50 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     let totalAnnualNOI = 0;
     let totalAnnualDebt = 0;
     let totalEquity = 0;
+    const aggItems: Array<{
+      id: string;
+      price: number;
+      capRate: number | null;
+      noi: number | null;
+      irr: number | null;
+      monthlyCashflow: number | null;
+    }> = [];
     for (const p of wgDraftProps) {
       const val = Math.max(0, Number(p.valuation) || 0);
       const rent = Math.max(0, Number(p.monthlyRent) || 0);
       const eqPct = Math.min(100, Math.max(1, Number(p.equityPct) || 30));
-      const ratePct = Math.max(0.1, Number(p.ratePct) || 5.5);
+      const ratePct = Math.max(0, Number(p.ratePct ?? 5.5) || 0);
       const opexPct = Math.min(95, Math.max(0, Number(p.opexPct) || 15));
-      const down = val * (eqPct / 100);
-      const loan = Math.max(0, val - down);
-      const r = ratePct / 100 / 12;
-      const n = 25 * 12;
-      const monthlyDebt = loan > 0 && r > 0 ? (loan * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1) : 0;
-      const annGross = rent * 12;
-      const annNoi = annGross * (1 - opexPct / 100);
+      const uw = calculateUnderwriting({
+        priceUSD: val,
+        rentUSD: rent,
+        downPaymentPct: eqPct,
+        interestRatePct: ratePct,
+        operatingExpensePct: opexPct,
+        vacancyRatePct: 0,
+      });
       totalValuation += val;
       totalMonthlyRent += rent;
-      totalAnnualNOI += annNoi;
-      totalAnnualDebt += monthlyDebt * 12;
-      totalEquity += down;
+      totalAnnualNOI += uw.netOperatingIncomeUSD ?? 0;
+      totalAnnualDebt += uw.annualDebtServiceUSD ?? 0;
+      totalEquity += uw.totalEquityInvestedUSD;
+      aggItems.push({
+        id: p.id,
+        price: val,
+        capRate: uw.capRate,
+        noi: uw.netOperatingIncomeUSD,
+        irr: uw.irr5Yr,
+        monthlyCashflow: uw.monthlyCashflowUSD,
+      });
     }
-    const weightedCapRate = totalValuation > 0 ? Number(((totalAnnualNOI / totalValuation) * 100).toFixed(2)) : 0;
+    const agg = computePortfolioAggregation(aggItems);
+    const weightedCapRate =
+      agg.weightedCapRateMetric.value ??
+      (totalValuation > 0 ? Number(((totalAnnualNOI / totalValuation) * 100).toFixed(2)) : null);
     const annualCf = totalAnnualNOI - totalAnnualDebt;
-    const blendedCoC = totalEquity > 0 ? Number(((annualCf / totalEquity) * 100).toFixed(2)) : 0;
-    const dscr = totalAnnualDebt > 0 ? Number((totalAnnualNOI / totalAnnualDebt).toFixed(2)) : 4.0;
-    const irr5Yr = annualCf <= 0 ? null : Number((blendedCoC + 3.0).toFixed(1));
+    const blendedCoC = totalEquity > 0 ? Number(((annualCf / totalEquity) * 100).toFixed(2)) : null;
+    const dscr = totalAnnualDebt > 0 ? Number((totalAnnualNOI / totalAnnualDebt).toFixed(2)) : null;
+    const irr5Yr = agg.weightedIRR;
     return {
       totalValuation: Math.round(totalValuation),
       totalMonthlyRent: Math.round(totalMonthlyRent),
@@ -427,7 +448,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           valuation: Math.max(1, parseEnglishNumber(p.valuation, 1)),
           monthlyRent: Math.max(0, parseEnglishNumber(p.monthlyRent, 0)),
           equityPct: Math.min(100, Math.max(1, parseEnglishNumber(p.equityPct, 30))),
-          ratePct: Math.max(0.1, parseEnglishNumber(p.ratePct, 5.5)),
+          ratePct: Math.max(0, parseEnglishNumber(p.ratePct, 5.5)),
           opexPct: Math.min(95, Math.max(0, parseEnglishNumber(p.opexPct, 15))),
           spvNote: p.spvNote.trim(),
         };
@@ -1774,12 +1795,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </div>
                           <div>
                             <div className="text-[10px] text-zinc-400">Weighted Cap Rate</div>
-                            <div className="font-bold text-[#D4AF37]">{wgLiveCombined.weightedCapRate}%</div>
+                            <div className="font-bold text-[#D4AF37]">
+                              {wgLiveCombined.weightedCapRate !== null ? `${wgLiveCombined.weightedCapRate}%` : 'Not available'}
+                            </div>
                           </div>
                           <div>
                             <div className="text-[10px] text-zinc-400">Blended CoC / IRR</div>
                             <div className="font-bold text-emerald-300">
-                              {wgLiveCombined.blendedCoC}% / {wgLiveCombined.irr5Yr}%
+                              {wgLiveCombined.blendedCoC !== null ? `${wgLiveCombined.blendedCoC}%` : 'N/A'} /{' '}
+                              {wgLiveCombined.irr5Yr !== null ? `${wgLiveCombined.irr5Yr}%` : 'Not available'}
                             </div>
                           </div>
                           <div>

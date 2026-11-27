@@ -25,13 +25,28 @@ export const InstitutionalPdfScreen: React.FC<InstitutionalPdfScreenProps> = ({
 
   const dateStr = new Date().toISOString().slice(0, 10);
   const firmLabel = memo.branding?.firmName || 'AQARI INSTITUTIONAL ADVISORY';
+  const naLabel = (reason?: string | null, fallback = 'Unavailable') =>
+    `Not available: ${reason || fallback}`;
   const irrLabel =
     memo.irr5Yr !== null && Number.isFinite(memo.irr5Yr)
       ? `${memo.irr5Yr.toFixed(1)}%`
-      : `N/A (${memo.irrError || 'Insufficient data'})`;
+      : naLabel(memo.irrError, 'Insufficient data');
+  const capLabel =
+    memo.capRate !== null && Number.isFinite(memo.capRate)
+      ? `${memo.capRate.toFixed(2)}%`
+      : naLabel(memo.capRateReason, 'Unavailable');
+  const cocLabel =
+    memo.cashOnCash !== null && Number.isFinite(memo.cashOnCash)
+      ? `${memo.cashOnCash.toFixed(2)}%`
+      : naLabel(memo.cashOnCashReason, 'Unavailable');
+  const dscrLabel = memo.dscr
+    ? `${memo.dscr}x`
+    : naLabel(memo.dscrReason, 'No debt');
 
-  const fmtUSD = (val: number | null | undefined) => {
-    if (val === null || val === undefined || !Number.isFinite(val)) return 'N/A';
+  const fmtUSD = (val: number | null | undefined, reason?: string | null) => {
+    if (val === null || val === undefined || !Number.isFinite(val)) {
+      return reason ? naLabel(reason) : 'Not available';
+    }
     const abs = Math.abs(Math.round(val)).toLocaleString('en-US');
     return val < 0 ? `-$${abs}` : `$${abs}`;
   };
@@ -120,13 +135,13 @@ export const InstitutionalPdfScreen: React.FC<InstitutionalPdfScreenProps> = ({
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
                     <div className="text-[10px] font-mono uppercase text-[#B5B0A4]">Annual NOI</div>
                     <div className="mt-1 text-base sm:text-lg font-bold font-mono text-[#34D399]">
-                      {fmtUSD(memo.noiUSD)}/yr
+                      {memo.noiUSD !== null ? `${fmtUSD(memo.noiUSD)}/yr` : naLabel(memo.noiReason, 'Invalid inputs')}
                     </div>
                   </div>
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
                     <div className="text-[10px] font-mono uppercase text-[#B5B0A4]">Unlevered Cap Rate</div>
                     <div className="mt-1 text-base sm:text-lg font-bold font-mono text-[#DFBE62]">
-                      {memo.capRate.toFixed(2)}%
+                      {capLabel}
                     </div>
                   </div>
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
@@ -156,20 +171,22 @@ export const InstitutionalPdfScreen: React.FC<InstitutionalPdfScreenProps> = ({
                     </div>
                     <div className="rounded-xl border border-[#E5DEC9] bg-[#F5F1E7] p-3">
                       <div className="text-[10px] uppercase text-[#5C584F]">Cash-on-Cash Return</div>
-                      <div className={`text-sm font-bold mt-0.5 ${memo.cashOnCash >= 0 ? 'text-[#146C43]' : 'text-[#9F1239]'}`}>
-                        {memo.cashOnCash.toFixed(2)}%
+                      <div className={`text-sm font-bold mt-0.5 ${(memo.cashOnCash ?? 0) >= 0 ? 'text-[#146C43]' : 'text-[#9F1239]'}`}>
+                        {cocLabel}
                       </div>
                     </div>
                     <div className="rounded-xl border border-[#E5DEC9] bg-[#F5F1E7] p-3">
                       <div className="text-[10px] uppercase text-[#5C584F]">DSCR Covenant</div>
                       <div className="text-sm font-bold text-[#141418] mt-0.5">
-                        {memo.dscr ? `${memo.dscr}x` : 'Unlevered'}
+                        {dscrLabel}
                       </div>
                     </div>
                     <div className="rounded-xl border border-[#E5DEC9] bg-[#F5F1E7] p-3">
                       <div className="text-[10px] uppercase text-[#5C584F]">Monthly Net Cashflow</div>
                       <div className={`text-sm font-bold mt-0.5 ${(memo.monthlyCashflowUSD ?? 0) >= 0 ? 'text-[#146C43]' : 'text-[#9F1239]'}`}>
-                        {fmtUSD(memo.monthlyCashflowUSD)}/mo
+                        {memo.monthlyCashflowUSD !== null
+                          ? `${fmtUSD(memo.monthlyCashflowUSD)}/mo`
+                          : naLabel(memo.monthlyCashflowReason)}
                       </div>
                     </div>
                   </div>

@@ -5,6 +5,20 @@ import {
   calculateUnderwriting,
   computePortfolioAggregation,
   runMonteCarloSimulation,
+  calculateNOIMetric,
+  calculateGrossYieldMetric,
+  calculateNetYieldMetric,
+  calculateCapRateMetric,
+  calculateCashOnCashMetric,
+  calculateDSCRMetric,
+  calculateLTVMetric,
+  calculateMonthlyMortgageMetric,
+  calculateMonthlyMortgage,
+  calculateEquityMultipleMetric,
+  calculateROIMetric,
+  calculateAppreciationMetric,
+  calculateIRRMetric,
+  computeIrrFromCashflows,
 } from '../lib/underwriting';
 
 // In-process Upstash Redis REST server for deterministic persistent-storage tests
@@ -357,6 +371,7 @@ test('NOI exact breakdown: Rent $193,200/yr ($16,100/mo), Expenses 15% => NOI $1
   });
 
   assert.equal(res.annualGrossRentUSD, 193_200);
+  assert.ok(res.noiBreakdown !== null);
   assert.equal(res.noiBreakdown.vacancyLossUSD, 0);
   assert.equal(res.noiBreakdown.baseOpexUSD, 28_980);
   assert.equal(res.netOperatingIncomeUSD, 164_220);
@@ -378,6 +393,7 @@ test('NOI itemized breakdown deducts Vacancy, Management, Tax, Insurance, Mainte
     hoaUSD: 4_800,
   });
 
+  assert.ok(res.noiBreakdown !== null);
   assert.equal(res.noiBreakdown.grossRentAnnualUSD, 120_000);
   assert.equal(res.noiBreakdown.vacancyLossUSD, 6_000);
   assert.equal(res.noiBreakdown.effectiveGrossIncomeUSD, 114_000);
@@ -445,6 +461,7 @@ test('DSCR & Cash-on-Cash calculations match mortgage amortization and closing c
   const expectedNOI = 48_000 * 0.8;
   assert.equal(res.netOperatingIncomeUSD, expectedNOI);
   assert.equal(res.totalEquityInvestedUSD, 140_000);
+  assert.ok(res.annualDebtServiceUSD !== null);
   const expectedDscr = Number((expectedNOI / res.annualDebtServiceUSD).toFixed(2));
   assert.equal(res.dscrNumeric, expectedDscr);
   const expectedCoc = Number(
@@ -574,6 +591,9 @@ test('Institutional PDF output matches underwriting metrics & financing figures 
     yearByYear: calc.yearByYear,
   });
 
+  assert.ok(calc.netOperatingIncomeUSD !== null);
+  assert.ok(calc.capRate !== null);
+  assert.ok(calc.cashOnCash !== null);
   const pdfStreamText = Buffer.from(pdfBytes).toString('latin1');
   assert.ok(filename.endsWith('.pdf'));
   assert.ok(pdfStreamText.startsWith('%PDF-1.4'));
@@ -3886,5 +3906,369 @@ test('Phase 6 Paddle Security: rejects fake/expired webhook signatures (401), re
   assert.ok(refundedRec);
   assert.equal(refundedRec.status, 'refunded');
 });
+
+// =============================================================================
+// PHASE 7 STEP 3 — AUTHORITATIVE FINANCIAL ENGINE & PARITY TESTS
+// =============================================================================
+
+test('Step 3.1 — NOI test: rent 120,000, vacancy 5%, expenses 20,000 -> NOI = 94,000', () => {
+  const metric = calculateNOIMetric({
+    annualGrossRentUSD: 120_000,
+    vacancyRatePct: 5,
+    annualOperatingExpensesUSD: 20_000,
+  });
+  assert.equal(metric.value, 94_000);
+  assert.ok(Array.isArray(metric.assumptions) && metric.assumptions.length > 0);
+
+  const uw = calculateUnderwriting({
+    priceUSD: 1_000_000,
+    rentUSD: 10_000, // 120,000 / yr
+    downPaymentPct: 30,
+    interestRatePct: 5.5,
+    operatingExpensePct: 0,
+    vacancyRatePct: 5,
+    annualOperatingExpensesUSD: 20_000,
+  });
+  assert.equal(uw.netOperatingIncomeUSD, 94_000);
+  assert.equal(uw.metrics.noi.value, 94_000);
+  assert.ok(Array.isArray(uw.assumptions) && uw.assumptions.length > 0);
+});
+
+test('Step 3.2 — Cap Rate test: NOI 94,000 / price 1,000,000 -> 9.4%', () => {
+  const cap = calculateCapRateMetric(94_000, 1_000_000);
+  assert.equal(cap.value, 9.4);
+  assert.ok(Array.isArray(cap.assumptions) && cap.assumptions.length > 0);
+
+  const uw = calculateUnderwriting({
+    priceUSD: 1_000_000,
+    rentUSD: 10_000,
+    downPaymentPct: 30,
+    interestRatePct: 5.5,
+    operatingExpensePct: 0,
+    vacancyRatePct: 5,
+    annualOperatingExpensesUSD: 20_000,
+  });
+  assert.equal(uw.capRate, 9.4);
+  assert.equal(uw.metrics.capRate.value, 9.4);
+
+  const grossY = calculateGrossYieldMetric(120_000, 1_000_000);
+  const netY = calculateNetYieldMetric(94_000, 1_000_000);
+  assert.equal(grossY.value, 12);
+  assert.equal(netY.value, 9.4);
+});
+
+test('Step 3.3 — Cash-on-Cash test: annual cashflow 30,000 / equity 200,000 -> 15%', () => {
+  const coc = calculateCashOnCashMetric(30_000, 200_000);
+  assert.equal(coc.value, 15);
+  assert.ok(Array.isArray(coc.assumptions) && coc.assumptions.length > 0);
+
+  // Also test full underwriting cash purchase: price 200,000, equity 200,000 (100% down), annual NOI 30,000 -> 15%
+  const uw = calculateUnderwriting({
+    priceUSD: 200_000,
+    rentUSD: 2_500, // 30,000 / yr
+    downPaymentPct: 100,
+    interestRatePct: 0,
+    operatingExpensePct: 0,
+  });
+  assert.equal(uw.totalEquityInvestedUSD, 200_000);
+  assert.equal(uw.annualCashflowUSD, 30_000);
+  assert.equal(uw.cashOnCash, 15);
+  assert.equal(uw.metrics.cashOnCash.value, 15);
+});
+
+test('Step 3.4 — DSCR test: NOI 94,000 / debt 50,000 -> 1.88, and unlevered -> null with No debt reason', () => {
+  const dscr = calculateDSCRMetric(94_000, 50_000);
+  assert.equal(dscr.value, 1.88);
+  assert.ok(Array.isArray(dscr.assumptions) && dscr.assumptions.length > 0);
+
+  const noDebtDscr = calculateDSCRMetric(94_000, 0);
+  assert.equal(noDebtDscr.value, null);
+  assert.equal(noDebtDscr.reason, 'No debt');
+
+  const unleveredUw = calculateUnderwriting({
+    priceUSD: 1_000_000,
+    rentUSD: 10_000,
+    downPaymentPct: 100,
+    interestRatePct: 5.5,
+    operatingExpensePct: 15,
+  });
+  assert.equal(unleveredUw.dscr, null);
+  assert.equal(unleveredUw.dscrNumeric, null);
+  assert.equal(unleveredUw.dscrReason, 'No debt');
+  assert.equal(unleveredUw.metrics.dscr.value, null);
+  assert.equal(unleveredUw.metrics.dscr.reason, 'No debt');
+});
+
+test('Step 3.5 — Division by zero test: price = 0 -> null + reason, never Infinity or NaN', () => {
+  const capZero = calculateCapRateMetric(94_000, 0);
+  assert.equal(capZero.value, null);
+  assert.ok(capZero.reason && capZero.reason.length > 0);
+
+  const ltvZero = calculateLTVMetric(0, 0);
+  assert.equal(ltvZero.value, null);
+  assert.ok(ltvZero.reason && ltvZero.reason.length > 0);
+
+  const cocZero = calculateCashOnCashMetric(30_000, 0);
+  assert.equal(cocZero.value, null);
+  assert.ok(cocZero.reason && cocZero.reason.length > 0);
+
+  const uwZero = calculateUnderwriting({
+    priceUSD: 0,
+    rentUSD: 5_000,
+    downPaymentPct: 30,
+    interestRatePct: 5.5,
+    operatingExpensePct: 15,
+  });
+  assert.equal(uwZero.capRate, null);
+  assert.ok(uwZero.capRateReason && uwZero.capRateReason.length > 0);
+  assert.equal(uwZero.cashOnCash, null);
+  assert.equal(uwZero.ltvPct, null);
+  assert.equal(uwZero.equityMultiple, null);
+  assert.equal(uwZero.roiPct, null);
+  assert.equal(Number.isNaN(uwZero.capRate), false);
+});
+
+test('Step 3.6 — Negative values test: rent = -100 -> null + error reason, never NaN', () => {
+  const noiNeg = calculateNOIMetric({ monthlyRentUSD: -100, operatingExpensePct: 15 });
+  assert.equal(noiNeg.value, null);
+  assert.equal(noiNeg.reason, 'Rent cannot be negative');
+
+  const uwNeg = calculateUnderwriting({
+    priceUSD: 500_000,
+    rentUSD: -100,
+    downPaymentPct: 30,
+    interestRatePct: 5.5,
+    operatingExpensePct: 15,
+  });
+  assert.equal(uwNeg.netOperatingIncomeUSD, null);
+  assert.equal(uwNeg.noiReason, 'Rent cannot be negative');
+  assert.equal(uwNeg.capRate, null);
+  assert.equal(uwNeg.cashOnCash, null);
+  assert.equal(uwNeg.monthlyCashflowUSD, null);
+  assert.equal(uwNeg.annualCashflowUSD, null);
+  assert.equal(uwNeg.noiBreakdown, null);
+});
+
+test('Step 3.7 — IRR test: [-100, 30, 30, 30, 30] -> approx 7.7%', () => {
+  const irrMetric = calculateIRRMetric([-100, 30, 30, 30, 30]);
+  assert.equal(irrMetric.status, 'ok');
+  assert.ok(irrMetric.value !== null);
+  assert.ok(
+    Math.abs(irrMetric.value - 7.7) < 0.5,
+    `Expected IRR ~7.7%, got ${irrMetric.value}%`
+  );
+
+  const legacy = computeIrrFromCashflows([-100, 30, 30, 30, 30]);
+  assert.equal(legacy.irrPct, irrMetric.value);
+});
+
+test('Step 3.8 — IRR non-convergence / no sign change test: [100, 100, 100] -> null + reason', () => {
+  const irrMetric = calculateIRRMetric([100, 100, 100]);
+  assert.equal(irrMetric.value, null);
+  assert.ok(irrMetric.reason && irrMetric.reason.length > 0);
+});
+
+test('Step 3.9 — Loan test: principal 800,000, rate 5%, 30 years -> payment ~ 4294', () => {
+  const loanMetric = calculateMonthlyMortgageMetric(800_000, 5, 30);
+  assert.ok(loanMetric.value !== null);
+  assert.ok(
+    Math.abs(loanMetric.value - 4294.57) < 5,
+    `Expected monthly payment ~4294.57, got ${loanMetric.value}`
+  );
+  assert.equal(calculateMonthlyMortgage(800_000, 5, 30), loanMetric.value);
+});
+
+test('Step 3.10 — Zero interest loan test: principal 120,000, rate 0%, 10 years -> payment = 1000', () => {
+  const zeroLoan = calculateMonthlyMortgageMetric(120_000, 0, 10);
+  assert.equal(zeroLoan.value, 1000);
+
+  const uwZeroRate = calculateUnderwriting({
+    priceUSD: 200_000,
+    rentUSD: 2_500,
+    downPaymentPct: 40, // loan 120,000
+    interestRatePct: 0,
+    loanTermYears: 10,
+    amortizationYears: 10,
+    operatingExpensePct: 0,
+  });
+  assert.equal(uwZeroRate.monthlyMortgageUSD, 1000);
+  assert.equal(uwZeroRate.annualDebtServiceUSD, 12_000);
+});
+
+test('Step 3.11 — Extreme values & Equity Multiple / ROI / Appreciation: no Infinity, no NaN, real assumptions', () => {
+  const extreme = calculateUnderwriting({
+    priceUSD: 1e12,
+    rentUSD: 1e9,
+    downPaymentPct: 30,
+    interestRatePct: 5.5,
+    operatingExpensePct: 15,
+    appreciationPct: 3,
+    sellingCostsPct: 3,
+  });
+  const numericFields = [
+    extreme.capRate,
+    extreme.grossYieldPct,
+    extreme.netYieldPct,
+    extreme.cashOnCash,
+    extreme.dscrNumeric,
+    extreme.ltvPct,
+    extreme.equityMultiple,
+    extreme.roiPct,
+    extreme.appreciationUSD,
+    extreme.monthlyCashflowUSD,
+    extreme.annualCashflowUSD,
+    extreme.monthlyMortgageUSD,
+    extreme.netOperatingIncomeUSD,
+    extreme.annualDebtServiceUSD,
+    extreme.exitGrossValueUSD,
+    extreme.netExitProceedsUSD,
+  ];
+  for (const val of numericFields) {
+    assert.ok(val !== null && Number.isFinite(val), `Expected finite extreme metric, got ${val}`);
+  }
+  assert.ok(extreme.assumptions.length >= 4);
+  assert.ok(extreme.assumptions.some((a) => a.includes('Vacancy Rate:')));
+
+  const em = calculateEquityMultipleMetric(300_000, 200_000);
+  assert.equal(em.value, 1.5);
+  const roi = calculateROIMetric(100_000, 200_000);
+  assert.equal(roi.value, 50);
+  const appr = calculateAppreciationMetric(1_000_000, 5, 5);
+  assert.ok(appr.value !== null && appr.futureValueUSD !== null && appr.value > 276_000);
+});
+
+test('Step 3.12 — Parity across Dashboard engine, /api/app?action=run-analysis, and PDF Export (+ Not available rendering)', async (t) => {
+  const { buildInstitutionalMemorandumBytes } = await import('../src/utils/pdfExport');
+  const parityEmail = `parity_${Date.now()}@aqari.test`;
+  await seedTestStoreUser(parityEmail, {
+    email: parityEmail,
+    name: 'Parity Tester',
+    plan: 'pro',
+    analyses_total: 100,
+    analyses_left: 100,
+    analyses_used: 0,
+    license_start: Date.now() - 1000,
+    license_end: Date.now() + 30 * 86_400_000,
+    status: 'active',
+  });
+  const parityCookie = await createTestSessionCookie(parityEmail, 'Parity Tester');
+  t.after(async () => {
+    await deleteTestUsers(parityEmail);
+  });
+
+  const sharedInput = {
+    priceUSD: 1_500_000,
+    rentUSD: 11_250,
+    downPaymentPct: 35,
+    interestRatePct: 5.25,
+    operatingExpensePct: 18,
+    vacancyRatePct: 5,
+    managementPct: 6,
+    propertyTaxUSD: 9_000,
+    insuranceUSD: 3_000,
+    maintenanceReserveUSD: 4_500,
+    hoaUSD: 6_000,
+    closingCostsPct: 3,
+  };
+
+  // 1. Direct engine (used by Dashboard, Admin White-Glove, Yield Simulator)
+  const directCalc = calculateUnderwriting(sharedInput);
+
+  // 2. API /api/app?action=run-analysis
+  const apiRes = await invokeApi({
+    action: 'run-analysis',
+    headers: { cookie: parityCookie },
+    body: {
+      propertyTitle: 'Parity Tower',
+      city: 'Muscat',
+      ...sharedInput,
+    },
+  });
+  assert.equal(apiRes.statusCode, 200);
+  const r = apiRes.data.results;
+  assert.ok(r, 'API run-analysis must return results');
+  assert.equal(r.capRate, directCalc.capRate);
+  assert.equal(r.cashOnCash, directCalc.cashOnCash);
+  assert.equal(r.irr5Yr, directCalc.irr5Yr);
+  assert.equal(r.dscr, directCalc.dscr);
+  assert.equal(r.netOperatingIncomeUSD, directCalc.netOperatingIncomeUSD);
+  assert.equal(r.monthlyCashflowUSD, directCalc.monthlyCashflowUSD);
+  assert.equal(r.monthlyMortgageUSD, directCalc.monthlyMortgageUSD);
+
+  // 3. PDF Export parity on same metrics
+  const { pdfBytes } = buildInstitutionalMemorandumBytes({
+    title: 'Parity Tower',
+    city: 'Muscat',
+    userEmail: parityEmail,
+    planDisplay: 'PRO',
+    valuationUSD: sharedInput.priceUSD,
+    monthlyRentUSD: sharedInput.rentUSD,
+    noiUSD: r.netOperatingIncomeUSD,
+    noiReason: r.noiReason,
+    capRate: r.capRate,
+    capRateReason: r.capRateReason,
+    cashOnCash: r.cashOnCash,
+    cashOnCashReason: r.cashOnCashReason,
+    irr5Yr: r.irr5Yr,
+    irrError: r.irrError,
+    dscr: r.dscr,
+    dscrReason: r.dscrReason,
+    monthlyCashflowUSD: r.monthlyCashflowUSD,
+    monthlyCashflowReason: r.monthlyCashflowReason,
+    downPaymentPct: sharedInput.downPaymentPct,
+    interestRatePct: sharedInput.interestRatePct,
+    loanAmountUSD: r.loanAmountUSD,
+    totalEquityInvestedUSD: r.totalEquityInvestedUSD,
+    noiBreakdown: r.noiBreakdown,
+    yearByYear: r.yearByYear,
+    assumptions: r.assumptions,
+  });
+  const pdfText = Buffer.from(pdfBytes).toString('latin1');
+  assert.ok(pdfText.includes(`${directCalc.capRate!.toFixed(2)}%`));
+  assert.ok(pdfText.includes(`${directCalc.cashOnCash!.toFixed(2)}%`));
+  assert.ok(pdfText.includes(`${directCalc.dscr}x`));
+
+  // 4. Unlevered / null metrics must render explicit "Not available: ..." in PDF
+  const unlevered = calculateUnderwriting({
+    priceUSD: 1_000_000,
+    rentUSD: 8_000,
+    downPaymentPct: 100,
+    interestRatePct: 5,
+    operatingExpensePct: 15,
+  });
+  const unlevPdf = buildInstitutionalMemorandumBytes({
+    title: 'All-Cash Parity Asset',
+    city: 'Dubai',
+    userEmail: parityEmail,
+    planDisplay: 'FREE',
+    valuationUSD: 1_000_000,
+    monthlyRentUSD: 8_000,
+    noiUSD: unlevered.netOperatingIncomeUSD,
+    noiReason: unlevered.noiReason ?? undefined,
+    capRate: unlevered.capRate,
+    capRateReason: unlevered.capRateReason ?? undefined,
+    cashOnCash: unlevered.cashOnCash,
+    cashOnCashReason: unlevered.cashOnCashReason ?? undefined,
+    irr5Yr: unlevered.irr5Yr,
+    irrError: unlevered.irrError,
+    dscr: unlevered.dscr,
+    dscrReason: unlevered.dscrReason ?? undefined,
+    monthlyCashflowUSD: unlevered.monthlyCashflowUSD,
+    monthlyCashflowReason: unlevered.monthlyCashflowReason ?? undefined,
+    downPaymentPct: 100,
+    interestRatePct: 5,
+    loanAmountUSD: 0,
+    totalEquityInvestedUSD: 1_000_000,
+    noiBreakdown: unlevered.noiBreakdown ?? undefined,
+    yearByYear: unlevered.yearByYear,
+    assumptions: unlevered.assumptions,
+  });
+  const unlevText = Buffer.from(unlevPdf.pdfBytes).toString('latin1');
+  assert.ok(
+    unlevText.includes('Not available: No debt'),
+    'PDF must explicitly state "Not available: No debt" when DSCR is unlevered'
+  );
+});
+
 
 

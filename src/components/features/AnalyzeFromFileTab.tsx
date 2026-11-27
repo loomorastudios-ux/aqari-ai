@@ -790,28 +790,34 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 font-mono tabular-nums">
             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
               <div className="text-[10px] uppercase text-zinc-400">Cap Rate</div>
-              <div className="text-xl font-black text-[#D4AF37] mt-1">{report.results.capRate}%</div>
+              <div className="text-xl font-black text-[#D4AF37] mt-1">
+                {report.results.capRate !== null ? `${report.results.capRate}%` : `Not available: ${report.results.capRateReason || 'Unavailable'}`}
+              </div>
             </div>
             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
               <div className="text-[10px] uppercase text-zinc-400">Annual NOI</div>
               <div className="text-xl font-black text-white mt-1">
-                {formatPrice(report.results.netOperatingIncomeUSD, currentCurrency)}
+                {report.results.netOperatingIncomeUSD !== null
+                  ? formatPrice(report.results.netOperatingIncomeUSD, currentCurrency)
+                  : `Not available: ${report.results.noiReason || 'Unavailable'}`}
               </div>
             </div>
             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
               <div className="text-[10px] uppercase text-zinc-400">DSCR</div>
               <div className="text-xl font-black text-cyan-300 mt-1">
-                {report.results.dscr ? `${report.results.dscr}x` : 'N/A'}
+                {report.results.dscr ? `${report.results.dscr}x` : `Not available: ${report.results.dscrReason || 'No debt'}`}
               </div>
             </div>
             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
               <div className="text-[10px] uppercase text-zinc-400">Cash-on-Cash</div>
-              <div className="text-xl font-black text-emerald-300 mt-1">{report.results.cashOnCash}%</div>
+              <div className="text-xl font-black text-emerald-300 mt-1">
+                {report.results.cashOnCash !== null ? `${report.results.cashOnCash}%` : `Not available: ${report.results.cashOnCashReason || 'Unavailable'}`}
+              </div>
             </div>
             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
               <div className="text-[10px] uppercase text-zinc-400">5-Yr Equity IRR</div>
               <div className="text-xl font-black text-purple-300 mt-1">
-                {report.results.irr5Yr !== null ? `${report.results.irr5Yr}%` : 'N/A'}
+                {report.results.irr5Yr !== null ? `${report.results.irr5Yr}%` : `Not available: ${report.results.irrError || 'Insufficient data'}`}
               </div>
             </div>
             <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.08]">
@@ -819,19 +825,19 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
               <div className="text-xl font-black text-white mt-1">
                 {report.results.monthlyCashflowUSD !== null
                   ? formatPrice(report.results.monthlyCashflowUSD, currentCurrency)
-                  : 'N/A'}
+                  : `Not available: ${report.results.monthlyCashflowReason || 'Unavailable'}`}
               </div>
             </div>
           </div>
 
           {report.results.yearByYear && (
             <IrrNoiDscrChart
-              capRate={report.results.capRate}
-              cashOnCash={report.results.cashOnCash}
+              capRate={report.results.capRate ?? 0}
+              cashOnCash={report.results.cashOnCash ?? 0}
               irr5Yr={report.results.irr5Yr}
               irrError={report.results.irrError}
               dscr={report.results.dscr}
-              netOperatingIncomeUSD={report.results.netOperatingIncomeUSD}
+              netOperatingIncomeUSD={report.results.netOperatingIncomeUSD ?? 0}
               monthlyCashflowUSD={report.results.monthlyCashflowUSD ?? 0}
               annualDebtServiceUSD={report.results.annualDebtServiceUSD ?? 0}
               yearByYear={report.results.yearByYear}
@@ -935,12 +941,17 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
                   valuationUSD: report.inputs.priceUSD,
                   monthlyRentUSD: report.inputs.rentUSD,
                   noiUSD: report.results.netOperatingIncomeUSD,
+                  noiReason: report.results.noiReason,
                   capRate: report.results.capRate,
+                  capRateReason: report.results.capRateReason,
                   cashOnCash: report.results.cashOnCash,
+                  cashOnCashReason: report.results.cashOnCashReason,
                   irr5Yr: report.results.irr5Yr,
                   irrError: report.results.irrError,
                   dscr: report.results.dscr,
+                  dscrReason: report.results.dscrReason,
                   monthlyCashflowUSD: report.results.monthlyCashflowUSD,
+                  monthlyCashflowReason: report.results.monthlyCashflowReason,
                   riskScore: `${report.riskScore}/100 (${report.verdict})`,
                   noiBreakdown: report.results.noiBreakdown,
                   yearByYear: report.results.yearByYear,
@@ -953,6 +964,7 @@ export const AnalyzeFromFileTab: React.FC<AnalyzeFromFileTabProps> = ({
                     updatedDate: report.marketContext.updatedDate,
                   },
                   monteCarlo: report.results.monteCarlo,
+                  assumptions: report.results.assumptions,
                   warnings: report.warnings,
                   sources: [
                     `Source file: ${report.fileName} (Provenance tracked per field)`,

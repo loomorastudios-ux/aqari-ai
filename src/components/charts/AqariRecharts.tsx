@@ -395,9 +395,9 @@ interface RiskScenarioChartProps {
   sensitivity?: Array<{
     deltaPct: number;
     rentUSD: number;
-    capRate: number;
-    cashOnCash: number;
-    monthlyCashflowUSD: number;
+    capRate: number | null;
+    cashOnCash: number | null;
+    monthlyCashflowUSD: number | null;
   }>;
   auditItems?: Array<{
     category: string;

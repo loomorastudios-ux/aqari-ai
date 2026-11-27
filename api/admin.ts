@@ -32,6 +32,7 @@ import {
   hydratePricingConfig,
 } from '../lib/serverStore';
 import { exportAllData } from '../lib/backup';
+import { calculateUnderwriting, computePortfolioAggregation } from '../lib/underwriting';
 
 // =========================================================================
 // 1. INLINED PLANS, SECURITY & ENV HELPERS (Zero external ../lib imports)
@@ -2036,27 +2037,47 @@ export default async function handler(req: any, res: any) {
         let totalAnnualNOI = 0;
         let totalAnnualDebt = 0;
         let totalEquity = 0;
+        const aggItems: Array<{
+          id: string;
+          price: number;
+          capRate: number | null;
+          noi: number | null;
+          irr: number | null;
+          monthlyCashflow: number | null;
+        }> = [];
         const normalizedProps = rawProps.map((p: any, pIdx: number) => {
           const val = Math.max(1, Number(p.valuation || 0));
           const rent = Math.max(0, Number(p.monthlyRent || 0));
           const eqPct = Math.min(100, Math.max(1, Number(p.equityPct ?? 30)));
-          const ratePct = Math.max(0.1, Number(p.ratePct ?? 5.5));
+          const ratePct = Math.max(0, Number(p.ratePct ?? 5.5));
           const opexPct = Math.min(95, Math.max(0, Number(p.opexPct ?? 15)));
-          const down = val * (eqPct / 100);
-          const loan = Math.max(0, val - down);
-          const r = ratePct / 100 / 12;
-          const n = 25 * 12;
-          const monthlyDebt =
-            loan > 0 && r > 0 ? (loan * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1) : 0;
-          const annualRent = rent * 12 * 0.95;
-          const annualNOI = annualRent * (1 - opexPct / 100);
-          const annualDebt = monthlyDebt * 12;
+          const vacPct = Math.min(95, Math.max(0, Number(p.vacancyPct ?? p.vacancyRatePct ?? 0)));
+          const uw = calculateUnderwriting({
+            priceUSD: val,
+            rentUSD: rent,
+            downPaymentPct: eqPct,
+            interestRatePct: ratePct,
+            operatingExpensePct: opexPct,
+            vacancyRatePct: vacPct,
+          });
+          const annualRent = uw.annualGrossRentUSD ?? rent * 12;
+          const annualNOI = uw.netOperatingIncomeUSD ?? 0;
+          const annualDebt = uw.annualDebtServiceUSD ?? 0;
 
           totalValuation += val;
           totalAnnualRent += annualRent;
           totalAnnualNOI += annualNOI;
           totalAnnualDebt += annualDebt;
-          totalEquity += down;
+          totalEquity += uw.totalEquityInvestedUSD;
+
+          aggItems.push({
+            id: p.id || `wgp_${pIdx + 1}`,
+            price: val,
+            capRate: uw.capRate,
+            noi: uw.netOperatingIncomeUSD,
+            irr: uw.irr5Yr,
+            monthlyCashflow: uw.monthlyCashflowUSD,
+          });
 
           return {
             id: p.id || `wgp_${pIdx + 1}`,
@@ -2068,18 +2089,24 @@ export default async function handler(req: any, res: any) {
             equityPct: eqPct,
             ratePct,
             opexPct,
+            vacancyPct: vacPct,
+            capRate: uw.capRate,
+            monthlyCashflowUSD: uw.monthlyCashflowUSD,
+            irr5Yr: uw.irr5Yr,
             spvNote: String(p.spvNote || ''),
           };
         });
 
+        const portfolioAgg = computePortfolioAggregation(aggItems);
         const weightedCapRate =
-          totalValuation > 0 ? Number(((totalAnnualNOI / totalValuation) * 100).toFixed(2)) : 0;
+          portfolioAgg.weightedCapRateMetric.value ??
+          (totalValuation > 0 ? Number(((totalAnnualNOI / totalValuation) * 100).toFixed(2)) : null);
         const annualCashflow = totalAnnualNOI - totalAnnualDebt;
         const blendedCoC =
-          totalEquity > 0 ? Number(((annualCashflow / totalEquity) * 100).toFixed(2)) : 0;
+          totalEquity > 0 ? Number(((annualCashflow / totalEquity) * 100).toFixed(2)) : null;
         const portfolioDscr =
-          totalAnnualDebt > 0 ? Number((totalAnnualNOI / totalAnnualDebt).toFixed(2)) : 4.0;
-        const blendedIrr5Yr = Number((blendedCoC + 4.8).toFixed(1));
+          totalAnnualDebt > 0 ? Number((totalAnnualNOI / totalAnnualDebt).toFixed(2)) : null;
+        const blendedIrr5Yr = portfolioAgg.weightedIRR;
         const now = Date.now();
         const currency = 'USD';
 

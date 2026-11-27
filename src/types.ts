@@ -76,9 +76,10 @@ export interface WhiteGlovePropertyInput {
   downPaymentPct?: number;
   interestRatePct?: number;
   operatingExpensePct?: number;
-  capRate?: number;
-  monthlyCashflowUSD?: number;
-  irr5Yr?: number;
+  vacancyPct?: number;
+  capRate?: number | null;
+  monthlyCashflowUSD?: number | null;
+  irr5Yr?: number | null;
 }
 
 export interface WhiteGloveDeliverable {
@@ -95,17 +96,17 @@ export interface WhiteGloveDeliverable {
     totalValuation: number;
     totalMonthlyRent: number;
     totalMonthlyCashflow: number;
-    weightedCapRate: number;
-    blendedCoC: number;
-    blendedIrr5Yr: number;
-    portfolioDscr: number;
+    weightedCapRate: number | null;
+    blendedCoC: number | null;
+    blendedIrr5Yr: number | null;
+    portfolioDscr: number | null;
   };
   combinedResults?: {
     totalValuationUSD: number;
     totalMonthlyRentUSD: number;
     totalMonthlyCashflowUSD: number;
-    weightedCapRate: number;
-    weightedIrr5Yr: number;
+    weightedCapRate: number | null;
+    weightedIrr5Yr: number | null;
   };
   deliveredAt: number | string;
   deliveredBy?: string;
@@ -273,27 +274,39 @@ export interface LastResultsData {
     };
     cityData?: any;
     results: {
-      capRate: number;
-      cashOnCash: number;
+      capRate: number | null;
+      capRateReason?: string | null;
+      grossYieldPct?: number | null;
+      netYieldPct?: number | null;
+      cashOnCash: number | null;
+      cashOnCashReason?: string | null;
       irr5Yr: number | null;
       irrStatus?: 'ok' | 'negative_cashflows' | 'no_exit_value' | 'insufficient_data';
       irrError?: string | null;
       dscr: string | null;
       dscrNumeric?: number | null;
+      dscrReason?: string | null;
+      ltvPct?: number | null;
+      equityMultiple?: number | null;
+      roiPct?: number | null;
+      appreciationUSD?: number | null;
       monthlyCashflowUSD: number | null;
+      monthlyCashflowReason?: string | null;
+      annualCashflowUSD?: number | null;
       monthlyMortgageUSD: number | null;
-      netOperatingIncomeUSD: number;
-      annualGrossRentUSD: number;
-      annualOPEXUSD: number;
-      annualDebtServiceUSD: number;
+      netOperatingIncomeUSD: number | null;
+      noiReason?: string | null;
+      annualGrossRentUSD: number | null;
+      annualOPEXUSD: number | null;
+      annualDebtServiceUSD: number | null;
       downPaymentUSD: number;
       closingCostsUSD?: number;
       totalEquityInvestedUSD?: number;
       loanAmountUSD?: number;
-      exitGrossValueUSD?: number;
-      sellingCostsUSD?: number;
+      exitGrossValueUSD?: number | null;
+      sellingCostsUSD?: number | null;
       remainingLoanYr5USD?: number;
-      netExitProceedsUSD?: number;
+      netExitProceedsUSD?: number | null;
       noiBreakdown?: {
         grossRentAnnualUSD: number;
         vacancyLossUSD: number;
@@ -304,9 +317,10 @@ export interface LastResultsData {
         insuranceUSD: number;
         maintenanceReserveUSD: number;
         hoaUSD: number;
+        annualOperatingExpensesUSD?: number;
         totalExpensesUSD: number;
         noiUSD: number;
-      };
+      } | null;
       yearByYear?: Array<{
         year: number;
         grossRentUSD: number;
@@ -320,6 +334,8 @@ export interface LastResultsData {
         dscr: number | null;
         cumulativeIrrPct: number | null;
       }>;
+      metrics?: Record<string, { value: number | null; reason?: string; assumptions: string[] }>;
+      assumptions?: string[];
       warnings?: string[];
       sensitivity: any[] | null;
       monteCarlo: any | null;
@@ -499,12 +515,13 @@ export interface DealFinderDeal {
   rent: number;
   capRate: number;
   cashOnCash: number;
-  irr: number;
-  dscr: string;
+  irr: number | null;
+  dscr: string | null;
   monthlyCashflow: number;
   downPaymentPct: number;
   interestRatePct: number;
   operatingExpensePct: number;
+  vacancyRatePct?: number;
   risk: 'Low' | 'Medium' | 'High' | string;
   score: number;
 }
@@ -797,14 +814,14 @@ export interface ScenarioCompareOutput {
   country: string;
   priceUSD: number;
   monthlyRentUSD: number;
-  noiUSD: number;
-  capRate: number;
-  netYieldPct: number;
-  cashOnCash: number;
+  noiUSD: number | null;
+  capRate: number | null;
+  netYieldPct: number | null;
+  cashOnCash: number | null;
   irr5Yr: number | null;
   dscr: string | null;
   monthlyDebtServiceUSD: number;
-  monthlyCashflowUSD: number;
+  monthlyCashflowUSD: number | null;
   ltvPct: number;
   transferTaxPct: number;
   capitalGainsTax: string;

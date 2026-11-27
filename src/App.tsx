@@ -33,6 +33,7 @@ import {
   PricingPublicPayload,
   PRODUCTION_URL,
 } from '../lib/plans';
+import { calculateUnderwriting } from '../lib/underwriting';
 import { getPaddleClient, getPaddleClientToken, getPaddleEnvironment } from './utils/paddleClient';
 import { AmbientBackground } from './components/AmbientBackground';
 import { CustomCursor } from './components/CustomCursor';
@@ -2225,17 +2226,27 @@ export default function App() {
             return;
           }
 
+          const uw = calculateUnderwriting({
+            priceUSD: prop.basePriceUSD,
+            rentUSD: prop.baseRentMonthlyUSD,
+            downPaymentPct: 30,
+            interestRatePct: 5.5,
+            operatingExpensePct: prop.managementPct || 10,
+            vacancyRatePct: prop.vacancyPct || 0,
+            hoaUSD: prop.hoaUSD || 0,
+          });
           const newAnalysis = {
             id: 'saved_' + Date.now(),
             property: prop.title,
             city: prop.city,
             price: prop.basePriceUSD,
             rent: prop.baseRentMonthlyUSD,
-            capRate: prop.capRate,
-            cashOnCash: Number((prop.capRate + 1.2).toFixed(2)),
-            irr: Number((prop.capRate + 5.0).toFixed(1)),
-            dscr: '1.75',
-            monthlyCashflow: Math.round(prop.baseRentMonthlyUSD * 0.8),
+            noi: uw.netOperatingIncomeUSD ?? prop.noiUSD,
+            capRate: uw.capRate ?? prop.capRate,
+            cashOnCash: uw.cashOnCash ?? 0,
+            irr: uw.irr5Yr,
+            dscr: uw.dscr,
+            monthlyCashflow: uw.monthlyCashflowUSD ?? 0,
             riskScore: prop.tenantRiskScore,
             date: Date.now(),
             imageUrl: prop.imageUrl,

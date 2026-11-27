@@ -5,6 +5,7 @@ import {
   type InstitutionalPdfSection,
   type PdfBrandingOptions,
 } from '../../lib/pdfGenerator';
+import { calculateUnderwriting } from '../../lib/underwriting';
 import type { WhiteGloveDeliverable } from '../types';
 
 export function toPdfSafeAscii(input: string): string {
@@ -44,13 +45,18 @@ export interface InstitutionalMemoInput {
   planDisplay: string;
   valuationUSD: number;
   monthlyRentUSD: number;
-  noiUSD: number;
-  capRate: number;
-  cashOnCash: number;
+  noiUSD: number | null;
+  noiReason?: string | null;
+  capRate: number | null;
+  capRateReason?: string | null;
+  cashOnCash: number | null;
+  cashOnCashReason?: string | null;
   irr5Yr: number | null;
   irrError?: string | null;
   dscr: string | null;
+  dscrReason?: string | null;
   monthlyCashflowUSD: number | null;
+  monthlyCashflowReason?: string | null;
   riskScore?: string | number;
   downPaymentPct?: number;
   interestRatePct?: number;
@@ -67,9 +73,10 @@ export interface InstitutionalMemoInput {
     insuranceUSD: number;
     maintenanceReserveUSD: number;
     hoaUSD: number;
+    annualOperatingExpensesUSD?: number;
     totalExpensesUSD: number;
     noiUSD: number;
-  };
+  } | null;
   yearByYear?: Array<{
     year: number;
     grossRentUSD: number;
@@ -98,9 +105,12 @@ export interface InstitutionalMemoInput {
     combinedStress?: {
       irr5Yr?: number | null;
       monthlyCashflowUSD?: number | null;
+      annualCashflowUSD?: number | null;
       dscr?: string | null;
+      dscrReason?: string | null;
     };
   } | null;
+  assumptions?: string[];
   warnings?: string[];
   notes?: string;
   recommendation?: string;
@@ -130,15 +140,39 @@ export function buildInstitutionalMemorandumBytes(params: InstitutionalMemoInput
         `${firmLabel} | Institutional Memorandum | Licensed to ${params.userEmail} | ${dateStr}`
       );
 
+  const naLabel = (reason?: string | null, fallback = 'Unavailable') =>
+    toPdfSafeAscii(`Not available: ${reason || fallback}`);
+
   const irrLabel =
     params.irr5Yr !== null && Number.isFinite(params.irr5Yr)
       ? `${params.irr5Yr.toFixed(1)}%`
-      : `N/A (${params.irrError || 'Insufficient data'})`;
+      : naLabel(params.irrError, 'Insufficient data');
+  const noiLabel =
+    params.noiUSD !== null && Number.isFinite(params.noiUSD)
+      ? `$${Math.round(params.noiUSD).toLocaleString('en-US')}/yr`
+      : naLabel(params.noiReason, 'Invalid inputs');
+  const capRateLabel =
+    params.capRate !== null && Number.isFinite(params.capRate)
+      ? `${params.capRate.toFixed(2)}%`
+      : naLabel(params.capRateReason, 'Unavailable');
+  const cocLabel =
+    params.cashOnCash !== null && Number.isFinite(params.cashOnCash)
+      ? `${params.cashOnCash.toFixed(2)}%`
+      : naLabel(params.cashOnCashReason, 'Unavailable');
+  const dscrLabel = params.dscr
+    ? `${params.dscr}x`
+    : naLabel(params.dscrReason, 'No debt');
+  const monthlyCashflowLabel =
+    params.monthlyCashflowUSD !== null && Number.isFinite(params.monthlyCashflowUSD)
+      ? `$${Math.round(params.monthlyCashflowUSD).toLocaleString('en-US')}/mo`
+      : naLabel(params.monthlyCashflowReason, 'Unavailable');
 
   const noiBreakdown = params.noiBreakdown;
   const recommendationText =
     params.recommendation ||
-    (params.capRate >= 7.5 && (params.monthlyCashflowUSD ?? 0) >= 0
+    (params.capRate === null
+      ? 'UNDERWRITING INCOMPLETE: Core valuation or income inputs unavailable; verify property inputs prior to underwriting.'
+      : params.capRate >= 7.5 && (params.monthlyCashflowUSD ?? 0) >= 0
       ? 'PROCEED / ACCUMULATE: Positive unlevered yield spread and resilient debt coverage support acquisition subject to legal title and lease audit.'
       : params.capRate >= 5.5
       ? 'SELECTIVE HOLD / NEGOTIATE: Moderate yield profile; negotiate acquisition basis or optimize financing/OPEX before closing.'
@@ -170,17 +204,14 @@ export function buildInstitutionalMemorandumBytes(params: InstitutionalMemoInput
       keyValues: [
         { label: 'Acquisition Valuation (USD)', value: `$${Math.round(params.valuationUSD).toLocaleString('en-US')}` },
         { label: 'Gross Monthly Rent (USD)', value: `$${Math.round(params.monthlyRentUSD).toLocaleString('en-US')}/mo` },
-        { label: 'Annual Net Operating Income (NOI)', value: `$${Math.round(params.noiUSD).toLocaleString('en-US')}/yr` },
-        { label: 'Unlevered Cap Rate', value: `${params.capRate.toFixed(2)}%` },
-        { label: 'Cash-on-Cash Return', value: `${params.cashOnCash.toFixed(2)}%` },
+        { label: 'Annual Net Operating Income (NOI)', value: noiLabel },
+        { label: 'Unlevered Cap Rate', value: capRateLabel },
+        { label: 'Cash-on-Cash Return', value: cocLabel },
         { label: '5-Year Levered Equity IRR', value: irrLabel },
-        { label: 'Debt Service Coverage (DSCR)', value: params.dscr ? `${params.dscr}x` : 'N/A (Unlevered)' },
+        { label: 'Debt Service Coverage (DSCR)', value: dscrLabel },
         {
           label: 'Monthly Net Cashflow',
-          value:
-            params.monthlyCashflowUSD !== null
-              ? `$${Math.round(params.monthlyCashflowUSD).toLocaleString('en-US')}/mo`
-              : 'N/A',
+          value: monthlyCashflowLabel,
         },
       ],
     },
@@ -281,7 +312,7 @@ export function buildInstitutionalMemorandumBytes(params: InstitutionalMemoInput
       subtitle: 'Model sanity checks, debt coverage, and structural exposures',
       keyValues: [
         { label: 'Institutional Risk Tier', value: toPdfSafeAscii(String(params.riskScore || 'Standard Audit')) },
-        { label: 'DSCR Covenant Cushion', value: params.dscr ? `${params.dscr}x` : 'Unlevered / N/A' },
+        { label: 'DSCR Covenant Cushion', value: dscrLabel },
       ],
       paragraphs:
         params.warnings && params.warnings.length > 0
@@ -309,11 +340,18 @@ export function buildInstitutionalMemorandumBytes(params: InstitutionalMemoInput
         },
         {
           label: 'Combined Stress (+200bps / -10% Rent / 15% Vac)',
-          value:
-            params.monteCarlo?.combinedStress?.monthlyCashflowUSD !== undefined &&
-            params.monteCarlo?.combinedStress?.monthlyCashflowUSD !== null
-              ? `$${Math.round(params.monteCarlo.combinedStress.monthlyCashflowUSD).toLocaleString('en-US')}/mo (DSCR ${params.monteCarlo.combinedStress.dscr || 'N/A'}x)`
-              : 'See terminal simulation',
+          value: (() => {
+            const cs = params.monteCarlo?.combinedStress;
+            const csMonthly =
+              cs?.monthlyCashflowUSD !== undefined && cs?.monthlyCashflowUSD !== null
+                ? cs.monthlyCashflowUSD
+                : cs?.annualCashflowUSD !== undefined && cs?.annualCashflowUSD !== null
+                ? cs.annualCashflowUSD / 12
+                : null;
+            if (csMonthly === null) return 'See terminal simulation';
+            const csDscrLabel = cs?.dscr ? `${cs.dscr}x` : naLabel(cs?.dscrReason, 'No debt');
+            return `$${Math.round(csMonthly).toLocaleString('en-US')}/mo (DSCR ${csDscrLabel})`;
+          })(),
         },
         {
           label: 'Exit Value Decline Risk',
@@ -334,6 +372,9 @@ export function buildInstitutionalMemorandumBytes(params: InstitutionalMemoInput
     {
       heading: '7. SOURCES, ASSUMPTIONS & DISCLAIMER',
       paragraphs: [
+        ...(params.assumptions && params.assumptions.length > 0
+          ? params.assumptions.map((a) => `Assumption: ${toPdfSafeAscii(a)}`)
+          : []),
         ...(params.sources && params.sources.length > 0
           ? params.sources.map((s) => `- ${toPdfSafeAscii(s)}`)
           : [
@@ -366,8 +407,14 @@ export function buildInstitutionalMemorandumBytes(params: InstitutionalMemoInput
       dateStr,
       highlights: [
         { label: 'Acquisition Price', value: `$${Math.round(params.valuationUSD).toLocaleString('en-US')}` },
-        { label: 'Unlevered Cap Rate', value: `${params.capRate.toFixed(2)}%` },
-        { label: 'Annual NOI', value: `$${Math.round(params.noiUSD).toLocaleString('en-US')}` },
+        { label: 'Unlevered Cap Rate', value: capRateLabel },
+        {
+          label: 'Annual NOI',
+          value:
+            params.noiUSD !== null && Number.isFinite(params.noiUSD)
+              ? `$${Math.round(params.noiUSD).toLocaleString('en-US')}`
+              : naLabel(params.noiReason, 'Invalid inputs'),
+        },
         { label: '5-Yr Equity IRR', value: irrLabel },
       ],
     },
@@ -733,11 +780,29 @@ export function downloadWhiteGlovePdf(params: {
     '=== COMBINED PORTFOLIO SUMMARY ===',
     `Total Valuation: ${ccy} ${Number(combined.totalValuation ?? combined.totalValuationUSD ?? 0).toLocaleString('en-US')}`,
     `Total Monthly Rent: ${ccy} ${Number(combined.totalMonthlyRent ?? combined.totalMonthlyRentUSD ?? 0).toLocaleString('en-US')}/mo`,
-    `Weighted Cap Rate: ${Number(combined.weightedCapRate || 0).toFixed(2)}%`,
-    ...(combined.blendedCoC !== undefined ? [`Blended Cash-on-Cash: ${Number(combined.blendedCoC).toFixed(2)}%`] : []),
+    `Weighted Cap Rate: ${combined.weightedCapRate !== null && combined.weightedCapRate !== undefined ? `${Number(combined.weightedCapRate).toFixed(2)}%` : 'Not available'}`,
+    ...(combined.blendedCoC !== undefined
+      ? [
+          `Blended Cash-on-Cash: ${
+            combined.blendedCoC !== null ? `${Number(combined.blendedCoC).toFixed(2)}%` : 'Not available'
+          }`,
+        ]
+      : []),
     `Combined Monthly Net Cashflow: ${ccy} ${Number(combined.totalMonthlyCashflow ?? combined.totalMonthlyCashflowUSD ?? 0).toLocaleString('en-US')}/mo`,
-    `Combined 5-Year Portfolio IRR: ${Number(combined.blendedIrr5Yr ?? combined.weightedIrr5Yr ?? 0).toFixed(1)}%`,
-    ...(combined.portfolioDscr !== undefined ? [`Portfolio DSCR: ${combined.portfolioDscr}x`] : []),
+    `Combined 5-Year Portfolio IRR: ${
+      combined.blendedIrr5Yr !== null && combined.blendedIrr5Yr !== undefined
+        ? `${Number(combined.blendedIrr5Yr).toFixed(1)}%`
+        : combined.weightedIrr5Yr !== null && combined.weightedIrr5Yr !== undefined
+        ? `${Number(combined.weightedIrr5Yr).toFixed(1)}%`
+        : 'Not available'
+    }`,
+    ...(combined.portfolioDscr !== undefined
+      ? [
+          `Portfolio DSCR: ${
+            combined.portfolioDscr !== null ? `${combined.portfolioDscr}x` : 'Not available: No debt'
+          }`,
+        ]
+      : []),
     '',
     '=== UNDERWRITTEN ASSETS BREAKDOWN ===',
   ];
@@ -745,19 +810,29 @@ export function downloadWhiteGlovePdf(params: {
   (deliverable.properties || []).forEach((p: any, idx: number) => {
     const val = Number(p.valuation ?? p.priceUSD ?? 0);
     const rent = Number(p.monthlyRent ?? p.rentUSD ?? 0);
-    const eq = p.equityPct ?? p.downPaymentPct ?? 30;
-    const rt = p.ratePct ?? p.interestRatePct ?? 5.5;
-    const opx = p.opexPct ?? p.operatingExpensePct ?? 15;
+    const eq = Number(p.equityPct ?? p.downPaymentPct ?? 30);
+    const rt = Number(p.ratePct ?? p.interestRatePct ?? 5.5);
+    const opx = Number(p.opexPct ?? p.operatingExpensePct ?? 15);
     const pCcy = String(p.currency || ccy).toUpperCase();
     const vacPct = Number(p.vacancyPct ?? p.vacancyRatePct ?? 0);
-    const annualRent = rent * 12 * (1 - vacPct / 100);
-    const noi = annualRent * (1 - Number(opx) / 100);
-    const estCap = val > 0 ? ((noi / val) * 100).toFixed(2) : '0.00';
+    const uw = calculateUnderwriting({
+      priceUSD: val,
+      rentUSD: rent,
+      downPaymentPct: eq,
+      interestRatePct: rt,
+      operatingExpensePct: opx,
+      vacancyRatePct: vacPct,
+    });
+    const capVal = p.capRate !== undefined ? p.capRate : uw.capRate;
+    const capDisplay =
+      capVal !== null && capVal !== undefined && Number.isFinite(Number(capVal))
+        ? `${Number(capVal).toFixed(2)}%`
+        : `Not available: ${uw.capRateReason || 'Invalid inputs'}`;
 
     lines.push(
       `#${idx + 1}: ${toPdfSafeAscii(p.title || `Asset #${idx + 1}`)} (${toPdfSafeAscii(p.city || '-')}, ${toPdfSafeAscii(pCcy)})`,
       `   Valuation: ${pCcy} ${val.toLocaleString('en-US')} | Rent: ${pCcy} ${rent.toLocaleString('en-US')}/mo`,
-      `   Terms: ${eq}% Equity | ${rt}% Rate | ${opx}% OPEX | Est. Cap Rate: ${p.capRate ?? estCap}%`,
+      `   Terms: ${eq}% Equity | ${rt}% Rate | ${opx}% OPEX | Cap Rate: ${capDisplay}`,
       ...(p.spvNote ? [`   SPV Note: ${toPdfSafeAscii(p.spvNote)}`] : []),
       ''
     );

@@ -134,8 +134,8 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
 
   const chartData = results.map((r) => ({
     name: `${r.city} (${r.label.slice(0, 14)})`,
-    NetYield: r.netYieldPct,
-    CashOnCash: r.cashOnCash,
+    NetYield: r.netYieldPct ?? 0,
+    CashOnCash: r.cashOnCash ?? 0,
     IRR5Yr: r.irr5Yr ?? 0,
     Liquidity: r.liquidityScore,
   }));
@@ -302,7 +302,7 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
                   <td className="py-3 px-4 font-bold text-zinc-300">Net Yield (Cap Rate)</td>
                   {results.map((r) => (
                     <td key={r.id} className="py-3 px-4 text-[#D4AF37] font-black text-sm">
-                      {r.netYieldPct}%
+                      {r.netYieldPct !== null ? `${r.netYieldPct}%` : 'Not available'}
                     </td>
                   ))}
                 </tr>
@@ -310,7 +310,7 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
                   <td className="py-3 px-4 font-bold text-zinc-300">Cash-on-Cash / 5Y IRR</td>
                   {results.map((r) => (
                     <td key={r.id} className="py-3 px-4 text-emerald-300 font-bold">
-                      {r.cashOnCash}% CoC / {r.irr5Yr !== null ? `${r.irr5Yr}% IRR` : 'N/A'}
+                      {r.cashOnCash !== null ? `${r.cashOnCash}% CoC` : 'Not available'} / {r.irr5Yr !== null ? `${r.irr5Yr}% IRR` : 'Not available'}
                     </td>
                   ))}
                 </tr>
@@ -319,7 +319,7 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
                   {results.map((r) => (
                     <td key={r.id} className="py-3 px-4 text-cyan-300">
                       {r.ltvPct}% LTV • {formatPrice(r.monthlyDebtServiceUSD, currentCurrency)}/mo •{' '}
-                      <strong>{r.dscr ? `${r.dscr}x` : 'N/A'}</strong>
+                      <strong>{r.dscr ? `${r.dscr}x` : 'Not available: No debt'}</strong>
                     </td>
                   ))}
                 </tr>
@@ -329,10 +329,10 @@ export const ScenarioComparatorTab: React.FC<ScenarioComparatorTabProps> = ({
                     <td
                       key={r.id}
                       className={`py-3 px-4 font-bold ${
-                        r.monthlyCashflowUSD >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                        (r.monthlyCashflowUSD ?? 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'
                       }`}
                     >
-                      {formatPrice(r.monthlyCashflowUSD, currentCurrency)}/mo
+                      {r.monthlyCashflowUSD !== null ? `${formatPrice(r.monthlyCashflowUSD, currentCurrency)}/mo` : 'Not available'}
                     </td>
                   ))}
                 </tr>

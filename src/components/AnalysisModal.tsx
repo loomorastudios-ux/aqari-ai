@@ -3,6 +3,7 @@ import { CurrencyCode, PropertyListing, User } from '../types';
 import { formatPrice } from '../utils/formatters';
 import { downloadMemorandumPdf } from '../utils/pdfExport';
 import { canUseFeature, normalizePlanKey, PLANS } from '../../lib/plans';
+import { calculateUnderwriting } from '../../lib/underwriting';
 import { 
   X, 
   Building, 
@@ -96,14 +97,23 @@ export const AnalysisModal: React.FC<AnalysisModalProps> = ({
       if (typeof window !== 'undefined' && typeof data?.analyses_left === 'number') {
         window.dispatchEvent(new CustomEvent('aqari:user-updated', { detail: data }));
       }
+      const uw = calculateUnderwriting({
+        priceUSD: property.basePriceUSD,
+        rentUSD: property.baseRentMonthlyUSD,
+        downPaymentPct: 30,
+        interestRatePct: 5.5,
+        operatingExpensePct: property.managementPct || 10,
+        vacancyRatePct: property.vacancyPct || 0,
+        hoaUSD: property.hoaUSD || 0,
+      });
       const metricsLines = [
         `Acquisition Cost: ${formatPrice(property.basePriceUSD, currentCurrency)}`,
         `Monthly Gross Rent: ${formatPrice(property.baseRentMonthlyUSD, currentCurrency)}`,
-        `Net Cap Rate: ${property.capRate}%`,
-        `Estimated Cash-on-Cash: ${(property.capRate + 1.1).toFixed(2)}%`,
-        `Estimated 5-Yr IRR: ${(property.capRate + 5.0).toFixed(1)}%`,
-        `Monthly NOI Estimate: ${formatPrice(Math.round(property.noiUSD / 12), currentCurrency)}`,
-        `DSCR Benchmark: 1.85x`,
+        `Net Cap Rate: ${uw.capRate !== null ? `${uw.capRate}%` : `Not available: ${uw.capRateReason || 'Invalid inputs'}`}`,
+        `Cash-on-Cash Return: ${uw.cashOnCash !== null ? `${uw.cashOnCash.toFixed(2)}%` : `Not available: ${uw.cashOnCashReason || 'No initial equity'}`}`,
+        `5-Yr Equity IRR: ${uw.irr5Yr !== null ? `${uw.irr5Yr.toFixed(1)}%` : `Not available: ${uw.irrError || 'Insufficient data'}`}`,
+        `Monthly NOI: ${uw.netOperatingIncomeUSD !== null ? formatPrice(Math.round(uw.netOperatingIncomeUSD / 12), currentCurrency) : `Not available: ${uw.noiReason || 'Invalid inputs'}`}`,
+        `DSCR: ${uw.dscr !== null ? `${uw.dscr}x` : `Not available: ${uw.dscrReason || 'No debt'}`}`,
       ];
       downloadMemorandumPdf({
         title: property.title,
