@@ -29,7 +29,7 @@ import {
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSignIn: (user: User) => void;
+  onSignIn: (user: User, authTokens?: { accessToken?: string; idToken?: string }) => void;
   initialEmail?: string;
 }
 
@@ -81,10 +81,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           setLoadingText('Verifying token with Google endpoint...');
           if (accessToken) {
             const verified = await verifyGoogleAccessToken(accessToken);
-            handleSuccessfulGoogleAuth(verified);
+            handleSuccessfulGoogleAuth(verified, { accessToken });
           } else if (idToken) {
             const verified = await verifyGoogleIdToken(idToken);
-            handleSuccessfulGoogleAuth(verified);
+            handleSuccessfulGoogleAuth(verified, { idToken });
           }
         } catch (err) {
           setErrorMsg(formatOAuthErrorMessage(err));
@@ -97,13 +97,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     return () => window.removeEventListener('message', handleOAuthMessage);
   }, []);
 
-  const handleSuccessfulGoogleAuth = (verified: {
-    googleId: string;
-    email: string;
-    name: string;
-    avatar: string;
-    picture?: string;
-  }) => {
+  const handleSuccessfulGoogleAuth = (
+    verified: {
+      googleId: string;
+      email: string;
+      name: string;
+      avatar: string;
+      picture?: string;
+    },
+    authTokens?: { accessToken?: string; idToken?: string }
+  ) => {
     const cleanEmail = verified.email.toLowerCase().trim();
     const { user } = loginOrCreateUser(
       cleanEmail,
@@ -114,7 +117,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     );
 
     setIsLoading(false);
-    onSignIn(user);
+    onSignIn(user, authTokens);
     onClose();
   };
 
@@ -187,7 +190,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               setLoadingText('Verifying token with Google Userinfo API...');
               // Verify directly against Google's Userinfo API
               const verified = await verifyGoogleAccessToken(tokenResponse.access_token);
-              handleSuccessfulGoogleAuth(verified);
+              handleSuccessfulGoogleAuth(verified, { accessToken: tokenResponse.access_token });
             } catch (verifyErr) {
               console.error('Google token verification failed:', verifyErr);
               setErrorMsg('Google verification failed. Token rejected by Google API.');
@@ -251,10 +254,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             if (accessToken) {
               const verified = await verifyGoogleAccessToken(accessToken);
-              handleSuccessfulGoogleAuth(verified);
+              handleSuccessfulGoogleAuth(verified, { accessToken });
             } else if (idToken) {
               const verified = await verifyGoogleIdToken(idToken);
-              handleSuccessfulGoogleAuth(verified);
+              handleSuccessfulGoogleAuth(verified, { idToken });
             }
           }
         } catch {

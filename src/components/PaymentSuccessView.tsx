@@ -36,21 +36,16 @@ export const PaymentSuccessView: React.FC<PaymentSuccessViewProps> = ({
       });
     } catch {}
 
-    const params = new URLSearchParams(window.location.search);
-    const emailParam = (params.get('email') || currentUser?.email || '').trim().toLowerCase();
-
-    if (!emailParam) {
-      setQuotaLabel('Sign in to sync');
-      return;
-    }
-
-    fetch(`/api/app?action=me&login_email=${encodeURIComponent(emailParam)}&t=${Date.now()}`, {
+    fetch(`/api/app?action=me&t=${Date.now()}`, {
       credentials: 'include',
       cache: 'no-store',
     })
       .then((res) => (res.ok ? res.json() : null))
       .then((me) => {
-        if (!me?.authenticated || !me?.email) return;
+        if (!me?.authenticated || !me?.email) {
+          setQuotaLabel('Sign in to sync');
+          return;
+        }
         const planKey = normalizePlanKey(me.planKey || me.user?.plan);
         const cfg = PLANS[planKey];
         const total = Number(me.analyses_total ?? cfg.analysesLimit);

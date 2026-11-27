@@ -66,10 +66,9 @@ export const PortfolioIntelligencePanel: React.FC<PortfolioIntelligencePanelProp
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/app?action=portfolio-intelligence&email=${encodeURIComponent(userEmail)}`,
-        { credentials: 'include' }
-      );
+      const res = await fetch('/api/app?action=portfolio-intelligence', {
+        credentials: 'include',
+      });
       const data = await res.json();
       if (res.ok && data.success) {
         setAssets(data.assets || []);

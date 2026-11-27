@@ -9,6 +9,25 @@ import {
 
 export const SESSION_COOKIE_NAME = 'aqari_session';
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const ADMIN_ALLOWED_ORIGIN = 'https://admin-aqari2.vercel.app';
+
+export function isAdminRequestOrigin(req: any): boolean {
+  const origin = String(req?.headers?.origin || req?.headers?.Origin || '').trim();
+  return origin === ADMIN_ALLOWED_ORIGIN;
+}
+
+export function applyAdminOnlyCors(req: any, res: any): void {
+  res?.setHeader?.('X-Content-Type-Options', 'nosniff');
+  res?.setHeader?.('Vary', 'Origin');
+
+  const origin = String(req?.headers?.origin || req?.headers?.Origin || '').trim();
+  if (!origin || origin === ADMIN_ALLOWED_ORIGIN) {
+    res?.setHeader?.('Access-Control-Allow-Origin', ADMIN_ALLOWED_ORIGIN);
+    res?.setHeader?.('Access-Control-Allow-Credentials', 'true');
+    res?.setHeader?.('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res?.setHeader?.('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+}
 
 export type AuthSessionUser = ServerSessionRecord;
 
@@ -245,7 +264,8 @@ export async function createSession(
     name?: string;
     picture?: string;
     verifiedViaGoogle: boolean;
-  }
+  },
+  options?: { req?: any; crossSiteAdmin?: boolean }
 ): Promise<{ session: AuthSessionUser; cookieToken: string }> {
   const email = (user?.email || '').trim().toLowerCase();
   if (!email || !email.includes('@')) {
@@ -268,15 +288,27 @@ export async function createSession(
 
   const cookieToken = signSessionId(sessionId);
   if (res) {
-    const isProd = isStrictSecretRuntime();
-    const flags = [
-      `${SESSION_COOKIE_NAME}=${encodeURIComponent(cookieToken)}`,
-      'Path=/',
-      'HttpOnly',
-      'SameSite=Lax',
-      `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
-      ...(isProd ? ['Secure'] : []),
-    ];
+    const useCrossSiteAdminCookie = Boolean(
+      options?.crossSiteAdmin || (options?.req && isAdminRequestOrigin(options.req))
+    );
+    const maxAgeSec = Math.floor(SESSION_TTL_MS / 1000);
+    const flags = useCrossSiteAdminCookie
+      ? [
+          `${SESSION_COOKIE_NAME}=${encodeURIComponent(cookieToken)}`,
+          'HttpOnly',
+          'Secure',
+          'SameSite=None',
+          'Path=/',
+          `Max-Age=${maxAgeSec}`,
+        ]
+      : [
+          `${SESSION_COOKIE_NAME}=${encodeURIComponent(cookieToken)}`,
+          'Path=/',
+          'HttpOnly',
+          'SameSite=Lax',
+          `Max-Age=${maxAgeSec}`,
+          ...(isStrictSecretRuntime() ? ['Secure'] : []),
+        ];
     appendSetCookieHeader(res, flags.join('; '));
   }
 
@@ -315,10 +347,25 @@ export async function destroySession(req: any, res: any): Promise<void> {
   } catch {}
 
   if (res) {
-    appendSetCookieHeader(
-      res,
-      `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
-    );
+    const useCrossSiteAdminCookie = isAdminRequestOrigin(req);
+    const flags = useCrossSiteAdminCookie
+      ? [
+          `${SESSION_COOKIE_NAME}=`,
+          'HttpOnly',
+          'Secure',
+          'SameSite=None',
+          'Path=/',
+          'Max-Age=0',
+        ]
+      : [
+          `${SESSION_COOKIE_NAME}=`,
+          'Path=/',
+          'HttpOnly',
+          'SameSite=Lax',
+          'Max-Age=0',
+          ...(isStrictSecretRuntime() ? ['Secure'] : []),
+        ];
+    appendSetCookieHeader(res, flags.join('; '));
   }
 }
 

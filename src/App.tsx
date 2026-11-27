@@ -638,7 +638,7 @@ export default function App() {
           ? cleanPlaceholderOrderId(overrideOrderId)
           : urlOrderId;
 
-      // 2. Verify checkout with /api/app?action=verify-payment
+      // 2. Verify checkout with /api/app?action=verify-payment (authenticated via HttpOnly session cookie)
       const verifyRes = await fetch('/api/app?action=verify-payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -646,7 +646,6 @@ export default function App() {
         body: JSON.stringify({
           transaction_id: targetOrderId || '',
           order_id: targetOrderId || '',
-          login_email: loginEmail,
         }),
       });
 
@@ -900,24 +899,42 @@ export default function App() {
     }
   };
 
-  // Sign In Action -> create signed HttpOnly cookie + load authoritative quota from backend
-  const handleSignIn = async (newUser: User) => {
-    handleSaveUser(newUser);
+  // Sign In Action -> send verified Google token to server to create signed HttpOnly cookie
+  const handleSignIn = async (
+    newUser: User,
+    authTokens?: { accessToken?: string; idToken?: string }
+  ) => {
     setIsAuthOpen(false);
     setMeError(null);
     setServerSynced(false);
 
-    let resolvedUser = newUser;
+    if (!authTokens?.idToken && !authTokens?.accessToken) {
+      handleSaveUser(null);
+      setMeError('Google token verification is required to sign in.');
+      setServerSynced(true);
+      return;
+    }
+
+    let resolvedUser: User | null = null;
     try {
       const res = await fetch('/api/app?action=session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email: newUser.email, name: newUser.name }),
+        body: JSON.stringify({
+          idToken: authTokens?.idToken,
+          accessToken: authTokens?.accessToken,
+        }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.user) {
+      if (!res.ok) {
+        const errPayload = await res.json().catch(() => null);
+        handleSaveUser(null);
+        setMeError(errPayload?.error || 'Google authentication failed. Please sign in again.');
+        setServerSynced(true);
+        return;
+      }
+      const data = await res.json();
+      if (data?.user) {
           const serverPlan = normalizePlanKey(data.planKey || data.user.plan);
           const serverCfg = PLANS[serverPlan];
           const serverTotal = Number(
@@ -1040,11 +1057,15 @@ export default function App() {
           resolvedUser = syncedUser;
           setServerSynced(true);
         }
-      }
     } catch {
+      handleSaveUser(null);
       setMeError('Unable to synchronize credits from server. Please retry.');
     } finally {
       setServerSynced(true);
+    }
+
+    if (!resolvedUser) {
+      return;
     }
 
     window.history.pushState({}, '', '/app');
@@ -1074,28 +1095,22 @@ export default function App() {
     window.scrollTo(0, 0);
   };
 
-  // Server-authoritative /api/app?action=me Sync: ALWAYS read plan & limits from server DB, NEVER localStorage
+  // Server-authoritative /api/app?action=me Sync: ALWAYS use verified HttpOnly session cookie
   useEffect(() => {
     const syncMeFromServer = async () => {
       try {
-        const loginQuery = user?.email ? `&login_email=${encodeURIComponent(user.email)}` : '';
-        let res = await fetch(`/api/app?action=me${loginQuery}&t=${Date.now()}`, {
+        const res = await fetch(`/api/app?action=me&t=${Date.now()}`, {
           credentials: 'include',
           cache: 'no-store',
         });
 
-        // If cookie hasn't been established for this signed-in user yet, establish HttpOnly cookie first
-        if (res.status === 401 && user?.email) {
-          await fetch('/api/app?action=session', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ email: user.email, name: user.name }),
-          });
-          res = await fetch(`/api/app?action=me${loginQuery}&t=${Date.now()}`, {
-            credentials: 'include',
-            cache: 'no-store',
-          });
+        if (res.status === 401) {
+          if (user?.email) {
+            clearSession();
+            setUser(null);
+          }
+          setServerSynced(true);
+          return;
         }
 
         if (!res.ok) {
@@ -1107,8 +1122,9 @@ export default function App() {
         }
         const data = await res.json();
         if (!data?.authenticated || !data?.email) {
-          if (user?.email && typeof user.analysesLeft !== 'number') {
-            setMeError('Unable to authenticate server session. Please retry.');
+          if (user?.email) {
+            clearSession();
+            setUser(null);
           }
           setServerSynced(true);
           return;

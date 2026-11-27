@@ -73,6 +73,7 @@ export interface CustomCityRecord {
 }
 
 export interface ServerUserRecord {
+  userId?: string;
   email: string;
   name: string;
   plan: PlanKey;
@@ -128,6 +129,7 @@ export interface ServerUserRecord {
 
 export interface ServerSessionRecord {
   sessionId: string;
+  userId?: string;
   email: string;
   name?: string;
   picture?: string;
@@ -281,6 +283,13 @@ interface StoreShape {
   analyst_threads: Record<string, AnalystThreadRecord>;
   whiteglove_requests: WhiteGloveRequestRecord[];
   api_keys: Record<string, string>;
+  rate_limits?: Record<string, { count: number; resetAt: number }>;
+  cancellation_logs?: any[];
+  enterprise_inquiries?: any[];
+  admin_audit_logs?: any[];
+  orgs?: Record<string, any>;
+  user_orgs?: Record<string, string[]>;
+  reports?: Record<string, any>;
 }
 
 function createDefaultPricingConfig(): StoredPricingConfig {
@@ -375,14 +384,28 @@ function getMemoryStore(): StoreShape {
       analyst_threads: {},
       whiteglove_requests: [],
       api_keys: {},
+      rate_limits: {},
+      cancellation_logs: [],
+      enterprise_inquiries: [],
+      admin_audit_logs: [],
+      orgs: {},
+      user_orgs: {},
+      reports: {},
     };
   }
   return memoryStoreCache;
 }
 
+export function getUserIdForEmail(rawEmail: string): string {
+  const email = normalizeEmail(rawEmail);
+  if (!email) return '';
+  return 'usr_' + crypto.createHash('sha256').update(email).digest('hex').slice(0, 16);
+}
+
 function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
   const now = Date.now();
   return {
+    userId: typeof raw?.userId === 'string' && raw.userId.trim() ? raw.userId.trim() : getUserIdForEmail(email),
     email,
     name: raw?.name || email.split('@')[0],
     plan: normalizePlanKey(raw?.plan),
@@ -518,6 +541,22 @@ function loadStore(): StoreShape {
           api_keys:
             parsed.api_keys && typeof parsed.api_keys === 'object' && !Array.isArray(parsed.api_keys)
               ? parsed.api_keys
+              : {},
+          rate_limits:
+            parsed.rate_limits && typeof parsed.rate_limits === 'object' && !Array.isArray(parsed.rate_limits)
+              ? parsed.rate_limits
+              : {},
+          cancellation_logs: Array.isArray(parsed.cancellation_logs) ? parsed.cancellation_logs : [],
+          enterprise_inquiries: Array.isArray(parsed.enterprise_inquiries) ? parsed.enterprise_inquiries : [],
+          admin_audit_logs: Array.isArray(parsed.admin_audit_logs) ? parsed.admin_audit_logs : [],
+          orgs: parsed.orgs && typeof parsed.orgs === 'object' && !Array.isArray(parsed.orgs) ? parsed.orgs : {},
+          user_orgs:
+            parsed.user_orgs && typeof parsed.user_orgs === 'object' && !Array.isArray(parsed.user_orgs)
+              ? parsed.user_orgs
+              : {},
+          reports:
+            parsed.reports && typeof parsed.reports === 'object' && !Array.isArray(parsed.reports)
+              ? parsed.reports
               : {},
         };
       }
@@ -1820,5 +1859,95 @@ export async function getAuditLogsFromDb(params?: {
     page,
     limit,
     totalPages: Math.max(1, Math.ceil(total / limit)),
+  };
+}
+
+// =========================================================================
+// PERSISTENT RATE LIMITER (Upstash KV REST + Durable Disk Store Fallback)
+// =========================================================================
+
+export interface RateLimitResult {
+  allowed: boolean;
+  remaining: number;
+  retryAfterSec: number;
+  resetAt: number;
+}
+
+export async function rateLimit(
+  rawKey: string,
+  limit: number,
+  windowMs: number
+): Promise<RateLimitResult> {
+  const key = String(rawKey || 'anonymous').trim().slice(0, 180);
+  const safeLimit = Math.max(1, Math.floor(limit));
+  const safeWindowMs = Math.max(1000, Math.floor(windowMs));
+  const now = Date.now();
+
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const redisKey = `aqari:rl:${key}`;
+      const countRaw = await kvCommand(['INCR', redisKey]);
+      const count = Math.max(1, Number(countRaw || 1));
+      let ttlMs = safeWindowMs;
+      if (count === 1) {
+        await kvCommand(['PEXPIRE', redisKey, safeWindowMs]);
+      } else {
+        const pttl = Number(await kvCommand(['PTTL', redisKey]));
+        if (Number.isFinite(pttl) && pttl > 0) {
+          ttlMs = pttl;
+        } else {
+          await kvCommand(['PEXPIRE', redisKey, safeWindowMs]);
+        }
+      }
+      const allowed = count <= safeLimit;
+      return {
+        allowed,
+        remaining: Math.max(0, safeLimit - count),
+        retryAfterSec: allowed ? 0 : Math.max(1, Math.ceil(ttlMs / 1000)),
+        resetAt: now + ttlMs,
+      };
+    }
+  } catch (err) {
+    console.error('[RATE_LIMIT] KV fallback to durable disk store:', err);
+  }
+
+  const store = loadStore();
+  if (!store.rate_limits || typeof store.rate_limits !== 'object' || Array.isArray(store.rate_limits)) {
+    store.rate_limits = {};
+  }
+
+  // Prune expired buckets opportunistically
+  for (const [k, bucket] of Object.entries(store.rate_limits)) {
+    if (!bucket || typeof bucket.resetAt !== 'number' || bucket.resetAt <= now) {
+      delete store.rate_limits[k];
+    }
+  }
+
+  const existing = store.rate_limits[key];
+  if (!existing || existing.resetAt <= now) {
+    const resetAt = now + safeWindowMs;
+    store.rate_limits[key] = { count: 1, resetAt };
+    persistStore(store);
+    return {
+      allowed: true,
+      remaining: Math.max(0, safeLimit - 1),
+      retryAfterSec: 0,
+      resetAt,
+    };
+  }
+
+  const nextCount = Number(existing.count || 0) + 1;
+  existing.count = nextCount;
+  store.rate_limits[key] = existing;
+  persistStore(store);
+
+  const allowed = nextCount <= safeLimit;
+  const retryAfterSec = allowed ? 0 : Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+  return {
+    allowed,
+    remaining: Math.max(0, safeLimit - nextCount),
+    retryAfterSec,
+    resetAt: existing.resetAt,
   };
 }

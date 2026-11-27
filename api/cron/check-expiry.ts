@@ -1,9 +1,11 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { requireAdmin } from '../../lib/auth';
 
 // =========================================================================
-// 1. INLINED PLANS & EMAIL TEMPLATES (Zero external ../../lib imports)
+// 1. INLINED PLANS & EMAIL TEMPLATES
 // =========================================================================
 
 type PlanKey = 'free' | 'starter' | 'pro' | 'enterprise';
@@ -48,6 +50,13 @@ function cleanEnvValue(value?: string | null): string {
 }
 
 function getStoreFile(): string {
+  const override = getEnv('AQARI_STORE_FILE');
+  if (override) return override;
+  if (!getEnv('VERCEL')) {
+    try {
+      return path.join(process.cwd(), '.aqari-data', 'aqari_terminal_store_v1.json');
+    } catch {}
+  }
   try {
     return path.join('/tmp', 'aqari_terminal_store_v1.json');
   } catch {
@@ -172,6 +181,22 @@ function buildExpiredEmail(params: { name: string; previousPlan: PlanKey; expire
   return { subject, text, html };
 }
 
+function verifyCronAuth(req: any): boolean {
+  const cronSecret = cleanEnvValue(getEnv('CRON_SECRET'));
+  if (!cronSecret) return false;
+  const rawAuth = String(req?.headers?.authorization || req?.headers?.Authorization || '');
+  if (!rawAuth.startsWith('Bearer ')) return false;
+  const token = rawAuth.slice(7).trim();
+  if (!token) return false;
+  try {
+    const a = Buffer.from(token, 'utf8');
+    const b = Buffer.from(cronSecret, 'utf8');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
 async function dispatchEmail(params: {
   to: string;
   subject: string;
@@ -181,7 +206,6 @@ async function dispatchEmail(params: {
 }) {
   const resendKey = cleanEnvValue(getEnv('RESEND_API_KEY'));
   const hasResendKey = Boolean(resendKey);
-  const keyPrefix = hasResendKey ? resendKey.slice(0, 6) : 'MISSING';
 
   if (!hasResendKey) {
     appendEmailLog({
@@ -191,9 +215,8 @@ async function dispatchEmail(params: {
       type: params.type,
       status: 'failed',
       provider: 'resend',
-      error: 'RESEND_API_KEY missing in Vercel',
+      error: 'Email service not configured',
       has_resend_key: false,
-      key_prefix: 'MISSING',
       resend_status: 0,
     });
     return { success: false };
@@ -230,11 +253,10 @@ async function dispatchEmail(params: {
       status: res.ok ? 'sent' : 'failed',
       provider: 'resend',
       has_resend_key: true,
-      key_prefix: keyPrefix,
       resend_status: res.status,
     });
     return { success: res.ok };
-  } catch (err: any) {
+  } catch {
     appendEmailLog({
       to: params.to,
       from: EMAIL_FROM_ADDRESS,
@@ -242,9 +264,8 @@ async function dispatchEmail(params: {
       type: params.type,
       status: 'failed',
       provider: 'resend',
-      error: err?.message || 'Network error',
+      error: 'Network error',
       has_resend_key: true,
-      key_prefix: keyPrefix,
       resend_status: 502,
     });
     return { success: false };
@@ -278,6 +299,14 @@ function getLocalHourAndDate(timestamp: number, timeZone: string): { hour: numbe
 
 export default async function handler(req: any, res: any) {
   try {
+    res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
+    if (!verifyCronAuth(req)) {
+      const adminAuth = await requireAdmin(req);
+      if (!adminAuth.ok) {
+        return res.status(401).json({ success: false, error: 'unauthorized' });
+      }
+    }
+
     const now = Date.now();
     const force = req?.query?.force === 'true' || req?.body?.force === true;
     const store = loadRawStore();
@@ -286,7 +315,6 @@ export default async function handler(req: any, res: any) {
     let downgradedToFree = 0;
     let expiredEmailsSent = 0;
     let day29EmailsSent = 0;
-    const actions: Array<{ email: string; action: string }> = [];
 
     for (const u of users) {
       const planKey = normalizePlanKey(u?.plan);
@@ -322,7 +350,6 @@ export default async function handler(req: any, res: any) {
           });
           expiredEmailsSent++;
         }
-        actions.push({ email: u.email, action: `expired_locked_${previousPlan}` });
         continue;
       }
 
@@ -369,7 +396,6 @@ export default async function handler(req: any, res: any) {
         store.users[u.email] = u;
         persistRawStore(store);
         day29EmailsSent++;
-        actions.push({ email: u.email, action: `sent_day29_email_${planKey}` });
       }
     }
 
@@ -380,10 +406,13 @@ export default async function handler(req: any, res: any) {
       downgradedToFree,
       expiredEmailsSent,
       day29EmailsSent,
-      actions,
     });
   } catch (error: any) {
     console.error('/api/cron/check-expiry error:', error);
-    return res.status(200).json({ success: false, error: error?.message || 'Cron execution failed' });
+    const isProd = getEnv('VERCEL_ENV') === 'production' || getEnv('NODE_ENV') === 'production';
+    return res.status(500).json({
+      success: false,
+      error: isProd ? 'internal error' : error?.message || 'Cron execution failed',
+    });
   }
 }

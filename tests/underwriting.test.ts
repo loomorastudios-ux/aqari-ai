@@ -254,6 +254,39 @@ test('Institutional PDF output matches underwriting metrics & financing figures 
   }
 });
 
+// Helpers to resolve aligned store path and mint verified test sessions via lib/auth.ts
+async function getTestStorePath(): Promise<string> {
+  const path = await import('node:path');
+  const override = process.env.AQARI_STORE_FILE;
+  if (override && override.trim()) return override.trim();
+  if (!process.env.VERCEL) {
+    return path.join(process.cwd(), '.aqari-data', 'aqari_terminal_store_v1.json');
+  }
+  return '/tmp/aqari_terminal_store_v1.json';
+}
+
+async function seedTestStoreUser(email: string, record: Record<string, any>): Promise<void> {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const storePath = await getTestStorePath();
+  const dir = path.dirname(storePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
+  existing.users = existing.users || {};
+  existing.users[email.trim().toLowerCase()] = record;
+  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+}
+
+async function createTestSessionCookie(email: string, name?: string): Promise<string> {
+  const { createSession, SESSION_COOKIE_NAME } = await import('../lib/auth');
+  const { cookieToken } = await createSession(null, {
+    email: email.trim().toLowerCase(),
+    name: name || email.split('@')[0],
+    verifiedViaGoogle: true,
+  });
+  return `${SESSION_COOKIE_NAME}=${encodeURIComponent(cookieToken)}`;
+}
+
 // Helper to invoke Vercel API handler directly in-process
 async function invokeApi(params: {
   method?: string;
@@ -304,13 +337,60 @@ async function invokeApi(params: {
   return { statusCode, data: jsonPayload, headers: responseHeaders };
 }
 
-test('Server blocks limit bypass via API & persists saved analyses across logout/cookie-clear', async () => {
+async function invokeCronApi(params: {
+  method?: string;
+  headers?: Record<string, string>;
+}) {
+  const { default: cronHandler } = await import('../api/cron/check-expiry');
+  let statusCode = 200;
+  let jsonPayload: any = null;
+  const responseHeaders: Record<string, any> = {};
+
+  const req: any = {
+    method: params.method || 'GET',
+    url: '/api/cron/check-expiry',
+    headers: { host: 'localhost:3000', ...(params.headers || {}) },
+    query: {},
+    body: {},
+  };
+  const res: any = {
+    status(code: number) {
+      statusCode = code;
+      return this;
+    },
+    setHeader(k: string, v: any) {
+      responseHeaders[k] = v;
+      return this;
+    },
+    getHeader(k: string) {
+      return responseHeaders[k];
+    },
+    json(payload: any) {
+      jsonPayload = payload;
+      return this;
+    },
+    send(payload: any) {
+      jsonPayload = payload;
+      return this;
+    },
+    end() {
+      return this;
+    },
+  };
+
+  await cronHandler(req, res);
+  return { statusCode, data: jsonPayload, headers: responseHeaders };
+}
+
+test('Server blocks limit bypass via API & persists saved analyses across logout/re-login', async () => {
   const testEmail = `audit_free_${Date.now()}@aqari.test`;
+  const testCookie = await createTestSessionCookie(testEmail);
 
   // 1. Run 3 free analyses (limit = 3), trying client-side spoofing payload each time
   for (let i = 0; i < 3; i++) {
     const r = await invokeApi({
       action: 'run-analysis',
+      headers: { cookie: testCookie },
       body: {
         email: testEmail,
         plan: 'enterprise', // spoof attempt MUST be ignored by server
@@ -328,6 +408,7 @@ test('Server blocks limit bypass via API & persists saved analyses across logout
   // 2. 4th request MUST be blocked with 403 even if body claims enterprise plan
   const blockedRun = await invokeApi({
     action: 'run-analysis',
+    headers: { cookie: testCookie },
     body: {
       email: testEmail,
       plan: 'enterprise',
@@ -344,16 +425,18 @@ test('Server blocks limit bypass via API & persists saved analyses across logout
   // 3. Direct monte-carlo call on exhausted free user MUST be blocked with 403
   const blockedMc = await invokeApi({
     action: 'monte-carlo',
+    headers: { cookie: testCookie },
     body: { email: testEmail, priceUSD: 650_000, rentUSD: 4_500 },
   });
   assert.equal(blockedMc.statusCode, 403);
 
-  // 4. Logout & Persistence Check: save 1 analysis on fresh account, DELETE session, then fetch ?action=me
+  // 4. Logout & Persistence Check: save 1 analysis on fresh account, DELETE session, verify unauth ?action=me returns 401, then re-login and verify saved_analyses persists
   const persistEmail = `persist_${Date.now()}@aqari.test`;
+  const persistCookie1 = await createTestSessionCookie(persistEmail);
   const saveRes = await invokeApi({
     action: 'save-to-portfolio',
+    headers: { cookie: persistCookie1 },
     body: {
-      email: persistEmail,
       analysis: {
         id: 'persist_check_1',
         property: 'Persistence Tower Muscat',
@@ -372,19 +455,33 @@ test('Server blocks limit bypass via API & persists saved analyses across logout
   assert.equal(saveRes.statusCode, 200);
   assert.equal(saveRes.data.saved_count, 1);
 
-  const logoutRes = await invokeApi({ method: 'DELETE', action: 'session' });
+  const logoutRes = await invokeApi({
+    method: 'DELETE',
+    action: 'session',
+    headers: { cookie: persistCookie1 },
+  });
   assert.equal(logoutRes.statusCode, 200);
 
-  const rehydrateRes = await invokeApi({
+  // Unauthenticated ?action=me with only ?email=... must return 401 (no email-based data leak)
+  const unauthMe = await invokeApi({
     method: 'GET',
     action: 'me',
     query: { email: persistEmail },
+  });
+  assert.equal(unauthMe.statusCode, 401);
+
+  // New authenticated session for persistEmail restores persisted portfolio
+  const persistCookie2 = await createTestSessionCookie(persistEmail);
+  const rehydrateRes = await invokeApi({
+    method: 'GET',
+    action: 'me',
+    headers: { cookie: persistCookie2 },
   });
   assert.equal(rehydrateRes.statusCode, 200);
   assert.ok(
     Array.isArray(rehydrateRes.data.saved_analyses) &&
       rehydrateRes.data.saved_analyses.some((a: any) => a.property === 'Persistence Tower Muscat'),
-    'Saved analyses must persist on server after logout'
+    'Saved analyses must persist on server across logout and re-login'
   );
 });
 
@@ -392,25 +489,24 @@ test('Deal Finder labels generated/simulated output and Forecast exposes modelSp
   const adminEmail = `rbac_admin_${Date.now()}@aqari.test`;
   const managerEmail = `rbac_mgr_${Date.now()}@aqari.test`;
   const analystEmail = `rbac_analyst_${Date.now()}@aqari.test`;
+  const adminCookie = await createTestSessionCookie(adminEmail);
+  const analystCookie = await createTestSessionCookie(analystEmail);
 
   // Admin creates Enterprise org and invites Manager & Analyst
   const wsInit = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: adminEmail, subAction: 'create-org', name: 'Riyadh Sovereign IC' },
+    headers: { cookie: adminCookie },
+    body: { subAction: 'create-org', name: 'Riyadh Sovereign IC' },
   });
   assert.equal(wsInit.statusCode, 200);
   const orgId = wsInit.data.activeOrg.id;
 
-  // Give admin institutional quota to invite seats
-  const { updateServerUser, saveUserToDb } = await import('../api/app').catch(() => ({} as any));
-  void updateServerUser;
-  void saveUserToDb;
-
   const invMgr = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: adminEmail, orgId, subAction: 'invite-member', memberEmail: managerEmail, role: 'Manager' },
+    headers: { cookie: adminCookie },
+    body: { orgId, subAction: 'invite-member', memberEmail: managerEmail, role: 'Manager' },
   });
   // On free default user teamUsersLimit is 1 so 2nd seat returns 403 TEAM_SEAT_LIMIT_REACHED — verifies server seat gating too!
   assert.equal(invMgr.statusCode, 403);
@@ -420,13 +516,15 @@ test('Deal Finder labels generated/simulated output and Forecast exposes modelSp
   const outsiderApprove = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: analystEmail, orgId, subAction: 'update-deal-status', dealId: 'x', status: 'IC Approved' },
+    headers: { cookie: analystCookie },
+    body: { orgId, subAction: 'update-deal-status', dealId: 'x', status: 'IC Approved' },
   });
   assert.equal(outsiderApprove.statusCode, 403, 'Non-member/unauthorized actor blocked on server');
 
   const dfRes = await invokeApi({
     action: 'find-deals',
-    body: { email: adminEmail, city: 'Muscat', budget: 900_000, minCapRate: 5, propertyType: 'Apartment', risk: 'Medium' },
+    headers: { cookie: adminCookie },
+    body: { city: 'Muscat', budget: 900_000, minCapRate: 5, propertyType: 'Apartment', risk: 'Medium' },
   });
   assert.equal(dfRes.statusCode, 200);
   assert.equal(dfRes.data.sourceType, 'GENERATED_SIMULATED_NOT_LIVE_MLS');
@@ -435,15 +533,13 @@ test('Deal Finder labels generated/simulated output and Forecast exposes modelSp
 
 test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise Workspace enforces Admin/Manager/Analyst RBAC on server', async (t) => {
   const fs = await import('node:fs');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const instAdminEmail = `inst_admin_${Date.now()}@aqari.test`;
   const mgrEmail = `inst_mgr_${Date.now()}@aqari.test`;
   const analystEmail = `inst_analyst_${Date.now()}@aqari.test`;
 
-  const seedInstitutionalUser = (email: string) => {
-    const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
-    existing.users = existing.users || {};
-    existing.users[email] = {
+  const seedInstitutionalUser = async (email: string) => {
+    await seedTestStoreUser(email, {
       email,
       name: 'IC Admin Test',
       plan: 'institutional',
@@ -463,8 +559,7 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
       license_start: Date.now() - 1000,
       license_end: Date.now() + 30 * 24 * 60 * 60 * 1000,
       status: 'active',
-    };
-    fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+    });
   };
 
   t.after(() => {
@@ -483,14 +578,17 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
     }
   });
 
-  seedInstitutionalUser(instAdminEmail);
+  await seedInstitutionalUser(instAdminEmail);
+  const instAdminCookie = await createTestSessionCookie(instAdminEmail, 'IC Admin Test');
+  const mgrCookie = await createTestSessionCookie(mgrEmail, 'IC Manager');
+  const analystCookie = await createTestSessionCookie(analystEmail, 'IC Analyst');
 
   // 1. Forecast endpoint: check documented modelSpec + 2022-2026 historical baseline + indexed series
   const fcRes = await invokeApi({
     method: 'POST',
     action: 'get-forecast',
+    headers: { cookie: instAdminCookie },
     body: {
-      email: instAdminEmail,
       city: 'Muscat',
       propertyType: 'Apartment',
       period: '5 years',
@@ -510,7 +608,8 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
   const orgRes = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: instAdminEmail, subAction: 'create-org', name: 'Gulf Sovereign IC' },
+    headers: { cookie: instAdminCookie },
+    body: { subAction: 'create-org', name: 'Gulf Sovereign IC' },
   });
   assert.equal(orgRes.statusCode, 200);
   const orgId = orgRes.data.activeOrg.id;
@@ -518,22 +617,24 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
   const invMgr = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: instAdminEmail, orgId, subAction: 'invite-member', memberEmail: mgrEmail, role: 'Manager' },
+    headers: { cookie: instAdminCookie },
+    body: { orgId, subAction: 'invite-member', memberEmail: mgrEmail, role: 'Manager' },
   });
   assert.equal(invMgr.statusCode, 200);
 
   const invAnalyst = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: instAdminEmail, orgId, subAction: 'invite-member', memberEmail: analystEmail, role: 'Analyst' },
+    headers: { cookie: instAdminCookie },
+    body: { orgId, subAction: 'invite-member', memberEmail: analystEmail, role: 'Analyst' },
   });
   assert.equal(invAnalyst.statusCode, 200);
 
   const shared = await invokeApi({
     method: 'POST',
     action: 'workspace',
+    headers: { cookie: analystCookie },
     body: {
-      email: analystEmail,
       orgId,
       subAction: 'share-deal',
       deal: { title: 'Al Mouj Marina Parcel', city: 'Muscat', priceUSD: 1_800_000, capRate: 7.2 },
@@ -546,21 +647,24 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
   const analystApprove = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: analystEmail, orgId, subAction: 'update-deal-status', dealId, status: 'IC Approved' },
+    headers: { cookie: analystCookie },
+    body: { orgId, subAction: 'update-deal-status', dealId, status: 'IC Approved' },
   });
   assert.equal(analystApprove.statusCode, 403);
 
   const analystDelete = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: analystEmail, orgId, subAction: 'delete-deal', dealId },
+    headers: { cookie: analystCookie },
+    body: { orgId, subAction: 'delete-deal', dealId },
   });
   assert.equal(analystDelete.statusCode, 403);
 
   const analystInvite = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: analystEmail, orgId, subAction: 'invite-member', memberEmail: 'extra@aqari.test', role: 'Analyst' },
+    headers: { cookie: analystCookie },
+    body: { orgId, subAction: 'invite-member', memberEmail: 'extra@aqari.test', role: 'Analyst' },
   });
   assert.equal(analystInvite.statusCode, 403);
 
@@ -568,7 +672,8 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
   const mgrApprove = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: mgrEmail, orgId, subAction: 'update-deal-status', dealId, status: 'IC Approved' },
+    headers: { cookie: mgrCookie },
+    body: { orgId, subAction: 'update-deal-status', dealId, status: 'IC Approved' },
   });
   assert.equal(mgrApprove.statusCode, 200);
   assert.equal(mgrApprove.data.activeOrg.sharedDeals[0].status, 'IC Approved');
@@ -576,14 +681,16 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
   const mgrDelete = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: mgrEmail, orgId, subAction: 'delete-deal', dealId },
+    headers: { cookie: mgrCookie },
+    body: { orgId, subAction: 'delete-deal', dealId },
   });
   assert.equal(mgrDelete.statusCode, 403);
 
   const mgrInvite = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: mgrEmail, orgId, subAction: 'invite-member', memberEmail: 'extra@aqari.test', role: 'Analyst' },
+    headers: { cookie: mgrCookie },
+    body: { orgId, subAction: 'invite-member', memberEmail: 'extra@aqari.test', role: 'Analyst' },
   });
   assert.equal(mgrInvite.statusCode, 403);
 
@@ -591,7 +698,8 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
   const adminDelete = await invokeApi({
     method: 'POST',
     action: 'workspace',
-    body: { email: instAdminEmail, orgId, subAction: 'delete-deal', dealId },
+    headers: { cookie: instAdminCookie },
+    body: { orgId, subAction: 'delete-deal', dealId },
   });
   assert.equal(adminDelete.statusCode, 200);
   assert.equal(adminDelete.data.activeOrg.sharedDeals.length, 0);
@@ -653,12 +761,10 @@ async function invokeAdminApi(params: {
 
 test('Enterprise null limits lock by default and unlock only after Admin override', async (t) => {
   const fs = await import('node:fs');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const entEmail = `ent_unset_${Date.now()}@aqari.test`;
 
-  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
-  existing.users = existing.users || {};
-  existing.users[entEmail] = {
+  await seedTestStoreUser(entEmail, {
     email: entEmail,
     name: 'Unconfigured Enterprise',
     plan: 'institutional',
@@ -678,10 +784,14 @@ test('Enterprise null limits lock by default and unlock only after Admin overrid
     license_start: Date.now() - 1000,
     license_end: Date.now() + 30 * 24 * 60 * 60 * 1000,
     status: 'active',
-  };
-  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+  });
+  const entCookie = await createTestSessionCookie(entEmail, 'Unconfigured Enterprise');
+  const prevAdminEmail = process.env.ADMIN_EMAIL;
+  process.env.ADMIN_EMAIL = 'loomorastudios@gmail.com';
 
   t.after(() => {
+    if (prevAdminEmail === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = prevAdminEmail;
     try {
       const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
       if (parsed?.users?.[entEmail]) {
@@ -694,8 +804,8 @@ test('Enterprise null limits lock by default and unlock only after Admin overrid
   // 1. Unconfigured Enterprise user MUST be blocked with ENTERPRISE_CONTRACT_LIMIT_UNSET
   const blockedRes = await invokeApi({
     action: 'run-analysis',
+    headers: { cookie: entCookie },
     body: {
-      email: entEmail,
       propertyTitle: 'Null Enterprise Test',
       city: 'Muscat',
       priceUSD: 1_250_000,
@@ -705,17 +815,8 @@ test('Enterprise null limits lock by default and unlock only after Admin overrid
   assert.equal(blockedRes.statusCode, 403);
   assert.equal(blockedRes.data.code, 'ENTERPRISE_CONTRACT_LIMIT_UNSET');
 
-  // 2. Owner signs in to get a valid signed admin session cookie
-  const ownerSess = await invokeApi({
-    action: 'session',
-    method: 'POST',
-    body: { email: 'loomorastudios@gmail.com', name: 'Owner' },
-  });
-  assert.equal(ownerSess.statusCode, 200);
-  const rawSetCookie = ownerSess.headers['Set-Cookie'];
-  const cookieHeader = Array.isArray(rawSetCookie)
-    ? rawSetCookie.map((c: string) => c.split(';')[0]).join('; ')
-    : String(rawSetCookie || '').split(';')[0];
+  // 2. Owner signs in via verified server session cookie
+  const cookieHeader = await createTestSessionCookie('loomorastudios@gmail.com', 'Owner');
 
   // 3. Admin sets Enterprise contract limits
   const adminRes = await invokeAdminApi({
@@ -744,8 +845,8 @@ test('Enterprise null limits lock by default and unlock only after Admin overrid
   // 4. Configured Enterprise user can now run analysis
   const allowedRes = await invokeApi({
     action: 'run-analysis',
+    headers: { cookie: entCookie },
     body: {
-      email: entEmail,
       propertyTitle: 'Configured Enterprise Test',
       city: 'Muscat',
       priceUSD: 1_250_000,
@@ -758,13 +859,11 @@ test('Enterprise null limits lock by default and unlock only after Admin overrid
 
 test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async (t) => {
   const fs = await import('node:fs');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const freeOldEmail = `free_60d_${Date.now()}@aqari.test`;
 
   const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
-  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
-  existing.users = existing.users || {};
-  existing.users[freeOldEmail] = {
+  await seedTestStoreUser(freeOldEmail, {
     email: freeOldEmail,
     name: 'Old Free User',
     plan: 'free',
@@ -775,8 +874,8 @@ test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async 
     license_start: sixtyDaysAgo - 30 * 24 * 60 * 60 * 1000,
     license_end: sixtyDaysAgo, // 60 days past — Free must NOT expire by time!
     status: 'active',
-  };
-  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+  });
+  const freeOldCookie = await createTestSessionCookie(freeOldEmail, 'Old Free User');
 
   t.after(() => {
     try {
@@ -792,7 +891,7 @@ test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async 
   const meRes = await invokeApi({
     method: 'GET',
     action: 'me',
-    query: { login_email: freeOldEmail },
+    headers: { cookie: freeOldCookie },
   });
   assert.equal(meRes.statusCode, 200);
   assert.equal(meRes.data.package_expired, false);
@@ -803,8 +902,8 @@ test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async 
   for (let i = 0; i < 3; i++) {
     const r = await invokeApi({
       action: 'run-analysis',
+      headers: { cookie: freeOldCookie },
       body: {
-        email: freeOldEmail,
         propertyTitle: `Free Pass Asset ${i + 1}`,
         city: 'Muscat',
         priceUSD: 600_000,
@@ -817,8 +916,8 @@ test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async 
   // 4th run locks with exact exhaustion message
   const blocked = await invokeApi({
     action: 'run-analysis',
+    headers: { cookie: freeOldCookie },
     body: {
-      email: freeOldEmail,
       propertyTitle: 'Free Pass Asset 4',
       city: 'Muscat',
       priceUSD: 600_000,
@@ -831,16 +930,12 @@ test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async 
 
 test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring credits, and deducts package before credits', async (t) => {
   const fs = await import('node:fs');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const expiredNoCredsEmail = `exp_nocreds_${Date.now()}@aqari.test`;
   const expiredWithCredsEmail = `exp_creds_${Date.now()}@aqari.test`;
   const pkgFirstEmail = `pkg_first_${Date.now()}@aqari.test`;
 
-  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
-  existing.users = existing.users || {};
-
-  // User A: Expired Pro with 0 credits
-  existing.users[expiredNoCredsEmail] = {
+  await seedTestStoreUser(expiredNoCredsEmail, {
     email: expiredNoCredsEmail,
     name: 'Expired Zero Credits',
     plan: 'pro',
@@ -851,10 +946,8 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
     license_start: Date.now() - 35 * 86_400_000,
     license_end: Date.now() - 5 * 86_400_000,
     status: 'active',
-  };
-
-  // User B: Expired Pro with 25 non-expiring credits
-  existing.users[expiredWithCredsEmail] = {
+  });
+  await seedTestStoreUser(expiredWithCredsEmail, {
     email: expiredWithCredsEmail,
     name: 'Expired With Credits',
     plan: 'pro',
@@ -865,10 +958,8 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
     license_start: Date.now() - 35 * 86_400_000,
     license_end: Date.now() - 5 * 86_400_000,
     status: 'active',
-  };
-
-  // User C: Active Starter with 2 plan analyses left + 10 non-expiring credits (total 12)
-  existing.users[pkgFirstEmail] = {
+  });
+  await seedTestStoreUser(pkgFirstEmail, {
     email: pkgFirstEmail,
     name: 'Package First User',
     plan: 'starter',
@@ -879,9 +970,11 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
     license_start: Date.now() - 5 * 86_400_000,
     license_end: Date.now() + 25 * 86_400_000,
     status: 'active',
-  };
+  });
 
-  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+  const cookieA = await createTestSessionCookie(expiredNoCredsEmail);
+  const cookieB = await createTestSessionCookie(expiredWithCredsEmail);
+  const cookieC = await createTestSessionCookie(pkgFirstEmail);
 
   t.after(() => {
     try {
@@ -896,8 +989,8 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
   // Check User A: locked cleanly with exact no-auto-charge message
   const resA = await invokeApi({
     action: 'run-analysis',
+    headers: { cookie: cookieA },
     body: {
-      email: expiredNoCredsEmail,
       propertyTitle: 'Expired No Creds',
       city: 'Muscat',
       priceUSD: 600_000,
@@ -911,7 +1004,7 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
   const meB = await invokeApi({
     method: 'GET',
     action: 'me',
-    query: { login_email: expiredWithCredsEmail },
+    headers: { cookie: cookieB },
   });
   assert.equal(meB.statusCode, 200);
   assert.equal(meB.data.package_expired, true);
@@ -923,15 +1016,16 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
   // User B package modules (Monte Carlo) MUST be blocked with 403 while package expired
   const mcB = await invokeApi({
     action: 'monte-carlo',
-    body: { email: expiredWithCredsEmail, priceUSD: 600_000, rentUSD: 4_000 },
+    headers: { cookie: cookieB },
+    body: { priceUSD: 600_000, rentUSD: 4_000 },
   });
   assert.equal(mcB.statusCode, 403);
 
   // User B standard analysis MUST succeed and deduct 25 -> 24 extra_credits
   const runB = await invokeApi({
     action: 'run-analysis',
+    headers: { cookie: cookieB },
     body: {
-      email: expiredWithCredsEmail,
       propertyTitle: 'Credits Only Run',
       city: 'Muscat',
       priceUSD: 600_000,
@@ -945,7 +1039,8 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
   // Check User C: Package deducts first (2 plan runs), keeping extra_credits=10 intact, then 3rd run burns credits to 9
   const runC1 = await invokeApi({
     action: 'run-analysis',
-    body: { email: pkgFirstEmail, propertyTitle: 'Pkg 1', city: 'Muscat', priceUSD: 600_000, rentUSD: 4_000 },
+    headers: { cookie: cookieC },
+    body: { propertyTitle: 'Pkg 1', city: 'Muscat', priceUSD: 600_000, rentUSD: 4_000 },
   });
   assert.equal(runC1.statusCode, 200);
   assert.equal(runC1.data.plan_analyses_left, 1);
@@ -954,7 +1049,8 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
 
   const runC2 = await invokeApi({
     action: 'run-analysis',
-    body: { email: pkgFirstEmail, propertyTitle: 'Pkg 2', city: 'Muscat', priceUSD: 600_000, rentUSD: 4_000 },
+    headers: { cookie: cookieC },
+    body: { propertyTitle: 'Pkg 2', city: 'Muscat', priceUSD: 600_000, rentUSD: 4_000 },
   });
   assert.equal(runC2.statusCode, 200);
   assert.equal(runC2.data.plan_analyses_left, 0);
@@ -963,7 +1059,8 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
 
   const runC3 = await invokeApi({
     action: 'run-analysis',
-    body: { email: pkgFirstEmail, propertyTitle: 'Cred 1', city: 'Muscat', priceUSD: 600_000, rentUSD: 4_000 },
+    headers: { cookie: cookieC },
+    body: { propertyTitle: 'Cred 1', city: 'Muscat', priceUSD: 600_000, rentUSD: 4_000 },
   });
   assert.equal(runC3.statusCode, 200);
   assert.equal(runC3.data.plan_analyses_left, 0);
@@ -974,8 +1071,9 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
 test('One-time credit pack webhook credits account once and stays idempotent on replay', async (t) => {
   const fs = await import('node:fs');
   const crypto = await import('node:crypto');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const buyerEmail = `pack_buyer_${Date.now()}@aqari.test`;
+  const buyerCookie = await createTestSessionCookie(buyerEmail);
   const txnId = `txn_pack_${Date.now()}`;
   const prevSecret = process.env.PADDLE_WEBHOOK_SECRET;
   const testSecret = 'pdl_ntfset_test_secret_unit';
@@ -1027,7 +1125,7 @@ test('One-time credit pack webhook credits account once and stays idempotent on 
   const meAfterFirst = await invokeApi({
     method: 'GET',
     action: 'me',
-    query: { login_email: buyerEmail },
+    headers: { cookie: buyerCookie },
   });
   assert.equal(meAfterFirst.data.credits_balance, 25);
   assert.equal(meAfterFirst.data.extra_credits, 25);
@@ -1045,7 +1143,7 @@ test('One-time credit pack webhook credits account once and stays idempotent on 
   const meAfterReplay = await invokeApi({
     method: 'GET',
     action: 'me',
-    query: { login_email: buyerEmail },
+    headers: { cookie: buyerCookie },
   });
   assert.equal(meAfterReplay.data.credits_balance, 25);
 });
@@ -1081,10 +1179,13 @@ test('Backend Paddle endpoints fail closed without test-key fallback when env va
   assert.equal(whRes.data.verified, false);
   assert.match(String(whRes.data.error), /PADDLE_WEBHOOK_SECRET/);
 
+  const buyerCookie = await createTestSessionCookie('buyer@aqari.test');
+
   const checkoutRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
-    body: { plan: 'pro', email: 'buyer@aqari.test' },
+    headers: { cookie: buyerCookie },
+    body: { plan: 'pro' },
   });
   assert.equal(checkoutRes.statusCode, 400);
   assert.equal(checkoutRes.data.success, false);
@@ -1093,7 +1194,8 @@ test('Backend Paddle endpoints fail closed without test-key fallback when env va
   const verifyRes = await invokeApi({
     action: 'verify-payment',
     method: 'POST',
-    body: { email: 'buyer@aqari.test', transaction_id: 'txn_01missingkey' },
+    headers: { cookie: buyerCookie },
+    body: { transaction_id: 'txn_01missingkey' },
   });
   assert.equal(verifyRes.statusCode, 500);
   assert.equal(verifyRes.data.success, false);
@@ -1102,7 +1204,8 @@ test('Backend Paddle endpoints fail closed without test-key fallback when env va
   const buyCreditsRes = await invokeApi({
     action: 'buy-credits',
     method: 'POST',
-    body: { email: 'buyer@aqari.test', packId: 'pack_25' },
+    headers: { cookie: buyerCookie },
+    body: { packId: 'pack_25' },
   });
   assert.equal(buyCreditsRes.statusCode, 500);
   assert.equal(buyCreditsRes.data.success, false);
@@ -1169,11 +1272,9 @@ test('City autocomplete triggers at 1 character, resolves city_id, and rejects i
   assert.equal(findCityEntry('', 'om-muscat')?.city, 'Muscat');
 
   const fs = await import('node:fs');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const sovEmail = `city_val_${Date.now()}@aqari.test`;
-  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
-  existing.users = existing.users || {};
-  existing.users[sovEmail] = {
+  await seedTestStoreUser(sovEmail, {
     email: sovEmail,
     name: 'City Validation Test',
     plan: 'enterprise',
@@ -1183,8 +1284,8 @@ test('City autocomplete triggers at 1 character, resolves city_id, and rejects i
     license_start: Date.now() - 1000,
     license_end: Date.now() + 30 * 86_400_000,
     status: 'active',
-  };
-  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+  });
+  const sovCookie = await createTestSessionCookie(sovEmail, 'City Validation Test');
 
   t.after(() => {
     try {
@@ -1206,8 +1307,8 @@ test('City autocomplete triggers at 1 character, resolves city_id, and rejects i
   ] as Array<[string, Record<string, any>]>) {
     const invalidRes = await invokeApi({
       action,
+      headers: { cookie: sovCookie },
       body: {
-        email: sovEmail,
         city: 'FakeAtlantisCity',
         ...extra,
       },
@@ -1219,8 +1320,8 @@ test('City autocomplete triggers at 1 character, resolves city_id, and rejects i
   // Valid city + city_id stores city_id in analysis & studio draft
   const validAnalysis = await invokeApi({
     action: 'run-analysis',
+    headers: { cookie: sovCookie },
     body: {
-      email: sovEmail,
       city: 'Muscat',
       city_id: 'om-muscat',
       priceUSD: 680_000,
@@ -1232,8 +1333,8 @@ test('City autocomplete triggers at 1 character, resolves city_id, and rejects i
 
   const validStudio = await invokeApi({
     action: 'studio-generate',
+    headers: { cookie: sovCookie },
     body: {
-      email: sovEmail,
       city: 'Dubai',
       city_id: 'ae-dubai',
       budgetUSD: 680_000,
@@ -1251,11 +1352,9 @@ test('City autocomplete triggers at 1 character, resolves city_id, and rejects i
 
 test('Analyst message endpoint stores client message with replyByDate for admin and targets loomorastudios@gmail.com', async (t) => {
   const fs = await import('node:fs');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const clientEmail = `analyst_client_${Date.now()}@aqari.test`;
-  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
-  existing.users = existing.users || {};
-  existing.users[clientEmail] = {
+  await seedTestStoreUser(clientEmail, {
     email: clientEmail,
     name: 'Sovereign Client',
     plan: 'enterprise',
@@ -1265,8 +1364,8 @@ test('Analyst message endpoint stores client message with replyByDate for admin 
     license_start: Date.now() - 1000,
     license_end: Date.now() + 30 * 86_400_000,
     status: 'active',
-  };
-  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+  });
+  const clientCookie = await createTestSessionCookie(clientEmail, 'Sovereign Client');
 
   t.after(() => {
     try {
@@ -1281,8 +1380,8 @@ test('Analyst message endpoint stores client message with replyByDate for admin 
   const postRes = await invokeApi({
     action: 'analyst-message',
     method: 'POST',
+    headers: { cookie: clientCookie },
     body: {
-      email: clientEmail,
       message: 'Please audit our Al Mouj waterfront villa cap rate.',
       replyByDate: '12/01/2026',
     },
@@ -1314,8 +1413,9 @@ test('Server pricing & quota single source enforces 100 for PROFESSIONAL and 300
 test('One-time transaction.completed webhook sets purchase_date + 30d expiry_date for Plans, fulfills $19 Credits, and ignores subscription events', async (t) => {
   const fs = await import('node:fs');
   const crypto = await import('node:crypto');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const buyerEmail = `wh_plan_${Date.now()}@aqari.test`;
+  const buyerCookie = await createTestSessionCookie(buyerEmail);
   const txnPlanId = `txn_plan_${Date.now()}`;
   const txnCred19Id = `txn_c19_${Date.now()}`;
 
@@ -1412,8 +1512,8 @@ test('One-time transaction.completed webhook sets purchase_date + 30d expiry_dat
   const verifyAfterCred = await invokeApi({
     action: 'verify-payment',
     method: 'POST',
+    headers: { cookie: buyerCookie },
     body: {
-      login_email: buyerEmail,
       transaction_id: txnCred19Id,
     },
   });
@@ -1440,8 +1540,9 @@ test('One-time transaction.completed webhook sets purchase_date + 30d expiry_dat
 
 test('verify-payment handles direct $19 Credit Pack transaction_id via Paddle API without overwriting existing plan', async (t) => {
   const fs = await import('node:fs');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const buyerEmail = `verify_c19_${Date.now()}@aqari.test`;
+  const buyerCookie = await createTestSessionCookie(buyerEmail, 'Starter Buyer');
   const txnDirectId = `txn_direct19_${Date.now()}`;
 
   const prevApiKey = process.env.PADDLE_API_KEY;
@@ -1453,9 +1554,7 @@ test('verify-payment handles direct $19 Credit Pack transaction_id via Paddle AP
   process.env.PADDLE_ENVIRONMENT = 'live';
   process.env.PADDLE_CREDIT_25_PRICE = 'pri_direct_pack25';
 
-  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
-  existing.users = existing.users || {};
-  existing.users[buyerEmail] = {
+  await seedTestStoreUser(buyerEmail, {
     email: buyerEmail,
     name: 'Starter Buyer',
     plan: 'starter',
@@ -1466,8 +1565,7 @@ test('verify-payment handles direct $19 Credit Pack transaction_id via Paddle AP
     license_start: Date.now() - 1000,
     license_end: Date.now() + 30 * 86_400_000,
     status: 'active',
-  };
-  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+  });
 
   globalThis.fetch = (async (url: any, opts?: any) => {
     const s = String(url);
@@ -1508,8 +1606,8 @@ test('verify-payment handles direct $19 Credit Pack transaction_id via Paddle AP
   const verifyRes = await invokeApi({
     action: 'verify-payment',
     method: 'POST',
+    headers: { cookie: buyerCookie },
     body: {
-      login_email: buyerEmail,
       transaction_id: txnDirectId,
     },
   });
@@ -1609,10 +1707,13 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   delete process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN;
   process.env.PADDLE_API_KEY = 'pdl_live_apikey_check';
 
+  const checkoutBuyerCookie = await createTestSessionCookie('buyer@aqari.test');
+
   const missingTokenRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
-    body: { plan: 'pro', email: 'buyer@aqari.test' },
+    headers: { cookie: checkoutBuyerCookie },
+    body: { plan: 'pro' },
   });
   assert.equal(missingTokenRes.statusCode, 400);
   assert.match(String(missingTokenRes.data.error), /Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN/);
@@ -1623,7 +1724,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   const sdbxKeyRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
-    body: { plan: 'pro', email: 'buyer@aqari.test' },
+    headers: { cookie: checkoutBuyerCookie },
+    body: { plan: 'pro' },
   });
   assert.equal(sdbxKeyRes.statusCode, 400);
   assert.match(String(sdbxKeyRes.data.error), /PADDLE_API_KEY/);
@@ -1633,7 +1735,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   const sdbxTokRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
-    body: { plan: 'pro', email: 'buyer@aqari.test' },
+    headers: { cookie: checkoutBuyerCookie },
+    body: { plan: 'pro' },
   });
   assert.equal(sdbxTokRes.statusCode, 400);
   assert.match(String(sdbxTokRes.data.error), /PADDLE_CLIENT_SIDE_TOKEN/);
@@ -1651,7 +1754,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   const disallowedPriceRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
-    body: { plan: 'pro', priceId: 'pri_hacker_invalid', email: 'buyer@aqari.test' },
+    headers: { cookie: checkoutBuyerCookie },
+    body: { plan: 'pro', priceId: 'pri_hacker_invalid' },
   });
   assert.equal(disallowedPriceRes.statusCode, 400);
   assert.match(String(disallowedPriceRes.data.error), /Price ID/);
@@ -1659,7 +1763,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   const sandboxLegacyPriceRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
-    body: { plan: 'pro', priceId: 'pri_01m7qwqceh520nd4we9pg90f8m', email: 'buyer@aqari.test' },
+    headers: { cookie: checkoutBuyerCookie },
+    body: { plan: 'pro', priceId: 'pri_01m7qwqceh520nd4we9pg90f8m' },
   });
   assert.equal(sandboxLegacyPriceRes.statusCode, 400);
 
@@ -1668,7 +1773,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   const badEnvRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
-    body: { plan: 'pro', email: 'buyer@aqari.test' },
+    headers: { cookie: checkoutBuyerCookie },
+    body: { plan: 'pro' },
   });
   assert.equal(badEnvRes.statusCode, 400);
   process.env.PADDLE_ENVIRONMENT = 'live';
@@ -1711,19 +1817,20 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   }) as typeof fetch;
 
   const sevenItems: Array<{ body: Record<string, any>; expectedPriceId: string }> = [
-    { body: { plan: 'starter', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_starter_75' },
-    { body: { plan: 'pro', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_pro_199' },
-    { body: { plan: 'enterprise', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_sov_599' },
-    { body: { plan: 'institutional', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_ent_1499' },
-    { body: { packId: 'pack_25', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_c25_19' },
-    { body: { packId: 'pack_100', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_c100_59' },
-    { body: { packId: 'pack_500', email: 'buyer@aqari.test' }, expectedPriceId: 'pri_live_c500_249' },
+    { body: { plan: 'starter' }, expectedPriceId: 'pri_live_starter_75' },
+    { body: { plan: 'pro' }, expectedPriceId: 'pri_live_pro_199' },
+    { body: { plan: 'enterprise' }, expectedPriceId: 'pri_live_sov_599' },
+    { body: { plan: 'institutional' }, expectedPriceId: 'pri_live_ent_1499' },
+    { body: { packId: 'pack_25' }, expectedPriceId: 'pri_live_c25_19' },
+    { body: { packId: 'pack_100' }, expectedPriceId: 'pri_live_c100_59' },
+    { body: { packId: 'pack_500' }, expectedPriceId: 'pri_live_c500_249' },
   ];
 
   for (const item of sevenItems) {
     const res = await invokeApi({
       action: 'checkout',
       method: 'POST',
+      headers: { cookie: checkoutBuyerCookie },
       body: item.body,
     });
     assert.equal(res.statusCode, 200);
@@ -1741,7 +1848,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   const authFailRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
-    body: { plan: 'pro', email: 'buyer@aqari.test' },
+    headers: { cookie: checkoutBuyerCookie },
+    body: { plan: 'pro' },
   });
   assert.equal(authFailRes.statusCode, 401);
   assert.equal(authFailRes.data.success, false);
@@ -1831,31 +1939,37 @@ test('OPTIONS preflight returns 200 with CORS headers and no auth check; mode=re
   const optRes = await invokeApi({
     action: 'admin-list',
     method: 'OPTIONS',
+    headers: { origin: 'https://admin-aqari2.vercel.app' },
     query: { section: 'users' },
   });
   assert.equal(optRes.statusCode, 200);
-  assert.equal(optRes.headers['Access-Control-Allow-Origin'], '*');
+  assert.equal(optRes.headers['Access-Control-Allow-Origin'], 'https://admin-aqari2.vercel.app');
+  assert.equal(optRes.headers['Access-Control-Allow-Credentials'], 'true');
   assert.equal(optRes.headers['Access-Control-Allow-Methods'], 'GET, POST, OPTIONS');
   assert.equal(
     optRes.headers['Access-Control-Allow-Headers'],
-    'Content-Type, x-admin-token, Authorization'
+    'Content-Type, Authorization'
   );
 
+  const directCookie = await createTestSessionCookie('directcheckout@aqari.test');
   const recRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
+    headers: {
+      cookie: directCookie,
+      origin: 'https://admin-aqari2.vercel.app',
+    },
     body: {
       mode: 'record',
       plan: 'pro',
       priceId: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy',
-      email: 'directcheckout@aqari.test',
     },
   });
   assert.equal(recRes.statusCode, 200);
   assert.equal(recRes.data.success, true);
   assert.equal(recRes.data.mode, 'paddlejs_overlay');
   assert.equal(calledExternalPaddle, false);
-  assert.equal(recRes.headers['Access-Control-Allow-Origin'], '*');
+  assert.equal(recRes.headers['Access-Control-Allow-Origin'], 'https://admin-aqari2.vercel.app');
 });
 
 test('Admin API enforces x-admin-token === ADMIN_TOKEN and returns real stored data across all actions', async (t) => {
@@ -1868,14 +1982,15 @@ test('Admin API enforces x-admin-token === ADMIN_TOKEN and returns real stored d
     else process.env.ADMIN_TOKEN = prevToken;
   });
 
-  // 1. Missing or invalid token -> 401 with CORS headers
+  // 1. Missing or invalid token -> 401 with admin-only CORS headers
   const missingHdr = await invokeApi({
     action: 'admin-list',
     method: 'GET',
+    headers: { origin: 'https://admin-aqari2.vercel.app' },
     query: { section: 'users' },
   });
   assert.equal(missingHdr.statusCode, 401);
-  assert.equal(missingHdr.headers['Access-Control-Allow-Origin'], '*');
+  assert.equal(missingHdr.headers['Access-Control-Allow-Origin'], 'https://admin-aqari2.vercel.app');
 
   const wrongHdr = await invokeApi({
     action: 'admin-lock',
@@ -1991,10 +2106,10 @@ test('Admin API enforces x-admin-token === ADMIN_TOKEN and returns real stored d
 
 test('Server enforces single active plan (Rule A block, Rule B switch & feature close, Rule C expired re-buy, Rule D independent credits, Rule E duplicate txn_id, and Credit 25 fallback)', async (t) => {
   const fs = await import('node:fs');
-  const path = await import('node:path');
   const crypto = await import('node:crypto');
-  const storePath = '/tmp/aqari_terminal_store_v1.json';
+  const storePath = await getTestStorePath();
   const buyerEmail = `entitle_${Date.now()}@aqari.test`;
+  const buyerCookie = await createTestSessionCookie(buyerEmail);
   const txnPro = `txn_rule_pro_${Date.now()}`;
   const txnDupPro = `txn_rule_pro_dup_${Date.now()}`;
   const txnCred = `txn_rule_cred_${Date.now()}`;
@@ -2066,11 +2181,11 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   const blockCheckout = await invokeApi({
     action: 'checkout',
     method: 'POST',
+    headers: { cookie: buyerCookie },
     body: {
       mode: 'record',
       plan: 'pro',
       priceId: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy',
-      email: buyerEmail,
     },
   });
   assert.equal(blockCheckout.statusCode, 409);
@@ -2105,11 +2220,11 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   const credCheckout = await invokeApi({
     action: 'checkout',
     method: 'POST',
+    headers: { cookie: buyerCookie },
     body: {
       mode: 'record',
       packId: 'pack_25',
       priceId: 'pri_backend_c25_19',
-      email: buyerEmail,
     },
   });
   assert.equal(credCheckout.statusCode, 200);
@@ -2150,7 +2265,7 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   const meAfterCred = await invokeApi({
     method: 'GET',
     action: 'me',
-    query: { login_email: buyerEmail },
+    headers: { cookie: buyerCookie },
   });
   assert.equal(meAfterCred.data.planKey, 'pro');
   assert.equal(new Date(meAfterCred.data.expiry_date).toISOString(), proExpiryIso);
@@ -2160,11 +2275,11 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   const switchCheckout = await invokeApi({
     action: 'checkout',
     method: 'POST',
+    headers: { cookie: buyerCookie },
     body: {
       mode: 'record',
       plan: 'enterprise',
       priceId: 'pri_01m7tgj4pp767gacchp49k2qev',
-      email: buyerEmail,
     },
   });
   assert.equal(switchCheckout.statusCode, 200);
@@ -2196,7 +2311,8 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   const verifySwitch = await invokeApi({
     action: 'verify-payment',
     method: 'POST',
-    body: { login_email: buyerEmail, transaction_id: txnSov },
+    headers: { cookie: buyerCookie },
+    body: { transaction_id: txnSov },
   });
   assert.equal(verifySwitch.statusCode, 200);
   assert.equal(verifySwitch.data.switched, true);
@@ -2229,7 +2345,8 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   const blockedOpt = await invokeApi({
     action: 'optimize-portfolio',
     method: 'POST',
-    body: { email: buyerEmail, portfolio: [] },
+    headers: { cookie: buyerCookie },
+    body: { portfolio: [] },
   });
   assert.equal(blockedOpt.statusCode, 403);
 
@@ -2241,11 +2358,11 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   const expiredRebuyRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
+    headers: { cookie: buyerCookie },
     body: {
       mode: 'record',
       plan: 'starter',
       priceId: 'pri_01m7tgfvteegdih2mx4hgyz1c',
-      email: buyerEmail,
     },
   });
   assert.equal(expiredRebuyRes.statusCode, 200);
@@ -2274,13 +2391,500 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   process.env.VITE_PADDLE_CREDIT_25 = 'pri_vite_short_c25';
   assert.equal(getPaddleCreditPriceId('pack_25'), 'pri_vite_short_c25');
 
+  const path = await import('node:path');
   const paddleClientSrc = fs.readFileSync(path.resolve('src/utils/paddleClient.ts'), 'utf8');
   assert.match(paddleClientSrc, /items:\s*\[\{\s*priceId,\s*quantity:\s*1\s*\}\]/);
   assert.match(paddleClientSrc, /updateItems\(\[\{\s*priceId:\s*lockedPriceId,\s*quantity:\s*1\s*\}\]\)/);
 });
 
+test('Phase 4 Privacy & Data Isolation: unauthenticated customer data routes rejected even when email supplied, and spoofed email-only session fails with 401', async () => {
+  const victimEmail = `victim_${Date.now()}@aqari.test`;
+  await seedTestStoreUser(victimEmail, {
+    email: victimEmail,
+    name: 'Victim Account',
+    plan: 'pro',
+    analyses_total: 100,
+    analyses_left: 95,
+    analyses_used: 5,
+    saved_analyses: [
+      {
+        id: 'vic_asset_1',
+        property: 'Private Victim Asset',
+        city: 'Muscat',
+        price: 900_000,
+        rent: 6_000,
+        capRate: 8,
+        cashOnCash: 9,
+        irr: 14,
+        dscr: '1.6',
+        monthlyCashflow: 2200,
+        riskScore: 'AA',
+      },
+    ],
+    api_key: 'aqari_secret_tok_victim_123456',
+    license_start: Date.now() - 1000,
+    license_end: Date.now() + 30 * 86_400_000,
+    status: 'active',
+  });
 
+  // 1. Spoofing session with only { email } MUST be rejected with 401
+  const spoofSess = await invokeApi({
+    action: 'session',
+    method: 'POST',
+    body: { email: victimEmail, name: 'Spoofer' },
+  });
+  assert.equal(spoofSess.statusCode, 401);
 
+  // 2. Customer data routes MUST reject unauthenticated requests with 401 even when ?email=victim or body.email=victim
+  const unauthChecks: Array<{ action: string; method: string; query?: Record<string, string>; body?: any }> = [
+    { action: 'me', method: 'GET', query: { email: victimEmail, login_email: victimEmail } },
+    { action: 'portfolio', method: 'GET', query: { email: victimEmail } },
+    { action: 'get-last-results', method: 'GET', query: { email: victimEmail, login_email: victimEmail } },
+    { action: 'save', method: 'POST', body: { email: victimEmail, analysis: { id: 'x', property: 'P', city: 'Muscat', price: 100000, rent: 1000 } } },
+    { action: 'export', method: 'POST', body: { email: victimEmail, propertyTitle: 'Vic', city: 'Muscat', priceUSD: 500000, rentUSD: 3000 } },
+    { action: 'get-report-file', method: 'GET', query: { id: 'rpt_any', email: victimEmail } },
+    { action: 'whiteglove-request', method: 'GET', query: { email: victimEmail } },
+    { action: 'analyst-message', method: 'GET', query: { email: victimEmail } },
+    { action: 'workspace', method: 'GET', query: { email: victimEmail } },
+    { action: 'webhook-logs', method: 'GET' },
+    { action: 'debug-plan', method: 'GET', query: { email: victimEmail } },
+  ];
 
+  for (const check of unauthChecks) {
+    const res = await invokeApi(check);
+    assert.equal(res.statusCode, 401, `${check.action} must reject unauthenticated caller with 401`);
+  }
 
+  // 3. /api/cron/check-expiry must reject unauthenticated callers with 401
+  const prevCron = process.env.CRON_SECRET;
+  process.env.CRON_SECRET = 'cron_secret_unit_test_123';
+  try {
+    const cronNoAuth = await invokeCronApi({ method: 'GET' });
+    assert.equal(cronNoAuth.statusCode, 401);
+    const cronWrongAuth = await invokeCronApi({ method: 'GET', headers: { authorization: 'Bearer wrong' } });
+    assert.equal(cronWrongAuth.statusCode, 401);
+  } finally {
+    if (prevCron === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = prevCron;
+  }
+});
 
+test('Phase 4 Cross-User IDOR & API Key Scrubbing: User B cannot read/delete User A reports, analyses, workspaces, or api_key', async () => {
+  const userA = `idor_a_${Date.now()}@aqari.test`;
+  const userB = `idor_b_${Date.now()}@aqari.test`;
+
+  await seedTestStoreUser(userA, {
+    email: userA,
+    name: 'User A',
+    plan: 'enterprise',
+    analyses_total: 300,
+    analyses_left: 299,
+    analyses_used: 1,
+    api_key: 'aqari_live_userA_full_secret_token_xyz9',
+    saved_analyses: [
+      {
+        id: 'asset_owner_a_1',
+        ownerId: 'usr_a',
+        ownerEmail: userA,
+        property: 'User A Tower',
+        city: 'Muscat',
+        price: 1_200_000,
+        rent: 8_000,
+        capRate: 8.0,
+        cashOnCash: 9.2,
+        irr: 14.5,
+        dscr: '1.55',
+        monthlyCashflow: 3100,
+        riskScore: 'AAA',
+      },
+    ],
+    license_start: Date.now() - 1000,
+    license_end: Date.now() + 30 * 86_400_000,
+    status: 'active',
+  });
+
+  const cookieA = await createTestSessionCookie(userA, 'User A');
+  const cookieB = await createTestSessionCookie(userB, 'User B');
+
+  // 1. User A ?action=me returns userId and redacted/masked api_key_last4, NEVER full api_key_token
+  const meA = await invokeApi({ method: 'GET', action: 'me', headers: { cookie: cookieA } });
+  assert.equal(meA.statusCode, 200);
+  assert.ok(String(meA.data.userId || '').startsWith('usr_'));
+  assert.equal(meA.data.api_key_token, undefined);
+  assert.equal(JSON.stringify(meA.data).includes('aqari_live_userA_full_secret_token_xyz9'), false);
+  assert.match(String(meA.data.user?.api_key || ''), /^\*\*\*\*[a-f0-9]{4}$/i);
+
+  // 2. User B tries ?action=me&email=userA -> receives ONLY User B profile, NEVER User A
+  const meCross = await invokeApi({
+    method: 'GET',
+    action: 'me',
+    headers: { cookie: cookieB },
+    query: { email: userA, login_email: userA },
+  });
+  assert.equal(meCross.statusCode, 200);
+  assert.equal(meCross.data.email, userB);
+
+  // 3. User B tries to delete User A's saved analysis -> uniform 404 { error: 'not found' }
+  const delCross = await invokeApi({
+    method: 'POST',
+    action: 'delete-saved',
+    headers: { cookie: cookieB },
+    body: { email: userA, id: 'asset_owner_a_1' },
+  });
+  assert.equal(delCross.statusCode, 404);
+  assert.equal(delCross.data.error, 'not found');
+
+  // 4. User A exports report, User B tries to fetch that report -> uniform 404 { error: 'not found' }, User A succeeds
+  const exportRes = await invokeApi({
+    method: 'POST',
+    action: 'export',
+    headers: { cookie: cookieA },
+    body: {
+      propertyTitle: 'User A Confidential Memo',
+      city: 'Muscat',
+      priceUSD: 1_200_000,
+      rentUSD: 8_000,
+      format: 'pdf',
+    },
+  });
+  assert.equal(exportRes.statusCode, 200);
+  const reportId = exportRes.data.reportId;
+  assert.ok(reportId);
+
+  const reportCross = await invokeApi({
+    method: 'GET',
+    action: 'get-report-file',
+    headers: { cookie: cookieB },
+    query: { id: reportId, email: userA },
+  });
+  assert.equal(reportCross.statusCode, 404);
+  assert.equal(reportCross.data.error, 'not found');
+
+  const reportOwner = await invokeApi({
+    method: 'GET',
+    action: 'get-report-file',
+    headers: { cookie: cookieA },
+    query: { id: reportId },
+  });
+  assert.equal(reportOwner.statusCode, 200);
+  assert.equal(reportOwner.data.report.id, reportId);
+
+  // 5. User A creates private workspace org, User B calls GET ?action=workspace&orgId=... -> uniform 404 { error: 'not found' }
+  const wsA = await invokeApi({
+    method: 'POST',
+    action: 'workspace',
+    headers: { cookie: cookieA },
+    body: { subAction: 'create-org', name: 'Private A Org' },
+  });
+  assert.equal(wsA.statusCode, 200);
+  const orgAId = wsA.data.activeOrg.id;
+
+  const wsCross = await invokeApi({
+    method: 'GET',
+    action: 'workspace',
+    headers: { cookie: cookieB },
+    query: { orgId: orgAId },
+  });
+  assert.equal(wsCross.statusCode, 404);
+  assert.equal(wsCross.data.error, 'not found');
+});
+
+test('Phase 4 Input Validation, Branding Logo Safety, Persistent Rate Limiting, and Production Error Sanitization', async () => {
+  const userEmail = `val_sec_${Date.now()}@aqari.test`;
+  await seedTestStoreUser(userEmail, {
+    email: userEmail,
+    name: 'Validation User',
+    plan: 'enterprise',
+    analyses_total: 300,
+    analyses_left: 300,
+    analyses_used: 0,
+    white_label_enabled: true,
+    license_start: Date.now() - 1000,
+    license_end: Date.now() + 30 * 86_400_000,
+    status: 'active',
+  });
+  const userCookie = await createTestSessionCookie(userEmail, 'Validation User');
+
+  // 1. Script / XSS payloads rejected cleanly with 400
+  const xssSave = await invokeApi({
+    method: 'POST',
+    action: 'save-to-portfolio',
+    headers: { cookie: userCookie },
+    body: {
+      analysis: {
+        id: 'bad_xss_1',
+        property: '<script>alert(1)</script>',
+        city: 'Muscat',
+        price: 500_000,
+        rent: 3_500,
+      },
+    },
+  });
+  assert.equal(xssSave.statusCode, 400);
+
+  // 2. Path traversal / unsafe ID rejected with 400
+  const badReportId = await invokeApi({
+    method: 'GET',
+    action: 'get-report-file',
+    headers: { cookie: userCookie },
+    query: { id: '../../etc/passwd' },
+  });
+  assert.equal(badReportId.statusCode, 400);
+
+  // 3. Negative / absurd / NaN financial numbers rejected with 400
+  const badNumbers = await invokeApi({
+    method: 'POST',
+    action: 'run-analysis',
+    headers: { cookie: userCookie },
+    body: {
+      propertyTitle: 'Invalid Price Property',
+      city: 'Muscat',
+      priceUSD: -500,
+      rentUSD: 4000,
+    },
+  });
+  assert.equal(badNumbers.statusCode, 400);
+
+  const hugeNumbers = await invokeApi({
+    method: 'POST',
+    action: 'run-analysis',
+    headers: { cookie: userCookie },
+    body: {
+      propertyTitle: 'Overflow Property',
+      city: 'Muscat',
+      priceUSD: 1e15,
+      rentUSD: 4000,
+    },
+  });
+  assert.equal(hugeNumbers.statusCode, 400);
+
+  // 4. Dangerous branding URLs (image/svg+xml and javascript:) rejected with 400
+  for (const badLogo of ['javascript:alert(1)', 'data:image/svg+xml;base64,PHN2Zy8+']) {
+    const brandBad = await invokeApi({
+      method: 'POST',
+      action: 'update-branding',
+      headers: { cookie: userCookie },
+      body: { firmName: 'Safe Firm', logoUrl: badLogo },
+    });
+    assert.equal(brandBad.statusCode, 400);
+  }
+
+  // 5. Persistent rateLimit stays enforced after reload / multiple invocations
+  const { rateLimit } = await import('../lib/serverStore');
+  const rlKey = `test_rl_${Date.now()}`;
+  for (let i = 0; i < 10; i++) {
+    const r = await rateLimit(rlKey, 10, 600_000);
+    assert.equal(r.allowed, true);
+  }
+  const rlBlocked = await rateLimit(rlKey, 10, 600_000);
+  assert.equal(rlBlocked.allowed, false);
+  assert.ok(rlBlocked.retryAfterSec >= 1);
+
+  // 6. Production sanitization: errors do not leak secret env names, /tmp paths, or stack traces
+  const prevVercelEnv = process.env.VERCEL_ENV;
+  const prevResend = process.env.RESEND_API_KEY;
+  process.env.VERCEL_ENV = 'production';
+  delete process.env.RESEND_API_KEY;
+  try {
+    const prevAdminToken = process.env.ADMIN_TOKEN;
+    process.env.ADMIN_TOKEN = 'prod_san_admin_tok';
+    try {
+      const emailRes = await invokeAdminApi({
+        action: 'email',
+        method: 'POST',
+        headers: { 'x-admin-token': 'prod_san_admin_tok' },
+        body: { email: userEmail, subject: 'Test', body: 'Hello' },
+      });
+      assert.equal(emailRes.data.key_prefix, undefined);
+      assert.equal(String(emailRes.data.error || '').includes('RESEND_API_KEY'), false);
+    } finally {
+      if (prevAdminToken === undefined) delete process.env.ADMIN_TOKEN;
+      else process.env.ADMIN_TOKEN = prevAdminToken;
+    }
+
+    const fs = await import('node:fs');
+    const storePath = await getTestStorePath();
+    if (fs.existsSync(storePath)) {
+      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+      if (parsed?.users) {
+        for (const k of Object.keys(parsed.users)) {
+          if (k.endsWith('@aqari.test')) delete parsed.users[k];
+        }
+        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
+      }
+    }
+  } finally {
+    if (prevVercelEnv === undefined) delete process.env.VERCEL_ENV;
+    else process.env.VERCEL_ENV = prevVercelEnv;
+    if (prevResend !== undefined) process.env.RESEND_API_KEY = prevResend;
+  }
+});
+
+test('Admin CORS & Cross-Domain Session: strict https://admin-aqari2.vercel.app origin, OPTIONS 200, SameSite=None only for admin origin', async (t) => {
+  const {
+    ADMIN_ALLOWED_ORIGIN,
+    createSession,
+    destroySession,
+    isAdminRequestOrigin,
+  } = await import('../lib/auth');
+
+  assert.equal(ADMIN_ALLOWED_ORIGIN, 'https://admin-aqari2.vercel.app');
+
+  // 1. OPTIONS preflight returns 200 with admin CORS headers and NO auth check on both /api/app and /api/admin
+  for (const fn of [invokeApi, invokeAdminApi]) {
+    const optAllowed = await fn({
+      action: 'users',
+      method: 'OPTIONS',
+      headers: { origin: 'https://admin-aqari2.vercel.app' },
+    });
+    assert.equal(optAllowed.statusCode, 200);
+    assert.equal(optAllowed.headers['Access-Control-Allow-Origin'], 'https://admin-aqari2.vercel.app');
+    assert.equal(optAllowed.headers['Access-Control-Allow-Credentials'], 'true');
+    assert.equal(optAllowed.headers['Access-Control-Allow-Methods'], 'GET, POST, OPTIONS');
+    assert.equal(optAllowed.headers['Access-Control-Allow-Headers'], 'Content-Type, Authorization');
+
+    // Disallowed / arbitrary origins NEVER get * or reflected Access-Control-Allow-Origin
+    for (const badOrigin of [
+      'https://evil.com',
+      'https://other-admin.vercel.app',
+      'https://aqari-ai-rho.vercel.app',
+      'http://localhost:5173',
+    ]) {
+      const optBlocked = await fn({
+        action: 'users',
+        method: 'OPTIONS',
+        headers: { origin: badOrigin },
+      });
+      assert.equal(optBlocked.statusCode, 200);
+      assert.equal(optBlocked.headers['Access-Control-Allow-Origin'], undefined);
+      assert.equal(optBlocked.headers['Access-Control-Allow-Credentials'], undefined);
+      assert.notEqual(optBlocked.headers['Access-Control-Allow-Origin'], '*');
+    }
+  }
+
+  // 2. Session cookie uses HttpOnly; Secure; SameSite=None; Path=/; Max-Age=604800 ONLY when Origin is admin origin
+  const makeMockRes = () => {
+    const headers: Record<string, any> = {};
+    return {
+      headers,
+      setHeader(k: string, v: any) {
+        headers[k] = v;
+        return this;
+      },
+      getHeader(k: string) {
+        return headers[k];
+      },
+    };
+  };
+
+  const adminReq = { headers: { origin: 'https://admin-aqari2.vercel.app' } };
+  const mainAppReq = { headers: { origin: 'https://aqari-ai-rho.vercel.app' } };
+  const evilReq = { headers: { origin: 'https://evil.com' } };
+  const noOriginReq = { headers: {} };
+
+  assert.equal(isAdminRequestOrigin(adminReq), true);
+  assert.equal(isAdminRequestOrigin(mainAppReq), false);
+  assert.equal(isAdminRequestOrigin(evilReq), false);
+  assert.equal(isAdminRequestOrigin(noOriginReq), false);
+
+  const adminRes = makeMockRes();
+  const { cookieToken: adminCookieTok } = await createSession(
+    adminRes,
+    {
+      email: 'cors_admin@aqari.test',
+      name: 'Admin User',
+      verifiedViaGoogle: true,
+    },
+    { req: adminReq }
+  );
+  const adminSetCookie = String(adminRes.headers['Set-Cookie'] || '');
+  assert.ok(adminSetCookie.includes('HttpOnly'));
+  assert.ok(adminSetCookie.includes('Secure'));
+  assert.ok(adminSetCookie.includes('SameSite=None'));
+  assert.ok(adminSetCookie.includes('Path=/'));
+  assert.ok(adminSetCookie.includes('Max-Age=604800'));
+
+  // Main app request keeps SameSite=Lax (no SameSite=None)
+  const mainRes = makeMockRes();
+  await createSession(
+    mainRes,
+    {
+      email: 'cors_main@aqari.test',
+      name: 'Main User',
+      verifiedViaGoogle: true,
+    },
+    { req: mainAppReq }
+  );
+  const mainSetCookie = String(mainRes.headers['Set-Cookie'] || '');
+  assert.ok(mainSetCookie.includes('HttpOnly'));
+  assert.ok(mainSetCookie.includes('SameSite=Lax'));
+  assert.equal(mainSetCookie.includes('SameSite=None'), false);
+  assert.ok(mainSetCookie.includes('Path=/'));
+  assert.ok(mainSetCookie.includes('Max-Age=604800'));
+
+  // No-origin request also keeps SameSite=Lax
+  const noOriginRes = makeMockRes();
+  await createSession(
+    noOriginRes,
+    {
+      email: 'cors_noorigin@aqari.test',
+      verifiedViaGoogle: true,
+    },
+    { req: noOriginReq }
+  );
+  assert.ok(String(noOriginRes.headers['Set-Cookie'] || '').includes('SameSite=Lax'));
+  assert.equal(String(noOriginRes.headers['Set-Cookie'] || '').includes('SameSite=None'), false);
+
+  // destroySession mirrors SameSite=None; Secure for admin origin
+  const destroyAdminRes = makeMockRes();
+  await destroySession(
+    { headers: { origin: 'https://admin-aqari2.vercel.app', cookie: `aqari_session=${adminCookieTok}` } },
+    destroyAdminRes
+  );
+  const destroyCookieStr = String(destroyAdminRes.headers['Set-Cookie'] || '');
+  assert.ok(destroyCookieStr.includes('SameSite=None'));
+  assert.ok(destroyCookieStr.includes('Secure'));
+  assert.ok(destroyCookieStr.includes('Max-Age=0'));
+
+  // 3. Cross-domain authenticated GET /api/admin?action=users works for configured admin with admin Origin
+  const prevAdminEmail = process.env.ADMIN_EMAIL;
+  process.env.ADMIN_EMAIL = 'cors_admin@aqari.test';
+  t.after(() => {
+    if (prevAdminEmail === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = prevAdminEmail;
+  });
+
+  const adminSessionRes = makeMockRes();
+  const { cookieToken: liveAdminTok } = await createSession(
+    adminSessionRes,
+    {
+      email: 'cors_admin@aqari.test',
+      name: 'Owner Admin',
+      verifiedViaGoogle: true,
+    },
+    { req: adminReq }
+  );
+  const usersRes = await invokeAdminApi({
+    action: 'users',
+    method: 'GET',
+    headers: {
+      origin: 'https://admin-aqari2.vercel.app',
+      cookie: `aqari_session=${encodeURIComponent(liveAdminTok)}`,
+    },
+  });
+  assert.equal(usersRes.statusCode, 200);
+  assert.equal(usersRes.headers['Access-Control-Allow-Origin'], 'https://admin-aqari2.vercel.app');
+  assert.equal(usersRes.headers['Access-Control-Allow-Credentials'], 'true');
+  assert.ok(Array.isArray(usersRes.data?.users));
+
+  // Evil origin calling GET /api/admin gets 401/403 and NO Access-Control-Allow-Origin
+  const evilUsersRes = await invokeAdminApi({
+    action: 'users',
+    method: 'GET',
+    headers: {
+      origin: 'https://evil.com',
+    },
+  });
+  assert.equal(evilUsersRes.statusCode, 401);
+  assert.equal(evilUsersRes.headers['Access-Control-Allow-Origin'], undefined);
+});

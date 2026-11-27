@@ -3,6 +3,18 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { GoogleGenAI, Type } from '@google/genai';
+import {
+  getSessionFromRequest,
+  createSession,
+  destroySession,
+  verifyGoogleIdToken,
+  requireAdmin,
+  applyAdminOnlyCors,
+} from '../lib/auth';
+import {
+  rateLimit as persistentRateLimit,
+  getUserIdForEmail,
+} from '../lib/serverStore';
 
 // =========================================================================
 // 1. INLINED PLANS & TIER MAPPING (Zero external ../lib imports)
@@ -1557,6 +1569,149 @@ function getAdminEmail(): string {
   return (cleanEnvValue(getEnv('ADMIN_EMAIL')) || 'loomorastudios@gmail.com').toLowerCase();
 }
 
+function isProdRuntime(): boolean {
+  return getEnv('VERCEL_ENV') === 'production' || getEnv('NODE_ENV') === 'production';
+}
+
+function publicError(prodMessage: string, devDetail?: string | null): string {
+  if (isProdRuntime()) return prodMessage;
+  return devDetail ? String(devDetail) : prodMessage;
+}
+
+function escapeHtml(raw: any): string {
+  return String(raw ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/\//g, '&#x2F;');
+}
+
+function hasScriptInjection(val: string): boolean {
+  if (!val) return false;
+  return /<\s*script\b/i.test(val) || /javascript\s*:/i.test(val) || val.includes('\0');
+}
+
+function validateSafeId(raw: any, fieldName = 'id'): { ok: true; value: string } | { ok: false; error: string } {
+  const s = String(raw ?? '').trim();
+  if (!s || !/^[a-zA-Z0-9_-]{1,100}$/.test(s)) {
+    return { ok: false, error: `Invalid ${fieldName}` };
+  }
+  return { ok: true, value: s };
+}
+
+function validateSafeText(
+  raw: any,
+  fieldName = 'text',
+  opts: { required?: boolean; minLen?: number; maxLen?: number } = {}
+): { ok: true; value: string } | { ok: false; error: string } {
+  const s = String(raw ?? '').trim();
+  if (hasScriptInjection(s)) {
+    return { ok: false, error: `Invalid characters in ${fieldName}` };
+  }
+  const cleaned = s
+    .replace(/<\s*iframe\b[^>]*>[\s\S]*?<\/\s*iframe>/gi, '')
+    .replace(/on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .trim();
+  const minLen = opts.minLen ?? 0;
+  const maxLen = opts.maxLen ?? 2000;
+  if (opts.required && !cleaned) {
+    return { ok: false, error: `${fieldName} is required` };
+  }
+  if (cleaned && minLen > 0 && cleaned.length < minLen) {
+    return { ok: false, error: `${fieldName} must be at least ${minLen} characters` };
+  }
+  if (cleaned.length > maxLen) {
+    return { ok: false, error: `${fieldName} exceeds maximum length of ${maxLen} characters` };
+  }
+  return { ok: true, value: cleaned };
+}
+
+function validateFiniteNumber(
+  raw: any,
+  fieldName: string,
+  opts: { min?: number; max?: number; integer?: boolean; defaultValue?: number } = {}
+): { ok: true; value: number } | { ok: false; error: string } {
+  if ((raw === undefined || raw === null || raw === '') && typeof opts.defaultValue === 'number') {
+    return { ok: true, value: opts.defaultValue };
+  }
+  if (typeof raw === 'string' && hasScriptInjection(raw)) {
+    return { ok: false, error: `Invalid ${fieldName}` };
+  }
+  const num = typeof raw === 'number' ? raw : parseEnglishNumberServer(raw);
+  if (!Number.isFinite(num)) {
+    return { ok: false, error: `${fieldName} must be a finite number` };
+  }
+  if (opts.min !== undefined && num < opts.min) {
+    return { ok: false, error: `${fieldName} must be >= ${opts.min}` };
+  }
+  if (opts.max !== undefined && num > opts.max) {
+    return { ok: false, error: `${fieldName} must be <= ${opts.max}` };
+  }
+  return { ok: true, value: opts.integer ? Math.round(num) : num };
+}
+
+async function verifyGoogleAccessTokenServer(accessToken: string): Promise<{
+  email: string;
+  name?: string;
+  picture?: string;
+  sub: string;
+  email_verified: boolean;
+}> {
+  const token = String(accessToken || '').trim();
+  if (!token || token.length < 16 || hasScriptInjection(token)) {
+    throw new Error('Invalid Google access token');
+  }
+
+  const allowedAudiences = [
+    getEnv('GOOGLE_CLIENT_ID'),
+    getEnv('VITE_GOOGLE_CLIENT_ID'),
+    getEnv('NEXT_PUBLIC_GOOGLE_CLIENT_ID'),
+  ].filter(Boolean);
+  if (allowedAudiences.length === 0) {
+    throw new Error('GOOGLE_CLIENT_ID is not configured on the server');
+  }
+
+  const infoRes = await fetch(
+    `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`
+  );
+  if (!infoRes.ok) {
+    throw new Error('Google rejected access token');
+  }
+  const info: any = await infoRes.json().catch(() => null);
+  const aud = String(info?.aud || info?.azp || '');
+  if (!allowedAudiences.includes(aud)) {
+    throw new Error('Google access token audience mismatch');
+  }
+  const expiresIn = Number(info?.expires_in || 0);
+  if (!Number.isFinite(expiresIn) || expiresIn <= 0) {
+    throw new Error('Google access token expired');
+  }
+
+  const userRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!userRes.ok) {
+    throw new Error('Failed to fetch verified Google user profile');
+  }
+  const profile: any = await userRes.json().catch(() => null);
+  const email = String(profile?.email || info?.email || '').trim().toLowerCase();
+  if (!email || !email.includes('@')) {
+    throw new Error('Google profile missing valid email');
+  }
+  if (profile?.email_verified !== true && info?.email_verified !== 'true' && info?.email_verified !== true) {
+    throw new Error('Google account email is not verified');
+  }
+  return {
+    email,
+    name: typeof profile?.name === 'string' ? profile.name : undefined,
+    picture: typeof profile?.picture === 'string' ? profile.picture : undefined,
+    sub: String(profile?.sub || info?.sub || ''),
+    email_verified: true,
+  };
+}
+
 function getSessionSecret(): string {
   return (
     cleanEnvValue(getEnv('SESSION_SECRET')) ||
@@ -1613,68 +1768,15 @@ function appendSetCookieHeader(res: any, cookieStr: string): void {
 function isAdminEmail(email?: string | null): boolean {
   const norm = (email || '').trim().toLowerCase();
   if (!norm) return false;
-  return norm === getAdminEmail() || norm === 'loomorastudios@gmail.com' || norm === 'azzamalshmale@gmail.com';
+  return norm === getAdminEmail();
 }
 
-function signSessionToken(email: string): string {
-  const norm = (email || '').trim().toLowerCase();
-  const payload = Buffer.from(
-    JSON.stringify({
-      email: norm,
-      iat: Date.now(),
-      exp: Date.now() + THIRTY_DAYS_MS,
-    })
-  ).toString('base64url');
-  const sig = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('base64url');
-  return `${payload}.${sig}`;
-}
-
-function verifySessionToken(token?: string | null): string | null {
-  if (!token || !token.includes('.')) return null;
-  const [payload, sig] = token.split('.');
-  if (!payload || !sig) return null;
-  try {
-    const expected = crypto
-      .createHmac('sha256', getSessionSecret())
-      .update(payload)
-      .digest('base64url');
-    const a = Buffer.from(sig);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
-    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (!decoded?.email || (decoded.exp && Date.now() > decoded.exp)) return null;
-    return String(decoded.email).trim().toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-function getSessionEmailFromReq(req: any): string | null {
-  const cookies = parseCookies(req?.headers?.cookie || '');
-  const fromCookie = verifySessionToken(cookies[SESSION_COOKIE_NAME]);
-  if (fromCookie) return fromCookie;
-
-  const authHeader = req?.headers?.authorization || '';
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    const bearerEmail = verifySessionToken(authHeader.slice(7).trim());
-    if (bearerEmail) return bearerEmail;
+async function getSessionEmailFromReq(req: any): Promise<string | null> {
+  const session = await getSessionFromRequest(req);
+  if (session?.email) {
+    return String(session.email).trim().toLowerCase();
   }
   return null;
-}
-
-function setSessionCookie(res: any, email: string): string {
-  const token = signSessionToken(email);
-  const isProd = getEnv('NODE_ENV') === 'production' || getEnv('VERCEL_ENV') === 'production';
-  const flags = [
-    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${30 * 24 * 60 * 60}`,
-    ...(isProd ? ['Secure'] : []),
-  ];
-  appendSetCookieHeader(res, flags.join('; '));
-  return token;
 }
 
 function signEntitlementToken(data: Omit<SignedEntitlementPayload, 'exp'>): string {
@@ -1735,41 +1837,24 @@ function setEntitlementCookie(res: any, data: Omit<SignedEntitlementPayload, 'ex
   return token;
 }
 
-function clearSessionCookie(res: any): void {
-  appendSetCookieHeader(
-    res,
-    `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
-  );
+function clearEntitlementCookie(res: any): void {
   appendSetCookieHeader(
     res,
     `${ENTITLEMENT_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
   );
 }
 
-const rateBuckets = new Map<string, number[]>();
-
-function checkRateLimit(
+async function checkRateLimit(
   key: string,
   maxRequests: number,
   windowMs: number
-): { allowed: boolean; remaining: number; retryAfterSec: number } {
-  const now = Date.now();
-  const windowStart = now - windowMs;
-  const timestamps = (rateBuckets.get(key) || []).filter((t) => t > windowStart);
-
-  if (timestamps.length >= maxRequests) {
-    const oldest = timestamps[0] || now;
-    const retryAfterSec = Math.max(1, Math.ceil((oldest + windowMs - now) / 1000));
-    rateBuckets.set(key, timestamps);
-    return { allowed: false, remaining: 0, retryAfterSec };
-  }
-
-  timestamps.push(now);
-  rateBuckets.set(key, timestamps);
+): Promise<{ allowed: boolean; remaining: number; retryAfterSec: number }> {
+  const res = await persistentRateLimit(key, maxRequests, windowMs);
+  const retryAfterSec = res.allowed ? 0 : Math.max(1, Math.ceil((res.resetAt - Date.now()) / 1000));
   return {
-    allowed: true,
-    remaining: Math.max(0, maxRequests - timestamps.length),
-    retryAfterSec: 0,
+    allowed: res.allowed,
+    remaining: res.remaining,
+    retryAfterSec,
   };
 }
 
@@ -1925,6 +2010,7 @@ interface PersistedLastResults {
 }
 
 interface ServerUserRecord {
+  userId?: string;
   email: string;
   name: string;
   plan: PlanKey;
@@ -2071,6 +2157,24 @@ interface PendingCheckoutEntry {
   checkoutId?: string;
 }
 
+interface StoredReportRecord {
+  id: string;
+  ownerId: string;
+  ownerEmail: string;
+  filename: string;
+  format: string;
+  docType: string;
+  watermark: string;
+  isWatermarked?: boolean;
+  propertyTitle: string;
+  city?: string;
+  priceUSD?: number;
+  capRate?: number;
+  cashOnCash?: number;
+  branding: any;
+  generatedAt: string;
+}
+
 interface StoreShape {
   users: Record<string, ServerUserRecord>;
   webhook_logs: WebhookLogEntry[];
@@ -2086,6 +2190,12 @@ interface StoreShape {
   api_keys: Record<string, string>;
   enterprise_inquiries?: any[];
   admin_audit_logs?: any[];
+  orgs?: Record<string, any>;
+  user_orgs?: Record<string, string[]>;
+  reports?: Record<string, StoredReportRecord>;
+  sessions?: Record<string, any>;
+  auditLog?: any[];
+  rate_limits?: Record<string, any>;
 }
 
 function buildStoredPlanEntry(k: PlanKey): StoredPlanConfig {
@@ -2132,11 +2242,16 @@ function createDefaultPricingConfig(): StoredPricingConfig {
 }
 
 function getStoreFile(): string {
-  try {
-    return path.join('/tmp', 'aqari_terminal_store_v1.json');
-  } catch {
-    return '/tmp/aqari_terminal_store_v1.json';
+  const override = cleanEnvValue(getEnv('AQARI_STORE_FILE'));
+  if (override) return override;
+  if (!cleanEnvValue(getEnv('VERCEL'))) {
+    try {
+      return path.join(process.cwd(), '.aqari-data', 'aqari_terminal_store_v1.json');
+    } catch {
+      return '/tmp/aqari_terminal_store_v1.json';
+    }
   }
+  return '/tmp/aqari_terminal_store_v1.json';
 }
 
 let memoryStoreCache: StoreShape | null = null;
@@ -2158,6 +2273,12 @@ function getMemoryStore(): StoreShape {
       api_keys: {},
       enterprise_inquiries: [],
       admin_audit_logs: [],
+      orgs: {},
+      user_orgs: {},
+      reports: {},
+      sessions: {},
+      auditLog: [],
+      rate_limits: {},
     };
   }
   return memoryStoreCache;
@@ -2337,6 +2458,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
   const apiCallsToday = apiCallsDay === todayUtc ? Math.max(0, Number(raw?.api_calls_today || 0)) : 0;
 
   return {
+    userId: typeof raw?.userId === 'string' && raw.userId.trim() ? raw.userId.trim() : getUserIdForEmail(email),
     email,
     name: raw?.name || email.split('@')[0],
     plan,
@@ -2531,6 +2653,29 @@ function loadStore(): StoreShape {
           admin_audit_logs: Array.isArray(parsed.admin_audit_logs)
             ? parsed.admin_audit_logs
             : [],
+          orgs:
+            parsed.orgs && typeof parsed.orgs === 'object' && !Array.isArray(parsed.orgs)
+              ? parsed.orgs
+              : {},
+          user_orgs:
+            parsed.user_orgs &&
+            typeof parsed.user_orgs === 'object' &&
+            !Array.isArray(parsed.user_orgs)
+              ? parsed.user_orgs
+              : {},
+          reports:
+            parsed.reports && typeof parsed.reports === 'object' && !Array.isArray(parsed.reports)
+              ? parsed.reports
+              : {},
+          sessions:
+            parsed.sessions && typeof parsed.sessions === 'object' && !Array.isArray(parsed.sessions)
+              ? parsed.sessions
+              : {},
+          auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
+          rate_limits:
+            parsed.rate_limits && typeof parsed.rate_limits === 'object' && !Array.isArray(parsed.rate_limits)
+              ? parsed.rate_limits
+              : {},
         };
       }
     }
@@ -2543,7 +2688,9 @@ function loadStore(): StoreShape {
 function persistStore(store: StoreShape): void {
   memoryStoreCache = store;
   try {
-    fs.writeFileSync(getStoreFile(), JSON.stringify(store, null, 2), 'utf8');
+    const storeFile = getStoreFile();
+    fs.mkdirSync(path.dirname(storeFile), { recursive: true });
+    fs.writeFileSync(storeFile, JSON.stringify(store, null, 2), 'utf8');
   } catch {
     // Ignore read-only filesystem errors
   }
@@ -3001,6 +3148,7 @@ function updateServerUser(email: string, patch: Partial<ServerUserRecord>): Serv
   const merged = {
     ...existing,
     ...patch,
+    userId: existing.userId || getUserIdForEmail(norm),
     email: norm,
   };
   const planKey = normalizePlanKey(merged.plan);
@@ -3720,6 +3868,7 @@ function sanitizeUserForClient(user: ServerUserRecord, maskedApiKey?: string | n
   const { api_key_token: _secret, ...safeUser } = user as any;
   return {
     ...safeUser,
+    userId: user.userId || getUserIdForEmail(user.email),
     api_key: maskedApiKey ?? maskApiKey(user.api_key_token) ?? (user.api_key_last4 ? `****${user.api_key_last4}` : null),
     api_key_last4: user.api_key_last4 || (user.api_key_token ? user.api_key_token.slice(-4) : null),
   };
@@ -3911,7 +4060,7 @@ async function dispatchEmailAlert(params: {
       subject: params.subject,
       status: 'simulated',
       event_type: params.eventType,
-      error: 'RESEND_API_KEY missing (logged in email_logs)',
+      error: 'Email provider not configured (logged in email_logs)',
     });
     return { status: 'simulated' };
   }
@@ -6210,41 +6359,48 @@ function getGlobalMarketIntelligenceData() {
   ];
 }
 
-// Enterprise Workspace Persistence (KV + Local Store fallback)
-const localOrgsFallback: Record<string, any> = {};
-const localUserOrgsFallback: Record<string, string[]> = {};
-
+// Enterprise Workspace & Report File Persistence (KV + Shared Store fallback)
 async function readEnterpriseOrgFromDb(orgId: string): Promise<any | null> {
   const cleanId = String(orgId || '').trim();
   if (!cleanId) return null;
+  const store = loadStore();
   try {
     const kv = getKvConfig();
     if (kv) {
       const raw = await kvCommand(['GET', `aqari:org:${cleanId}`]);
       if (raw) {
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        localOrgsFallback[cleanId] = parsed;
+        if (!store.orgs || typeof store.orgs !== 'object') store.orgs = {};
+        store.orgs[cleanId] = parsed;
+        persistStore(store);
         return parsed;
       }
     }
   } catch (err) {
     console.error('[Workspace KV Read]', err);
   }
-  return localOrgsFallback[cleanId] || null;
+  return store.orgs?.[cleanId] || null;
 }
 
 async function saveEnterpriseOrgToDb(org: any): Promise<void> {
   if (!org?.id) return;
-  localOrgsFallback[org.id] = org;
-  const kv = getKvConfig();
-  if (kv) {
-    await kvCommand(['SET', `aqari:org:${org.id}`, JSON.stringify(org)]);
-  }
+  const store = loadStore();
+  if (!store.orgs || typeof store.orgs !== 'object') store.orgs = {};
+  store.orgs[org.id] = org;
+  persistStore(store);
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['SET', `aqari:org:${org.id}`, JSON.stringify(org)]);
+    }
+  } catch {}
 }
 
 async function addOrgToUserIndexDb(rawEmail: string, orgId: string): Promise<string[]> {
   const email = normalizeEmail(rawEmail);
-  let ids: string[] = [...(localUserOrgsFallback[email] || [])];
+  const store = loadStore();
+  if (!store.user_orgs || typeof store.user_orgs !== 'object') store.user_orgs = {};
+  let ids: string[] = [...(store.user_orgs[email] || [])];
   try {
     const kv = getKvConfig();
     if (kv) {
@@ -6260,12 +6416,14 @@ async function addOrgToUserIndexDb(rawEmail: string, orgId: string): Promise<str
     }
   } catch {}
   if (!ids.includes(orgId)) ids.unshift(orgId);
-  localUserOrgsFallback[email] = ids.slice(0, 50);
-  return localUserOrgsFallback[email];
+  store.user_orgs[email] = ids.slice(0, 50);
+  persistStore(store);
+  return store.user_orgs[email];
 }
 
 async function getUserOrgIdsDb(rawEmail: string): Promise<string[]> {
   const email = normalizeEmail(rawEmail);
+  const store = loadStore();
   try {
     const kv = getKvConfig();
     if (kv) {
@@ -6273,26 +6431,84 @@ async function getUserOrgIdsDb(rawEmail: string): Promise<string[]> {
       if (raw) {
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
         if (Array.isArray(parsed)) {
-          localUserOrgsFallback[email] = parsed.map(String);
-          return localUserOrgsFallback[email];
+          if (!store.user_orgs || typeof store.user_orgs !== 'object') store.user_orgs = {};
+          store.user_orgs[email] = parsed.map(String);
+          persistStore(store);
+          return store.user_orgs[email];
         }
       }
     }
   } catch {}
-  return localUserOrgsFallback[email] || [];
+  return store.user_orgs?.[email] || [];
+}
+
+async function saveReportFileToDb(report: StoredReportRecord): Promise<void> {
+  if (!report?.id) return;
+  const store = loadStore();
+  if (!store.reports || typeof store.reports !== 'object') store.reports = {};
+  store.reports[report.id] = report;
+  persistStore(store);
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      await kvCommand(['SET', `aqari:report:${report.id}`, JSON.stringify(report)]);
+    }
+  } catch {}
+}
+
+async function readReportFileFromDb(reportId: string): Promise<StoredReportRecord | null> {
+  const cleanId = String(reportId || '').trim();
+  if (!cleanId) return null;
+  const store = loadStore();
+  try {
+    const kv = getKvConfig();
+    if (kv) {
+      const raw = await kvCommand(['GET', `aqari:report:${cleanId}`]);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!store.reports || typeof store.reports !== 'object') store.reports = {};
+        store.reports[cleanId] = parsed;
+        persistStore(store);
+        return parsed;
+      }
+    }
+  } catch {}
+  return store.reports?.[cleanId] || null;
+}
+
+async function verifyAdminRequest(
+  req: any
+): Promise<
+  | { ok: true; via: 'token' | 'session'; email?: string }
+  | { ok: false; status: 401 | 403; error: string }
+> {
+  if (verifyAdminToken(req)) {
+    return { ok: true, via: 'token' };
+  }
+  const res = await requireAdmin(req);
+  if (res.ok) {
+    return { ok: true, via: 'session', email: res.user.email };
+  }
+  return {
+    ok: false,
+    status: res.status === 401 ? 401 : 403,
+    error: res.status === 401 ? 'Unauthorized' : 'Forbidden',
+  };
 }
 
 // =========================================================================
-// 6. MAIN SERVERLESS HANDLER (NEVER RETURNS 500)
+// 6. MAIN SERVERLESS HANDLER (NEVER RETURNS 500 EXCEPT FATAL INTERNAL ERRORS)
 // =========================================================================
 
 export default async function handler(req: any, res: any) {
-  res?.setHeader?.('Access-Control-Allow-Origin', '*');
-  res?.setHeader?.('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res?.setHeader?.(
-    'Access-Control-Allow-Headers',
-    'Content-Type, x-admin-token, Authorization'
-  );
+  applyAdminOnlyCors(req, res);
+
+  let url: URL;
+  try {
+    url = new URL(req?.url || '/api/app', `http://${req?.headers?.host || 'localhost:3000'}`);
+  } catch {
+    url = new URL('/api/app', 'http://localhost:3000');
+  }
 
   if (req?.method === 'OPTIONS') {
     if (typeof res?.end === 'function') {
@@ -6303,12 +6519,6 @@ export default async function handler(req: any, res: any) {
 
   let action = '';
   try {
-    let url: URL;
-    try {
-      url = new URL(req?.url || '/api/app', `http://${req?.headers?.host || 'localhost:3000'}`);
-    } catch {
-      url = new URL('/api/app', 'http://localhost:3000');
-    }
     const parsedBody = safeParseBody(req);
     action = (getQueryParam(req, url, 'action') || parsedBody.action || '')
       .toString()
@@ -6351,6 +6561,7 @@ export default async function handler(req: any, res: any) {
             'save-to-portfolio',
             'save-property',
             'export',
+            'get-report-file',
             'portfolio',
             'analyst-chat',
             'analyst-message',
@@ -6387,17 +6598,14 @@ export default async function handler(req: any, res: any) {
 
       case 'me': {
         res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
-        const sessionEmail = getSessionEmailFromReq(req);
-        const queryEmail = normalizeEmail(
-          getQueryParam(req, url, 'login_email') || getQueryParam(req, url, 'email')
-        );
-        const lookupEmail = sessionEmail || (queryEmail && queryEmail.includes('@') ? queryEmail : '');
-        if (!lookupEmail) {
+        const sessionEmail = await getSessionEmailFromReq(req);
+        if (!sessionEmail || !sessionEmail.includes('@')) {
           return res.status(401).json({
             authenticated: false,
             error: 'Authentication required',
           });
         }
+        const lookupEmail = sessionEmail;
 
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(lookupEmail);
         if (kvError && !hydratedDb) {
@@ -6415,9 +6623,6 @@ export default async function handler(req: any, res: any) {
           await saveUserToDb(dbUser);
         }
 
-        // Only restore from signed entitlement cookie if DB has NO active/refunded paid record
-        // AND the DB user is still on FREE with 0 payments for this order. NEVER overwrite an
-        // existing paid plan or decremented credit balance from a cookie.
         const ent = getEntitlementFromReq(req);
         const orderAlreadyInPayments = Boolean(
           ent &&
@@ -6461,7 +6666,6 @@ export default async function handler(req: any, res: any) {
           license.planKey === 'free'
             ? 0
             : dynamicPlan?.activePrice ?? PLAN_DEFINITIONS[license.planKey].priceUSD;
-        const planCfg = PLAN_DEFINITIONS[license.planKey];
         const maxSaved = quotas.savedLimit ?? 0;
         const savedCount = Array.isArray(dbUser.saved_analyses)
           ? dbUser.saved_analyses.length
@@ -6511,6 +6715,7 @@ export default async function handler(req: any, res: any) {
           : quotas.isEnterprise && quotas.contractEndMs !== null
           ? quotas.contractEndMs
           : dbUser.license_end;
+        const resolvedUserId = dbUser.userId || getUserIdForEmail(dbUser.email);
 
         const quotaEnvelope = {
           extra_credits: lockState.creditsBalance,
@@ -6553,6 +6758,7 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({
           success: true,
           authenticated: true,
+          userId: resolvedUserId,
           email: dbUser.email,
           login_email: dbUser.email,
           payment_provider: dbUser.payment_provider || 'paddle',
@@ -6612,6 +6818,7 @@ export default async function handler(req: any, res: any) {
           whiteglove_requests: userWhiteGlove,
           whiteglove_deliverables: userDeliverables,
           user: {
+            userId: resolvedUserId,
             email: dbUser.email,
             login_email: dbUser.email,
             payment_provider: dbUser.payment_provider || 'paddle',
@@ -6687,15 +6894,22 @@ export default async function handler(req: any, res: any) {
             ...(req?.query && typeof req.query === 'object' ? req.query : {}),
             ...(parsedBody && typeof parsedBody === 'object' ? parsedBody : {}),
           };
-          const sessionEmail = getSessionEmailFromReq(req);
-          const loginEmail = String(sessionEmail || src?.login_email || src?.email || '')
-            .trim()
-            .toLowerCase();
+          const sessionEmail = await getSessionEmailFromReq(req);
+          const loginEmail = String(sessionEmail || '').trim().toLowerCase();
 
           if (!loginEmail || !loginEmail.includes('@')) {
-            return res.status(200).json({
+            return res.status(401).json({
               success: false,
-              error: 'Please sign in first to verify your payment.',
+              error: 'Authentication required',
+            });
+          }
+
+          const rl = await checkRateLimit(`verify-pay:${loginEmail}`, 20, 60 * 1000);
+          if (!rl.allowed) {
+            return res.status(429).json({
+              success: false,
+              error: 'Too many payment verification attempts. Please wait briefly.',
+              retryAfterSec: rl.retryAfterSec,
             });
           }
 
@@ -6739,6 +6953,12 @@ export default async function handler(req: any, res: any) {
             lowerOrderParam === 'not found' ||
             !cleanPlaceholderOrderId(rawOrderParam);
           orderId = isFallbackMode ? '' : cleanPlaceholderOrderId(rawOrderParam);
+          if (orderId) {
+            const oidCheck = validateSafeId(orderId, 'transaction_id');
+            if (!oidCheck.ok) {
+              return res.status(400).json({ success: false, error: oidCheck.error });
+            }
+          }
 
           const pricing = getPricingPublicPayload();
 
@@ -6821,7 +7041,6 @@ export default async function handler(req: any, res: any) {
             }
 
             try {
-              setSessionCookie(res, dbUser.email);
               setEntitlementCookie(res, {
                 email: dbUser.email,
                 plan: tier.plan,
@@ -6867,7 +7086,7 @@ export default async function handler(req: any, res: any) {
               payment_provider: params.paymentProvider || 'paddle',
               login_email: dbUser.email,
               license_end: dbUser.license_end,
-              user: dbUser,
+              user: sanitizeUserForClient(dbUser),
               license: {
                 ...license,
                 analysesLimit: tier.analyses,
@@ -6878,8 +7097,8 @@ export default async function handler(req: any, res: any) {
           };
 
           const returnExistingUsedOrder = async (existingUsedOrder: UsedOrderRecord) => {
-            if (existingUsedOrder.login_email !== loginEmail) {
-              return res.status(200).json({
+            if (normalizeEmail(existingUsedOrder.login_email) !== loginEmail) {
+              return res.status(403).json({
                 success: false,
                 error: 'This order was already used by another account.',
               });
@@ -6917,7 +7136,7 @@ export default async function handler(req: any, res: any) {
                 order_id: existingUsedOrder.order_id,
                 login_email: existingUser.email,
                 message: `Credits verified (${pack.label}). Current credits balance: ${existingUser.extra_credits || 0} (Never expires).`,
-                user: existingUser,
+                user: sanitizeUserForClient(existingUser),
                 license,
                 features,
               });
@@ -6958,7 +7177,6 @@ export default async function handler(req: any, res: any) {
                 ? 'One-time 30-day PRO access activated! Pro plan is now active.'
                 : `One-time 30-day access activated! ${license.displayName} plan is now active.`);
             try {
-              setSessionCookie(res, existingUser.email);
               if (existingUser.cancel_status !== 'refunded') {
                 setEntitlementCookie(res, {
                   email: existingUser.email,
@@ -6998,7 +7216,7 @@ export default async function handler(req: any, res: any) {
               payment_provider: existingUser.payment_provider || 'paddle',
               login_email: existingUser.email,
               license_end: existingUser.license_end,
-              user: existingUser,
+              user: sanitizeUserForClient(existingUser),
               license,
               features,
             });
@@ -7007,6 +7225,11 @@ export default async function handler(req: any, res: any) {
           if (isFallbackMode) {
             const isValidWebhookOrderEntry = (entry: any, allowVerifyEvent = false): string => {
               if (!entry || typeof entry !== 'object') return '';
+              const entryEmail = normalizeEmail(entry?.email || '');
+              const entryPayEmail = normalizeEmail(entry?.payment_email || '');
+              if (entryEmail !== loginEmail && entryPayEmail !== loginEmail) {
+                return '';
+              }
               const ev = String(entry?.event || entry?.event_name || '').trim().toLowerCase();
               const allowedEvents = allowVerifyEvent
                 ? ['order_created', 'payment_intent.succeeded', 'checkout.session.completed', 'checkout_verify_api']
@@ -7088,7 +7311,7 @@ export default async function handler(req: any, res: any) {
             }
 
             if (latestClaimedByOther) {
-              return res.status(200).json({
+              return res.status(403).json({
                 success: false,
                 error: 'This order was already used by another account.',
               });
@@ -7106,20 +7329,24 @@ export default async function handler(req: any, res: any) {
           }
 
           if (!hasPaymentKey || !paddleApiKey) {
-            console.error('[Paddle Verify] Missing required environment variable: PADDLE_API_KEY');
+            console.error('[Paddle Verify] Missing required server payment API key');
             return res.status(500).json({
               success: false,
-              error: 'Missing required server environment variable: PADDLE_API_KEY.',
+              error: publicError(
+                'Payment verification service misconfigured.',
+                'Missing required server environment variable: PADDLE_API_KEY.'
+              ),
             });
           }
 
           if (!paddleEnv.configured || !paddleBaseUrl) {
-            console.error(
-              '[Paddle Verify] Missing or invalid environment variable: PADDLE_ENVIRONMENT (expected "live" or "sandbox").'
-            );
+            console.error('[Paddle Verify] Missing or invalid server payment environment');
             return res.status(500).json({
               success: false,
-              error: 'Missing required server environment variable: PADDLE_ENVIRONMENT.',
+              error: publicError(
+                'Payment verification service misconfigured.',
+                'Missing required server environment variable: PADDLE_ENVIRONMENT.'
+              ),
             });
           }
 
@@ -7138,10 +7365,12 @@ export default async function handler(req: any, res: any) {
           if (!paddleRes?.ok || !txnData?.id) {
             return res.status(200).json({
               success: false,
-              error:
+              error: publicError(
+                'Transaction not found or could not be verified.',
                 paddleJson?.error?.detail ||
-                paddleJson?.error?.message ||
-                `Transaction not found in Paddle: ${orderId}`,
+                  paddleJson?.error?.message ||
+                  `Transaction not found in Paddle: ${orderId}`
+              ),
             });
           }
 
@@ -7153,7 +7382,25 @@ export default async function handler(req: any, res: any) {
           if (!isPaid) {
             return res.status(200).json({
               success: false,
-              error: `Paddle transaction #${orderId} status is '${txnData.status || 'pending'}' (not completed)`,
+              error: `Transaction is not completed yet (status: ${txnData.status || 'pending'})`,
+            });
+          }
+
+          const paymentEmail = String(
+            txnData?.customer?.email ||
+              txnData?.custom_data?.email ||
+              txnData?.custom_data?.login_email ||
+              ''
+          )
+            .trim()
+            .toLowerCase();
+          const customLoginEmail = normalizeEmail(
+            txnData?.custom_data?.login_email || txnData?.custom_data?.email || ''
+          );
+          if (customLoginEmail && customLoginEmail !== loginEmail) {
+            return res.status(403).json({
+              success: false,
+              error: 'This transaction belongs to a different account.',
             });
           }
 
@@ -7174,15 +7421,6 @@ export default async function handler(req: any, res: any) {
           const itemProductName = String(
             firstItem?.price?.name || firstItem?.product?.name || firstItem?.price?.description || ''
           ).trim();
-          const paymentEmail = String(
-            txnData?.customer?.email ||
-              txnData?.custom_data?.email ||
-              txnData?.custom_data?.login_email ||
-              src?.email ||
-              loginEmail
-          )
-            .trim()
-            .toLowerCase();
 
           const matchedCreditPack = resolveCreditPackMatch({
             itemPriceId,
@@ -7194,7 +7432,7 @@ export default async function handler(req: any, res: any) {
           });
 
           if (matchedCreditPack) {
-            const targetCreditEmail = loginEmail || paymentEmail;
+            const targetCreditEmail = loginEmail;
             const updatedCreditUser = await applyCreditPackToUser({
               email: targetCreditEmail,
               pack: matchedCreditPack,
@@ -7219,9 +7457,6 @@ export default async function handler(req: any, res: any) {
             const creditFeatures =
               findPlanPricing(pricing, creditLicense.planKey)?.features ||
               PLAN_DEFINITIONS[creditLicense.planKey].features;
-            try {
-              setSessionCookie(res, updatedCreditUser.email);
-            } catch {}
 
             return res.status(200).json({
               success: true,
@@ -7280,43 +7515,43 @@ export default async function handler(req: any, res: any) {
             productName: itemProductName || undefined,
             variantId: itemPriceId || undefined,
             fallbackPlan: resolvedFallbackPlan,
-            paymentEmail,
+            paymentEmail: paymentEmail || loginEmail,
             paymentProvider: 'paddle',
             testMode: verifiedBaseUrl.includes('sandbox'),
             createdAtIso: txnData.created_at || new Date().toISOString(),
           });
         } catch (err: any) {
-          console.error('[verify-checkout] Unhandled error (returning HTTP 200):', err);
-          return res.status(200).json({
+          console.error('[verify-checkout] Unhandled error:', err);
+          return res.status(500).json({
             success: false,
-            error: `Verify failed: ${err?.message || String(err || 'Unknown error')} | order_id:${orderId || 'none'}`,
+            error: publicError(
+              'Payment verification failed.',
+              `Verify failed: ${err?.message || String(err || 'Unknown error')} | order_id:${orderId || 'none'}`
+            ),
           });
         }
       }
 
       case 'debug-plan': {
-        const sessionEmail = getSessionEmailFromReq(req);
-        const isProd =
-          getEnv('VERCEL_ENV') === 'production' ||
-          getEnv('NODE_ENV') === 'production';
-
-        if (isProd && !isAdminEmail(sessionEmail)) {
-          return res.status(403).json({
-            error: 'Debug endpoint restricted to ADMIN_EMAIL in production',
+        const adminAuth = await verifyAdminRequest(req);
+        if (!adminAuth.ok) {
+          return res.status(adminAuth.status).json({
+            success: false,
+            error: adminAuth.error,
           });
         }
 
         const email = (
-          sessionEmail ||
           getQueryParam(req, url, 'email') ||
           parsedBody?.email ||
+          adminAuth.email ||
           ''
         )
           .toString()
           .trim()
           .toLowerCase();
-        if (!email) {
-          return res.status(401).json({ error: 'Authentication or email query required' });
+        if (!email || !email.includes('@')) {
+          return res.status(400).json({ error: 'Target email required' });
         }
 
         const userRecord =
@@ -7325,6 +7560,7 @@ export default async function handler(req: any, res: any) {
         const pricing = getPricingPublicPayload();
 
         return res.status(200).json({
+          userId: userRecord.userId || getUserIdForEmail(userRecord.email),
           email: userRecord.email,
           plan: license.displayName,
           planKey: license.planKey,
@@ -7353,7 +7589,7 @@ export default async function handler(req: any, res: any) {
         const authHeader = String(req?.headers?.authorization || '');
         const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
         const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
-        let email = getSessionEmailFromReq(req) || '';
+        let email = (await getSessionEmailFromReq(req)) || '';
 
         if (isApiKeyBearer) {
           const apiOwner = await resolveApiKeyEmail(bearerRaw);
@@ -7365,22 +7601,156 @@ export default async function handler(req: any, res: any) {
             });
           }
           email = apiOwner;
-        } else if (!email) {
-          email = String(body.login_email || body.email || '')
-            .trim()
-            .toLowerCase();
         }
 
-        if (!email) {
+        if (!email || !email.includes('@')) {
           return res.status(401).json({ error: 'Authentication required to run underwriting analysis' });
         }
 
-        const rl = checkRateLimit(`analyze:${email}`, 30, 60 * 1000);
+        const rl = await checkRateLimit(`analyze:${email}`, 30, 60 * 1000);
         if (!rl.allowed) {
           return res.status(429).json({
             error: 'Rate limit exceeded. Please wait briefly.',
             retryAfterSec: rl.retryAfterSec,
           });
+        }
+
+        const rawCityInput = String(body.city || '').trim();
+        const rawCityId = String(body.city_id || body.cityId || '').trim();
+        const cityTextCheck = validateSafeText(rawCityInput, 'city', { maxLen: 120 });
+        if (!cityTextCheck.ok) {
+          return res.status(400).json({ success: false, error: cityTextCheck.error, code: 'INVALID_INPUTS' });
+        }
+
+        const titleCheck = validateSafeText(
+          body.propertyTitle ?? body.title ?? '',
+          'propertyTitle',
+          { maxLen: 200 }
+        );
+        if (!titleCheck.ok) {
+          return res.status(400).json({ success: false, error: titleCheck.error, code: 'INVALID_INPUTS' });
+        }
+
+        const rawPriceCheck = validateFiniteNumber(
+          body.priceUSD ?? body.acquisitionValuation ?? body.valuation,
+          'priceUSD',
+          { min: 1, max: 1e12 }
+        );
+        const rawRentCheck = validateFiniteNumber(
+          body.rentUSD ?? body.monthlyRent ?? body.rent,
+          'rentUSD',
+          { min: 1, max: 1e9 }
+        );
+        const rawDownCheck = validateFiniteNumber(
+          body.downPaymentPct ?? body.equityDownPct ?? body.equity,
+          'downPaymentPct',
+          { min: 0, max: 100, defaultValue: 30 }
+        );
+        const rawRateCheck = validateFiniteNumber(
+          body.interestRatePct ?? body.mortgageRatePct ?? body.rate,
+          'interestRatePct',
+          { min: 0, max: 1000, defaultValue: 5.5 }
+        );
+        const rawOpexCheck = validateFiniteNumber(
+          body.operatingExpensePct ?? body.opexPct ?? body.opex,
+          'operatingExpensePct',
+          { min: 0, max: 99.99, defaultValue: 15 }
+        );
+        const loanTermCheck = validateFiniteNumber(
+          body.loanTermYears ?? body.loan_term_years,
+          'loanTermYears',
+          { min: 1, max: 50, defaultValue: 25 }
+        );
+        const amortCheck = validateFiniteNumber(
+          body.amortizationYears ?? body.amortization_years ?? body.loanTermYears,
+          'amortizationYears',
+          { min: 1, max: 50, defaultValue: loanTermCheck.ok ? loanTermCheck.value : 25 }
+        );
+        const vacancyCheck = validateFiniteNumber(
+          body.vacancyRatePct ?? body.vacancy_pct,
+          'vacancyRatePct',
+          { min: 0, max: 100, defaultValue: 0 }
+        );
+        const mgmtCheck = validateFiniteNumber(
+          body.managementPct ?? body.management_pct,
+          'managementPct',
+          { min: 0, max: 50, defaultValue: 0 }
+        );
+        const propTaxCheck = validateFiniteNumber(
+          body.propertyTaxUSD ?? body.property_tax_usd,
+          'propertyTaxUSD',
+          { min: 0, max: 1e9, defaultValue: 0 }
+        );
+        const insCheck = validateFiniteNumber(
+          body.insuranceUSD ?? body.insurance_usd,
+          'insuranceUSD',
+          { min: 0, max: 1e9, defaultValue: 0 }
+        );
+        const maintCheck = validateFiniteNumber(
+          body.maintenanceReserveUSD ?? body.maintenance_usd,
+          'maintenanceReserveUSD',
+          { min: 0, max: 1e9, defaultValue: 0 }
+        );
+        const hoaCheck = validateFiniteNumber(
+          body.hoaUSD ?? body.hoa_usd,
+          'hoaUSD',
+          { min: 0, max: 1e9, defaultValue: 0 }
+        );
+        const closingCheck = validateFiniteNumber(
+          body.closingCostsPct ?? body.closing_costs_pct,
+          'closingCostsPct',
+          { min: 0, max: 25, defaultValue: 0 }
+        );
+        const rentGrowthCheck = validateFiniteNumber(
+          body.rentGrowthPct ?? body.rent_growth_pct,
+          'rentGrowthPct',
+          { min: -50, max: 100, defaultValue: 3.0 }
+        );
+        const expGrowthCheck = validateFiniteNumber(
+          body.expenseGrowthPct ?? body.expense_growth_pct,
+          'expenseGrowthPct',
+          { min: -50, max: 100, defaultValue: 2.5 }
+        );
+        const appCheck = validateFiniteNumber(
+          body.appreciationPct ?? body.appreciation_pct,
+          'appreciationPct',
+          { min: -50, max: 100, defaultValue: 3.0 }
+        );
+        const exitCapCheck = validateFiniteNumber(
+          body.exitCapRatePct ?? body.exit_cap_rate_pct,
+          'exitCapRatePct',
+          { min: 0, max: 100, defaultValue: 0 }
+        );
+        const sellCostsCheck = validateFiniteNumber(
+          body.sellingCostsPct ?? body.selling_costs_pct,
+          'sellingCostsPct',
+          { min: 0, max: 50, defaultValue: 3.0 }
+        );
+
+        const numericChecks = [
+          rawPriceCheck,
+          rawRentCheck,
+          rawDownCheck,
+          rawRateCheck,
+          rawOpexCheck,
+          loanTermCheck,
+          amortCheck,
+          vacancyCheck,
+          mgmtCheck,
+          propTaxCheck,
+          insCheck,
+          maintCheck,
+          hoaCheck,
+          closingCheck,
+          rentGrowthCheck,
+          expGrowthCheck,
+          appCheck,
+          exitCapCheck,
+          sellCostsCheck,
+        ];
+        const firstBadNum = numericChecks.find((c) => !c.ok);
+        if (firstBadNum && !firstBadNum.ok) {
+          return res.status(400).json({ success: false, error: firstBadNum.error, code: 'INVALID_INPUTS' });
         }
 
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
@@ -7390,14 +7760,10 @@ export default async function handler(req: any, res: any) {
             error: 'Database temporarily unavailable. No credit deducted. Please retry.',
           });
         }
-        const userRecord =
-          hydratedDb ||
-          getOrCreateServerUser(email, {
-            name: body.name,
-            timezone: body.timezone,
-          });
+        const userRecord = hydratedDb || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['run-analysis']);
+
         let apiDailyPatch: Partial<ServerUserRecord> = {};
         if (isApiKeyBearer) {
           const apiCheck = checkAndConsumeApiDailyQuota(userRecord);
@@ -7415,23 +7781,10 @@ export default async function handler(req: any, res: any) {
             ...creditCheck.payload,
             plan: license.planKey,
             displayName: license.displayName,
-            daysLeft: creditCheck.payload.reason === 'expired' ? 0 : license.daysLeft,
           });
         }
 
         const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
-        if (body.useMonteCarlo === true && !canUseFeature(featurePlanKey, 'monteCarlo')) {
-          return res.status(403).json({
-            success: false,
-            error: getUpgradeMessage('monteCarlo'),
-            code: 'FEATURE_LOCKED',
-            feature: 'monteCarlo',
-            requiredPlan: 'starter',
-          });
-        }
-
-        const rawCityInput = String(body.city || '').trim();
-        const rawCityId = String(body.city_id || body.cityId || '').trim();
         const cityEntry = findInlinedCity(rawCityInput, rawCityId);
         if (!cityEntry) {
           return res.status(400).json({
@@ -7442,66 +7795,28 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const priceUSD = parseEnglishNumberServer(
-          body.priceUSD ?? body.acquisitionValuation ?? body.valuation
-        );
-        const rentUSD = parseEnglishNumberServer(
-          body.rentUSD ?? body.monthlyRent ?? body.rent
-        );
-        const downPaymentPct = parseEnglishNumberServer(
-          body.downPaymentPct ?? body.equityDownPct ?? body.equity ?? 30
-        );
-        const interestRatePct = parseEnglishNumberServer(
-          body.interestRatePct ?? body.mortgageRatePct ?? body.rate ?? 5.5
-        );
-        const operatingExpensePct = parseEnglishNumberServer(
-          body.operatingExpensePct ?? body.opexPct ?? body.opex ?? 15
-        );
-        const loanTermYears = parseEnglishNumberServer(body.loanTermYears ?? 25);
-        const amortizationYears = parseEnglishNumberServer(
-          body.amortizationYears ?? (Number.isFinite(loanTermYears) ? loanTermYears : 25)
-        );
-        const vacancyRatePct = parseEnglishNumberServer(body.vacancyRatePct ?? 0);
-        const managementPct = parseEnglishNumberServer(body.managementPct ?? 0);
-        const propertyTaxUSD = parseEnglishNumberServer(body.propertyTaxUSD ?? 0);
-        const insuranceUSD = parseEnglishNumberServer(body.insuranceUSD ?? 0);
-        const maintenanceReserveUSD = parseEnglishNumberServer(body.maintenanceReserveUSD ?? 0);
-        const hoaUSD = parseEnglishNumberServer(body.hoaUSD ?? 0);
-        const closingCostsPct = parseEnglishNumberServer(body.closingCostsPct ?? 0);
-        const rentGrowthPct = parseEnglishNumberServer(body.rentGrowthPct ?? 3.0);
-        const expenseGrowthPct = parseEnglishNumberServer(body.expenseGrowthPct ?? 2.5);
-        const appreciationPct = parseEnglishNumberServer(body.appreciationPct ?? 3.0);
-        const exitCapRatePct = parseEnglishNumberServer(body.exitCapRatePct ?? 0);
-        const sellingCostsPct = parseEnglishNumberServer(body.sellingCostsPct ?? 3.0);
+        const priceUSD = rawPriceCheck.ok ? rawPriceCheck.value : 0;
+        const rentUSD = rawRentCheck.ok ? rawRentCheck.value : 0;
+        const downPaymentPct = rawDownCheck.ok ? rawDownCheck.value : 30;
+        const interestRatePct = rawRateCheck.ok ? rawRateCheck.value : 5.5;
+        const operatingExpensePct = rawOpexCheck.ok ? rawOpexCheck.value : 15;
+        const loanTermYears = loanTermCheck.ok ? loanTermCheck.value : 25;
+        const amortizationYears = amortCheck.ok ? amortCheck.value : 25;
+        const vacancyRatePct = vacancyCheck.ok ? vacancyCheck.value : 0;
+        const managementPct = mgmtCheck.ok ? mgmtCheck.value : 0;
+        const propertyTaxUSD = propTaxCheck.ok ? propTaxCheck.value : 0;
+        const insuranceUSD = insCheck.ok ? insCheck.value : 0;
+        const maintenanceReserveUSD = maintCheck.ok ? maintCheck.value : 0;
+        const hoaUSD = hoaCheck.ok ? hoaCheck.value : 0;
+        const closingCostsPct = closingCheck.ok ? closingCheck.value : 0;
+        const rentGrowthPct = rentGrowthCheck.ok ? rentGrowthCheck.value : 3.0;
+        const expenseGrowthPct = expGrowthCheck.ok ? expGrowthCheck.value : 2.5;
+        const appreciationPct = appCheck.ok ? appCheck.value : 3.0;
+        const exitCapRatePct = exitCapCheck.ok ? exitCapCheck.value : 0;
+        const sellingCostsPct = sellCostsCheck.ok ? sellCostsCheck.value : 3.0;
         const noExitValue = Boolean(body.noExitValue);
-
-        const propertyTitle = (
-          body.propertyTitle ||
-          body.title ||
-          `${cityEntry.city} Prime Institutional Asset`
-        ).toString();
         const city = cityEntry.city;
-
-        if (
-          !Number.isFinite(priceUSD) ||
-          priceUSD <= 0 ||
-          !Number.isFinite(rentUSD) ||
-          rentUSD <= 0 ||
-          !Number.isFinite(downPaymentPct) ||
-          downPaymentPct < 0 ||
-          downPaymentPct > 100 ||
-          !Number.isFinite(interestRatePct) ||
-          interestRatePct < 0 ||
-          !Number.isFinite(operatingExpensePct) ||
-          operatingExpensePct < 0 ||
-          operatingExpensePct >= 100
-        ) {
-          return res.status(400).json({
-            success: false,
-            error: 'Price & monthly rent must be greater than 0; percentages must be valid.',
-            code: 'INVALID_INPUTS',
-          });
-        }
+        const propertyTitle = titleCheck.value || `${city} Prime Institutional Asset`;
 
         const uwInputs: ServerUnderwritingInputs = {
           priceUSD,
@@ -7509,20 +7824,20 @@ export default async function handler(req: any, res: any) {
           downPaymentPct,
           interestRatePct,
           operatingExpensePct,
-          loanTermYears: Number.isFinite(loanTermYears) ? loanTermYears : 25,
-          amortizationYears: Number.isFinite(amortizationYears) ? amortizationYears : 25,
-          vacancyRatePct: Number.isFinite(vacancyRatePct) ? vacancyRatePct : 0,
-          managementPct: Number.isFinite(managementPct) ? managementPct : 0,
-          propertyTaxUSD: Number.isFinite(propertyTaxUSD) ? propertyTaxUSD : 0,
-          insuranceUSD: Number.isFinite(insuranceUSD) ? insuranceUSD : 0,
-          maintenanceReserveUSD: Number.isFinite(maintenanceReserveUSD) ? maintenanceReserveUSD : 0,
-          hoaUSD: Number.isFinite(hoaUSD) ? hoaUSD : 0,
-          closingCostsPct: Number.isFinite(closingCostsPct) ? closingCostsPct : 0,
-          rentGrowthPct: Number.isFinite(rentGrowthPct) ? rentGrowthPct : 3.0,
-          expenseGrowthPct: Number.isFinite(expenseGrowthPct) ? expenseGrowthPct : 2.5,
-          appreciationPct: Number.isFinite(appreciationPct) ? appreciationPct : 3.0,
-          exitCapRatePct: Number.isFinite(exitCapRatePct) ? exitCapRatePct : 0,
-          sellingCostsPct: Number.isFinite(sellingCostsPct) ? sellingCostsPct : 3.0,
+          loanTermYears,
+          amortizationYears,
+          vacancyRatePct,
+          managementPct,
+          propertyTaxUSD,
+          insuranceUSD,
+          maintenanceReserveUSD,
+          hoaUSD,
+          closingCostsPct,
+          rentGrowthPct,
+          expenseGrowthPct,
+          appreciationPct,
+          exitCapRatePct,
+          sellingCostsPct,
           noExitValue,
         };
 
@@ -7658,7 +7973,7 @@ export default async function handler(req: any, res: any) {
         const authHeader = String(req?.headers?.authorization || '');
         const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
         const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
-        let email = getSessionEmailFromReq(req) || '';
+        let email = (await getSessionEmailFromReq(req)) || '';
 
         if (isApiKeyBearer) {
           const apiOwner = await resolveApiKeyEmail(bearerRaw);
@@ -7666,14 +7981,19 @@ export default async function handler(req: any, res: any) {
             return res.status(401).json({ success: false, error: 'Invalid API token' });
           }
           email = apiOwner;
-        } else if (!email) {
-          email = String(body.login_email || body.email || '')
-            .trim()
-            .toLowerCase();
         }
 
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const rl = await checkRateLimit(`deals:${email}`, 30, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
 
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
@@ -7739,10 +8059,10 @@ export default async function handler(req: any, res: any) {
         const riskLevel: 'Low' | 'Medium' | 'High' =
           rawRisk === 'Low' || rawRisk === 'High' ? rawRisk : 'Medium';
 
-        if (!Number.isFinite(budget) || budget <= 0) {
+        if (!Number.isFinite(budget) || budget <= 0 || budget > 1e12) {
           return res.status(400).json({
             success: false,
-            error: 'Budget ($) must be greater than 0.',
+            error: 'Budget ($) must be between 1 and 1,000,000,000,000.',
             code: 'INVALID_INPUTS',
           });
         }
@@ -7952,7 +8272,7 @@ export default async function handler(req: any, res: any) {
         const authHeader = String(req?.headers?.authorization || '');
         const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
         const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
-        let email = getSessionEmailFromReq(req) || '';
+        let email = (await getSessionEmailFromReq(req)) || '';
 
         if (isApiKeyBearer) {
           const apiOwner = await resolveApiKeyEmail(bearerRaw);
@@ -7960,14 +8280,19 @@ export default async function handler(req: any, res: any) {
             return res.status(401).json({ success: false, error: 'Invalid API token' });
           }
           email = apiOwner;
-        } else if (!email) {
-          email = String(body.login_email || body.email || '')
-            .trim()
-            .toLowerCase();
         }
 
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const rl = await checkRateLimit(`forecast:${email}`, 30, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
 
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
@@ -8233,7 +8558,7 @@ export default async function handler(req: any, res: any) {
         const authHeader = String(req?.headers?.authorization || '');
         const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
         const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
-        let email = getSessionEmailFromReq(req) || '';
+        let email = (await getSessionEmailFromReq(req)) || '';
 
         if (isApiKeyBearer) {
           const apiOwner = await resolveApiKeyEmail(bearerRaw);
@@ -8241,14 +8566,19 @@ export default async function handler(req: any, res: any) {
             return res.status(401).json({ success: false, error: 'Invalid API token' });
           }
           email = apiOwner;
-        } else if (!email) {
-          email = String(body.login_email || body.email || '')
-            .trim()
-            .toLowerCase();
         }
 
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const rl = await checkRateLimit(`dd:${email}`, 30, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
 
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
@@ -8318,17 +8648,17 @@ export default async function handler(req: any, res: any) {
         const rawAge = parseEnglishNumberServer(body.buildingAge ?? body.age ?? 5);
         const buildingAge = Number.isFinite(rawAge) ? Math.max(0, Math.min(200, Math.round(rawAge))) : -1;
 
-        if (!Number.isFinite(price) || price <= 0) {
+        if (!Number.isFinite(price) || price <= 0 || price > 1e12) {
           return res.status(400).json({
             success: false,
-            error: 'Property Price ($) must be greater than 0.',
+            error: 'Property Price ($) must be between 1 and 1,000,000,000,000.',
             code: 'INVALID_INPUTS',
           });
         }
-        if (!Number.isFinite(monthlyRent) || monthlyRent <= 0) {
+        if (!Number.isFinite(monthlyRent) || monthlyRent <= 0 || monthlyRent > 1e9) {
           return res.status(400).json({
             success: false,
-            error: 'Gross Monthly Rent ($/mo) must be greater than 0.',
+            error: 'Gross Monthly Rent ($/mo) must be between 1 and 1,000,000,000.',
             code: 'INVALID_INPUTS',
           });
         }
@@ -8630,7 +8960,7 @@ export default async function handler(req: any, res: any) {
         const authHeader = String(req?.headers?.authorization || '');
         const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
         const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
-        let email = getSessionEmailFromReq(req) || '';
+        let email = (await getSessionEmailFromReq(req)) || '';
 
         if (isApiKeyBearer) {
           const apiOwner = await resolveApiKeyEmail(bearerRaw);
@@ -8638,14 +8968,19 @@ export default async function handler(req: any, res: any) {
             return res.status(401).json({ success: false, error: 'Invalid API token' });
           }
           email = apiOwner;
-        } else if (!email) {
-          email = String(body.login_email || body.email || '')
-            .trim()
-            .toLowerCase();
         }
 
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const rl = await checkRateLimit(`opt:${email}`, 30, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
 
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
@@ -8693,10 +9028,10 @@ export default async function handler(req: any, res: any) {
         const totalCapital = parseEnglishNumberServer(
           body.totalCapital ?? body.capital ?? body.budget
         );
-        if (!Number.isFinite(totalCapital) || totalCapital <= 0) {
+        if (!Number.isFinite(totalCapital) || totalCapital <= 0 || totalCapital > 1e12) {
           return res.status(400).json({
             success: false,
-            error: 'Total Capital ($) must be greater than 0.',
+            error: 'Total Capital ($) must be between 1 and 1,000,000,000,000.',
             code: 'INVALID_INPUTS',
           });
         }
@@ -8882,7 +9217,7 @@ export default async function handler(req: any, res: any) {
         const authHeader = String(req?.headers?.authorization || '');
         const bearerRaw = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
         const isApiKeyBearer = bearerRaw.startsWith('aqari_live_');
-        let email = getSessionEmailFromReq(req) || '';
+        let email = (await getSessionEmailFromReq(req)) || '';
 
         if (isApiKeyBearer) {
           const apiOwner = await resolveApiKeyEmail(bearerRaw);
@@ -8890,14 +9225,19 @@ export default async function handler(req: any, res: any) {
             return res.status(401).json({ success: false, error: 'Invalid API token' });
           }
           email = apiOwner;
-        } else if (!email) {
-          email = String(body.login_email || body.email || '')
-            .trim()
-            .toLowerCase();
         }
 
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+
+        const rl = await checkRateLimit(`advisor:${email}`, 30, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
 
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
@@ -8942,14 +9282,19 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const question = String(body.question || '').trim().slice(0, 1200);
-        if (question.length < 4) {
+        const questionCheck = validateSafeText(body.question, 'question', {
+          required: true,
+          minLen: 4,
+          maxLen: 1200,
+        });
+        if (!questionCheck.ok) {
           return res.status(400).json({
             success: false,
-            error: 'Enter an investment question (minimum 4 characters).',
+            error: questionCheck.error,
             code: 'INVALID_INPUTS',
           });
         }
+        const question = questionCheck.value;
 
         const rawCityInput = String(body.city || '').trim();
         const rawCityId = String(body.city_id || body.cityId || '').trim();
@@ -8964,10 +9309,10 @@ export default async function handler(req: any, res: any) {
         }
 
         const budget = parseEnglishNumberServer(body.budget ?? body.capital ?? body.amount);
-        if (!Number.isFinite(budget) || budget <= 0) {
+        if (!Number.isFinite(budget) || budget <= 0 || budget > 1e12) {
           return res.status(400).json({
             success: false,
-            error: 'Budget ($) must be greater than 0.',
+            error: 'Budget ($) must be between 1 and 1,000,000,000,000.',
             code: 'INVALID_INPUTS',
           });
         }
@@ -9117,12 +9462,26 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = String(sessionEmail || body.login_email || body.email || '')
-          .trim()
-          .toLowerCase();
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`mc:${email}`, 30, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
+        }
+        const mcPriceCheck = validateFiniteNumber(body.priceUSD ?? 650000, 'priceUSD', { min: 1, max: 1e12 });
+        const mcRentCheck = validateFiniteNumber(body.rentUSD ?? 4500, 'rentUSD', { min: 1, max: 1e9 });
+        if (!mcPriceCheck.ok || !mcRentCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error: (!mcPriceCheck.ok && mcPriceCheck.error) || (!mcRentCheck.ok && mcRentCheck.error) || 'Invalid inputs',
+            code: 'INVALID_INPUTS',
+          });
         }
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
@@ -9152,8 +9511,8 @@ export default async function handler(req: any, res: any) {
         const mcCycles = PLAN_DEFINITIONS[featurePlanKey].monteCarloMaxCycles || 1000;
         const monteCarlo = runServerMonteCarlo(
           {
-            priceUSD: Number(body.priceUSD || 650000),
-            rentUSD: Number(body.rentUSD || 4500),
+            priceUSD: mcPriceCheck.value,
+            rentUSD: mcRentCheck.value,
             downPaymentPct: Number(body.downPaymentPct ?? 30),
             interestRatePct: Number(body.interestRatePct ?? 5.5),
             operatingExpensePct: Number(body.operatingExpensePct ?? 15),
@@ -9206,17 +9565,23 @@ export default async function handler(req: any, res: any) {
         }
 
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = String(sessionEmail || body.login_email || body.email || '')
-          .trim()
-          .toLowerCase();
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ error: 'Authentication required to save analyses' });
         }
 
+        const rl = await checkRateLimit(`save:${email}`, 40, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
+        }
+
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email, { name: body.name });
+          getOrCreateServerUser(email);
         const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
@@ -9276,13 +9641,41 @@ export default async function handler(req: any, res: any) {
         }
 
         const rawAnalysis = body.analysis || (body.property ? body : null);
-        if (!rawAnalysis) {
+        if (!rawAnalysis || typeof rawAnalysis !== 'object') {
           return res.status(400).json({ success: false, error: 'Analysis payload is required' });
+        }
+
+        if (rawAnalysis.id !== undefined && rawAnalysis.id !== null) {
+          const idCheck = validateSafeId(rawAnalysis.id, 'id');
+          if (!idCheck.ok) {
+            return res.status(400).json({ success: false, error: idCheck.error, code: 'INVALID_INPUTS' });
+          }
+        }
+        const propCheck = validateSafeText(
+          rawAnalysis.property ?? rawAnalysis.propertyTitle ?? rawAnalysis.title ?? '',
+          'property',
+          { maxLen: 200 }
+        );
+        const cityCheck = validateSafeText(rawAnalysis.city ?? '', 'city', { maxLen: 120 });
+        if (!propCheck.ok || !cityCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error: (!propCheck.ok && propCheck.error) || (!cityCheck.ok && cityCheck.error) || 'Invalid text input',
+            code: 'INVALID_INPUTS',
+          });
+        }
+        if (rawAnalysis.priceUSD !== undefined) {
+          const priceCheck = validateFiniteNumber(rawAnalysis.priceUSD, 'priceUSD', { min: 0, max: 1e12 });
+          if (!priceCheck.ok) {
+            return res.status(400).json({ success: false, error: priceCheck.error, code: 'INVALID_INPUTS' });
+          }
         }
 
         const newItem = {
           ...rawAnalysis,
-          id: rawAnalysis.id || `saved_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          id: rawAnalysis.id ? String(rawAnalysis.id).trim() : `saved_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          ownerId: getUserIdForEmail(email),
+          ownerEmail: email,
           date: rawAnalysis.date || Date.now(),
         };
 
@@ -9309,19 +9702,28 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = String(sessionEmail || body.login_email || body.email || '')
-          .trim()
-          .toLowerCase();
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
-        const targetId = String(body.id || getQueryParam(req, url, 'id') || '').trim();
-        if (!targetId) {
-          return res.status(400).json({ success: false, error: 'Saved item id is required' });
+        const idCheck = validateSafeId(body.id || getQueryParam(req, url, 'id') || '', 'id');
+        if (!idCheck.ok) {
+          return res.status(400).json({ success: false, error: idCheck.error, code: 'INVALID_INPUTS' });
         }
+        const targetId = idCheck.value;
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+        const callerId = getUserIdForEmail(email);
+        const existingItem = userRecord.saved_analyses.find(
+          (item: any) => String(item?.id) === targetId
+        );
+        if (
+          !existingItem ||
+          (existingItem.ownerEmail && normalizeEmail(existingItem.ownerEmail) !== email) ||
+          (existingItem.ownerId && existingItem.ownerId !== callerId)
+        ) {
+          return res.status(404).json({ success: false, error: 'not found' });
+        }
         const license = computeServerLicenseStatus(userRecord);
         const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
         const nextSaved = userRecord.saved_analyses.filter((item: any) => String(item?.id) !== targetId);
@@ -9342,13 +9744,18 @@ export default async function handler(req: any, res: any) {
 
       case 'analyst-message':
       case 'analyst-chat': {
-        const sessionEmail = getSessionEmailFromReq(req);
+        const email = (await getSessionEmailFromReq(req)) || '';
         const body = parsedBody;
-        const email = String(sessionEmail || getQueryParam(req, url, 'email') || body.login_email || body.email || '')
-          .trim()
-          .toLowerCase();
         if (!email) {
           return res.status(401).json({ error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`analyst:${email}`, 30, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
@@ -9375,10 +9782,21 @@ export default async function handler(req: any, res: any) {
         }
 
         if (req.method === 'POST') {
-          const text = String(body.message || '').trim().slice(0, 2000);
-          if (!text) {
-            return res.status(400).json({ success: false, error: 'Message cannot be empty' });
+          const textCheck = validateSafeText(body.message, 'message', {
+            required: true,
+            minLen: 1,
+            maxLen: 2000,
+          });
+          if (!textCheck.ok) {
+            return res.status(400).json({ success: false, error: textCheck.error, code: 'INVALID_INPUTS' });
           }
+          const text = textCheck.value;
+          const titleAttachCheck = validateSafeText(body.attachedAnalysisTitle || '', 'attachedAnalysisTitle', { maxLen: 200 });
+          const summaryAttachCheck = validateSafeText(body.attachedAnalysisSummary || '', 'attachedAnalysisSummary', { maxLen: 500 });
+          if (!titleAttachCheck.ok || !summaryAttachCheck.ok) {
+            return res.status(400).json({ success: false, error: 'Invalid attachment metadata', code: 'INVALID_INPUTS' });
+          }
+
           const thread = await getAnalystThreadFromDb(email);
           const now = Date.now();
           const msg = {
@@ -9387,10 +9805,10 @@ export default async function handler(req: any, res: any) {
             senderEmail: email,
             text,
             timestamp: new Date(now).toISOString(),
-            attachedAnalysisId: body.attachedAnalysisId || undefined,
-            attachedAnalysisTitle: body.attachedAnalysisTitle || undefined,
-            attachedAnalysisSummary: body.attachedAnalysisSummary || undefined,
-            replyByDate: body.replyByDate || undefined,
+            attachedAnalysisId: body.attachedAnalysisId ? String(body.attachedAnalysisId).slice(0, 100) : undefined,
+            attachedAnalysisTitle: titleAttachCheck.value || undefined,
+            attachedAnalysisSummary: summaryAttachCheck.value || undefined,
+            replyByDate: body.replyByDate ? String(body.replyByDate).slice(0, 40) : undefined,
           };
           thread.status = 'Open';
           thread.plan = license.displayName || 'SOVEREIGN';
@@ -9420,13 +9838,18 @@ export default async function handler(req: any, res: any) {
       }
 
       case 'whiteglove-request': {
-        const sessionEmail = getSessionEmailFromReq(req);
+        const email = (await getSessionEmailFromReq(req)) || '';
         const body = parsedBody;
-        const email = String(sessionEmail || getQueryParam(req, url, 'email') || body.login_email || body.email || '')
-          .trim()
-          .toLowerCase();
         if (!email) {
           return res.status(401).json({ error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`wg:${email}`, 20, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
@@ -9454,28 +9877,41 @@ export default async function handler(req: any, res: any) {
         }
 
         if (req.method === 'POST') {
-          const propertyTitle = String(body.propertyTitle || '').trim();
-          const targetCity = String(body.targetCity || body.city || '').trim();
-          const valuation = parseEnglishNumberServer(body.valuation || 0);
-          const expectedMonthlyRent = parseEnglishNumberServer(body.expectedMonthlyRent || 0);
-          if (!propertyTitle || !targetCity) {
+          const titleCheck = validateSafeText(body.propertyTitle, 'propertyTitle', { required: true, maxLen: 200 });
+          const cityCheck = validateSafeText(body.targetCity ?? body.city, 'targetCity', { required: true, maxLen: 120 });
+          const notesCheck = validateSafeText(body.goalNotes || '', 'goalNotes', { maxLen: 2000 });
+          const linkCheck = validateSafeText(body.dealLink || '', 'dealLink', { maxLen: 500 });
+          const valCheck = validateFiniteNumber(body.valuation ?? 0, 'valuation', { min: 0, max: 1e12, defaultValue: 0 });
+          const rentCheck = validateFiniteNumber(body.expectedMonthlyRent ?? 0, 'expectedMonthlyRent', { min: 0, max: 1e9, defaultValue: 0 });
+          if (!titleCheck.ok || !cityCheck.ok || !notesCheck.ok || !linkCheck.ok || !valCheck.ok || !rentCheck.ok) {
             return res.status(400).json({
               success: false,
-              error: 'Property title and target city are required',
+              error:
+                (!titleCheck.ok && titleCheck.error) ||
+                (!cityCheck.ok && cityCheck.error) ||
+                (!notesCheck.ok && notesCheck.error) ||
+                (!linkCheck.ok && linkCheck.error) ||
+                (!valCheck.ok && valCheck.error) ||
+                (!rentCheck.ok && rentCheck.error) ||
+                'Property title, target city, and valid fields are required',
+              code: 'INVALID_INPUTS',
             });
           }
+          const propertyTitle = titleCheck.value;
+          const targetCity = cityCheck.value;
           const now = Date.now();
           const requestItem = {
             id: `WG-${now.toString(36).toUpperCase()}`,
+            ownerId: getUserIdForEmail(email),
             email,
             clientName: userRecord.name || email.split('@')[0],
             propertyTitle,
-            dealLink: String(body.dealLink || '').trim() || undefined,
+            dealLink: linkCheck.value || undefined,
             targetCity,
             currency: 'USD',
-            valuation: Number.isFinite(valuation) ? valuation : 0,
-            expectedMonthlyRent: Number.isFinite(expectedMonthlyRent) ? expectedMonthlyRent : 0,
-            goalNotes: String(body.goalNotes || '').trim().slice(0, 2000),
+            valuation: valCheck.value,
+            expectedMonthlyRent: rentCheck.value,
+            goalNotes: notesCheck.value,
             attachments: Array.isArray(body.attachments) ? body.attachments.slice(0, 10) : [],
             status: 'Pending',
             createdAt: new Date(now).toISOString(),
@@ -9505,10 +9941,7 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = String(sessionEmail || body.login_email || body.email || '')
-          .trim()
-          .toLowerCase();
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ error: 'Authentication required' });
         }
@@ -9524,10 +9957,18 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        const notesCheck = validateSafeText(
+          body.notes || body.brief || body.preferredSlot || '',
+          'notes',
+          { maxLen: 500 }
+        );
+        if (!notesCheck.ok) {
+          return res.status(400).json({ success: false, error: notesCheck.error, code: 'INVALID_INPUTS' });
+        }
         const reqType = body.type === 'white_glove' ? 'White-glove Custom Underwriting' : '1-on-1 Dedicated Analyst Desk';
         const now = Date.now();
         const referenceId = `SOV-${now.toString(36).toUpperCase()}`;
-        const notes = String(body.notes || body.brief || body.preferredSlot || '').trim().slice(0, 500);
+        const notes = notesCheck.value;
         const updated = updateServerUser(email, {
           timeline: [
             {
@@ -9556,15 +9997,38 @@ export default async function handler(req: any, res: any) {
         }
 
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = (sessionEmail || body.email || '').trim().toLowerCase();
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ error: 'Authentication required to export' });
         }
 
+        const rl = await checkRateLimit(`export:${email}`, 25, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
+        }
+
+        const propCheck = validateSafeText(body.propertyTitle || 'AQARI_Institutional_Asset', 'propertyTitle', { maxLen: 200 });
+        const cityCheck = validateSafeText(body.city || 'Global', 'city', { maxLen: 120 });
+        const priceCheck = validateFiniteNumber(body.priceUSD ?? 0, 'priceUSD', { min: 0, max: 1e12, defaultValue: 0 });
+        if (!propCheck.ok || !cityCheck.ok || !priceCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error:
+              (!propCheck.ok && propCheck.error) ||
+              (!cityCheck.ok && cityCheck.error) ||
+              (!priceCheck.ok && priceCheck.error) ||
+              'Invalid export parameters',
+            code: 'INVALID_INPUTS',
+          });
+        }
+
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email, { name: body.name });
+          getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
@@ -9641,7 +10105,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const propertyTitle = (body.propertyTitle || 'AQARI_Institutional_Asset').toString();
+        const propertyTitle = propCheck.value || 'AQARI_Institutional_Asset';
         const safeName = propertyTitle.replace(/[^a-z0-9_-]+/gi, '_');
         const dateStr = new Date().toISOString().slice(0, 10);
         const isWatermarked = license.planKey === 'free';
@@ -9655,20 +10119,36 @@ export default async function handler(req: any, res: any) {
           : `Generated by AQARI TERMINAL - Licensed to ${email} - ${dateStr}`;
 
         const nextPdfsUsed = Math.max(0, Number(userRecord.pdfs_used || 0)) + (format === 'api' ? 0 : 1);
+        const reportId = `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const pdfEntry: ForensicPdfEntry = {
-          id: `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          id: reportId,
           timestamp: new Date().toISOString(),
           property: propertyTitle,
           format,
           watermark,
         };
 
+        const reportFilename = `${safeName}_AQARI_MEMO.${format === 'api' ? 'json' : 'pdf'}`;
+        await saveReportFileToDb({
+          id: reportId,
+          ownerId: getUserIdForEmail(email),
+          ownerEmail: email,
+          filename: reportFilename,
+          format,
+          docType,
+          propertyTitle,
+          watermark,
+          isWatermarked,
+          branding,
+          generatedAt: pdfEntry.timestamp,
+        }).catch(() => {});
+
         const updatedUser = recordUserAnalysis(
           userRecord,
           {
             property: `${propertyTitle} (${format.toUpperCase()})`,
-            city: String(body.city || 'Global'),
-            priceUSD: Number(body.priceUSD || 0),
+            city: cityCheck.value || 'Global',
+            priceUSD: priceCheck.value,
             capRate: Number(body.capRate || 0),
             cashOnCash: Number(body.cashOnCash || 0),
             resultSummary: `Exported ${docType === 'memorandum' ? 'Memorandum' : format.toUpperCase()} Report`,
@@ -9684,13 +10164,14 @@ export default async function handler(req: any, res: any) {
 
         return res.status(200).json({
           success: true,
+          reportId,
           format,
           docType,
-          filename: `${safeName}_AQARI_MEMO.${format === 'api' ? 'json' : 'pdf'}`,
+          filename: reportFilename,
           watermark,
           isWatermarked,
           branding,
-          generatedAt: new Date().toISOString(),
+          generatedAt: pdfEntry.timestamp,
           plan: nextLicense.displayName,
           planKey: nextLicense.planKey,
           pdfs_used: nextPdfsUsed,
@@ -9701,17 +10182,55 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'getreportfile':
+      case 'get-report-file':
+      case 'download-report': {
+        const email = (await getSessionEmailFromReq(req)) || '';
+        if (!email) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const idCheck = validateSafeId(
+          getQueryParam(req, url, 'id') || parsedBody?.id || parsedBody?.reportId || '',
+          'id'
+        );
+        if (!idCheck.ok) {
+          return res.status(400).json({ success: false, error: idCheck.error, code: 'INVALID_INPUTS' });
+        }
+        const report = await readReportFileFromDb(idCheck.value);
+        const callerId = getUserIdForEmail(email);
+        if (
+          !report ||
+          (normalizeEmail(report.ownerEmail) !== email && report.ownerId !== callerId)
+        ) {
+          return res.status(404).json({ success: false, error: 'not found' });
+        }
+        return res.status(200).json({
+          success: true,
+          report: {
+            id: report.id,
+            ownerId: report.ownerId,
+            filename: report.filename,
+            format: report.format,
+            docType: report.docType,
+            propertyTitle: report.propertyTitle,
+            watermark: report.watermark,
+            isWatermarked: report.isWatermarked,
+            branding: report.branding || null,
+            generatedAt: report.generatedAt,
+          },
+        });
+      }
+
       case 'portfolio': {
         const body = req.method === 'POST' ? parsedBody : req.query || {};
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = (sessionEmail || body.email || '').toString().trim().toLowerCase();
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ error: 'Authentication required for portfolio aggregation' });
         }
 
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email, { name: body.name });
+          getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
         const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
 
@@ -9761,6 +10280,20 @@ export default async function handler(req: any, res: any) {
           }
 
           const body = parsedBody || {};
+          const sessionEmail = await getSessionEmailFromReq(req);
+          if (!sessionEmail) {
+            return res.status(401).json({ success: false, error: 'Authentication required for checkout' });
+          }
+          const email = normalizeEmail(sessionEmail);
+          const rl = await checkRateLimit(`checkout:${email}`, 20, 60 * 1000);
+          if (!rl.allowed) {
+            return res.status(429).json({
+              success: false,
+              error: 'Rate limit exceeded. Please wait briefly.',
+              retryAfterSec: rl.retryAfterSec,
+            });
+          }
+
           const isRecordOnly = String(body.mode || '').trim().toLowerCase() === 'record';
 
           if (isRecordOnly) {
@@ -9777,9 +10310,6 @@ export default async function handler(req: any, res: any) {
                 : body.price_id !== undefined && body.price_id !== null
                 ? String(body.price_id).trim()
                 : '';
-            const email = normalizeEmail(
-              getSessionEmailFromReq(req) || body.login_email || body.email || ''
-            );
             const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
             const pricing = getPricingPublicPayload();
             const isLaunchPrice = Boolean(pricing.launchDiscountActive);
@@ -9853,7 +10383,7 @@ export default async function handler(req: any, res: any) {
             console.error('CHECKOUT_ERROR', { reason: 'Invalid PADDLE_ENVIRONMENT', rawEnv });
             return res.status(400).json({
               success: false,
-              error: 'Missing Paddle config: PADDLE_ENVIRONMENT (must be "live")',
+              error: publicError('Payment configuration error', 'Missing Paddle config: PADDLE_ENVIRONMENT (must be "live")'),
             });
           }
 
@@ -9865,7 +10395,7 @@ export default async function handler(req: any, res: any) {
             console.error('CHECKOUT_ERROR', 'Missing Paddle config: PADDLE_API_KEY');
             return res.status(400).json({
               success: false,
-              error: 'Missing Paddle config: PADDLE_API_KEY',
+              error: publicError('Payment configuration error', 'Missing Paddle config: PADDLE_API_KEY'),
             });
           }
           if (
@@ -9875,7 +10405,7 @@ export default async function handler(req: any, res: any) {
             console.error('CHECKOUT_ERROR', 'Sandbox PADDLE_API_KEY blocked in live mode');
             return res.status(400).json({
               success: false,
-              error: 'Missing Paddle config: PADDLE_API_KEY (sandbox key not allowed in live mode)',
+              error: publicError('Payment configuration error', 'Missing Paddle config: PADDLE_API_KEY (sandbox key not allowed in live mode)'),
             });
           }
 
@@ -9889,15 +10419,17 @@ export default async function handler(req: any, res: any) {
             console.error('CHECKOUT_ERROR', 'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN');
             return res.status(400).json({
               success: false,
-              error: 'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN',
+              error: publicError('Payment configuration error', 'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN'),
             });
           }
           if (!isTestMode && paddleClientToken.startsWith('test_')) {
             console.error('CHECKOUT_ERROR', 'Sandbox client token blocked in live mode');
             return res.status(400).json({
               success: false,
-              error:
-                'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN (sandbox token not allowed in live mode)',
+              error: publicError(
+                'Payment configuration error',
+                'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN (sandbox token not allowed in live mode)'
+              ),
             });
           }
 
@@ -9914,10 +10446,7 @@ export default async function handler(req: any, res: any) {
               : body.price_id !== undefined && body.price_id !== null
               ? String(body.price_id).trim()
               : '';
-          const email = normalizeEmail(
-            getSessionEmailFromReq(req) || body.login_email || body.email || ''
-          );
-          const userId = body.userId ? String(body.userId).trim() : '';
+          const userId = getUserIdForEmail(email);
           const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
 
           const prices = resolvePaddleConfiguredPrices(isTestMode);
@@ -9987,7 +10516,7 @@ export default async function handler(req: any, res: any) {
               console.error('CHECKOUT_ERROR', `Missing Paddle config: Price ID (${rawPackId})`);
               return res.status(400).json({
                 success: false,
-                error: `Missing Paddle config: Price ID (${rawPackId})`,
+                error: publicError('Payment configuration error', `Missing Paddle config: Price ID (${rawPackId})`),
               });
             }
             if (requestedPriceId && requestedPriceId !== resolvedPriceId) {
@@ -10059,7 +10588,7 @@ export default async function handler(req: any, res: any) {
                 console.error('CHECKOUT_ERROR', `Missing Paddle config: Price ID (${validPlan})`);
                 return res.status(400).json({
                   success: false,
-                  error: `Missing Paddle config: Price ID (${validPlan})`,
+                  error: publicError('Payment configuration error', `Missing Paddle config: Price ID (${validPlan})`),
                 });
               }
               if (requestedPriceId && requestedPriceId !== resolvedPriceId) {
@@ -10121,14 +10650,16 @@ export default async function handler(req: any, res: any) {
                 purchase_type: 'credit_pack',
                 packId: resolvedPack!.id,
                 credits: resolvedPack!.credits,
-                ...(email ? { email, login_email: email } : {}),
-                ...(userId ? { userId } : {}),
+                email,
+                login_email: email,
+                userId,
               }
             : {
                 purchase_type: 'plan',
                 plan: validPlan,
-                ...(email ? { email, login_email: email } : {}),
-                ...(userId ? { userId } : {}),
+                email,
+                login_email: email,
+                userId,
               };
 
           const paddleTxnRes = await fetch(`${paddleBaseUrl}/transactions`, {
@@ -10159,9 +10690,10 @@ export default async function handler(req: any, res: any) {
               success: false,
               paddleStatus: paddleTxnRes.status,
               paddleCode: paddleTxnJson?.error?.code || null,
-              paddleDetail: paddleTxnJson?.error?.detail || paddleTxnJson?.error?.message || null,
-              paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
-              error: 'Paddle auth failed - check API key in Vercel',
+              ...(isProdRuntime()
+                ? {}
+                : { paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null }),
+              error: publicError('Payment provider authentication failed.', 'Paddle auth failed - check API key in Vercel'),
             });
           }
           if (!paddleTxnRes.ok || !paddleTxnJson?.data?.id) {
@@ -10184,13 +10716,20 @@ export default async function handler(req: any, res: any) {
             const friendlyError =
               paddleCode === 'transaction_default_checkout_url_not_set'
                 ? 'Checkout settings missing in Paddle, contact support loomorastudios@gmail.com'
-                : `Paddle checkout error (HTTP ${paddleTxnRes.status}): ${paddleDetail}`;
+                : publicError(
+                    'Payment checkout unavailable. Please try again or contact support.',
+                    `Paddle checkout error (HTTP ${paddleTxnRes.status}): ${paddleDetail}`
+                  );
             return res.status(outStatus).json({
               success: false,
               paddleStatus: paddleTxnRes.status,
               paddleCode: paddleCode || null,
-              paddleDetail,
-              paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
+              ...(isProdRuntime()
+                ? {}
+                : {
+                    paddleDetail,
+                    paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
+                  }),
               error: friendlyError,
             });
           }
@@ -10227,19 +10766,20 @@ export default async function handler(req: any, res: any) {
           console.error('CHECKOUT_ERROR', error);
           return res.status(500).json({
             success: false,
-            error: error?.message || 'Unexpected checkout error.',
+            error: publicError('Unexpected checkout error.', error?.message),
           });
         }
       }
 
       case 'session': {
         if (req.method === 'DELETE') {
-          clearSessionCookie(res);
+          await destroySession(req, res);
+          clearEntitlementCookie(res);
           return res.status(200).json({ success: true });
         }
 
         if (req.method === 'GET') {
-          const sessionEmail = getSessionEmailFromReq(req);
+          const sessionEmail = await getSessionEmailFromReq(req);
           if (!sessionEmail) {
             return res.status(200).json({ authenticated: false, email: null, isAdmin: false });
           }
@@ -10256,6 +10796,7 @@ export default async function handler(req: any, res: any) {
           const cancellationEligibility = evaluateCancelRefundEligibility(user);
           return res.status(200).json({
             authenticated: true,
+            userId: user.userId || getUserIdForEmail(user.email),
             email: user.email,
             isAdmin: isAdminEmail(user.email),
             last_results: user.last_results || {},
@@ -10267,30 +10808,78 @@ export default async function handler(req: any, res: any) {
 
         if (req.method === 'POST') {
           const ip = getClientIp(req);
-          const rl = checkRateLimit(`auth:${ip}`, 60, 60 * 1000);
+          const rl = await checkRateLimit(`auth:${ip}`, 10, 10 * 60 * 1000);
           if (!rl.allowed) {
             return res.status(429).json({
-              error: 'Too many authentication attempts. Please wait 1 minute.',
+              success: false,
+              error: 'Too many authentication attempts. Please wait 10 minutes.',
               retryAfterSec: rl.retryAfterSec,
             });
           }
 
-          const body = parsedBody;
-          const email = (body.email || '').toString().trim().toLowerCase();
-          if (!email || !email.includes('@')) {
-            return res.status(400).json({ error: 'Valid email is required' });
+          const body = parsedBody || {};
+          const rawIdToken = typeof body.idToken === 'string' ? body.idToken.trim() : typeof body.credential === 'string' ? body.credential.trim() : '';
+          const rawAccessToken = typeof body.accessToken === 'string' ? body.accessToken.trim() : '';
+
+          let verifiedEmail = '';
+          let verifiedName: string | undefined;
+          let verifiedPicture: string | undefined;
+
+          if (rawIdToken) {
+            const claims = await verifyGoogleIdToken(rawIdToken);
+            if (!claims || !claims.email || !claims.email_verified) {
+              return res.status(401).json({
+                success: false,
+                error: 'Invalid or unverified Google ID token',
+              });
+            }
+            verifiedEmail = normalizeEmail(claims.email);
+            verifiedName = claims.name;
+            verifiedPicture = claims.picture;
+          } else if (rawAccessToken) {
+            const claims = await verifyGoogleAccessTokenServer(rawAccessToken);
+            if (!claims || !claims.email || !claims.email_verified) {
+              return res.status(401).json({
+                success: false,
+                error: 'Invalid or unverified Google access token',
+              });
+            }
+            verifiedEmail = normalizeEmail(claims.email);
+            verifiedName = claims.name;
+            verifiedPicture = claims.picture;
+          } else {
+            return res.status(401).json({
+              success: false,
+              error: 'Valid Google token is required to create session',
+            });
           }
 
-          const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
+          if (!verifiedEmail || !verifiedEmail.includes('@')) {
+            return res.status(401).json({
+              success: false,
+              error: 'Verified Google email required',
+            });
+          }
+
+          const { user: hydratedDb, kvError } = await readUserFromDbStatus(verifiedEmail);
           if (kvError && !hydratedDb) {
             return res.status(503).json({
               success: false,
               error: 'Database temporarily unavailable. Please retry.',
             });
           }
-          const user = recordUserLogin(email, body.name);
+          const user = recordUserLogin(verifiedEmail, verifiedName);
           await saveUserToDb(user);
-          setSessionCookie(res, user.email);
+          await createSession(
+            res,
+            {
+              email: user.email,
+              name: user.name,
+              picture: verifiedPicture,
+              verifiedViaGoogle: true,
+            },
+            { req }
+          );
           const license = computeServerLicenseStatus(user);
           const pricing = getPricingPublicPayload();
           const cancellationEligibility = evaluateCancelRefundEligibility(user);
@@ -10300,6 +10889,7 @@ export default async function handler(req: any, res: any) {
           return res.status(200).json({
             success: true,
             authenticated: true,
+            userId: user.userId || getUserIdForEmail(user.email),
             email: user.email,
             isAdmin: isAdminEmail(user.email),
             plan: license.displayName,
@@ -10324,23 +10914,20 @@ export default async function handler(req: any, res: any) {
       }
 
       case 'license': {
-        const source = req.method === 'POST' ? parsedBody : req.query || {};
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = (sessionEmail || source.email || '').toString().trim().toLowerCase();
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
-          return res.status(400).json({ error: 'Email is required' });
+          return res.status(401).json({ success: false, error: 'Authentication required' });
         }
 
-        const userRecord = getOrCreateServerUser(email, {
-          name: source.name,
-          timezone: source.timezone,
-        });
+        const userRecord =
+          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
         const license = computeServerLicenseStatus(userRecord);
         const pricing = getPricingPublicPayload();
 
         return res.status(200).json({
           success: true,
           user: {
+            userId: userRecord.userId || getUserIdForEmail(userRecord.email),
             email: userRecord.email,
             name: userRecord.name,
             plan: userRecord.plan,
@@ -10400,7 +10987,7 @@ export default async function handler(req: any, res: any) {
         if (req.method !== 'POST') {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
-        const sessionEmail = getSessionEmailFromReq(req);
+        const sessionEmail = await getSessionEmailFromReq(req);
         if (!sessionEmail) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
@@ -10441,7 +11028,7 @@ export default async function handler(req: any, res: any) {
         if (req.method !== 'POST') {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
-        const sessionEmail = getSessionEmailFromReq(req);
+        const sessionEmail = await getSessionEmailFromReq(req);
         if (!sessionEmail) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
@@ -10781,6 +11368,13 @@ export default async function handler(req: any, res: any) {
 
       case 'webhook-logs': {
         res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const adminAuth = await verifyAdminRequest(req);
+        if (!adminAuth.ok) {
+          return res.status(adminAuth.status).json({
+            success: false,
+            error: adminAuth.error,
+          });
+        }
         const logs = await getWebhookLogsFromDb(50);
         const emailLogs = await getEmailLogsFromDb(50);
         const paddleWebhookSecretPresent = Boolean(
@@ -10800,21 +11394,18 @@ export default async function handler(req: any, res: any) {
           webhooks: logs,
           emailLogs,
           emails: emailLogs,
-          envStatus: {
-            webhookSecretPresent,
-            paddleWebhookSecretPresent,
-            apiKeyPresent,
-            paddleEnvironmentConfigured: paddleEnv.configured,
-            paddleEnvironment: paddleEnv.normalized || 'missing',
-            webhookStatus,
-          },
-          ...(logs.length === 0
-            ? {
-                debug: webhookSecretPresent
-                  ? 'PADDLE_WEBHOOK_SECRET configured (Connected) — waiting for Paddle events.'
-                  : 'PADDLE_WEBHOOK_SECRET missing (Not Connected).',
-              }
-            : {}),
+          ...(isProdRuntime()
+            ? {}
+            : {
+                envStatus: {
+                  webhookSecretPresent,
+                  paddleWebhookSecretPresent,
+                  apiKeyPresent,
+                  paddleEnvironmentConfigured: paddleEnv.configured,
+                  paddleEnvironment: paddleEnv.normalized || 'missing',
+                  webhookStatus,
+                },
+              }),
         });
       }
 
@@ -10880,22 +11471,21 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = (sessionEmail || body.email || '').toString().trim().toLowerCase();
-        const rawCity = (body.city || '').toString().trim();
-
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ error: 'Authentication required to analyze a city' });
         }
-        if (!rawCity || rawCity.length < 1) {
+        const cityTextCheck = validateSafeText(body.city || '', 'city', { required: true, maxLen: 120 });
+        if (!cityTextCheck.ok) {
           return res.status(400).json({
             error: 'City not found, please select from list',
           });
         }
+        const rawCity = cityTextCheck.value;
 
         const userRecord =
           (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email, { name: body.name });
+          getOrCreateServerUser(email);
         const lockState = evaluateLockState(userRecord);
         const license = computeServerLicenseStatus(userRecord);
         if (lockState.locked) {
@@ -11098,10 +11688,10 @@ export default async function handler(req: any, res: any) {
               <head><title>Authentication Error</title></head>
               <body style="font-family:sans-serif; background:#000; color:#fff; text-align:center; padding:50px;">
                 <h2>Google Authentication Error</h2>
-                <p style="color:#f87171;">${error}</p>
+                <p style="color:#f87171;">${escapeHtml(error)}</p>
                 <script>
                   if (window.opener) {
-                    window.opener.postMessage({ type: 'AQARI_GOOGLE_AUTH_CALLBACK', error: ${JSON.stringify(error)} }, '*');
+                    window.opener.postMessage({ type: 'AQARI_GOOGLE_AUTH_CALLBACK', error: ${JSON.stringify(String(error))} }, '*');
                     window.close();
                   } else {
                     setTimeout(() => { window.location.href = '/#/landing'; }, 2500);
@@ -11146,6 +11736,21 @@ export default async function handler(req: any, res: any) {
               throw new Error('Failed to verify token with Google userinfo API');
             }
             const userData = await userRes.json();
+            const verifiedEmail = normalizeEmail(userData?.email || '');
+            if (verifiedEmail && userData?.email_verified !== false) {
+              const loggedUser = recordUserLogin(verifiedEmail, userData?.name);
+              await saveUserToDb(loggedUser).catch(() => {});
+              await createSession(
+                res,
+                {
+                  email: loggedUser.email,
+                  name: loggedUser.name,
+                  picture: userData?.picture,
+                  verifiedViaGoogle: true,
+                },
+                { req }
+              );
+            }
 
             return res.status(200).send(`
               <!DOCTYPE html>
@@ -11156,27 +11761,32 @@ export default async function handler(req: any, res: any) {
                   <script>
                     const payload = {
                       type: 'AQARI_GOOGLE_AUTH_CALLBACK',
-                      accessToken: ${JSON.stringify(accessToken)},
-                      idToken: ${JSON.stringify(idToken)},
-                      user: ${JSON.stringify(userData)}
+                      accessToken: ${JSON.stringify(accessToken || '')},
+                      idToken: ${JSON.stringify(idToken || '')},
+                      user: ${JSON.stringify({
+                        email: verifiedEmail,
+                        name: userData?.name || '',
+                        picture: userData?.picture || '',
+                      })}
                     };
                     if (window.opener) {
                       window.opener.postMessage(payload, '*');
                       window.close();
                     } else {
-                      window.location.href = '/#access_token=' + encodeURIComponent(${JSON.stringify(accessToken)}) + '&id_token=' + encodeURIComponent(${JSON.stringify(idToken)});
+                      window.location.href = '/#/terminal';
                     }
                   </script>
                 </body>
               </html>
             `);
           } catch (err: any) {
+            const safeMsg = escapeHtml(publicError('Authentication error', err?.message));
             return res.status(200).send(`
               <!DOCTYPE html>
               <html>
                 <body style="font-family:sans-serif; background:#000; color:#fff; text-align:center; padding:50px;">
                   <h2>Verification Failed</h2>
-                  <p style="color:#f87171;">${err?.message || 'Authentication error'}</p>
+                  <p style="color:#f87171;">${safeMsg}</p>
                   <a href="/#/landing" style="color:#D4AF37;">Back to AQARI</a>
                 </body>
               </html>
@@ -11206,20 +11816,30 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = String(sessionEmail || body.login_email || body.email || '')
-          .trim()
-          .toLowerCase();
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
-        const description = String(body.description || body.issueDescription || body.message || '').trim().slice(0, 2000);
-        if (description.length < 4) {
-          return res.status(400).json({
+        const rl = await checkRateLimit(`issue:${email}`, 15, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
             success: false,
-            error: 'Please describe the tool issue (minimum 4 characters).',
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
           });
         }
+        const descCheck = validateSafeText(
+          body.description || body.issueDescription || body.message || '',
+          'description',
+          { required: true, minLen: 4, maxLen: 2000 }
+        );
+        if (!descCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error: descCheck.error || 'Please describe the tool issue (minimum 4 characters).',
+          });
+        }
+        const description = descCheck.value;
 
         const existing =
           (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
@@ -11267,12 +11887,17 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = String(sessionEmail || body.login_email || body.email || '')
-          .trim()
-          .toLowerCase();
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`cancel:${email}`, 10, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
 
         const user =
@@ -11335,7 +11960,7 @@ export default async function handler(req: any, res: any) {
             console.error('[Paddle Refund] Missing required environment variable: PADDLE_API_KEY');
             return res.status(500).json({
               success: false,
-              error: 'Missing required server environment variable: PADDLE_API_KEY. Refund could not be processed.',
+              error: publicError('Refund provider unavailable. Please contact support.', 'Missing required server environment variable: PADDLE_API_KEY. Refund could not be processed.'),
             });
           }
           if (!paddleEnv.configured || !paddleBaseUrl) {
@@ -11344,7 +11969,7 @@ export default async function handler(req: any, res: any) {
             );
             return res.status(500).json({
               success: false,
-              error: 'Missing required server environment variable: PADDLE_ENVIRONMENT. Refund could not be processed.',
+              error: publicError('Refund provider configuration error. Please contact support.', 'Missing required server environment variable: PADDLE_ENVIRONMENT. Refund could not be processed.'),
             });
           }
           try {
@@ -11370,14 +11995,20 @@ export default async function handler(req: any, res: any) {
               } else {
                 return res.status(200).json({
                   success: false,
-                  error: `Paddle refund failed (${refErr?.error?.detail || refErr?.error?.message || refundRes.status}). Your subscription was NOT cancelled or deactivated.`,
+                  error: publicError(
+                    'Refund request could not be completed. Your subscription was NOT cancelled.',
+                    `Paddle refund failed (${refErr?.error?.detail || refErr?.error?.message || refundRes.status}). Your subscription was NOT cancelled or deactivated.`
+                  ),
                 });
               }
             }
           } catch (err: any) {
             return res.status(200).json({
               success: false,
-              error: `Paddle refund error (${err?.message || 'network'}). Subscription was NOT cancelled.`,
+              error: publicError(
+                'Refund request failed due to network error. Subscription was NOT cancelled.',
+                `Paddle refund error (${err?.message || 'network'}). Subscription was NOT cancelled.`
+              ),
             });
           }
         }
@@ -11450,14 +12081,7 @@ export default async function handler(req: any, res: any) {
 
       case 'get-last-results': {
         res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
-        const sessionEmail = getSessionEmailFromReq(req);
-        const queryEmail = normalizeEmail(
-          getQueryParam(req, url, 'login_email') ||
-            getQueryParam(req, url, 'email') ||
-            parsedBody?.login_email ||
-            parsedBody?.email
-        );
-        const email = sessionEmail || (queryEmail && queryEmail.includes('@') ? queryEmail : '');
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
@@ -11481,8 +12105,7 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const sessionEmail = getSessionEmailFromReq(req);
-        const email = normalizeEmail(sessionEmail || body.login_email || body.email);
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
@@ -11555,9 +12178,17 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const email = normalizeEmail(getSessionEmailFromReq(req) || body.login_email || body.email);
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`extract:${email}`, 20, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
         if (kvError && !hydratedDb) {
@@ -11601,14 +12232,23 @@ export default async function handler(req: any, res: any) {
         if (!ai) {
           return res.status(503).json({
             success: false,
-            error: 'GEMINI_API_KEY is not configured in server Secrets (Settings > Secrets).',
+            error: publicError('Document extraction AI service unavailable.', 'GEMINI_API_KEY is not configured in server Secrets (Settings > Secrets).'),
             code: 'MISSING_GEMINI_KEY',
           });
         }
 
-        const fileName = String(body.fileName || 'uploaded-property').slice(0, 120);
+        const fileNameCheck = validateSafeText(body.fileName || 'uploaded-property', 'fileName', { maxLen: 120 });
+        const textHintCheck = validateSafeText(body.textExtract || '', 'textExtract', { maxLen: 12000 });
+        if (!fileNameCheck.ok || !textHintCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error: (!fileNameCheck.ok && fileNameCheck.error) || (!textHintCheck.ok && textHintCheck.error) || 'Invalid text input',
+            code: 'INVALID_INPUTS',
+          });
+        }
+        const fileName = fileNameCheck.value || 'uploaded-property';
         const rawBase64 = String(body.base64Data || '').trim();
-        const textHint = String(body.textExtract || '').trim().slice(0, 12000);
+        const textHint = textHintCheck.value;
         if (!rawBase64 && !textHint) {
           return res.status(400).json({
             success: false,
@@ -11814,9 +12454,17 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const email = normalizeEmail(getSessionEmailFromReq(req) || body.login_email || body.email);
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`fa:${email}`, 30, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
         if (kvError && !hydratedDb) {
@@ -11835,6 +12483,15 @@ export default async function handler(req: any, res: any) {
             error: 'Enterprise contract custom_image_pdf_limit is not configured yet. Ask your Admin to configure File/OCR limits.',
             code: 'ENTERPRISE_CONTRACT_LIMIT_UNSET',
           });
+        }
+        if (body.extractionId !== undefined && body.extractionId !== null && String(body.extractionId).trim() !== '') {
+          const extIdCheck = validateSafeId(body.extractionId, 'extractionId');
+          if (!extIdCheck.ok) {
+            return res.status(400).json({ success: false, error: extIdCheck.error, code: 'INVALID_INPUTS' });
+          }
+          if (!userRecord.last_extraction_id || String(userRecord.last_extraction_id) !== extIdCheck.value) {
+            return res.status(404).json({ success: false, error: 'not found' });
+          }
         }
         const imagePdfQuota = quotas.imagePdfLimit ?? 0;
         const currentImagePdfUsed = Math.max(0, Number(userRecord.image_pdf_used || 0));
@@ -11861,6 +12518,16 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        const propTitleCheck = validateSafeText(body.propertyTitle || '', 'propertyTitle', { maxLen: 200 });
+        const fileNameCheck = validateSafeText(body.fileName || 'Uploaded Asset', 'fileName', { maxLen: 150 });
+        if (!propTitleCheck.ok || !fileNameCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error: (!propTitleCheck.ok && propTitleCheck.error) || (!fileNameCheck.ok && fileNameCheck.error) || 'Invalid text input',
+            code: 'INVALID_INPUTS',
+          });
+        }
+
         const rawCityInput = String(body.city || '').trim();
         const rawCityId = String(body.city_id || body.cityId || '').trim();
         const cityEntry = findInlinedCity(rawCityInput, rawCityId);
@@ -11874,10 +12541,11 @@ export default async function handler(req: any, res: any) {
         }
         const priceUSD = parseEnglishNumberServer(body.priceUSD);
         const rentUSD = parseEnglishNumberServer(body.monthlyRentUSD ?? body.rentUSD);
-        if (!Number.isFinite(priceUSD) || priceUSD <= 0 || !Number.isFinite(rentUSD) || rentUSD <= 0) {
+        if (!Number.isFinite(priceUSD) || priceUSD <= 0 || priceUSD > 1e12 || !Number.isFinite(rentUSD) || rentUSD <= 0 || rentUSD > 1e9) {
           return res.status(400).json({
             success: false,
-            error: 'Confirmed Property Price ($) and Monthly Rent ($) must be greater than 0.',
+            error: 'Confirmed Property Price ($) and Monthly Rent ($) must be within valid positive limits.',
+            code: 'INVALID_INPUTS',
           });
         }
 
@@ -12032,9 +12700,17 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const email = normalizeEmail(getSessionEmailFromReq(req) || body.login_email || body.email);
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`studio:${email}`, 25, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
         if (kvError && !hydratedDb) {
@@ -12097,18 +12773,36 @@ export default async function handler(req: any, res: any) {
         }
         const country = cityEntry.country;
         const city = cityEntry.city;
-        const areaDistrict = String(body.areaDistrict || 'Prime Waterfront District').trim();
+        const areaCheck = validateSafeText(body.areaDistrict || 'Prime Waterfront District', 'areaDistrict', { maxLen: 150 });
+        const titleCheck = validateSafeText(body.title || '', 'title', { maxLen: 200 });
+        const budgetCheck = validateFiniteNumber(body.budgetUSD ?? 0, 'budgetUSD', { min: 0, max: 1e12, defaultValue: 0 });
+        const areaSqCheck = validateFiniteNumber(body.areaSqM ?? 0, 'areaSqM', { min: 0, max: 1e9, defaultValue: 0 });
+        const rentCheck = validateFiniteNumber(body.expectedMonthlyRentUSD ?? 0, 'expectedMonthlyRentUSD', { min: 0, max: 1e9, defaultValue: 0 });
+        if (!areaCheck.ok || !titleCheck.ok || !budgetCheck.ok || !areaSqCheck.ok || !rentCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error:
+              (!areaCheck.ok && areaCheck.error) ||
+              (!titleCheck.ok && titleCheck.error) ||
+              (!budgetCheck.ok && budgetCheck.error) ||
+              (!areaSqCheck.ok && areaSqCheck.error) ||
+              (!rentCheck.ok && rentCheck.error) ||
+              'Invalid studio parameters',
+            code: 'INVALID_INPUTS',
+          });
+        }
+        const areaDistrict = areaCheck.value || 'Prime Waterfront District';
         const propertyType = String(body.propertyType || 'Apartment');
-        const budgetUSD = Math.max(0, Number(body.budgetUSD || 0));
-        const areaSqM = Math.max(0, Number(body.areaSqM || 0));
-        const bedrooms = Math.max(0, Number(body.bedrooms || 0));
-        const bathrooms = Math.max(0, Number(body.bathrooms || 0));
-        const expectedMonthlyRentUSD = Math.max(0, Number(body.expectedMonthlyRentUSD || 0));
-        const targetYieldPct = Math.max(0, Number(body.targetYieldPct || 7.5));
+        const budgetUSD = budgetCheck.value;
+        const areaSqM = areaSqCheck.value;
+        const bedrooms = Math.max(0, Math.min(100, Number(body.bedrooms || 0)));
+        const bathrooms = Math.max(0, Math.min(100, Number(body.bathrooms || 0)));
+        const expectedMonthlyRentUSD = rentCheck.value;
+        const targetYieldPct = Math.max(0, Math.min(100, Number(body.targetYieldPct || 7.5)));
         const finishing = String(body.finishing || 'Luxury');
         const amenities = Array.isArray(body.amenities) ? body.amenities.map(String) : [];
         const targetAudience = String(body.targetAudience || 'Yield Investors');
-        const title = String(body.title || `${city} ${areaDistrict} ${propertyType} ${isVirtual ? 'Concept' : 'Offering'}`).trim();
+        const title = (titleCheck.value || `${city} ${areaDistrict} ${propertyType} ${isVirtual ? 'Concept' : 'Offering'}`).trim();
 
         const impliedYield =
           budgetUSD > 0 && expectedMonthlyRentUSD > 0
@@ -12133,7 +12827,7 @@ export default async function handler(req: any, res: any) {
           if (!ai) {
             return res.status(503).json({
               success: false,
-              error: 'GEMINI_API_KEY is not configured in server Secrets (Settings > Secrets).',
+              error: publicError('Property studio AI service unavailable.', 'GEMINI_API_KEY is not configured in server Secrets (Settings > Secrets).'),
             });
           }
           const resp = await ai.models.generateContent({
@@ -12270,11 +12964,17 @@ STRICT GUARDRAILS:
 
       case 'portfolio-intelligence': {
         const body = parsedBody;
-        const email = normalizeEmail(
-          getSessionEmailFromReq(req) || getQueryParam(req, url, 'email') || body.login_email || body.email
-        );
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`pi:${email}`, 40, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
         if (kvError && !hydratedDb) {
@@ -12291,15 +12991,31 @@ STRICT GUARDRAILS:
         if (req.method === 'POST') {
           const subAction = String(body.subAction || 'add').toLowerCase();
           if (subAction === 'delete') {
-            const targetId = String(body.id || '');
-            assets = assets.filter((a) => a.id !== targetId);
-          } else if (subAction === 'update') {
-            const targetId = String(body.id || '');
-            const idx = assets.findIndex((a) => a.id === targetId);
-            if (idx === -1) {
-              return res.status(404).json({ success: false, error: 'Asset not found' });
+            const idCheck = validateSafeId(body.id || '', 'id');
+            if (!idCheck.ok) {
+              return res.status(400).json({ success: false, error: idCheck.error, code: 'INVALID_INPUTS' });
             }
-            assets[idx] = computePostPurchaseAssetRecord({ ...assets[idx], ...body.asset }, targetId);
+            const idx = assets.findIndex((a) => a.id === idCheck.value);
+            if (idx === -1) {
+              return res.status(404).json({ success: false, error: 'not found' });
+            }
+            assets = assets.filter((a) => a.id !== idCheck.value);
+          } else if (subAction === 'update') {
+            const idCheck = validateSafeId(body.id || '', 'id');
+            if (!idCheck.ok) {
+              return res.status(400).json({ success: false, error: idCheck.error, code: 'INVALID_INPUTS' });
+            }
+            const idx = assets.findIndex((a) => a.id === idCheck.value);
+            if (idx === -1) {
+              return res.status(404).json({ success: false, error: 'not found' });
+            }
+            const assetPayload = body.asset || {};
+            const propCheck = validateSafeText(assetPayload.property ?? assets[idx].property ?? '', 'property', { maxLen: 200 });
+            const cityCheck = validateSafeText(assetPayload.city ?? assets[idx].city ?? '', 'city', { maxLen: 120 });
+            if (!propCheck.ok || !cityCheck.ok) {
+              return res.status(400).json({ success: false, error: 'Invalid asset text input', code: 'INVALID_INPUTS' });
+            }
+            assets[idx] = computePostPurchaseAssetRecord({ ...assets[idx], ...assetPayload }, idCheck.value);
           } else if (subAction === 'seed-from-saved') {
             if (quotas.isEnterprise && (quotas.portfolioAssetsLimit === null || quotas.portfolioAssetsLimit <= 0)) {
               return res.status(403).json({
@@ -12353,7 +13069,14 @@ STRICT GUARDRAILS:
                 assetCount: assets.length,
               });
             }
-            const record = computePostPurchaseAssetRecord(body.asset || body);
+            const assetPayload = body.asset || body;
+            const propCheck = validateSafeText(assetPayload.property ?? 'Tracked Asset', 'property', { maxLen: 200 });
+            const cityCheck = validateSafeText(assetPayload.city ?? 'Muscat', 'city', { maxLen: 120 });
+            const priceCheck = validateFiniteNumber(assetPayload.purchasePriceUSD ?? 0, 'purchasePriceUSD', { min: 0, max: 1e12, defaultValue: 0 });
+            if (!propCheck.ok || !cityCheck.ok || !priceCheck.ok) {
+              return res.status(400).json({ success: false, error: 'Invalid asset parameters', code: 'INVALID_INPUTS' });
+            }
+            const record = computePostPurchaseAssetRecord(assetPayload);
             assets.unshift(record);
           }
 
@@ -12444,9 +13167,17 @@ STRICT GUARDRAILS:
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const email = normalizeEmail(getSessionEmailFromReq(req) || body.login_email || body.email);
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`ddd:${email}`, 20, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
         if (kvError && !hydratedDb) {
@@ -12485,16 +13216,23 @@ STRICT GUARDRAILS:
         if (!ai) {
           return res.status(503).json({
             success: false,
-            error: 'GEMINI_API_KEY is not configured in server Secrets (Settings > Secrets).',
+            error: publicError('Document audit AI service unavailable.', 'GEMINI_API_KEY is not configured in server Secrets (Settings > Secrets).'),
           });
         }
 
         const finModel = body.financialModel || {};
-        const modelPrice = Number(finModel.priceUSD || 0);
-        const modelRent = Number(finModel.monthlyRentUSD || 0);
-        const modelHoa = Number(finModel.hoaUSD || 0);
+        const modelPriceCheck = validateFiniteNumber(finModel.priceUSD ?? 0, 'priceUSD', { min: 0, max: 1e12, defaultValue: 0 });
+        const modelRentCheck = validateFiniteNumber(finModel.monthlyRentUSD ?? 0, 'monthlyRentUSD', { min: 0, max: 1e9, defaultValue: 0 });
+        const modelHoaCheck = validateFiniteNumber(finModel.hoaUSD ?? 0, 'hoaUSD', { min: 0, max: 1e9, defaultValue: 0 });
+        const modelCityCheck = validateSafeText(finModel.city || 'Muscat', 'city', { maxLen: 120 });
+        if (!modelPriceCheck.ok || !modelRentCheck.ok || !modelHoaCheck.ok || !modelCityCheck.ok) {
+          return res.status(400).json({ success: false, error: 'Invalid financial model inputs', code: 'INVALID_INPUTS' });
+        }
+        const modelPrice = modelPriceCheck.value;
+        const modelRent = modelRentCheck.value;
+        const modelHoa = modelHoaCheck.value;
         const modelOwnership = String(finModel.ownershipType || 'Freehold');
-        const modelCity = String(finModel.city || 'Muscat');
+        const modelCity = modelCityCheck.value || 'Muscat';
 
         const parts: any[] = [];
         const docListDesc: string[] = [];
@@ -12650,9 +13388,17 @@ Return JSON with:
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const email = normalizeEmail(getSessionEmailFromReq(req) || body.login_email || body.email);
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`sc:${email}`, 30, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const { user: hydratedDb } = await readUserFromDbStatus(email);
         const userRecord = hydratedDb || getOrCreateServerUser(email);
@@ -12677,6 +13423,15 @@ Return JSON with:
         const rawScenarios = Array.isArray(body.scenarios) && body.scenarios.length > 0
           ? body.scenarios.slice(0, effectiveCompareLimit)
           : defaultScenarios.slice(0, effectiveCompareLimit);
+
+        for (const sc of rawScenarios) {
+          const lblCheck = validateSafeText(sc?.label ?? '', 'label', { maxLen: 150 });
+          const scPriceCheck = validateFiniteNumber(sc?.priceUSD ?? 500000, 'priceUSD', { min: 1, max: 1e12 });
+          const scRentCheck = validateFiniteNumber(sc?.monthlyRentUSD ?? 3500, 'monthlyRentUSD', { min: 1, max: 1e9 });
+          if (!lblCheck.ok || !scPriceCheck.ok || !scRentCheck.ok) {
+            return res.status(400).json({ success: false, error: 'Invalid scenario parameters', code: 'INVALID_INPUTS' });
+          }
+        }
 
         const computed = rawScenarios.map((sc: any, idx: number) => {
           const cityEntry = findInlinedCity(String(sc.city || 'Muscat')) || findInlinedCity('Muscat')!;
@@ -12754,11 +13509,17 @@ Return JSON with:
 
       case 'workspace': {
         const body = parsedBody;
-        const email = normalizeEmail(
-          getSessionEmailFromReq(req) || getQueryParam(req, url, 'email') || body.login_email || body.email
-        );
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`ws:${email}`, 40, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const { user: hydratedDb } = await readUserFromDbStatus(email);
         const userRecord = hydratedDb || getOrCreateServerUser(email);
@@ -12805,15 +13566,30 @@ Return JSON with:
         }
 
         if (req.method === 'GET') {
-          const orgs = (await Promise.all(orgIds.map((id) => readEnterpriseOrgFromDb(id)))).filter(Boolean);
-          const requestedOrgId = getQueryParam(req, url, 'orgId');
-          const activeOrg = (requestedOrgId && orgs.find((o: any) => o.id === requestedOrgId)) || orgs[0] || null;
+          const requestedOrgId = getQueryParam(req, url, 'orgId').trim();
+          const allOrgs = (await Promise.all(orgIds.map((id) => readEnterpriseOrgFromDb(id)))).filter(Boolean);
+          const memberOrgs = allOrgs.filter((o: any) =>
+            Array.isArray(o?.members) && o.members.some((m: any) => normalizeEmail(m?.email) === email)
+          );
+          let activeOrg: any = null;
+          if (requestedOrgId) {
+            const reqIdCheck = validateSafeId(requestedOrgId, 'orgId');
+            if (!reqIdCheck.ok) {
+              return res.status(400).json({ success: false, error: reqIdCheck.error, code: 'INVALID_INPUTS' });
+            }
+            activeOrg = memberOrgs.find((o: any) => o.id === reqIdCheck.value) || null;
+            if (!activeOrg) {
+              return res.status(404).json({ success: false, error: 'not found' });
+            }
+          } else {
+            activeOrg = memberOrgs[0] || null;
+          }
           const myMember = activeOrg?.members?.find((m: any) => normalizeEmail(m.email) === email) || null;
           return res.status(200).json({
             success: true,
             planKey: license.planKey,
             teamUsersLimit: quotas.teamUsersLimit ?? 0,
-            orgs,
+            orgs: memberOrgs,
             activeOrg,
             myRole: myMember?.role || 'Analyst',
           });
@@ -12824,7 +13600,11 @@ Return JSON with:
           const nowIso = new Date().toISOString();
 
           if (subAction === 'create-org') {
-            const orgName = String(body.name || 'Sovereign Family Office').trim().slice(0, 80);
+            const orgNameCheck = validateSafeText(body.name || 'Sovereign Family Office', 'name', { maxLen: 80 });
+            if (!orgNameCheck.ok) {
+              return res.status(400).json({ success: false, error: orgNameCheck.error, code: 'INVALID_INPUTS' });
+            }
+            const orgName = orgNameCheck.value || 'Sovereign Family Office';
             const newOrgId = `org_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
             const newOrg = {
               id: newOrgId,
@@ -12859,10 +13639,13 @@ Return JSON with:
             return res.status(200).json({ success: true, activeOrg: newOrg, myRole: 'Admin' });
           }
 
-          const orgId = String(body.orgId || orgIds[0] || '').trim();
-          const org = await readEnterpriseOrgFromDb(orgId);
+          const orgIdCheck = validateSafeId(String(body.orgId || orgIds[0] || '').trim(), 'orgId');
+          if (!orgIdCheck.ok) {
+            return res.status(400).json({ success: false, error: orgIdCheck.error, code: 'INVALID_INPUTS' });
+          }
+          const org = await readEnterpriseOrgFromDb(orgIdCheck.value);
           if (!org) {
-            return res.status(404).json({ success: false, error: 'Organization workspace not found.' });
+            return res.status(404).json({ success: false, error: 'not found' });
           }
           const actorMember = (org.members || []).find((m: any) => normalizeEmail(m.email) === email);
           if (!actorMember) {
@@ -12900,6 +13683,10 @@ Return JSON with:
             if (!memberEmail || !memberEmail.includes('@')) {
               return res.status(400).json({ success: false, error: 'Valid team member email is required.' });
             }
+            const memberNameCheck = validateSafeText(body.memberName || memberEmail.split('@')[0], 'memberName', { maxLen: 100 });
+            if (!memberNameCheck.ok) {
+              return res.status(400).json({ success: false, error: memberNameCheck.error, code: 'INVALID_INPUTS' });
+            }
             const existingIdx = org.members.findIndex((m: any) => normalizeEmail(m.email) === memberEmail);
             if (existingIdx >= 0) {
               org.members[existingIdx].role = role;
@@ -12923,7 +13710,7 @@ Return JSON with:
               }
               org.members.push({
                 email: memberEmail,
-                name: String(body.memberName || memberEmail.split('@')[0]),
+                name: memberNameCheck.value || memberEmail.split('@')[0],
                 role,
                 addedAt: nowIso,
                 addedBy: email,
@@ -12944,7 +13731,7 @@ Return JSON with:
               : 'Analyst';
             const idx = org.members.findIndex((m: any) => normalizeEmail(m.email) === memberEmail);
             if (idx === -1) {
-              return res.status(404).json({ success: false, error: 'Member not found.' });
+              return res.status(404).json({ success: false, error: 'not found' });
             }
             const prevRole = org.members[idx].role;
             org.members[idx].role = role;
@@ -12964,20 +13751,28 @@ Return JSON with:
             pushAudit('MEMBER_REMOVED', memberEmail, `Removed ${memberEmail} from workspace`);
           } else if (subAction === 'share-deal') {
             const deal = body.deal || {};
+            const dealTitleCheck = validateSafeText(deal.title || deal.property || 'Shared Property Analysis', 'title', { maxLen: 200 });
+            const dealCityCheck = validateSafeText(deal.city || 'Muscat', 'city', { maxLen: 120 });
+            const dealNotesCheck = validateSafeText(deal.notes || '', 'notes', { maxLen: 1500 });
+            const dealPriceCheck = validateFiniteNumber(deal.priceUSD ?? deal.price ?? 0, 'priceUSD', { min: 0, max: 1e12, defaultValue: 0 });
+            const dealRentCheck = validateFiniteNumber(deal.rentUSD ?? deal.rent ?? 0, 'rentUSD', { min: 0, max: 1e9, defaultValue: 0 });
+            if (!dealTitleCheck.ok || !dealCityCheck.ok || !dealNotesCheck.ok || !dealPriceCheck.ok || !dealRentCheck.ok) {
+              return res.status(400).json({ success: false, error: 'Invalid shared deal parameters', code: 'INVALID_INPUTS' });
+            }
             const dealId = `wd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
             const sharedDeal = {
               id: dealId,
-              title: String(deal.title || deal.property || 'Shared Property Analysis'),
-              city: String(deal.city || 'Muscat'),
-              priceUSD: Number(deal.priceUSD ?? deal.price ?? 0),
-              rentUSD: Number(deal.rentUSD ?? deal.rent ?? 0),
+              title: dealTitleCheck.value || 'Shared Property Analysis',
+              city: dealCityCheck.value || 'Muscat',
+              priceUSD: dealPriceCheck.value,
+              rentUSD: dealRentCheck.value,
               capRate: Number(deal.capRate ?? 0),
               irr5Yr: deal.irr5Yr ?? deal.irr ?? null,
               dscr: deal.dscr ?? null,
               status: 'Under Review',
               sharedBy: email,
               sharedAt: nowIso,
-              notes: String(deal.notes || ''),
+              notes: dealNotesCheck.value,
             };
             org.sharedDeals.unshift(sharedDeal);
             pushAudit('DEAL_SHARED', sharedDeal.title, `Shared "${sharedDeal.title}" (${sharedDeal.city}) to IC pipeline`);
@@ -12988,13 +13783,17 @@ Return JSON with:
                 error: 'RBAC Denied (Server): Manager or Admin role required to approve/change deal status.',
               });
             }
-            const dealId = String(body.dealId || '');
+            const dealIdCheck = validateSafeId(body.dealId || '', 'dealId');
+            if (!dealIdCheck.ok) {
+              return res.status(400).json({ success: false, error: dealIdCheck.error, code: 'INVALID_INPUTS' });
+            }
+            const dealId = dealIdCheck.value;
             const status = ['Under Review', 'IC Approved', 'On Hold', 'Rejected'].includes(body.status)
               ? body.status
               : 'Under Review';
             const dIdx = org.sharedDeals.findIndex((d: any) => d.id === dealId);
             if (dIdx === -1) {
-              return res.status(404).json({ success: false, error: 'Shared deal not found.' });
+              return res.status(404).json({ success: false, error: 'not found' });
             }
             const prevStatus = org.sharedDeals[dIdx].status;
             org.sharedDeals[dIdx].status = status;
@@ -13010,16 +13809,25 @@ Return JSON with:
                 error: 'RBAC Denied (Server): Only Admin role can delete shared deals.',
               });
             }
-            const dealId = String(body.dealId || '');
+            const dealIdCheck = validateSafeId(body.dealId || '', 'dealId');
+            if (!dealIdCheck.ok) {
+              return res.status(400).json({ success: false, error: dealIdCheck.error, code: 'INVALID_INPUTS' });
+            }
+            const dealId = dealIdCheck.value;
             const targetDeal = org.sharedDeals.find((d: any) => d.id === dealId);
+            if (!targetDeal) {
+              return res.status(404).json({ success: false, error: 'not found' });
+            }
             org.sharedDeals = org.sharedDeals.filter((d: any) => d.id !== dealId);
             pushAudit('DEAL_DELETED', targetDeal?.title || dealId, `Removed shared deal from workspace`);
           } else if (subAction === 'add-comment') {
-            const dealId = String(body.dealId || '');
-            const text = String(body.text || '').trim().slice(0, 1200);
-            if (!dealId || !text) {
-              return res.status(400).json({ success: false, error: 'Deal ID and comment text are required.' });
+            const dealIdCheck = validateSafeId(body.dealId || '', 'dealId');
+            const textCheck = validateSafeText(body.text || '', 'text', { required: true, minLen: 1, maxLen: 1200 });
+            if (!dealIdCheck.ok || !textCheck.ok) {
+              return res.status(400).json({ success: false, error: 'Deal ID and valid comment text are required.' });
             }
+            const dealId = dealIdCheck.value;
+            const text = textCheck.value;
             const dealObj = org.sharedDeals.find((d: any) => d.id === dealId);
             org.comments.unshift({
               id: `cmt_${Date.now()}`,
@@ -13048,13 +13856,10 @@ Return JSON with:
 
       case 'market-intelligence': {
         const allMarkets = getGlobalMarketIntelligenceData();
-        const sessionEmail = getSessionEmailFromReq(req);
-        const queryEmail = normalizeEmail(
-          sessionEmail || getQueryParam(req, url, 'email') || parsedBody?.login_email || parsedBody?.email
-        );
+        const sessionEmail = await getSessionEmailFromReq(req);
         let planKey: PlanKey = 'free';
-        if (queryEmail && queryEmail.includes('@')) {
-          const userRec = (await getUserFromDb(queryEmail).catch(() => null)) || getServerUserByEmail(queryEmail);
+        if (sessionEmail && sessionEmail.includes('@')) {
+          const userRec = (await getUserFromDb(sessionEmail).catch(() => null)) || getServerUserByEmail(sessionEmail);
           if (userRec) {
             planKey = computeServerLicenseStatus(userRec).planKey;
           }
@@ -13078,9 +13883,17 @@ Return JSON with:
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const email = normalizeEmail(getSessionEmailFromReq(req) || body.login_email || body.email);
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required to purchase credits.' });
+        }
+        const rl = await checkRateLimit(`credits:${email}`, 20, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const packId = String(body.packId || body.pack_id || '').trim();
         const pack = EXTRA_CREDIT_PACKS.find((p) => p.id === packId);
@@ -13092,7 +13905,14 @@ Return JSON with:
           });
         }
 
-        const rawOrderId = normalizeOrderId(String(body.transaction_id || body.transactionId || body.order_id || '').trim());
+        const rawOrderInput = String(body.transaction_id || body.transactionId || body.order_id || '').trim();
+        if (rawOrderInput) {
+          const orderCheck = validateSafeId(rawOrderInput, 'transaction_id');
+          if (!orderCheck.ok) {
+            return res.status(400).json({ success: false, error: orderCheck.error, code: 'INVALID_INPUTS' });
+          }
+        }
+        const rawOrderId = normalizeOrderId(rawOrderInput);
         const paddleApiKey = cleanPaddleApiKey(getEnv('PADDLE_API_KEY'));
         const paddleEnv = resolvePaddleEnvironment();
 
@@ -13100,7 +13920,7 @@ Return JSON with:
           console.error('[Paddle BuyCredits] Missing required environment variable: PADDLE_API_KEY');
           return res.status(500).json({
             success: false,
-            error: 'Missing required server environment variable: PADDLE_API_KEY.',
+            error: publicError('Payment provider configuration error.', 'Missing required server environment variable: PADDLE_API_KEY.'),
           });
         }
 
@@ -13110,7 +13930,7 @@ Return JSON with:
           );
           return res.status(500).json({
             success: false,
-            error: 'Missing required server environment variable: PADDLE_ENVIRONMENT.',
+            error: publicError('Payment provider configuration error.', 'Missing required server environment variable: PADDLE_ENVIRONMENT.'),
           });
         }
 
@@ -13170,7 +13990,7 @@ Return JSON with:
         } catch (err: any) {
           return res.status(502).json({
             success: false,
-            error: `Unable to verify Paddle transaction: ${err?.message || 'network error'}`,
+            error: publicError('Unable to verify payment transaction. Please retry.', `Unable to verify Paddle transaction: ${err?.message || 'network error'}`),
           });
         }
 
@@ -13200,9 +14020,17 @@ Return JSON with:
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
         const body = parsedBody;
-        const email = normalizeEmail(getSessionEmailFromReq(req) || body.login_email || body.email);
+        const email = (await getSessionEmailFromReq(req)) || '';
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`brand:${email}`, 20, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
         if (kvError && !hydratedDb) {
@@ -13223,13 +14051,37 @@ Return JSON with:
           });
         }
 
-        const firmName = String(body.firmName || '').trim().slice(0, 100);
+        const firmCheck = validateSafeText(body.firmName || '', 'firmName', { maxLen: 100 });
+        if (!firmCheck.ok) {
+          return res.status(400).json({ success: false, error: firmCheck.error, code: 'INVALID_INPUTS' });
+        }
+        const firmName = firmCheck.value;
         const rawLogo = String(body.logoUrl || '').trim().slice(0, 200000);
+        let safeLogoUrl = '';
+        if (rawLogo) {
+          if (hasScriptInjection(rawLogo) || /^data:image\/svg/i.test(rawLogo)) {
+            return res.status(400).json({
+              success: false,
+              error: 'Unsafe logo URL rejected (SVG/script URLs are not permitted).',
+              code: 'INVALID_INPUTS',
+            });
+          }
+          const isValidDataRaster = /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(rawLogo);
+          const isValidHttps = /^https:\/\/[^\s<>"']+$/i.test(rawLogo);
+          if (!isValidDataRaster && !isValidHttps) {
+            return res.status(400).json({
+              success: false,
+              error: 'Logo URL must be an https:// image URL or a PNG/JPEG/WEBP/GIF data URL.',
+              code: 'INVALID_INPUTS',
+            });
+          }
+          safeLogoUrl = rawLogo;
+        }
         const rawAccent = String(body.accentColor || '#D4AF37').trim();
         const accentColor = /^#[0-9a-fA-F]{6}$/.test(rawAccent) ? rawAccent : '#D4AF37';
         const branding = {
           firmName: firmName || `${userRecord.name || 'Sovereign'} Capital`,
-          logoUrl: rawLogo.startsWith('data:image/') || rawLogo.startsWith('https://') ? rawLogo : '',
+          logoUrl: safeLogoUrl,
           accentColor,
         };
         const now = Date.now();
@@ -13259,19 +14111,37 @@ Return JSON with:
         if (req.method !== 'POST') {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
-        const body = parsedBody;
-        const companyName = String(body.companyName || body.firmName || '').trim().slice(0, 120);
-        const contactEmail = normalizeEmail(body.email || '');
-        const seats = Math.max(1, Math.min(500, Math.round(Number(body.seats || 50))));
-        const assetsCount = Math.max(1, Math.min(10000, Math.round(Number(body.assetsCount || 1000))));
-        const notes = String(body.notes || '').trim().slice(0, 2000);
-
-        if (!companyName || !contactEmail || !contactEmail.includes('@')) {
-          return res.status(400).json({
+        const ip = getClientIp(req);
+        const rl = await checkRateLimit(`ent:${ip}`, 10, 60 * 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
             success: false,
-            error: 'Organization / Company Name and a valid Corporate Email are required.',
+            error: 'Rate limit exceeded. Please wait before submitting another inquiry.',
+            retryAfterSec: rl.retryAfterSec,
           });
         }
+        const body = parsedBody;
+        const companyCheck = validateSafeText(body.companyName || body.firmName || '', 'companyName', { required: true, maxLen: 120 });
+        const notesCheck = validateSafeText(body.notes || '', 'notes', { maxLen: 2000 });
+        const seatsCheck = validateFiniteNumber(body.seats ?? 50, 'seats', { min: 1, max: 500, defaultValue: 50 });
+        const assetsCheck = validateFiniteNumber(body.assetsCount ?? 1000, 'assetsCount', { min: 1, max: 10000, defaultValue: 1000 });
+        const contactEmail = normalizeEmail(body.email || '');
+
+        if (!companyCheck.ok || !notesCheck.ok || !seatsCheck.ok || !assetsCheck.ok || !contactEmail || !contactEmail.includes('@')) {
+          return res.status(400).json({
+            success: false,
+            error:
+              (!companyCheck.ok && companyCheck.error) ||
+              (!notesCheck.ok && notesCheck.error) ||
+              (!seatsCheck.ok && seatsCheck.error) ||
+              (!assetsCheck.ok && assetsCheck.error) ||
+              'Organization / Company Name and a valid Corporate Email are required.',
+          });
+        }
+        const companyName = companyCheck.value;
+        const seats = Math.round(seatsCheck.value);
+        const assetsCount = Math.round(assetsCheck.value);
+        const notes = notesCheck.value;
 
         const now = Date.now();
         const inquiry = {
@@ -13820,6 +14690,7 @@ Return JSON with:
             'market-live',
             'news',
             'demo',
+            'get-report-file',
             'webhook-logs',
             'report-issue',
             'cancel-subscription',
@@ -13835,9 +14706,9 @@ Return JSON with:
     }
   } catch (err: any) {
     console.error(`/api/app?action=${action} error:`, err);
-    return res.status(200).json({
+    return res.status(500).json({
       success: false,
-      error: `Verify failed: ${err?.message || String(err || 'App API error')}`,
+      error: publicError('Internal server error', err?.message || String(err || 'App API error')),
     });
   }
 }

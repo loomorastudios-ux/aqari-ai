@@ -2,7 +2,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { requireAdmin } from '../lib/auth';
+import { requireAdmin, applyAdminOnlyCors } from '../lib/auth';
 import {
   logAdminAction,
   getAuditLogsFromDb,
@@ -1540,7 +1540,6 @@ async function dispatchEmail(params: {
 }) {
   const resendKey = cleanEnvValue(getEnv('RESEND_API_KEY'));
   const hasResendKey = Boolean(resendKey);
-  const keyPrefix = hasResendKey ? resendKey.slice(0, 6) : 'MISSING';
 
   if (!hasResendKey) {
     await appendEmailLogToDb({
@@ -1548,7 +1547,7 @@ async function dispatchEmail(params: {
       subject: params.subject,
       status: 'simulated',
       event_type: params.type,
-      error: 'RESEND_API_KEY missing in Vercel (logged to email_logs)',
+      error: 'Email provider not configured (logged to email_logs)',
     });
     return {
       success: false,
@@ -1556,9 +1555,7 @@ async function dispatchEmail(params: {
       status: 'simulated',
       to: params.to,
       from: EMAIL_FROM_ADDRESS,
-      error: 'RESEND_API_KEY missing in Vercel',
-      has_resend_key: false,
-      key_prefix: 'MISSING',
+      error: 'Email provider not configured',
     };
   }
 
@@ -1603,8 +1600,6 @@ async function dispatchEmail(params: {
       status: res.ok ? 'sent' : 'failed',
       to: params.to,
       from: EMAIL_FROM,
-      has_resend_key: true,
-      key_prefix: keyPrefix,
       resend_status: res.status,
       resend_id: parsed?.id,
       error: res.ok ? undefined : parsed?.message || rawText || res.statusText,
@@ -1615,7 +1610,7 @@ async function dispatchEmail(params: {
       subject: params.subject,
       status: 'failed',
       event_type: params.type,
-      error: err?.message || 'Resend network error',
+      error: err?.message || 'Email provider network error',
     });
     return {
       success: false,
@@ -1623,9 +1618,7 @@ async function dispatchEmail(params: {
       status: 'failed',
       to: params.to,
       from: EMAIL_FROM,
-      has_resend_key: true,
-      key_prefix: keyPrefix,
-      error: err?.message || 'Resend network error',
+      error: err?.message || 'Email provider network error',
     };
   }
 }
@@ -1642,6 +1635,14 @@ function getQueryParam(req: any, url: URL, key: string): string {
 // =========================================================================
 
 export default async function handler(req: any, res: any) {
+  applyAdminOnlyCors(req, res);
+  if (req?.method === 'OPTIONS') {
+    if (typeof res?.end === 'function') {
+      return res.status(200).end();
+    }
+    return res.status(200).json({ ok: true });
+  }
+
   let action = 'users';
   try {
     let url: URL;
@@ -2958,6 +2959,10 @@ export default async function handler(req: any, res: any) {
     }
   } catch (err: any) {
     console.error(`/api/admin?action=${action} error:`, err);
-    return res.status(500).json({ success: false, error: err?.message || 'Admin API error' });
+    const isProd = getEnv('VERCEL_ENV') === 'production' || getEnv('NODE_ENV') === 'production';
+    return res.status(500).json({
+      success: false,
+      error: isProd ? 'internal error' : err?.message || 'Admin API error',
+    });
   }
 }

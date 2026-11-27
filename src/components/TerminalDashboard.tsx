@@ -1428,7 +1428,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
   useEffect(() => {
     if (!user?.email) return;
     let cancelled = false;
-    fetch(`/api/app?action=get-last-results&login_email=${encodeURIComponent(user.email)}&t=${Date.now()}`, {
+    fetch(`/api/app?action=get-last-results&t=${Date.now()}`, {
       credentials: 'include',
       cache: 'no-store',
     })
@@ -2882,7 +2882,7 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     const fetchWhiteGloveAndUnread = async () => {
       try {
         const [wgRes, meRes] = await Promise.all([
-          fetch(`/api/app?action=whiteglove-request&email=${encodeURIComponent(user.email)}&t=${Date.now()}`, {
+          fetch(`/api/app?action=whiteglove-request&t=${Date.now()}`, {
             credentials: 'include',
           }),
           fetch(`/api/app?action=me&t=${Date.now()}`, { credentials: 'include' }),
@@ -2923,10 +2923,9 @@ export const TerminalDashboard: React.FC<TerminalDashboardProps> = ({
     setAnalystChatOpen(true);
     if (!canAnalystDesk || !user?.email) return;
     try {
-      const res = await fetch(
-        `/api/app?action=analyst-message&email=${encodeURIComponent(user.email)}&t=${Date.now()}`,
-        { credentials: 'include' }
-      );
+      const res = await fetch(`/api/app?action=analyst-message&t=${Date.now()}`, {
+        credentials: 'include',
+      });
       if (res.ok) {
         const data = await res.json().catch(() => null);
         if (data?.thread) {
