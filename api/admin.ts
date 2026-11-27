@@ -10,6 +10,7 @@ import {
   getAllServerUsersFromDb,
   updatePlan,
   savePayment,
+  getAllPaymentsFromDb,
   getPricingConfigFromDb,
   savePricingConfigToDb,
   getPricingLogsFromDb,
@@ -1632,17 +1633,62 @@ export default async function handler(req: any, res: any) {
           return res.status(405).json({ error: 'Method not allowed' });
         }
         const filterEmail = getQueryParam(req, url, 'email').trim().toLowerCase();
-        const allUsers = await getAllServerUsersFromDb();
-        const payments = allUsers
-          .filter((u: any) => !filterEmail || u.email.toLowerCase() === filterEmail)
-          .flatMap((u: any) =>
-            (Array.isArray(u.payments) ? u.payments : []).map((p: any) => ({
+        const [allUsers, dbPayments] = await Promise.all([
+          getAllServerUsersFromDb(),
+          getAllPaymentsFromDb(),
+        ]);
+        const userMap = new Map<string, any>();
+        for (const u of allUsers) {
+          userMap.set(String(u.email || '').toLowerCase(), u);
+        }
+
+        const byOrderId = new Map<string, any>();
+        for (const p of dbPayments) {
+          const uEmail = String(p.login_email || '').toLowerCase();
+          if (filterEmail && uEmail !== filterEmail) continue;
+          const u = userMap.get(uEmail);
+          const oid = String(p.order_id || p.transactionId || '');
+          byOrderId.set(oid, {
+            id: oid,
+            order_id: oid,
+            transactionId: p.transactionId || oid,
+            userId: p.userId || u?.userId || '',
+            userEmail: uEmail,
+            userName: u?.name || uEmail.split('@')[0],
+            plan: p.plan,
+            plan_display: p.plan_display,
+            purchase_type: p.purchase_type || 'plan',
+            credits: p.credits,
+            amount: p.amount,
+            currency: p.currency || 'USD',
+            status: p.status || 'completed',
+            refunded_at: p.refunded_at,
+            refund_reason: p.refund_reason,
+            test_mode: Boolean(p.test_mode),
+            timestamp: p.timestamp || (p.used_at ? new Date(p.used_at).toISOString() : ''),
+          });
+        }
+
+        for (const u of allUsers) {
+          const uEmail = String(u.email || '').toLowerCase();
+          if (filterEmail && uEmail !== filterEmail) continue;
+          for (const p of Array.isArray(u.payments) ? u.payments : []) {
+            const oid = String(p.order_id || p.id || '');
+            if (!oid || byOrderId.has(oid)) continue;
+            byOrderId.set(oid, {
               ...p,
-              userEmail: u.email,
+              transactionId: oid,
+              userId: u.userId || '',
+              userEmail: uEmail,
               userName: u.name,
-            }))
-          )
-          .sort((a: any, b: any) => Date.parse(b.timestamp || '') - Date.parse(a.timestamp || ''));
+              status: p.status || 'completed',
+            });
+          }
+        }
+
+        const payments = Array.from(byOrderId.values()).sort(
+          (a: any, b: any) => Date.parse(b.timestamp || '') - Date.parse(a.timestamp || '')
+        );
         return res.status(200).json({
           success: true,
           total: payments.length,

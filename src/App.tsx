@@ -632,22 +632,30 @@ export default function App() {
       }
 
       const targetOrderId =
-        overrideOrderId === 'LAST'
-          ? 'LAST'
-          : overrideOrderId
+        overrideOrderId && overrideOrderId !== 'LAST'
           ? cleanPlaceholderOrderId(overrideOrderId)
           : urlOrderId;
 
-      // 2. Verify checkout with /api/app?action=verify-payment (authenticated via HttpOnly session cookie)
-      const verifyRes = await fetch('/api/app?action=verify-payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          transaction_id: targetOrderId || '',
-          order_id: targetOrderId || '',
-        }),
-      });
+      // 2. Verify checkout with /api/app?action=verify-payment when txn ID present, or checkPaymentStatus via DB
+      const verifyRes = await fetch(
+        targetOrderId
+          ? '/api/app?action=verify-payment'
+          : `/api/app?action=checkPaymentStatus&t=${Date.now()}`,
+        targetOrderId
+          ? {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({
+                transaction_id: targetOrderId,
+              }),
+            }
+          : {
+              method: 'GET',
+              credentials: 'include',
+              cache: 'no-store',
+            }
+      );
 
       const rawText = await verifyRes.text().catch(() => '');
       let data: any = null;
@@ -657,7 +665,7 @@ export default function App() {
         data = null;
       }
 
-      if (verifyRes.ok && data?.success) {
+      if (verifyRes.ok && data?.success && (targetOrderId || data?.verified)) {
         let meData: any = null;
         try {
           const meRes = await fetch(`/api/app?action=me&t=${Date.now()}`, {

@@ -1458,7 +1458,7 @@ test('Backend Paddle endpoints fail closed without test-key fallback when env va
     headers: { 'paddle-signature': 'ts=1700000000;h1=deadbeef' },
     body: JSON.stringify({ event_type: 'transaction.completed', data: { id: 'txn_missing_secret' } }),
   });
-  assert.equal(whRes.statusCode, 500);
+  assert.equal(whRes.statusCode, 401);
   assert.equal(whRes.data.verified, false);
   assert.match(String(whRes.data.error), /PADDLE_WEBHOOK_SECRET/);
 
@@ -1870,22 +1870,19 @@ test('verify-payment handles direct $19 Credit Pack transaction_id via Paddle AP
   assert.equal(verifyRes.data.analyses_left, 55);
 });
 
-test('Frontend paddleClient resolves all 7 Price IDs via env vars and formats /app?checkout=success redirect URL', async (t) => {
-  const {
-    getPaddlePriceId,
-    getPaddleCreditPriceId,
-    getCheckoutSuccessUrl,
-  } = await import('../src/utils/paddleClient.ts');
+test('Server lib/paddle resolves all 7 Price IDs via server env vars with zero PADDLE_PRICE leaks in src/ and formats /app?checkout=success', async (t) => {
+  const { getServerPrices, SERVER_PRICES } = await import('../lib/paddle.ts');
+  const { getCheckoutSuccessUrl } = await import('../src/utils/paddleClient.ts');
 
   const keys = [
-    'NEXT_PUBLIC_PADDLE_ENVIRONMENT',
-    'NEXT_PUBLIC_PADDLE_STARTER_PRICE',
-    'NEXT_PUBLIC_PADDLE_PRICE_ID',
-    'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE',
-    'NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE',
-    'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE',
-    'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE',
-    'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE',
+    'PADDLE_ENVIRONMENT',
+    'PADDLE_PRICE_STARTER',
+    'PADDLE_PRICE_PRO',
+    'PADDLE_PRICE_SOVEREIGN',
+    'PADDLE_PRICE_ENTERPRISE',
+    'PADDLE_PRICE_CREDIT_25',
+    'PADDLE_PRICE_CREDIT_100',
+    'PADDLE_PRICE_CREDIT_500',
   ] as const;
   const saved: Record<string, string | undefined> = {};
   for (const k of keys) saved[k] = process.env[k];
@@ -1897,22 +1894,23 @@ test('Frontend paddleClient resolves all 7 Price IDs via env vars and formats /a
     }
   });
 
-  process.env.NEXT_PUBLIC_PADDLE_ENVIRONMENT = 'live';
-  process.env.NEXT_PUBLIC_PADDLE_STARTER_PRICE = 'pri_starter_1';
-  process.env.NEXT_PUBLIC_PADDLE_PRICE_ID = 'pri_pro_2';
-  process.env.NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE = 'pri_sov_3';
-  process.env.NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE = 'pri_ent_4';
-  process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE = 'pri_c25_5';
-  process.env.NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE = 'pri_c100_6';
-  process.env.NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE = 'pri_c500_7';
+  process.env.PADDLE_ENVIRONMENT = 'live';
+  process.env.PADDLE_PRICE_STARTER = 'pri_starter_1';
+  process.env.PADDLE_PRICE_PRO = 'pri_pro_2';
+  process.env.PADDLE_PRICE_SOVEREIGN = 'pri_sov_3';
+  process.env.PADDLE_PRICE_ENTERPRISE = 'pri_ent_4';
+  process.env.PADDLE_PRICE_CREDIT_25 = 'pri_c25_5';
+  process.env.PADDLE_PRICE_CREDIT_100 = 'pri_c100_6';
+  process.env.PADDLE_PRICE_CREDIT_500 = 'pri_c500_7';
 
-  assert.equal(getPaddlePriceId('starter'), 'pri_starter_1');
-  assert.equal(getPaddlePriceId('pro'), 'pri_pro_2');
-  assert.equal(getPaddlePriceId('enterprise'), 'pri_sov_3');
-  assert.equal(getPaddlePriceId('institutional'), 'pri_ent_4');
-  assert.equal(getPaddleCreditPriceId('pack_25'), 'pri_c25_5');
-  assert.equal(getPaddleCreditPriceId('pack_100'), 'pri_c100_6');
-  assert.equal(getPaddleCreditPriceId('pack_500'), 'pri_c500_7');
+  const catalog = getServerPrices();
+  assert.equal(catalog.plans.starter.priceId, 'pri_starter_1');
+  assert.equal(catalog.plans.pro.priceId, 'pri_pro_2');
+  assert.equal(catalog.plans.enterprise.priceId, 'pri_sov_3');
+  assert.equal(catalog.plans.institutional.priceId, 'pri_ent_4');
+  assert.equal(SERVER_PRICES.PACK_25.priceId, 'pri_c25_5');
+  assert.equal(SERVER_PRICES.PACK_100.priceId, 'pri_c100_6');
+  assert.equal(SERVER_PRICES.PACK_500.priceId, 'pri_c500_7');
 
   assert.equal(
     getCheckoutSuccessUrl('txn_01livecheck'),
@@ -2018,8 +2016,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
   });
   assert.equal(sandboxLegacyPriceRes.statusCode, 400);
 
-  // Reject non-live PADDLE_ENVIRONMENT
-  process.env.PADDLE_ENVIRONMENT = 'sandbox';
+  // Reject invalid PADDLE_ENVIRONMENT and mismatched live key in sandbox mode
+  process.env.PADDLE_ENVIRONMENT = 'staging';
   const badEnvRes = await invokeApi({
     action: 'checkout',
     method: 'POST',
@@ -2027,6 +2025,15 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
     body: { plan: 'pro' },
   });
   assert.equal(badEnvRes.statusCode, 400);
+
+  process.env.PADDLE_ENVIRONMENT = 'sandbox';
+  const liveInSandboxRes = await invokeApi({
+    action: 'checkout',
+    method: 'POST',
+    headers: { cookie: checkoutBuyerCookie },
+    body: { plan: 'pro' },
+  });
+  assert.equal(liveInSandboxRes.statusCode, 400);
   process.env.PADDLE_ENVIRONMENT = 'live';
 
   // Even if PADDLE_API_KEY was pasted with accidental "Bearer " prefix / whitespace, backend normalizes to exact "Bearer <key>"
@@ -2034,6 +2041,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
 
   let txnCounter = 0;
   let capturedAuthHeader = '';
+  let capturedCreatedPriceId = '';
+  let capturedCreatedQuantity = 0;
   let simulate401 = false;
   globalThis.fetch = (async (url: any, opts?: any) => {
     const s = String(url);
@@ -2050,6 +2059,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
       txnCounter += 1;
       const parsed = JSON.parse(String(opts.body || '{}'));
       const priceId = parsed?.items?.[0]?.price_id || 'unknown';
+      capturedCreatedPriceId = priceId;
+      capturedCreatedQuantity = Number(parsed?.items?.[0]?.quantity || 0);
       const txnId = `txn_01live_${txnCounter}`;
       return new Response(
         JSON.stringify({
@@ -2086,7 +2097,8 @@ test('/api/app?action=checkout validates config with 400, blocks sandbox creds i
     assert.equal(res.statusCode, 200);
     assert.equal(res.data.success, true);
     assert.equal(res.data.environment, 'production');
-    assert.equal(res.data.priceId, item.expectedPriceId);
+    assert.equal(capturedCreatedPriceId, item.expectedPriceId);
+    assert.equal(capturedCreatedQuantity, 1);
     assert.equal(capturedAuthHeader, 'Bearer pdl_live_apikey_check');
     assert.ok(String(res.data.transactionId).startsWith('txn_01live_'));
     assert.match(String(res.data.checkoutUrl), /^https:\/\/checkout\.paddle\.com\/checkout\?_ptxn=/);
@@ -2148,8 +2160,9 @@ test('Local /assets JSON files replace raw.githubusercontent.com, SafeChartConta
   assert.equal(appSrc.includes('Missing NEXT_PUBLIC_PADDLE_ENVIRONMENT'), false);
   assert.match(paddleClientSrc, /import\.meta\.env\.VITE_PADDLE_ENVIRONMENT/);
   assert.match(paddleClientSrc, /import\.meta\.env\.VITE_PADDLE_CLIENT_TOKEN/);
-  assert.match(paddleClientSrc, /mode:\s*'record'/);
-  assert.match(paddleClientSrc, /successUrl:\s*'https:\/\/aqari-ai-rho\.vercel\.app\/app\?checkout=success'/);
+  assert.match(paddleClientSrc, /action=createCheckout/);
+  assert.match(paddleClientSrc, /transactionId:\s*session\.transactionId/);
+  assert.equal(paddleClientSrc.includes('PADDLE_PRICE'), false);
   assert.match(paddleClientSrc, /locale:\s*'en'/);
 
   const { formatPaddleCheckoutErrorMessage, getCheckoutSuccessUrl } = await import(
@@ -2172,20 +2185,7 @@ test('Local /assets JSON files replace raw.githubusercontent.com, SafeChartConta
   );
 });
 
-test('OPTIONS preflight returns 200 with CORS headers and no auth check; mode=record returns 200 without api.paddle.com', async (t) => {
-  const prevFetch = globalThis.fetch;
-  let calledExternalPaddle = false;
-  globalThis.fetch = (async (url: any, opts?: any) => {
-    if (String(url).includes('paddle.com')) {
-      calledExternalPaddle = true;
-    }
-    return prevFetch(url, opts);
-  }) as typeof fetch;
-
-  t.after(() => {
-    globalThis.fetch = prevFetch;
-  });
-
+test('OPTIONS preflight returns 200 with CORS headers and no auth check; mode=record bypass is rejected with 400', async () => {
   const optRes = await invokeApi({
     action: 'admin-list',
     method: 'OPTIONS',
@@ -2212,13 +2212,10 @@ test('OPTIONS preflight returns 200 with CORS headers and no auth check; mode=re
     body: {
       mode: 'record',
       plan: 'pro',
-      priceId: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy',
     },
   });
-  assert.equal(recRes.statusCode, 200);
-  assert.equal(recRes.data.success, true);
-  assert.equal(recRes.data.mode, 'paddlejs_overlay');
-  assert.equal(calledExternalPaddle, false);
+  assert.equal(recRes.statusCode, 400);
+  assert.equal(recRes.data.success, false);
   assert.equal(recRes.headers['Access-Control-Allow-Origin'], 'https://admin-aqari2.vercel.app');
 });
 
@@ -2366,19 +2363,49 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
 
   const prevSecret = process.env.PADDLE_WEBHOOK_SECRET;
   const prevEnv = process.env.PADDLE_ENVIRONMENT;
+  const prevApiKey = process.env.PADDLE_API_KEY;
+  const prevClientTok = process.env.PADDLE_CLIENT_SIDE_TOKEN;
   const prevCredit25 = process.env.PADDLE_CREDIT_25_PRICE;
   const prevViteC25 = process.env.VITE_PADDLE_CREDIT_25;
   const prevNextC25 = process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE;
+  const prevFetch = globalThis.fetch;
   const testSecret = 'pdl_ntfset_entitle_rules_test';
   process.env.PADDLE_WEBHOOK_SECRET = testSecret;
   process.env.PADDLE_ENVIRONMENT = 'live';
+  process.env.PADDLE_API_KEY = 'pdl_live_entitle_rules_key';
+  process.env.PADDLE_CLIENT_SIDE_TOKEN = 'live_entitle_rules_tok';
   process.env.PADDLE_CREDIT_25_PRICE = 'pri_backend_c25_19';
 
+  let mockTxnCounter = 0;
+  globalThis.fetch = (async (url: any, opts?: any) => {
+    const s = String(url);
+    if (s === 'https://api.paddle.com/transactions' && opts?.method === 'POST') {
+      mockTxnCounter += 1;
+      const txnId = `txn_rule_co_${mockTxnCounter}`;
+      return new Response(
+        JSON.stringify({
+          data: {
+            id: txnId,
+            status: 'draft',
+            checkout: { url: `https://buy.paddle.com/checkout?_ptxn=${txnId}` },
+          },
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    return prevFetch(url, opts);
+  }) as typeof fetch;
+
   t.after(async () => {
+    globalThis.fetch = prevFetch;
     if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
     else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
     if (prevEnv === undefined) delete process.env.PADDLE_ENVIRONMENT;
     else process.env.PADDLE_ENVIRONMENT = prevEnv;
+    if (prevApiKey === undefined) delete process.env.PADDLE_API_KEY;
+    else process.env.PADDLE_API_KEY = prevApiKey;
+    if (prevClientTok === undefined) delete process.env.PADDLE_CLIENT_SIDE_TOKEN;
+    else process.env.PADDLE_CLIENT_SIDE_TOKEN = prevClientTok;
     if (prevCredit25 === undefined) delete process.env.PADDLE_CREDIT_25_PRICE;
     else process.env.PADDLE_CREDIT_25_PRICE = prevCredit25;
     if (prevViteC25 === undefined) delete process.env.VITE_PADDLE_CREDIT_25;
@@ -2418,18 +2445,16 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   const proExpiryFormatted = proWh.data.expiryDateFormatted;
   assert.match(String(proExpiryFormatted), /^\d{2}\/\d{2}\/\d{4}$/);
 
-  // Rule A: Re-buying PRO while PRO is active -> BLOCKED at checkout (409) AND webhook
+  // Rule A: Re-buying PRO while PRO is active -> BLOCKED at createCheckout (400) AND webhook
   const blockCheckout = await invokeApi({
-    action: 'checkout',
+    action: 'createCheckout',
     method: 'POST',
     headers: { cookie: buyerCookie },
     body: {
-      mode: 'record',
       plan: 'pro',
-      priceId: 'pri_01m7tggqhjtgk9fxmmg6mbp5wy',
     },
   });
-  assert.equal(blockCheckout.statusCode, 409);
+  assert.equal(blockCheckout.statusCode, 400);
   assert.equal(blockCheckout.data.code, 'SAME_PLAN_ACTIVE');
   assert.equal(
     blockCheckout.data.error,
@@ -2459,13 +2484,11 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
 
   // Rule D: Buying +25 Credits while PRO is active -> ALLOWED, plan & expiry unchanged, credits added
   const credCheckout = await invokeApi({
-    action: 'checkout',
+    action: 'createCheckout',
     method: 'POST',
     headers: { cookie: buyerCookie },
     body: {
-      mode: 'record',
       packId: 'pack_25',
-      priceId: 'pri_backend_c25_19',
     },
   });
   assert.equal(credCheckout.statusCode, 200);
@@ -2514,13 +2537,11 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
 
   // Rule B: Buy SOVEREIGN while PRO is active -> ALLOWED, replaces plan & expiry, closes PRO features, preserves 25 credits
   const switchCheckout = await invokeApi({
-    action: 'checkout',
+    action: 'createCheckout',
     method: 'POST',
     headers: { cookie: buyerCookie },
     body: {
-      mode: 'record',
       plan: 'enterprise',
-      priceId: 'pri_01m7tgj4pp767gacchp49k2qev',
     },
   });
   assert.equal(switchCheckout.statusCode, 200);
@@ -2596,46 +2617,26 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   await updateUserPartial(buyerEmail, { license_end: Date.now() - 60_000 }, { syncCredits: false });
 
   const expiredRebuyRes = await invokeApi({
-    action: 'checkout',
+    action: 'createCheckout',
     method: 'POST',
     headers: { cookie: buyerCookie },
     body: {
-      mode: 'record',
       plan: 'starter',
-      priceId: 'pri_01m7tgfvteegdih2mx4hgyz1c',
     },
   });
   assert.equal(expiredRebuyRes.statusCode, 200);
 
-  // FIX 3 + FIX 1 checks: /api/app?action=pricing exposes paddleCreditPriceIds fallback; frontend resolves VITE_PADDLE_CREDIT_25 & backend fallback; quantity=1 lock
+  // /api/app?action=pricing exposes availability booleans only (never leaks pri_ Price IDs to client)
   const pricingRes = await invokeApi({ method: 'GET', action: 'pricing' });
   assert.equal(pricingRes.statusCode, 200);
-  assert.equal(pricingRes.data.paddleCreditPriceIds?.pack_25, 'pri_backend_c25_19');
-
-  const {
-    getPaddleCreditPriceId,
-    setBackendCreditPriceIds,
-    getCreditPackDisabledTooltip,
-  } = await import('../src/utils/paddleClient.ts');
-
-  delete process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE;
-  delete process.env.VITE_PADDLE_CREDIT_25_PRICE;
-  delete process.env.VITE_PADDLE_CREDIT_25;
-  setBackendCreditPriceIds(null);
-  assert.equal(getCreditPackDisabledTooltip('pack_25'), 'Credits pack 25 coming soon - use +100 / +500');
-
-  setBackendCreditPriceIds(pricingRes.data.paddleCreditPriceIds);
-  assert.equal(getPaddleCreditPriceId('pack_25'), 'pri_backend_c25_19');
-
-  setBackendCreditPriceIds(null);
-  process.env.VITE_PADDLE_CREDIT_25 = 'pri_vite_short_c25';
-  assert.equal(getPaddleCreditPriceId('pack_25'), 'pri_vite_short_c25');
+  assert.equal(pricingRes.data.availableCreditPacks?.pack_25, true);
+  assert.equal(JSON.stringify(pricingRes.data).includes('pri_'), false);
 
   const fs = await import('node:fs');
   const path = await import('node:path');
   const paddleClientSrc = fs.readFileSync(path.resolve('src/utils/paddleClient.ts'), 'utf8');
-  assert.match(paddleClientSrc, /items:\s*\[\{\s*priceId,\s*quantity:\s*1\s*\}\]/);
-  assert.match(paddleClientSrc, /updateItems\(\[\{\s*priceId:\s*lockedPriceId,\s*quantity:\s*1\s*\}\]\)/);
+  assert.match(paddleClientSrc, /paddle\.Checkout\.open\(\{[\s\S]*transactionId:\s*session\.transactionId/);
+  assert.equal(paddleClientSrc.includes('PADDLE_PRICE'), false);
 });
 
 test('Phase 4 Privacy & Data Isolation: unauthenticated customer data routes rejected even when email supplied, and spoofed email-only session fails with 401', async () => {
@@ -3568,4 +3569,322 @@ test('Phase 5 Backup Utility: exportAllData & /api/admin?action=backup allow Adm
   assert.ok(backedUser);
   assert.equal(backedUser.api_key_token, undefined);
 });
+
+test('Phase 6 Paddle Security: rejects fake/expired webhook signatures (401), rejects unpaid plan spoofing, locks prices/quantity=1, prevents duplicates, handles refund/chargeback/cancel/expiry, and gates admin getPayments', async (t) => {
+  const crypto = await import('node:crypto');
+  const buyerEmail = `p6_buyer_${Date.now()}@aqari.test`;
+  const otherEmail = `p6_other_${Date.now()}@aqari.test`;
+  const adminEmail = 'p6_admin@aqari.test';
+
+  const buyerCookie = await createTestSessionCookie(buyerEmail, 'Phase6 Buyer');
+  const otherCookie = await createTestSessionCookie(otherEmail, 'Phase6 Other');
+  const adminCookie = await createTestSessionCookie(adminEmail, 'Phase6 Admin');
+
+  const prevEnv = process.env.PADDLE_ENVIRONMENT;
+  const prevApiKey = process.env.PADDLE_API_KEY;
+  const prevClientTok = process.env.PADDLE_CLIENT_SIDE_TOKEN;
+  const prevSecret = process.env.PADDLE_WEBHOOK_SECRET;
+  const prevProPrice = process.env.PADDLE_PRICE_PRO;
+  const prevStarterPrice = process.env.PADDLE_PRICE_STARTER;
+  const prevAdminEmail = process.env.ADMIN_EMAIL;
+  const prevFetch = globalThis.fetch;
+
+  const webhookSecret = 'pdl_ntfset_phase6_security_secret';
+  process.env.PADDLE_ENVIRONMENT = 'sandbox';
+  process.env.PADDLE_API_KEY = 'pdl_sdbx_phase6_apikey';
+  process.env.PADDLE_CLIENT_SIDE_TOKEN = 'test_phase6_client_token';
+  process.env.PADDLE_WEBHOOK_SECRET = webhookSecret;
+  process.env.PADDLE_PRICE_STARTER = 'pri_p6_starter_75';
+  process.env.PADDLE_PRICE_PRO = 'pri_p6_pro_199';
+  process.env.ADMIN_EMAIL = adminEmail;
+
+  const signAt = (body: string, tsSec: number) => {
+    const h1 = crypto.createHmac('sha256', webhookSecret).update(`${tsSec}:${body}`).digest('hex');
+    return `ts=${tsSec};h1=${h1}`;
+  };
+
+  let createdPayloads: any[] = [];
+  globalThis.fetch = (async (url: any, opts?: any) => {
+    const s = String(url);
+    if (s === 'https://sandbox-api.paddle.com/transactions' && opts?.method === 'POST') {
+      const payload = JSON.parse(String(opts.body || '{}'));
+      createdPayloads.push(payload);
+      return new Response(
+        JSON.stringify({
+          data: {
+            id: `txn_p6_srv_${createdPayloads.length}`,
+            status: 'draft',
+            checkout: { url: `https://sandbox-buy.paddle.com/checkout?_ptxn=txn_p6_srv_${createdPayloads.length}` },
+          },
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    return prevFetch(url, opts);
+  }) as typeof fetch;
+
+  t.after(async () => {
+    globalThis.fetch = prevFetch;
+    if (prevEnv === undefined) delete process.env.PADDLE_ENVIRONMENT;
+    else process.env.PADDLE_ENVIRONMENT = prevEnv;
+    if (prevApiKey === undefined) delete process.env.PADDLE_API_KEY;
+    else process.env.PADDLE_API_KEY = prevApiKey;
+    if (prevClientTok === undefined) delete process.env.PADDLE_CLIENT_SIDE_TOKEN;
+    else process.env.PADDLE_CLIENT_SIDE_TOKEN = prevClientTok;
+    if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
+    else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
+    if (prevProPrice === undefined) delete process.env.PADDLE_PRICE_PRO;
+    else process.env.PADDLE_PRICE_PRO = prevProPrice;
+    if (prevStarterPrice === undefined) delete process.env.PADDLE_PRICE_STARTER;
+    else process.env.PADDLE_PRICE_STARTER = prevStarterPrice;
+    if (prevAdminEmail === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = prevAdminEmail;
+    await deleteTestUsers(buyerEmail, otherEmail);
+  });
+
+  // 1. Fake or expired webhook signature -> 401, no plan/credits granted, audit log recorded
+  const spoofWhBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: `txn_p6_fake_${Date.now()}`,
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_p6_pro_199', name: 'AQARI PRO' }, quantity: 1 }],
+      custom_data: { login_email: buyerEmail, plan: 'pro' },
+    },
+  });
+  const fakeSigRes = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': 'ts=1700000000;h1=0000deadbeef' },
+    body: spoofWhBody,
+  });
+  assert.equal(fakeSigRes.statusCode, 401);
+  assert.equal(fakeSigRes.data.verified, false);
+
+  const expiredSigRes = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': signAt(spoofWhBody, Math.floor(Date.now() / 1000) - 900) },
+    body: spoofWhBody,
+  });
+  assert.equal(expiredSigRes.statusCode, 401);
+
+  const meBefore = await invokeApi({ action: 'me', method: 'GET', headers: { cookie: buyerCookie } });
+  assert.equal(meBefore.data.planKey, 'free');
+
+  // 2. Direct POST { plan: 'PRO' } without payment to app / verify-payment -> rejected (400/401), plan remains FREE
+  const postRootNoAction = await invokeApi({
+    action: '',
+    method: 'POST',
+    headers: { cookie: buyerCookie },
+    body: { plan: 'PRO' },
+  });
+  assert.equal(postRootNoAction.statusCode, 400);
+
+  const spoofVerify = await invokeApi({
+    action: 'verify-payment',
+    method: 'POST',
+    headers: { cookie: buyerCookie },
+    body: { plan: 'PRO' },
+  });
+  assert.equal(spoofVerify.statusCode, 400);
+
+  const unauthCheckout = await invokeApi({
+    action: 'createCheckout',
+    method: 'POST',
+    body: { plan: 'PRO' },
+  });
+  assert.equal(unauthCheckout.statusCode, 401);
+
+  // Invalid/free plan checkout rejected with 400
+  const invalidPlanRes = await invokeApi({
+    action: 'createCheckout',
+    method: 'POST',
+    headers: { cookie: buyerCookie },
+    body: { plan: 'free' },
+  });
+  assert.equal(invalidPlanRes.statusCode, 400);
+
+  const unknownPlanRes = await invokeApi({
+    action: 'createCheckout',
+    method: 'POST',
+    headers: { cookie: buyerCookie },
+    body: { plan: 'gold' },
+  });
+  assert.equal(unknownPlanRes.statusCode, 400);
+
+  // 3. Spoofed price/amount/quantity in createCheckout has zero effect; server uses server price_id + quantity=1
+  const coRes = await invokeApi({
+    action: 'createCheckout',
+    method: 'POST',
+    headers: { cookie: buyerCookie },
+    body: { plan: 'pro', price: 1, amount: 0.01, quantity: 99 },
+  });
+  assert.equal(coRes.statusCode, 200);
+  assert.equal(coRes.data.activePriceUSD, 199);
+  assert.equal(coRes.data.environment, 'sandbox');
+  assert.equal(createdPayloads[0].items[0].price_id, 'pri_p6_pro_199');
+  assert.equal(createdPayloads[0].items[0].quantity, 1);
+
+  // 4. Signed webhook transaction.completed activates PRO once; duplicate txn returns duplicate: true with zero extra credits
+  const proTxnId = `txn_p6_pro_${Date.now()}`;
+  const validWhBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: proTxnId,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_p6_pro_199', name: 'AQARI PRO' }, quantity: 5 }],
+      details: { totals: { total: '19900' } },
+      custom_data: { email: buyerEmail, login_email: buyerEmail, plan: 'pro' },
+    },
+  });
+  const firstWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': signAt(validWhBody, Math.floor(Date.now() / 1000)) },
+    body: validWhBody,
+  });
+  assert.equal(firstWh.statusCode, 200);
+  assert.equal(firstWh.data.duplicate, false);
+  assert.equal(firstWh.data.plan, 'pro');
+
+  const dupWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': signAt(validWhBody, Math.floor(Date.now() / 1000)) },
+    body: validWhBody,
+  });
+  assert.equal(dupWh.statusCode, 200);
+  assert.equal(dupWh.data.ok, true);
+  assert.equal(dupWh.data.duplicate, true);
+
+  // 8. checkPaymentStatus requires auth, checks ownership (403 for other user), reads strictly from DB
+  const unauthStatus = await invokeApi({ action: 'checkPaymentStatus', method: 'GET' });
+  assert.equal(unauthStatus.statusCode, 401);
+
+  const otherOwnership = await invokeApi({
+    action: 'checkPaymentStatus',
+    method: 'GET',
+    headers: { cookie: otherCookie },
+    query: { transactionId: proTxnId },
+  });
+  assert.equal(otherOwnership.statusCode, 403);
+
+  const buyerStatus = await invokeApi({
+    action: 'checkPaymentStatus',
+    method: 'GET',
+    headers: { cookie: buyerCookie },
+    query: { transactionId: proTxnId },
+  });
+  assert.equal(buyerStatus.statusCode, 200);
+  assert.equal(buyerStatus.data.verified, true);
+  assert.equal(buyerStatus.data.status, 'completed');
+  assert.equal(buyerStatus.data.planKey, 'pro');
+
+  // 5. Refund webhook revokes PRO immediately, marks payment status='refunded' (preserves record)
+  const refundWhBody = JSON.stringify({
+    event_type: 'transaction.refunded',
+    data: {
+      id: proTxnId,
+      customer: { email: buyerEmail },
+      custom_data: { login_email: buyerEmail, plan: 'pro' },
+    },
+  });
+  const refWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': signAt(refundWhBody, Math.floor(Date.now() / 1000)) },
+    body: refundWhBody,
+  });
+  assert.equal(refWh.statusCode, 200);
+  assert.equal(refWh.data.status, 'refunded');
+  assert.equal(refWh.data.plan, 'free');
+
+  const meAfterRefund = await invokeApi({ action: 'me', method: 'GET', headers: { cookie: buyerCookie } });
+  assert.equal(meAfterRefund.data.planKey, 'free');
+  assert.equal(meAfterRefund.data.plan, 'FREE');
+
+  // 6. Subscription activation -> cancelled / expired -> reverts to FREE cleanly
+  const starterTxnId = `txn_p6_start_${Date.now()}`;
+  const starterWhBody = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: starterTxnId,
+      currency_code: 'USD',
+      customer: { email: buyerEmail },
+      items: [{ price: { id: 'pri_p6_starter_75', name: 'AQARI STARTER' }, quantity: 1 }],
+      details: { totals: { total: '7500' } },
+      custom_data: { email: buyerEmail, login_email: buyerEmail, plan: 'starter' },
+    },
+  });
+  await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': signAt(starterWhBody, Math.floor(Date.now() / 1000)) },
+    body: starterWhBody,
+  });
+
+  const cancelFutureIso = new Date(Date.now() + 86_400_000).toISOString();
+  const cancelBody = JSON.stringify({
+    event_type: 'subscription.cancelled',
+    data: {
+      id: `sub_p6_${Date.now()}`,
+      customer: { email: buyerEmail },
+      custom_data: { login_email: buyerEmail },
+      scheduled_change: { effective_at: cancelFutureIso },
+    },
+  });
+  const cancelWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': signAt(cancelBody, Math.floor(Date.now() / 1000)) },
+    body: cancelBody,
+  });
+  assert.equal(cancelWh.statusCode, 200);
+  assert.equal(cancelWh.data.cancel_status, 'cancelled');
+
+  const expireBody = JSON.stringify({
+    event_type: 'subscription.expired',
+    data: {
+      id: `sub_p6_exp_${Date.now()}`,
+      customer: { email: buyerEmail },
+      custom_data: { login_email: buyerEmail },
+    },
+  });
+  const expWh = await invokeApi({
+    action: 'paddle-webhook',
+    method: 'POST',
+    headers: { 'paddle-signature': signAt(expireBody, Math.floor(Date.now() / 1000)) },
+    body: expireBody,
+  });
+  assert.equal(expWh.statusCode, 200);
+  assert.equal(expWh.data.plan, 'free');
+
+  const meAfterExpire = await invokeApi({ action: 'me', method: 'GET', headers: { cookie: buyerCookie } });
+  assert.equal(meAfterExpire.data.planKey, 'free');
+  assert.equal(meAfterExpire.data.plan, 'FREE');
+
+  // 9. Admin getpayments: normal user 403, admin 200 with refunded & completed payment records
+  const userPayList = await invokeAdminApi({
+    action: 'getpayments',
+    method: 'GET',
+    headers: { cookie: buyerCookie },
+  });
+  assert.equal(userPayList.statusCode, 403);
+
+  const adminPayList = await invokeAdminApi({
+    action: 'getpayments',
+    method: 'GET',
+    headers: { cookie: adminCookie },
+  });
+  assert.equal(adminPayList.statusCode, 200);
+  assert.equal(adminPayList.data.success, true);
+  const refundedRec = adminPayList.data.payments.find(
+    (p: any) => (p.transactionId || p.order_id) === proTxnId
+  );
+  assert.ok(refundedRec);
+  assert.equal(refundedRec.status, 'refunded');
+});
+
 

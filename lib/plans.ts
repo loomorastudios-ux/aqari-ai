@@ -99,11 +99,12 @@ export interface PricingPublicPayload {
   updatedAt: number;
   plans: DynamicPlanPublic[] | Record<PlanKey, DynamicPlanPublic>;
   plansMap?: Record<PlanKey, DynamicPlanPublic>;
-  paddleCreditPriceIds?: {
-    pack_25?: string | null;
-    pack_100?: string | null;
-    pack_500?: string | null;
+  availableCreditPacks?: {
+    pack_25?: boolean;
+    pack_100?: boolean;
+    pack_500?: boolean;
   };
+  institutionalCheckoutAvailable?: boolean;
 }
 
 export function getShortPlanLabel(planKey: PlanKey): string {

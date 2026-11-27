@@ -14,10 +14,7 @@ import {
 import { formatPrice } from '../utils/formatters';
 import {
   getPaddleEnvironment,
-  getPaddlePriceId,
-  getPaddleCreditPriceId,
   getCreditPackDisabledTooltip,
-  setBackendCreditPriceIds,
   formatPaddleDateMMDDYYYY,
   openPaddleCheckout,
   openPaddleCreditPackCheckout,
@@ -99,9 +96,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
   useEffect(() => {
     if (externalPricing) {
       setLivePricing(externalPricing);
-      if (externalPricing.paddleCreditPriceIds) {
-        setBackendCreditPriceIds(externalPricing.paddleCreditPriceIds);
-      }
     }
   }, [externalPricing]);
 
@@ -111,9 +105,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       if (res.ok) {
         const data: PricingPublicPayload = await res.json();
         setLivePricing(data);
-        if (data?.paddleCreditPriceIds) {
-          setBackendCreditPriceIds(data.paddleCreditPriceIds);
-        }
       }
     } catch {
       // Fall back gracefully if offline
@@ -134,14 +125,6 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
       window.removeEventListener('aqari:open-enterprise-modal', onOpenEnterprise);
     };
   }, []);
-
-  useEffect(() => {
-    for (const pack of EXTRA_CREDIT_PACKS) {
-      if (!getPaddleCreditPriceId(pack.id as CreditPackId)) {
-        console.warn(`[Paddle] Missing credit price ID for ${pack.id}: ${getCreditPackDisabledTooltip(pack.id as CreditPackId)}`);
-      }
-    }
-  }, [livePricing]);
 
   const showError = (msg: string) => {
     setErrorToast(msg);
@@ -730,8 +713,9 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 shrink-0">
             {EXTRA_CREDIT_PACKS.map((pack) => {
               const isBuying = buyingPackId === pack.id;
-              const packPriceId = getPaddleCreditPriceId(pack.id as CreditPackId);
-              const isPackAvailable = Boolean(packPriceId);
+              const isPackAvailable = Boolean(
+                livePricing?.availableCreditPacks?.[pack.id as CreditPackId] ?? false
+              );
               const disabledTooltip = getCreditPackDisabledTooltip(pack.id as CreditPackId);
               return (
                 <button
@@ -935,7 +919,7 @@ export const PricingSection: React.FC<PricingSectionProps> = ({
                 {entSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
                 <span>Submit Enterprise Contract Request</span>
               </button>
-              {getPaddlePriceId('institutional') && (
+              {Boolean(livePricing?.institutionalCheckoutAvailable) && (
                 <button
                   type="button"
                   disabled={loadingPlan === 'institutional'}

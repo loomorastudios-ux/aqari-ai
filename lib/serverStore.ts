@@ -48,6 +48,7 @@ export interface ForensicPaymentEntry {
   amount: number;
   currency: string;
   test_mode: boolean;
+  status?: 'completed' | 'refunded' | 'chargeback';
   refund_policy_accepted_at?: string;
 }
 
@@ -153,7 +154,11 @@ export interface ServerUserRecord {
   issue_status?: string;
   issue_reported_at?: number | null;
   issue_resolved_at?: number | null;
-  cancel_status?: string;
+  cancel_status?: 'none' | 'refunded' | 'cancelled' | string;
+  refunded_at?: number | null;
+  refund_reason?: string | null;
+  cancelled_at?: number | null;
+  expired_from_plan?: PlanKey | null;
   api_key_token?: string | null;
   api_key_last4?: string | null;
   api_key_revoked_legacy?: boolean;
@@ -236,6 +241,8 @@ export interface EmailLogEntry {
 
 export interface UsedOrderRecord {
   order_id: string;
+  transactionId?: string;
+  userId?: string;
   login_email: string;
   payment_email: string;
   plan: PlanKey;
@@ -248,6 +255,10 @@ export interface UsedOrderRecord {
   analyses: number;
   amount: number;
   currency?: string;
+  status?: 'completed' | 'refunded' | 'chargeback';
+  refunded_at?: number;
+  refund_reason?: string;
+  timestamp?: string;
   test_mode: boolean;
   used_at: number;
 }
@@ -748,14 +759,25 @@ export function hydrateUserRecord(raw: any, rawEmail: string): ServerUserRecord 
       ? raw.license_end
       : licenseStartVal + THIRTY_DAYS_MS;
 
-  const contractEndParsed = contractEndDate ? Date.parse(contractEndDate) : NaN;
-  const effectiveEnd = isFreePlan
-    ? null
-    : plan === 'institutional' && Number.isFinite(contractEndParsed)
-    ? contractEndParsed
-    : licenseEndVal;
+  const expiredFromPlanRaw = raw?.expired_from_plan
+    ? normalizePlanKey(raw.expired_from_plan)
+    : null;
+  const expiredFromPlan: PlanKey | null =
+    expiredFromPlanRaw && expiredFromPlanRaw !== 'free' && isFreePlan
+      ? expiredFromPlanRaw
+      : null;
 
-  const packageExpired = Boolean(!isFreePlan && effectiveEnd && now >= effectiveEnd);
+  const contractEndParsed = contractEndDate ? Date.parse(contractEndDate) : NaN;
+  const effectiveEnd =
+    isFreePlan && !expiredFromPlan
+      ? null
+      : plan === 'institutional' && Number.isFinite(contractEndParsed)
+      ? contractEndParsed
+      : licenseEndVal;
+
+  const packageExpired = Boolean(
+    (!isFreePlan || Boolean(expiredFromPlan)) && effectiveEnd && now >= effectiveEnd
+  );
   const adminLocked = Boolean(raw?.admin_locked || raw?.locked);
   const effectiveLeft = adminLocked
     ? 0
@@ -782,6 +804,7 @@ export function hydrateUserRecord(raw: any, rawEmail: string): ServerUserRecord 
     email,
     name: raw?.name || email.split('@')[0],
     plan,
+    expired_from_plan: expiredFromPlan,
     license_start: licenseStartVal,
     license_end: licenseEndVal,
     analyses_used: analysesUsed,
@@ -851,7 +874,12 @@ export function hydrateUserRecord(raw: any, rawEmail: string): ServerUserRecord 
         : 'none',
     issue_reported_at: typeof raw?.issue_reported_at === 'number' ? raw.issue_reported_at : null,
     issue_resolved_at: typeof raw?.issue_resolved_at === 'number' ? raw.issue_resolved_at : null,
-    cancel_status: raw?.cancel_status === 'refunded' ? 'refunded' : 'none',
+    cancel_status:
+      raw?.cancel_status === 'refunded'
+        ? 'refunded'
+        : raw?.cancel_status === 'cancelled'
+        ? 'cancelled'
+        : 'none',
     api_key_token: typeof raw?.api_key_token === 'string' ? raw.api_key_token : null,
     api_key_last4: typeof raw?.api_key_last4 === 'string' ? raw.api_key_last4 : null,
     api_key_revoked_legacy: Boolean(raw?.api_key_revoked_legacy),
@@ -1314,12 +1342,19 @@ export async function savePayment(
     throw new Error('orderId is required for savePayment');
   }
 
+  const usedAt = Number(data.used_at || Date.now());
+  const loginEmail = normalizeEmail(data.login_email);
   const normalizedRecord: UsedOrderRecord = {
     ...data,
     order_id: orderKey,
-    login_email: normalizeEmail(data.login_email),
-    payment_email: normalizeEmail(data.payment_email || data.login_email),
-    used_at: Number(data.used_at || Date.now()),
+    transactionId: String(data.transactionId || orderKey),
+    userId: String(data.userId || (loginEmail ? getUserIdForEmail(loginEmail) : '')),
+    login_email: loginEmail,
+    payment_email: normalizeEmail(data.payment_email || loginEmail),
+    currency: String(data.currency || 'USD').toUpperCase(),
+    status: data.status || 'completed',
+    timestamp: data.timestamp || new Date(usedAt).toISOString(),
+    used_at: usedAt,
   };
 
   const inserted = await withRedis(async (redis) => {
@@ -1346,6 +1381,47 @@ export async function savePayment(
   };
 }
 
+export async function updatePaymentStatus(
+  rawOrderId: string,
+  patch: {
+    status: 'completed' | 'refunded' | 'chargeback';
+    refunded_at?: number;
+    refund_reason?: string;
+  }
+): Promise<UsedOrderRecord | null> {
+  const orderKey = normalizeOrderId(rawOrderId);
+  if (!orderKey) return null;
+
+  return withRedis(async (redis) => {
+    const existing = await getPayment(orderKey);
+    if (!existing) return null;
+    const updated: UsedOrderRecord = {
+      ...existing,
+      status: patch.status,
+      refunded_at: patch.refunded_at ?? (patch.status === 'completed' ? existing.refunded_at : Date.now()),
+      refund_reason: patch.refund_reason ?? existing.refund_reason,
+    };
+    const serialized = JSON.stringify(updated);
+    const tx = redis.multi();
+    tx.set(paymentKey(orderKey), serialized);
+    tx.set(legacyPaymentKey(orderKey), serialized);
+    tx.sadd(PAYMENTS_INDEX_KEY, orderKey);
+    await tx.exec();
+    return updated;
+  });
+}
+
+export async function getUserPaymentsFromDb(userIdOrEmail: string): Promise<UsedOrderRecord[]> {
+  const { email, userId } = await resolveEmailByUserId(userIdOrEmail);
+  const normEmail = normalizeEmail(email);
+  const all = await getAllPaymentsFromDb();
+  return all.filter(
+    (p) =>
+      (normEmail && normalizeEmail(p.login_email) === normEmail) ||
+      (userId && p.userId === userId)
+  );
+}
+
 export async function getUsedOrderFromDb(rawOrderId: string): Promise<UsedOrderRecord | null> {
   return getPayment(rawOrderId);
 }
@@ -1365,7 +1441,12 @@ export async function getAllPaymentsFromDb(): Promise<UsedOrderRecord[]> {
       for (const r of Array.isArray(raws) ? raws : []) {
         const parsed = safeParseJson<UsedOrderRecord>(r);
         if (parsed?.order_id) {
-          byId[normalizeOrderId(parsed.order_id)] = parsed;
+          byId[normalizeOrderId(parsed.order_id)] = {
+            ...parsed,
+            transactionId: parsed.transactionId || parsed.order_id,
+            status: parsed.status || 'completed',
+            timestamp: parsed.timestamp || (parsed.used_at ? new Date(parsed.used_at).toISOString() : undefined),
+          };
         }
       }
     }
@@ -1375,7 +1456,11 @@ export async function getAllPaymentsFromDb(): Promise<UsedOrderRecord[]> {
       for (const [k, rec] of Object.entries(map)) {
         const oid = normalizeOrderId(rec?.order_id || k);
         if (oid && !byId[oid]) {
-          byId[oid] = rec;
+          byId[oid] = {
+            ...rec,
+            transactionId: rec.transactionId || oid,
+            status: rec.status || 'completed',
+          };
         }
       }
     }
@@ -1468,6 +1553,7 @@ export async function updatePlan(params: {
       userId: uid,
       email: existing.email,
       plan: nextPlan,
+      expired_from_plan: params.patch?.expired_from_plan ?? null,
       license_start: params.licenseStart ?? now,
       license_end: params.licenseEnd ?? now + THIRTY_DAYS_MS,
       analyses_total: nextAnalysesTotal,

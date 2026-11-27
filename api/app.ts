@@ -19,11 +19,15 @@ import {
   getOrCreateUserInDb,
   getAllServerUsersFromDb,
   updateServerUserInDb,
+  updateUserPartial,
   decrementCredits,
   saveAnalysis,
   getPayment,
   savePayment,
+  updatePaymentStatus,
+  getUserPaymentsFromDb,
   getAllPaymentsFromDb,
+  findUsersByOrderId,
   getPricingConfigFromDb,
   saveApiKeyToDb as saveApiKeyStoreDb,
   deleteApiKeyFromDb as deleteApiKeyStoreDb,
@@ -52,6 +56,17 @@ import {
   deleteServerUserFromDb,
   logAdminAction,
 } from '../lib/serverStore';
+import {
+  getServerPrices,
+  resolvePaddleEnv,
+  parseAllowlistedCheckoutPlan,
+  parseAllowlistedCreditPack,
+  verifyPaddleWebhookSignature,
+  validatePaddleServerCredentials,
+  createPaddleServerTransaction,
+  parsePaddleAmountUSD as parsePaddleAmountUsdStrict,
+  resolveServerItemFromPriceId,
+} from '../lib/paddle';
 
 // =========================================================================
 // 1. INLINED PLANS & TIER MAPPING (Zero external ../lib imports)
@@ -182,11 +197,12 @@ interface PricingPublicPayload {
   updatedAt: number;
   plans: DynamicPlanPublic[] | Record<PlanKey, DynamicPlanPublic>;
   plansMap?: Record<PlanKey, DynamicPlanPublic>;
-  paddleCreditPriceIds?: {
-    pack_25?: string | null;
-    pack_100?: string | null;
-    pack_500?: string | null;
+  availableCreditPacks?: {
+    pack_25?: boolean;
+    pack_100?: boolean;
+    pack_500?: boolean;
   };
+  institutionalCheckoutAvailable?: boolean;
 }
 
 interface ComputedLicenseStatus {
@@ -1585,21 +1601,18 @@ function cleanPaddleApiKey(value?: string | null): string {
 function resolvePaddleEnvironment(): {
   configured: boolean;
   raw: string;
-  normalized: 'live' | null;
+  normalized: 'live' | 'sandbox' | null;
   baseUrl: string;
   isSandbox: boolean;
 } {
-  const raw = cleanEnvValue(getEnv('PADDLE_ENVIRONMENT')).trim().toLowerCase();
-  if (raw === 'live') {
-    return {
-      configured: true,
-      raw: 'live',
-      normalized: 'live',
-      baseUrl: 'https://api.paddle.com',
-      isSandbox: false,
-    };
-  }
-  return { configured: false, raw, normalized: null, baseUrl: '', isSandbox: false };
+  const info = resolvePaddleEnv();
+  return {
+    configured: info.invalidEnv ? false : info.configured,
+    raw: info.raw,
+    normalized: info.invalidEnv ? null : info.normalized,
+    baseUrl: info.invalidEnv ? '' : info.baseUrl,
+    isSandbox: info.isSandbox,
+  };
 }
 
 function getAdminEmail(): string {
@@ -1934,6 +1947,7 @@ interface ForensicPaymentEntry {
   amount: number;
   currency: string;
   test_mode: boolean;
+  status?: 'completed' | 'refunded' | 'chargeback';
   refund_policy_accepted_at?: string;
 }
 
@@ -2085,7 +2099,8 @@ interface ServerUserRecord {
   issue_resolved_at: number | null;
   issue_description: string;
   issue_status: 'none' | 'open' | 'resolved';
-  cancel_status: 'none' | 'refunded';
+  cancel_status: 'none' | 'refunded' | 'cancelled';
+  expired_from_plan?: PlanKey | null;
   last_order_id?: string | null;
   api_key_token?: string | null;
   api_key_last4?: string | null;
@@ -2138,6 +2153,8 @@ interface WebhookLogEntry {
 
 interface UsedOrderRecord {
   order_id: string;
+  transactionId?: string;
+  userId?: string;
   login_email: string;
   payment_email: string;
   plan: PlanKey;
@@ -2149,6 +2166,10 @@ interface UsedOrderRecord {
   switched_message?: string | null;
   analyses: number;
   amount: number;
+  status?: 'completed' | 'refunded' | 'chargeback';
+  refunded_at?: number;
+  refund_reason?: string;
+  timestamp?: string;
   test_mode: boolean;
   used_at: number;
 }
@@ -2281,18 +2302,20 @@ function normalizeIsoDateOrNull(val: any): string | null {
 
 function resolveEffectiveQuotas(user: Partial<ServerUserRecord> & { plan?: PlanKey | string }, now = Date.now()) {
   const planKey = normalizePlanKey(user?.plan);
+  const expiredFromRaw = user?.expired_from_plan ? normalizePlanKey(user.expired_from_plan) : null;
+  const expiredFromPlan = expiredFromRaw && expiredFromRaw !== 'free' && planKey === 'free' ? expiredFromRaw : null;
   const planCfg = PLAN_DEFINITIONS[planKey];
-  const isFree = planKey === 'free';
+  const isTrueFree = planKey === 'free' && !expiredFromPlan;
   const rawLicenseEnd = typeof user?.license_end === 'number' && Number.isFinite(user.license_end) ? user.license_end : null;
   const contractEndDate = normalizeIsoDateOrNull(user?.contract_end_date);
   const parsedEnd = contractEndDate ? Date.parse(contractEndDate) : NaN;
   const contractEndMs = Number.isFinite(parsedEnd) ? parsedEnd : null;
-  const effectiveEndMs = isFree
+  const effectiveEndMs = isTrueFree
     ? null
-    : planKey === 'institutional' && contractEndMs !== null
+    : (planKey === 'institutional' || expiredFromPlan === 'institutional') && contractEndMs !== null
     ? contractEndMs
     : rawLicenseEnd;
-  const packageExpired = Boolean(!isFree && effectiveEndMs !== null && now > effectiveEndMs);
+  const packageExpired = Boolean(!isTrueFree && effectiveEndMs !== null && now >= effectiveEndMs);
 
   if (planKey !== 'institutional') {
     const freeDef = PLAN_DEFINITIONS.free;
@@ -2410,14 +2433,18 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
       ? raw.license_end
       : licenseStartVal + THIRTY_DAYS_MS;
 
-  const contractEndParsed = contractEndDate ? Date.parse(contractEndDate) : NaN;
-  const effectiveEnd = isFreePlan
-    ? null
-    : plan === 'institutional' && Number.isFinite(contractEndParsed)
-    ? contractEndParsed
-    : licenseEndVal;
+  const expiredFromPlanRaw = raw?.expired_from_plan ? normalizePlanKey(raw.expired_from_plan) : null;
+  const expiredFromPlan = expiredFromPlanRaw && expiredFromPlanRaw !== 'free' && isFreePlan ? expiredFromPlanRaw : null;
 
-  const packageExpired = Boolean(!isFreePlan && effectiveEnd && now >= effectiveEnd);
+  const contractEndParsed = contractEndDate ? Date.parse(contractEndDate) : NaN;
+  const effectiveEnd =
+    isFreePlan && !expiredFromPlan
+      ? null
+      : (plan === 'institutional' || expiredFromPlan === 'institutional') && Number.isFinite(contractEndParsed)
+      ? contractEndParsed
+      : licenseEndVal;
+
+  const packageExpired = Boolean((!isFreePlan || Boolean(expiredFromPlan)) && effectiveEnd && now >= effectiveEnd);
   const hydratedStatus: 'active' | 'expired' | 'exhausted' = packageExpired
     ? 'expired'
     : analysesLeft + (extraCredits > analysesLeft ? 0 : 0) <= 0 && extraCredits <= 0
@@ -2433,6 +2460,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
     email,
     name: raw?.name || email.split('@')[0],
     plan,
+    expired_from_plan: expiredFromPlan,
     license_start: licenseStartVal,
     license_end: licenseEndVal,
     analyses_used: analysesUsed,
@@ -2476,7 +2504,7 @@ function hydrateUserRecord(raw: any, email: string): ServerUserRecord {
           ? 'resolved'
           : 'open'
         : 'none',
-    cancel_status: raw?.cancel_status === 'refunded' ? 'refunded' : 'none',
+    cancel_status: raw?.cancel_status === 'refunded' ? 'refunded' : raw?.cancel_status === 'cancelled' ? 'cancelled' : 'none',
     last_order_id:
       typeof raw?.last_order_id === 'string' && raw.last_order_id.trim()
         ? raw.last_order_id.trim()
@@ -2615,8 +2643,8 @@ async function getPricingPublicPayload(): Promise<PricingPublicPayload> {
     plansMap[k] = entry;
     plansList.push(entry);
   }
-  const paddleEnv = resolvePaddleEnvironment();
-  const creditPrices = resolvePaddleConfiguredPrices(paddleEnv.isSandbox);
+  const envInfo = resolvePaddleEnv();
+  const serverCatalog = getServerPrices(envInfo.isSandbox);
   return {
     success: true,
     schemaVersion: PRICING_SCHEMA_VERSION,
@@ -2627,11 +2655,12 @@ async function getPricingPublicPayload(): Promise<PricingPublicPayload> {
     updatedAt: cfg.updatedAt,
     plans: plansList,
     plansMap,
-    paddleCreditPriceIds: {
-      pack_25: creditPrices.credit25 || null,
-      pack_100: creditPrices.credit100 || null,
-      pack_500: creditPrices.credit500 || null,
+    availableCreditPacks: {
+      pack_25: Boolean(serverCatalog.packs.pack_25.priceId),
+      pack_100: Boolean(serverCatalog.packs.pack_100.priceId),
+      pack_500: Boolean(serverCatalog.packs.pack_500.priceId),
     },
+    institutionalCheckoutAvailable: Boolean(serverCatalog.plans.institutional.priceId),
   };
 }
 
@@ -2656,30 +2685,37 @@ function evaluateLockState(
 } {
   const quotas = resolveEffectiveQuotas(user, now);
   const planKey = quotas.planKey;
-  const isFreePlan = planKey === 'free';
-  const planDisplay = quotas.displayName;
+  const expiredFromPlan =
+    planKey === 'free' && user.expired_from_plan && user.expired_from_plan !== 'free'
+      ? normalizePlanKey(user.expired_from_plan)
+      : null;
+  const isTrueFreePlan = planKey === 'free' && !expiredFromPlan;
+  const planDisplay = expiredFromPlan
+    ? PLAN_DEFINITIONS[expiredFromPlan].displayName
+    : quotas.displayName;
   const creditsBalance = Math.max(0, Number(user.extra_credits || 0));
-  const rawBaseLimit = isFreePlan
-    ? PLAN_DEFINITIONS.free.analysesLimit
-    : quotas.isEnterprise
-    ? parseOptionalPositiveInt(user.custom_analyses_limit) ?? 0
-    : PLAN_DEFINITIONS[planKey].analysesLimit;
+  const rawBaseLimit =
+    planKey === 'free'
+      ? PLAN_DEFINITIONS.free.analysesLimit
+      : quotas.isEnterprise
+      ? parseOptionalPositiveInt(user.custom_analyses_limit) ?? 0
+      : PLAN_DEFINITIONS[planKey].analysesLimit;
   const totalFallback = Math.max(0, rawBaseLimit + creditsBalance);
   const rawLeft =
     typeof user.analyses_left === 'number' && Number.isFinite(user.analyses_left)
       ? Math.max(0, user.analyses_left)
       : Math.max(0, totalFallback - Math.max(0, Number(user.analyses_used || 0)));
 
-  const effectiveEnd = isFreePlan
+  const effectiveEnd = isTrueFreePlan
     ? null
     : quotas.isEnterprise && quotas.contractEndMs !== null
     ? quotas.contractEndMs
     : user.license_end;
-  const packageExpired = Boolean(!isFreePlan && effectiveEnd && now >= effectiveEnd);
-  const expiryDateFormatted = isFreePlan ? null : formatDateMMDDYYYY(effectiveEnd);
+  const packageExpired = Boolean(!isTrueFreePlan && effectiveEnd && now >= effectiveEnd);
+  const expiryDateFormatted = isTrueFreePlan ? null : formatDateMMDDYYYY(effectiveEnd);
   const msLeft = effectiveEnd && !packageExpired ? effectiveEnd - now : 0;
   const daysRemaining = effectiveEnd && !packageExpired ? Math.max(0, Math.ceil(msLeft / (24 * 60 * 60 * 1000))) : 0;
-  const day29Reminder = Boolean(!isFreePlan && !packageExpired && effectiveEnd && daysRemaining === 1);
+  const day29Reminder = Boolean(!isTrueFreePlan && !packageExpired && effectiveEnd && daysRemaining === 1);
 
   if (user.admin_locked) {
     return {
@@ -2760,7 +2796,7 @@ function evaluateLockState(
       locked: true,
       reason: 'exhausted',
       status: 'exhausted',
-      error: isFreePlan
+      error: isTrueFreePlan
         ? 'You used your 3 free analyses. Buy a plan or credits to continue.'
         : `0 credits left for ${planDisplay}. Buy Extra Credits or a 30-day plan to continue.`,
       analysesLeft: 0,
@@ -2954,11 +2990,26 @@ async function enforceServerUserExpiry(
   }
 
   const lock = evaluateLockState(user);
+  const prevPlan = normalizePlanKey(user.plan);
+  const shouldDowngradeExpiredPlan = Boolean(prevPlan !== 'free' && lock.packageExpired);
+  const targetPlan: PlanKey = shouldDowngradeExpiredPlan ? 'free' : prevPlan;
+  const targetExpiredFrom = shouldDowngradeExpiredPlan
+    ? prevPlan
+    : user.expired_from_plan ?? null;
   const targetLeft = lock.locked ? 0 : lock.analysesLeft;
-  if (user.status !== lock.status || user.analyses_left !== targetLeft) {
+  const targetTotal = shouldDowngradeExpiredPlan ? lock.creditsBalance : user.analyses_total;
+
+  if (
+    shouldDowngradeExpiredPlan ||
+    user.status !== lock.status ||
+    user.analyses_left !== targetLeft
+  ) {
     const nextUser: ServerUserRecord = {
       ...user,
+      plan: targetPlan,
+      expired_from_plan: targetExpiredFrom,
       status: lock.status,
+      analyses_total: targetTotal,
       analyses_left: targetLeft,
       updated_at: Date.now(),
     };
@@ -3193,6 +3244,7 @@ async function activatePaidPlanOnServer(params: {
     {
       name: params.name || existing.name,
       plan: params.plan,
+      expired_from_plan: null,
       status: 'active',
       license_start: licenseStart,
       license_end: licenseEnd,
@@ -5103,83 +5155,15 @@ function pickPaddlePriceFromEnv(keys: string[], liveDefault = ''): string {
 }
 
 function resolvePaddleConfiguredPrices(isSandbox: boolean) {
+  const catalog = getServerPrices(isSandbox);
   return {
-    starter: pickPaddlePriceFromEnv(
-      [
-        'PADDLE_STARTER_PRICE',
-        'PADDLE_STARTER_PRICE_ID',
-        'VITE_PADDLE_STARTER_PRICE',
-        'VITE_PADDLE_STARTER_PRICE_ID',
-        'NEXT_PUBLIC_PADDLE_STARTER_PRICE',
-        'NEXT_PUBLIC_PADDLE_STARTER_PRICE_ID',
-      ],
-      !isSandbox ? 'pri_01m7tgfvteegdih2mx4hgyz1c' : ''
-    ),
-    pro: pickPaddlePriceFromEnv(
-      [
-        'PADDLE_PRO_PRICE',
-        'PADDLE_PRO_PRICE_ID',
-        'VITE_PADDLE_PRICE_ID',
-        'VITE_PADDLE_PRO_PRICE',
-        'VITE_PADDLE_PRO_PRICE_ID',
-        'NEXT_PUBLIC_PADDLE_PRICE_ID',
-        'NEXT_PUBLIC_PADDLE_PRO_PRICE',
-        'NEXT_PUBLIC_PADDLE_PRO_PRICE_ID',
-      ],
-      !isSandbox ? 'pri_01m7tggqhjtgk9fxmmg6mbp5wy' : ''
-    ),
-    sovereign: pickPaddlePriceFromEnv(
-      [
-        'PADDLE_SOVEREIGN_PRICE',
-        'PADDLE_SOVEREIGN_PRICE_ID',
-        'VITE_PADDLE_SOVEREIGN_PRICE',
-        'VITE_PADDLE_SOVEREIGN_PRICE_ID',
-        'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE',
-        'NEXT_PUBLIC_PADDLE_SOVEREIGN_PRICE_ID',
-      ],
-      !isSandbox ? 'pri_01m7tgj4pp767gacchp49k2qev' : ''
-    ),
-    enterprise: pickPaddlePriceFromEnv([
-      'PADDLE_ENTERPRISE_PRICE',
-      'PADDLE_ENTERPRISE_PRICE_ID',
-      'VITE_PADDLE_ENTERPRISE_PRICE',
-      'VITE_PADDLE_ENTERPRISE_PRICE_ID',
-      'NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE',
-      'NEXT_PUBLIC_PADDLE_ENTERPRISE_PRICE_ID',
-    ]),
-    credit25: pickPaddlePriceFromEnv([
-      'PADDLE_CREDIT_25_PRICE',
-      'PADDLE_CREDIT_25_PRICE_ID',
-      'PADDLE_CREDIT_25',
-      'VITE_PADDLE_CREDIT_25_PRICE',
-      'VITE_PADDLE_CREDIT_25_PRICE_ID',
-      'VITE_PADDLE_CREDIT_25',
-      'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE',
-      'NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE_ID',
-      'NEXT_PUBLIC_PADDLE_CREDIT_25',
-    ]),
-    credit100: pickPaddlePriceFromEnv([
-      'PADDLE_CREDIT_100_PRICE',
-      'PADDLE_CREDIT_100_PRICE_ID',
-      'PADDLE_CREDIT_100',
-      'VITE_PADDLE_CREDIT_100_PRICE',
-      'VITE_PADDLE_CREDIT_100_PRICE_ID',
-      'VITE_PADDLE_CREDIT_100',
-      'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE',
-      'NEXT_PUBLIC_PADDLE_CREDIT_100_PRICE_ID',
-      'NEXT_PUBLIC_PADDLE_CREDIT_100',
-    ]),
-    credit500: pickPaddlePriceFromEnv([
-      'PADDLE_CREDIT_500_PRICE',
-      'PADDLE_CREDIT_500_PRICE_ID',
-      'PADDLE_CREDIT_500',
-      'VITE_PADDLE_CREDIT_500_PRICE',
-      'VITE_PADDLE_CREDIT_500_PRICE_ID',
-      'VITE_PADDLE_CREDIT_500',
-      'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE',
-      'NEXT_PUBLIC_PADDLE_CREDIT_500_PRICE_ID',
-      'NEXT_PUBLIC_PADDLE_CREDIT_500',
-    ]),
+    starter: catalog.plans.starter.priceId,
+    pro: catalog.plans.pro.priceId,
+    sovereign: catalog.plans.enterprise.priceId,
+    enterprise: catalog.plans.institutional.priceId,
+    credit25: catalog.packs.pack_25.priceId,
+    credit100: catalog.packs.pack_100.priceId,
+    credit500: catalog.packs.pack_500.priceId,
   };
 }
 
@@ -5793,6 +5777,12 @@ export default async function handler(req: any, res: any) {
 
     switch (action) {
       case '': {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          return res.status(400).json({
+            success: false,
+            error: 'Action parameter is required.',
+          });
+        }
         return res.status(200).json({
           success: true,
           status: 'ok',
@@ -5801,6 +5791,8 @@ export default async function handler(req: any, res: any) {
             'health',
             'me',
             'pricing',
+            'createCheckout',
+            'checkPaymentStatus',
             'verify-checkout',
             'verify-payment',
             'buy-credits',
@@ -6194,16 +6186,6 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          const requestedPlanRaw = String(src?.plan || '').trim().toLowerCase();
-          const requestedPlan: PlanKey | undefined =
-            requestedPlanRaw === 'starter' ||
-            requestedPlanRaw === 'pro' ||
-            requestedPlanRaw === 'professional' ||
-            requestedPlanRaw === 'enterprise' ||
-            requestedPlanRaw === 'sovereign'
-              ? normalizePlanKey(requestedPlanRaw)
-              : undefined;
-
           const cleanPlaceholderOrderId = (raw: any): string => {
             const cleaned = normalizeOrderId(String(raw || ''));
             const lower = cleaned.toLowerCase();
@@ -6227,18 +6209,16 @@ export default async function handler(req: any, res: any) {
           const rawOrderParam = String(
             src?.transaction_id || src?.transactionId || src?._ptxn || src?.order_id || src?.order || ''
           ).trim();
-          const lowerOrderParam = rawOrderParam.toLowerCase();
-          const isFallbackMode =
-            !rawOrderParam ||
-            lowerOrderParam === 'last' ||
-            lowerOrderParam === 'not found' ||
-            !cleanPlaceholderOrderId(rawOrderParam);
-          orderId = isFallbackMode ? '' : cleanPlaceholderOrderId(rawOrderParam);
-          if (orderId) {
-            const oidCheck = validateSafeId(orderId, 'transaction_id');
-            if (!oidCheck.ok) {
-              return res.status(400).json({ success: false, error: oidCheck.error });
-            }
+          orderId = cleanPlaceholderOrderId(rawOrderParam);
+          if (!orderId) {
+            return res.status(400).json({
+              success: false,
+              error: 'Valid Paddle transaction_id (txn_...) is required for payment verification.',
+            });
+          }
+          const oidCheck = validateSafeId(orderId, 'transaction_id');
+          if (!oidCheck.ok) {
+            return res.status(400).json({ success: false, error: oidCheck.error });
           }
 
           const pricing = await getPricingPublicPayload();
@@ -6505,107 +6485,6 @@ export default async function handler(req: any, res: any) {
             });
           };
 
-          if (isFallbackMode) {
-            const isValidWebhookOrderEntry = (entry: any, allowVerifyEvent = false): string => {
-              if (!entry || typeof entry !== 'object') return '';
-              const entryEmail = normalizeEmail(entry?.email || '');
-              const entryPayEmail = normalizeEmail(entry?.payment_email || '');
-              if (entryEmail !== loginEmail && entryPayEmail !== loginEmail) {
-                return '';
-              }
-              const ev = String(entry?.event || entry?.event_name || '').trim().toLowerCase();
-              const allowedEvents = allowVerifyEvent
-                ? ['order_created', 'payment_intent.succeeded', 'checkout.session.completed', 'checkout_verify_api']
-                : ['order_created', 'payment_intent.succeeded', 'checkout.session.completed'];
-              if (ev && !allowedEvents.includes(ev)) {
-                return '';
-              }
-              const oid = cleanPlaceholderOrderId(entry?.order_id);
-              if (!oid || oid === 'key_missing' || oid === 'not_found' || oid.startsWith('ord_')) {
-                return '';
-              }
-              return oid;
-            };
-
-            const recentLogs = await getWebhookLogsFromDb(100);
-            const logsArr = Array.isArray(recentLogs) ? recentLogs : [];
-
-            let unusedWebhookLog: any = null;
-            let latestUsedSameEmail: UsedOrderRecord | null = null;
-            let latestClaimedByOther: UsedOrderRecord | null = null;
-
-            for (const entry of logsArr) {
-              const oid = isValidWebhookOrderEntry(entry, false);
-              if (!oid) continue;
-              const usedCheck = await getUsedOrderFromDb(oid);
-              if (!usedCheck) {
-                unusedWebhookLog = entry;
-                break;
-              }
-              if (usedCheck.login_email === loginEmail && !latestUsedSameEmail) {
-                latestUsedSameEmail = usedCheck;
-              } else if (usedCheck.login_email !== loginEmail && !latestClaimedByOther) {
-                latestClaimedByOther = usedCheck;
-              }
-            }
-
-            if (unusedWebhookLog) {
-              orderId = cleanPlaceholderOrderId(unusedWebhookLog.order_id);
-              const logAmount = Number(unusedWebhookLog?.amount ?? 0);
-              const logPlan = normalizePlanKey(unusedWebhookLog?.plan);
-              const fallbackAmount =
-                Number.isFinite(logAmount) && logAmount > 0
-                  ? logAmount
-                  : logPlan === 'enterprise'
-                  ? PLANS.SOVEREIGN.price
-                  : logPlan === 'starter'
-                  ? PLANS.STARTER.price
-                  : PLANS.PROFESSIONAL.price;
-              const logPaymentEmail = String(
-                unusedWebhookLog?.payment_email || unusedWebhookLog?.email || ''
-              )
-                .trim()
-                .toLowerCase();
-
-              return await completeActivation({
-                resolvedOrderId: orderId,
-                amountUSD: fallbackAmount,
-                fallbackPlan: logPlan !== 'free' ? logPlan : 'pro',
-                paymentEmail: logPaymentEmail,
-                testMode: Boolean(unusedWebhookLog?.test_mode),
-                createdAtIso: unusedWebhookLog?.created_at || unusedWebhookLog?.timestamp,
-                skipWebhookLogAppend: true,
-              });
-            }
-
-            if (latestUsedSameEmail) {
-              return await returnExistingUsedOrder(latestUsedSameEmail);
-            }
-            for (const entry of logsArr) {
-              const oid = isValidWebhookOrderEntry(entry, true);
-              if (!oid) continue;
-              const usedCheck = await getUsedOrderFromDb(oid);
-              if (usedCheck && usedCheck.login_email === loginEmail) {
-                return await returnExistingUsedOrder(usedCheck);
-              }
-              if (usedCheck && usedCheck.login_email !== loginEmail && !latestClaimedByOther) {
-                latestClaimedByOther = usedCheck;
-              }
-            }
-
-            if (latestClaimedByOther) {
-              return res.status(403).json({
-                success: false,
-                error: 'This order was already used by another account.',
-              });
-            }
-
-            return res.status(200).json({
-              success: false,
-              error: 'No completed payment found yet. Complete Paddle checkout or enter Transaction ID below.',
-            });
-          }
-
           const existingUsedOrder = await getUsedOrderFromDb(orderId);
           if (existingUsedOrder) {
             return await returnExistingUsedOrder(existingUsedOrder);
@@ -6693,10 +6572,7 @@ export default async function handler(req: any, res: any) {
             txnData?.details?.totals?.subtotal ??
             0;
           const rawGrandTotal = Number(rawTotalField);
-          const amountUSD = parsePaddleAmountUSD(
-            rawTotalField,
-            PLAN_DEFINITIONS[requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro'].launchPrice
-          );
+          const amountUSD = parsePaddleAmountUSD(rawTotalField, 0);
 
           const prices = resolvePaddleConfiguredPrices(paddleEnv.isSandbox);
           const firstItem = Array.isArray(txnData?.items) ? txnData.items[0] : null;
@@ -6705,14 +6581,18 @@ export default async function handler(req: any, res: any) {
             firstItem?.price?.name || firstItem?.product?.name || firstItem?.price?.description || ''
           ).trim();
 
-          const matchedCreditPack = resolveCreditPackMatch({
-            itemPriceId,
-            customPackId: String(txnData?.custom_data?.packId || txnData?.custom_data?.pack_id || '').trim(),
-            purchaseType: String(txnData?.custom_data?.purchase_type || '').trim(),
-            productName: itemProductName,
-            amountUSD,
-            prices,
-          });
+          const serverItemMatch = resolveServerItemFromPriceId(itemPriceId, paddleEnv.isSandbox);
+          const matchedCreditPack =
+            serverItemMatch?.type === 'credit_pack'
+              ? EXTRA_CREDIT_PACKS.find((p) => p.id === serverItemMatch.pack.id)
+              : resolveCreditPackMatch({
+                  itemPriceId,
+                  customPackId: String(txnData?.custom_data?.packId || txnData?.custom_data?.pack_id || '').trim(),
+                  purchaseType: String(txnData?.custom_data?.purchase_type || '').trim(),
+                  productName: itemProductName,
+                  amountUSD,
+                  prices,
+                });
 
           if (matchedCreditPack) {
             const targetCreditEmail = loginEmail;
@@ -6789,32 +6669,40 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          let resolvedFallbackPlan: PlanKey = requestedPlan && requestedPlan !== 'free' ? requestedPlan : 'pro';
-          if (prices.pro && itemPriceId === prices.pro) {
-            resolvedFallbackPlan = 'pro';
-          } else if (prices.starter && itemPriceId === prices.starter) {
-            resolvedFallbackPlan = 'starter';
-          } else if (prices.sovereign && itemPriceId === prices.sovereign) {
-            resolvedFallbackPlan = 'enterprise';
-          } else if (prices.enterprise && itemPriceId === prices.enterprise) {
-            resolvedFallbackPlan = 'institutional';
-          } else if (txnData?.custom_data?.plan) {
-            const cdPlan = normalizePlanKey(String(txnData.custom_data.plan));
-            if (cdPlan !== 'free') resolvedFallbackPlan = cdPlan;
-          } else if (itemProductName) {
-            resolvedFallbackPlan = resolvePlanFromOrderAttributes(
-              { product_name: itemProductName, amount: rawGrandTotal },
-              resolvedFallbackPlan
-            );
+          let resolvedServerPlan: PlanKey | null =
+            serverItemMatch?.type === 'plan'
+              ? serverItemMatch.plan
+              : prices.pro && itemPriceId === prices.pro
+              ? 'pro'
+              : prices.starter && itemPriceId === prices.starter
+              ? 'starter'
+              : prices.sovereign && itemPriceId === prices.sovereign
+              ? 'enterprise'
+              : prices.enterprise && itemPriceId === prices.enterprise
+              ? 'institutional'
+              : txnData?.custom_data?.plan
+              ? parseAllowlistedCheckoutPlan(String(txnData.custom_data.plan))
+              : itemProductName
+              ? resolvePlanFromOrderAttributes(
+                  { product_name: itemProductName, amount: rawGrandTotal },
+                  'pro'
+                )
+              : null;
+
+          if (!resolvedServerPlan || resolvedServerPlan === 'free') {
+            return res.status(400).json({
+              success: false,
+              error: 'Transaction does not match any valid paid plan or credit pack.',
+            });
           }
 
           return await completeActivation({
             resolvedOrderId: String(txnData.id),
-            amountUSD,
+            amountUSD: amountUSD > 0 ? amountUSD : PLAN_DEFINITIONS[resolvedServerPlan].launchPrice,
             rawAmountCents: Number.isFinite(rawGrandTotal) ? rawGrandTotal : undefined,
             productName: itemProductName || undefined,
             variantId: itemPriceId || undefined,
-            fallbackPlan: resolvedFallbackPlan,
+            fallbackPlan: resolvedServerPlan,
             paymentEmail: paymentEmail || loginEmail,
             paymentProvider: 'paddle',
             testMode: verifiedBaseUrl.includes('sandbox'),
@@ -9629,11 +9517,13 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'createcheckout':
+      case 'create-checkout':
       case 'checkout': {
         try {
           const startTime = Date.now();
           if (req.method !== 'POST') {
-            return res.status(405).json({ error: 'Method not allowed' });
+            return res.status(405).json({ success: false, error: 'Method not allowed' });
           }
 
           const body = parsedBody || {};
@@ -9651,147 +9541,25 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          const isRecordOnly = String(body.mode || '').trim().toLowerCase() === 'record';
-
-          if (isRecordOnly) {
-            const rawPlan = body.plan !== undefined && body.plan !== null ? String(body.plan).trim() : '';
-            const rawPackId =
-              body.packId !== undefined && body.packId !== null
-                ? String(body.packId).trim()
-                : body.pack_id !== undefined && body.pack_id !== null
-                ? String(body.pack_id).trim()
-                : '';
-            const requestedPriceId =
-              body.priceId !== undefined && body.priceId !== null
-                ? String(body.priceId).trim()
-                : body.price_id !== undefined && body.price_id !== null
-                ? String(body.price_id).trim()
-                : '';
-            const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
-            const pricing = await getPricingPublicPayload();
-            const isLaunchPrice = Boolean(pricing.launchDiscountActive);
-            const validPlan: 'starter' | 'pro' | 'enterprise' | 'institutional' =
-              rawPlan === 'starter' ||
-              rawPlan === 'pro' ||
-              rawPlan === 'enterprise' ||
-              rawPlan === 'institutional'
-                ? rawPlan
-                : 'pro';
-            const resolvedPack = rawPackId
-              ? EXTRA_CREDIT_PACKS.find((p) => p.id === rawPackId)
-              : undefined;
-
-            if (!resolvedPack && email) {
-              const { user: hydratedDb } = await readUserFromDbStatus(email);
-              const existingUser = hydratedDb || (await getServerUserByEmail(email));
-              const ruleCheck = evaluatePlanPurchaseRule(existingUser, validPlan);
-              if (!ruleCheck.allowed) {
-                return res.status(409).json({
-                  success: false,
-                  blocked: true,
-                  code: ruleCheck.code,
-                  currentPlan: ruleCheck.previousPlan,
-                  expiryDateFormatted: ruleCheck.untilDate || null,
-                  error: ruleCheck.error,
-                });
-              }
-            }
-
-            const planPricing = findPlanPricing(pricing, validPlan);
-            const activePriceUSD = resolvedPack
-              ? resolvedPack.priceUSD
-              : planPricing
-              ? isLaunchPrice
-                ? planPricing.launchPrice
-                : planPricing.originalPrice
-              : 0;
-
-            if (email && !resolvedPack) {
-              await recordPendingCheckout({
-                email,
-                plan: validPlan,
-                amountUSD: activePriceUSD,
-                isLaunchPrice,
-                testMode: false,
-                createdAt: Date.now(),
-              });
-            }
-
-            return res.status(200).json({
-              success: true,
-              mode: 'paddlejs_overlay',
-              provider: 'paddle',
-              environment: 'production',
-              purchaseType: resolvedPack ? 'credit_pack' : 'plan',
-              priceId: requestedPriceId || null,
-              ...(resolvedPack
-                ? { packId: resolvedPack.id, credits: resolvedPack.credits }
-                : { plan: validPlan }),
-              activePriceUSD,
-              refundAcceptedAt,
-              durationMs: Date.now() - startTime,
-            });
-          }
-
-          const rawEnv = cleanEnvValue(getEnv('PADDLE_ENVIRONMENT')).trim().toLowerCase();
-          if (!rawEnv) {
-            console.warn('Missing PADDLE_ENVIRONMENT, set it to live in Vercel');
-          } else if (rawEnv !== 'live') {
-            console.error('CHECKOUT_ERROR', { reason: 'Invalid PADDLE_ENVIRONMENT', rawEnv });
+          // Reject insecure client-side record bypasses (all checkouts must create a server Paddle transaction)
+          if (String(body.mode || '').trim().toLowerCase() === 'record') {
             return res.status(400).json({
               success: false,
-              error: publicError('Payment configuration error', 'Missing Paddle config: PADDLE_ENVIRONMENT (must be "live")'),
+              error: 'Direct record mode is disabled. Checkout must be created on server.',
             });
           }
 
-          const isTestMode = false;
-          const paddleBaseUrl = 'https://api.paddle.com';
-
-          const paddleApiKey = cleanPaddleApiKey(getEnv('PADDLE_API_KEY'));
-          if (!paddleApiKey) {
-            console.error('CHECKOUT_ERROR', 'Missing Paddle config: PADDLE_API_KEY');
-            return res.status(400).json({
+          const creds = validatePaddleServerCredentials();
+          if (!creds.ok) {
+            console.error('CHECKOUT_ERROR', creds.error);
+            return res.status(creds.status).json({
               success: false,
-              error: publicError('Payment configuration error', 'Missing Paddle config: PADDLE_API_KEY'),
-            });
-          }
-          if (
-            !isTestMode &&
-            (paddleApiKey.startsWith('pdl_sdbx') || paddleApiKey.toLowerCase().includes('sandbox'))
-          ) {
-            console.error('CHECKOUT_ERROR', 'Sandbox PADDLE_API_KEY blocked in live mode');
-            return res.status(400).json({
-              success: false,
-              error: publicError('Payment configuration error', 'Missing Paddle config: PADDLE_API_KEY (sandbox key not allowed in live mode)'),
+              error: publicError('Payment configuration error', creds.error),
             });
           }
 
-          const paddleClientToken = cleanEnvValue(
-            getEnv('PADDLE_CLIENT_SIDE_TOKEN') ||
-              getEnv('VITE_PADDLE_CLIENT_TOKEN') ||
-              getEnv('NEXT_PUBLIC_PADDLE_CLIENT_TOKEN') ||
-              getEnv('PADDLE_CLIENT_TOKEN')
-          );
-          if (!paddleClientToken) {
-            console.error('CHECKOUT_ERROR', 'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN');
-            return res.status(400).json({
-              success: false,
-              error: publicError('Payment configuration error', 'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN'),
-            });
-          }
-          if (!isTestMode && paddleClientToken.startsWith('test_')) {
-            console.error('CHECKOUT_ERROR', 'Sandbox client token blocked in live mode');
-            return res.status(400).json({
-              success: false,
-              error: publicError(
-                'Payment configuration error',
-                'Missing Paddle config: PADDLE_CLIENT_SIDE_TOKEN (sandbox token not allowed in live mode)'
-              ),
-            });
-          }
-
-          const rawPlan = body.plan !== undefined && body.plan !== null ? String(body.plan).trim() : '';
-          const rawPackId =
+          const rawPlanInput = body.plan !== undefined && body.plan !== null ? String(body.plan).trim() : '';
+          const rawPackInput =
             body.packId !== undefined && body.packId !== null
               ? String(body.packId).trim()
               : body.pack_id !== undefined && body.pack_id !== null
@@ -9803,49 +9571,19 @@ export default async function handler(req: any, res: any) {
               : body.price_id !== undefined && body.price_id !== null
               ? String(body.price_id).trim()
               : '';
-          const userId = getUserIdForEmail(email);
-          const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
 
-          const prices = resolvePaddleConfiguredPrices(isTestMode);
-          const pricing = await getPricingPublicPayload();
-          const isLaunchPrice = Boolean(pricing.launchDiscountActive);
-
-          const allowedPlanPrices: Record<
-            'starter' | 'pro' | 'enterprise' | 'institutional',
-            string
-          > = {
-            starter: prices.starter,
-            pro: prices.pro,
-            enterprise: prices.sovereign,
-            institutional: prices.enterprise,
-          };
-
-          const allowedPackPrices: Record<'pack_25' | 'pack_100' | 'pack_500', string> = {
-            pack_25: prices.credit25,
-            pack_100: prices.credit100,
-            pack_500: prices.credit500,
-          };
-
-          const allAllowedPriceIds = new Set(
-            [
-              ...Object.values(allowedPlanPrices),
-              ...Object.values(allowedPackPrices),
-            ].filter((id) => Boolean(id && id.startsWith('pri_')))
-          );
-
-          if (
-            requestedPriceId &&
-            !isTestMode &&
-            requestedPriceId === LEGACY_SANDBOX_PRICE_ID_SERVER
-          ) {
-            console.error('CHECKOUT_ERROR', 'Sandbox Price ID rejected in live mode', {
-              requestedPriceId,
-            });
+          if (!rawPlanInput && !rawPackInput) {
             return res.status(400).json({
               success: false,
-              error: 'Missing Paddle config: Price ID (sandbox price not allowed in live mode)',
+              error: 'Missing required plan or packId.',
             });
           }
+
+          const userId = getUserIdForEmail(email);
+          const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
+          const serverCatalog = getServerPrices(creds.isSandbox);
+          const pricing = await getPricingPublicPayload();
+          const isLaunchPrice = Boolean(pricing.launchDiscountActive);
 
           let isCreditPack = false;
           let resolvedPack: (typeof EXTRA_CREDIT_PACKS)[number] | undefined;
@@ -9855,32 +9593,24 @@ export default async function handler(req: any, res: any) {
           let originalPrice = 0;
           let launchPrice = 0;
 
-          if (rawPackId) {
-            if (
-              rawPackId !== 'pack_25' &&
-              rawPackId !== 'pack_100' &&
-              rawPackId !== 'pack_500'
-            ) {
+          if (rawPackInput) {
+            const allowlistedPack = parseAllowlistedCreditPack(rawPackInput);
+            if (!allowlistedPack) {
               return res.status(400).json({
                 success: false,
                 error: 'Invalid Paddle config: Price ID (unknown credit pack)',
               });
             }
             isCreditPack = true;
-            resolvedPack = EXTRA_CREDIT_PACKS.find((p) => p.id === rawPackId)!;
-            resolvedPriceId = allowedPackPrices[rawPackId];
+            resolvedPack = EXTRA_CREDIT_PACKS.find((p) => p.id === allowlistedPack)!;
+            resolvedPriceId = serverCatalog.packs[allowlistedPack].priceId;
             if (!resolvedPriceId || !resolvedPriceId.startsWith('pri_')) {
-              console.error('CHECKOUT_ERROR', `Missing Paddle config: Price ID (${rawPackId})`);
               return res.status(400).json({
                 success: false,
-                error: publicError('Payment configuration error', `Missing Paddle config: Price ID (${rawPackId})`),
+                error: publicError('Payment configuration error', `Missing Paddle config: Price ID (${allowlistedPack})`),
               });
             }
             if (requestedPriceId && requestedPriceId !== resolvedPriceId) {
-              console.error('CHECKOUT_ERROR', 'Price ID mismatch for credit pack', {
-                rawPackId,
-                requestedPriceId,
-              });
               return res.status(400).json({
                 success: false,
                 error: 'Invalid Paddle config: Price ID not in allowed list',
@@ -9890,97 +9620,39 @@ export default async function handler(req: any, res: any) {
             originalPrice = resolvedPack.priceUSD;
             launchPrice = resolvedPack.priceUSD;
           } else {
-            if (rawPlan) {
-              if (
-                rawPlan !== 'starter' &&
-                rawPlan !== 'pro' &&
-                rawPlan !== 'enterprise' &&
-                rawPlan !== 'institutional'
-              ) {
-                return res.status(400).json({
-                  success: false,
-                  error: 'Invalid Paddle config: Price ID (unknown plan)',
-                });
-              }
-              validPlan = rawPlan;
-            } else if (requestedPriceId) {
-              if (!allAllowedPriceIds.has(requestedPriceId)) {
-                console.error('CHECKOUT_ERROR', 'Requested Price ID not in allowed list', {
-                  requestedPriceId,
-                });
-                return res.status(400).json({
-                  success: false,
-                  error: 'Invalid Paddle config: Price ID not in allowed list',
-                });
-              }
-              const matchedPackKey = (
-                Object.keys(allowedPackPrices) as Array<'pack_25' | 'pack_100' | 'pack_500'>
-              ).find((k) => allowedPackPrices[k] === requestedPriceId);
-              if (matchedPackKey) {
-                isCreditPack = true;
-                resolvedPack = EXTRA_CREDIT_PACKS.find((p) => p.id === matchedPackKey)!;
-                resolvedPriceId = requestedPriceId;
-                activePriceUSD = resolvedPack.priceUSD;
-                originalPrice = resolvedPack.priceUSD;
-                launchPrice = resolvedPack.priceUSD;
-              } else {
-                const matchedPlanKey = (
-                  Object.keys(allowedPlanPrices) as Array<
-                    'starter' | 'pro' | 'enterprise' | 'institutional'
-                  >
-                ).find((k) => allowedPlanPrices[k] === requestedPriceId);
-                if (!matchedPlanKey) {
-                  return res.status(400).json({
-                    success: false,
-                    error: 'Invalid Paddle config: Price ID not in allowed list',
-                  });
-                }
-                validPlan = matchedPlanKey;
-              }
+            const allowlistedPlan = parseAllowlistedCheckoutPlan(rawPlanInput);
+            if (!allowlistedPlan) {
+              return res.status(400).json({
+                success: false,
+                error: `Invalid plan '${rawPlanInput}'. Allowed checkout plans: starter, pro, sovereign, enterprise.`,
+              });
             }
-
-            if (!isCreditPack) {
-              resolvedPriceId = allowedPlanPrices[validPlan];
-              if (!resolvedPriceId || !resolvedPriceId.startsWith('pri_')) {
-                console.error('CHECKOUT_ERROR', `Missing Paddle config: Price ID (${validPlan})`);
-                return res.status(400).json({
-                  success: false,
-                  error: publicError('Payment configuration error', `Missing Paddle config: Price ID (${validPlan})`),
-                });
-              }
-              if (requestedPriceId && requestedPriceId !== resolvedPriceId) {
-                console.error('CHECKOUT_ERROR', 'Price ID mismatch for plan', {
-                  validPlan,
-                  requestedPriceId,
-                });
-                return res.status(400).json({
-                  success: false,
-                  error: 'Invalid Paddle config: Price ID not in allowed list',
-                });
-              }
-              const planPricing = findPlanPricing(pricing, validPlan)!;
-              originalPrice = planPricing.originalPrice;
-              launchPrice = planPricing.launchPrice;
-              activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
+            validPlan = allowlistedPlan;
+            resolvedPriceId = serverCatalog.plans[validPlan].priceId;
+            if (!resolvedPriceId || !resolvedPriceId.startsWith('pri_')) {
+              return res.status(400).json({
+                success: false,
+                error: publicError('Payment configuration error', `Missing Paddle config: Price ID (${validPlan})`),
+              });
             }
+            if (requestedPriceId && requestedPriceId !== resolvedPriceId) {
+              return res.status(400).json({
+                success: false,
+                error: 'Invalid Paddle config: Price ID not in allowed list',
+              });
+            }
+            const planPricing = findPlanPricing(pricing, validPlan)!;
+            originalPrice = planPricing.originalPrice;
+            launchPrice = planPricing.launchPrice;
+            activePriceUSD = isLaunchPrice ? planPricing.launchPrice : planPricing.originalPrice;
           }
 
-          if (!allAllowedPriceIds.has(resolvedPriceId)) {
-            console.error('CHECKOUT_ERROR', 'Resolved Price ID not in allowed list', {
-              resolvedPriceId,
-            });
-            return res.status(400).json({
-              success: false,
-              error: 'Invalid Paddle config: Price ID not in allowed list',
-            });
-          }
-
-          if (!isCreditPack && email) {
+          if (!isCreditPack) {
             const { user: hydratedDb } = await readUserFromDbStatus(email);
             const existingUser = hydratedDb || (await getServerUserByEmail(email));
             const ruleCheck = evaluatePlanPurchaseRule(existingUser, validPlan);
             if (!ruleCheck.allowed) {
-              return res.status(409).json({
+              return res.status(400).json({
                 success: false,
                 blocked: true,
                 code: ruleCheck.code,
@@ -9989,129 +9661,85 @@ export default async function handler(req: any, res: any) {
                 error: ruleCheck.error,
               });
             }
-          }
-
-          if (email && !isCreditPack) {
             await recordPendingCheckout({
               email,
               plan: validPlan,
               amountUSD: activePriceUSD,
               isLaunchPrice,
-              testMode: isTestMode,
+              testMode: creds.isSandbox,
               createdAt: Date.now(),
             });
           }
 
+          // Server-bound custom data & quantity=1 (client price/amount/quantity strictly ignored)
           const customData: Record<string, any> = isCreditPack
             ? {
                 purchase_type: 'credit_pack',
                 packId: resolvedPack!.id,
                 credits: resolvedPack!.credits,
-                email,
-                login_email: email,
-                userId,
               }
             : {
                 purchase_type: 'plan',
                 plan: validPlan,
-                email,
-                login_email: email,
-                userId,
               };
 
-          const paddleTxnRes = await fetch(`${paddleBaseUrl}/transactions`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${paddleApiKey}`,
-              'Content-Type': 'application/json',
-              Accept: 'application/json',
-            },
-            body: JSON.stringify({
-              items: [{ price_id: resolvedPriceId, quantity: 1 }],
-              custom_data: customData,
-            }),
+          const txnRes = await createPaddleServerTransaction({
+            priceId: resolvedPriceId,
+            email,
+            userId,
+            customData,
+            baseUrl: creds.baseUrl,
+            apiKey: creds.apiKey,
+            isSandbox: creds.isSandbox,
           });
 
-          const paddleRawText = await paddleTxnRes.text();
-          let paddleTxnJson: any = null;
-          try {
-            paddleTxnJson = paddleRawText ? JSON.parse(paddleRawText) : null;
-          } catch {}
-
-          if (paddleTxnRes.status === 401) {
-            console.error('CHECKOUT_ERROR', {
-              paddleStatus: paddleTxnRes.status,
-              paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
-            });
-            return res.status(401).json({
-              success: false,
-              paddleStatus: paddleTxnRes.status,
-              paddleCode: paddleTxnJson?.error?.code || null,
-              ...(isProdRuntime()
-                ? {}
-                : { paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null }),
-              error: publicError('Payment provider authentication failed.', 'Paddle auth failed - check API key in Vercel'),
-            });
-          }
-          if (!paddleTxnRes.ok || !paddleTxnJson?.data?.id) {
-            const paddleCode = String(paddleTxnJson?.error?.code || '').trim();
-            const paddleDetail =
-              paddleTxnJson?.error?.detail ||
-              paddleTxnJson?.error?.message ||
-              paddleRawText ||
-              `Paddle transactions API returned ${paddleTxnRes.status}`;
-            console.error('CHECKOUT_ERROR', {
-              paddleStatus: paddleTxnRes.status,
-              paddleCode: paddleCode || null,
-              detail: paddleDetail,
-              paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
-            });
-            const outStatus =
-              paddleTxnRes.status >= 400 && paddleTxnRes.status < 600
-                ? paddleTxnRes.status
-                : 400;
+          if (!txnRes.ok) {
+            if (txnRes.status === 401) {
+              return res.status(401).json({
+                success: false,
+                paddleStatus: 401,
+                paddleCode: txnRes.code || null,
+                ...(isProdRuntime() ? {} : { paddleError: txnRes.raw || null }),
+                error: publicError(
+                  'Payment provider authentication failed.',
+                  txnRes.detail || 'Paddle auth failed - check API key in Vercel'
+                ),
+              });
+            }
             const friendlyError =
-              paddleCode === 'transaction_default_checkout_url_not_set'
+              txnRes.code === 'transaction_default_checkout_url_not_set'
                 ? 'Checkout settings missing in Paddle, contact support loomorastudios@gmail.com'
                 : publicError(
                     'Payment checkout unavailable. Please try again or contact support.',
-                    `Paddle checkout error (HTTP ${paddleTxnRes.status}): ${paddleDetail}`
+                    `Paddle checkout error (HTTP ${txnRes.status}): ${txnRes.detail}`
                   );
-            return res.status(outStatus).json({
+            return res.status(txnRes.status).json({
               success: false,
-              paddleStatus: paddleTxnRes.status,
-              paddleCode: paddleCode || null,
+              paddleStatus: txnRes.status,
+              paddleCode: txnRes.code || null,
               ...(isProdRuntime()
                 ? {}
                 : {
-                    paddleDetail,
-                    paddleError: paddleTxnJson?.error || paddleTxnJson || paddleRawText || null,
+                    paddleDetail: txnRes.detail,
+                    paddleError: txnRes.raw || null,
                   }),
               error: friendlyError,
             });
           }
 
-          const transactionId = String(paddleTxnJson.data.id);
-          const apiCheckoutUrl = cleanEnvValue(paddleTxnJson?.data?.checkout?.url);
-          const fallbackPaddleCheckoutUrl = `${
-            isTestMode ? 'https://sandbox-buy.paddle.com' : 'https://buy.paddle.com'
-          }/checkout?_ptxn=${encodeURIComponent(transactionId)}`;
-          const checkoutUrl = apiCheckoutUrl || fallbackPaddleCheckoutUrl;
-
-          const duration = Date.now() - startTime;
           return res.status(200).json({
             success: true,
             provider: 'paddle',
-            environment: isTestMode ? 'sandbox' : 'production',
+            environment: creds.environment,
             purchaseType: isCreditPack ? 'credit_pack' : 'plan',
-            priceId: resolvedPriceId,
-            transactionId,
-            checkoutUrl,
-            url: checkoutUrl,
-            success_url: `${SUCCESS_REDIRECT}&transaction_id=${encodeURIComponent(transactionId)}`,
+            transactionId: txnRes.transactionId,
+            checkoutUrl: txnRes.checkoutUrl,
+            url: txnRes.checkoutUrl,
+            clientToken: creds.clientToken,
+            success_url: `${SUCCESS_REDIRECT}&transaction_id=${encodeURIComponent(txnRes.transactionId)}`,
             cancel_url: CANCEL_REDIRECT,
-            testMode: isTestMode,
-            durationMs: duration,
+            testMode: creds.isSandbox,
+            durationMs: Date.now() - startTime,
             ...(isCreditPack ? { packId: resolvedPack!.id, credits: resolvedPack!.credits } : { plan: validPlan }),
             activePriceUSD,
             originalPrice,
@@ -10133,6 +9761,71 @@ export default async function handler(req: any, res: any) {
             error: publicError('Unexpected checkout error.', error?.message),
           });
         }
+      }
+
+      case 'checkpaymentstatus':
+      case 'check-payment-status': {
+        res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const sessionEmail = await getSessionEmailFromReq(req);
+        if (!sessionEmail) {
+          return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const email = normalizeEmail(sessionEmail);
+        const rl = await checkRateLimit(`checkpay:${email}`, 40, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'Rate limit exceeded. Please wait briefly.',
+            retryAfterSec: rl.retryAfterSec,
+          });
+        }
+
+        const rawTxn = String(
+          getQueryParam(req, url, 'transactionId') ||
+            getQueryParam(req, url, 'transaction_id') ||
+            getQueryParam(req, url, 'order_id') ||
+            parsedBody?.transactionId ||
+            parsedBody?.transaction_id ||
+            parsedBody?.order_id ||
+            ''
+        ).trim();
+
+        let targetPayment: UsedOrderRecord | null = null;
+        if (rawTxn) {
+          const checkId = validateSafeId(rawTxn, 'transaction_id');
+          if (!checkId.ok) {
+            return res.status(400).json({ success: false, error: checkId.error });
+          }
+          targetPayment = await getPayment(rawTxn);
+          if (targetPayment && normalizeEmail(targetPayment.login_email) !== email) {
+            return res.status(403).json({
+              success: false,
+              error: 'Forbidden: transaction belongs to another account.',
+            });
+          }
+        } else {
+          const userPayments = await getUserPaymentsFromDb(email);
+          targetPayment = userPayments[0] || null;
+        }
+
+        const freshUser = await enforceServerUserExpiry(email);
+        const pricing = await getPricingPublicPayload();
+        const license = await computeServerLicenseStatus(freshUser, pricing);
+        const payStatus = targetPayment?.status || (targetPayment ? 'completed' : 'not_found');
+
+        return res.status(200).json({
+          success: true,
+          verified: Boolean(targetPayment && payStatus === 'completed'),
+          status: payStatus,
+          transactionId: targetPayment?.transactionId || targetPayment?.order_id || rawTxn || null,
+          payment: targetPayment,
+          planKey: license.planKey,
+          plan: license.displayName,
+          credits_balance: freshUser.extra_credits || 0,
+          analyses_left: license.analysesLeft,
+          user: sanitizeUserForClient(freshUser),
+          license,
+        });
       }
 
       case 'session': {
@@ -10437,11 +10130,11 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'paddlewebhook':
       case 'paddle-webhook': {
         if (req.method !== 'POST') {
           return res.status(405).json({ success: false, error: 'Method not allowed' });
         }
-        const webhookSecret = cleanEnvValue(getEnv('PADDLE_WEBHOOK_SECRET'));
         const sigHeader = String(
           req?.headers?.['paddle-signature'] || req?.headers?.['Paddle-Signature'] || ''
         ).trim();
@@ -10456,53 +10149,18 @@ export default async function handler(req: any, res: any) {
             ? req.body.toString('utf8')
             : JSON.stringify(parsedBody || {});
 
-        let signatureValid = false;
-        let verifyError = '';
-        let missingSecret = false;
-
-        if (!webhookSecret) {
-          missingSecret = true;
-          verifyError = 'Missing required server environment variable: PADDLE_WEBHOOK_SECRET.';
-          console.error(
-            '[Paddle Webhook] Missing required environment variable: PADDLE_WEBHOOK_SECRET. Refusing webhook verification without test-key fallback.'
-          );
-        } else if (!sigHeader) {
-          verifyError = 'Missing Paddle-Signature header.';
-        } else {
-          const parts: Record<string, string> = {};
-          for (const seg of sigHeader.split(';')) {
-            const [k, ...v] = seg.split('=');
-            if (k && v.length > 0) parts[k.trim()] = v.join('=').trim();
-          }
-          const ts = parts.ts || '';
-          const h1 = parts.h1 || '';
-          if (!ts || !h1) {
-            verifyError = 'Malformed Paddle-Signature header (missing ts or h1).';
-          } else {
-            const expectedHex = crypto
-              .createHmac('sha256', webhookSecret)
-              .update(`${ts}:${rawBodyString}`)
-              .digest('hex');
-            try {
-              const a = Buffer.from(h1, 'hex');
-              const b = Buffer.from(expectedHex, 'hex');
-              signatureValid = a.length === b.length && crypto.timingSafeEqual(a, b);
-              if (!signatureValid) {
-                verifyError = 'Invalid HMAC signature mismatch.';
-              }
-            } catch {
-              signatureValid = false;
-              verifyError = 'Invalid signature encoding.';
-            }
-          }
-        }
+        const sigResult = verifyPaddleWebhookSignature(rawBodyString, sigHeader);
+        const signatureValid = sigResult.valid;
+        const verifyError = sigResult.error || '';
 
         const eventName = String(
           parsedBody?.event_type || parsedBody?.event_name || parsedBody?.type || 'paddle.unknown'
-        ).trim();
+        )
+          .trim()
+          .toLowerCase();
         const dataObj = parsedBody?.data || parsedBody || {};
         const orderId = String(
-          dataObj?.id || dataObj?.transaction_id || `wh_${Date.now()}`
+          dataObj?.transaction_id || dataObj?.id || `wh_${Date.now()}`
         );
         const customerEmail = normalizeEmail(
           dataObj?.customer?.email ||
@@ -10538,18 +10196,24 @@ export default async function handler(req: any, res: any) {
         const isTestEnv = paddleEnv.isSandbox;
         const prices = resolvePaddleConfiguredPrices(isTestEnv);
 
-        const matchedCreditPack = resolveCreditPackMatch({
-          itemPriceId: firstPriceId,
-          customPackId: String(dataObj?.custom_data?.packId || dataObj?.custom_data?.pack_id || '').trim(),
-          purchaseType: String(dataObj?.custom_data?.purchase_type || '').trim(),
-          productName: firstProductName,
-          amountUSD,
-          prices,
-        });
+        const serverMatchedItem = resolveServerItemFromPriceId(firstPriceId, isTestEnv);
+        const matchedCreditPack =
+          serverMatchedItem?.type === 'credit_pack'
+            ? EXTRA_CREDIT_PACKS.find((p) => p.id === serverMatchedItem.pack.id)
+            : resolveCreditPackMatch({
+                itemPriceId: firstPriceId,
+                customPackId: String(dataObj?.custom_data?.packId || dataObj?.custom_data?.pack_id || '').trim(),
+                purchaseType: String(dataObj?.custom_data?.purchase_type || '').trim(),
+                productName: firstProductName,
+                amountUSD,
+                prices,
+              });
         const isCreditPackPurchase = Boolean(matchedCreditPack);
 
         const resolvedPlan: PlanKey =
-          prices.enterprise && firstPriceId === prices.enterprise
+          serverMatchedItem?.type === 'plan'
+            ? serverMatchedItem.plan
+            : prices.enterprise && firstPriceId === prices.enterprise
             ? 'institutional'
             : prices.sovereign && firstPriceId === prices.sovereign
             ? 'enterprise'
@@ -10557,9 +10221,8 @@ export default async function handler(req: any, res: any) {
             ? 'pro'
             : prices.starter && firstPriceId === prices.starter
             ? 'starter'
-            : dataObj?.custom_data?.plan &&
-              normalizePlanKey(String(dataObj.custom_data.plan)) !== 'free'
-            ? normalizePlanKey(String(dataObj.custom_data.plan))
+            : dataObj?.custom_data?.plan && parseAllowlistedCheckoutPlan(String(dataObj.custom_data.plan))
+            ? parseAllowlistedCheckoutPlan(String(dataObj.custom_data.plan))!
             : resolvePlanFromOrderAttributes(
                 {
                   product_name: firstProductName,
@@ -10592,7 +10255,14 @@ export default async function handler(req: any, res: any) {
         });
 
         if (!signatureValid) {
-          return res.status(missingSecret ? 500 : 401).json({
+          await logAdminAction({
+            adminEmail: 'paddle-webhook-security',
+            targetEmail: accountEmail || customerEmail || 'unknown',
+            action: 'WEBHOOK_AUTH_FAILED',
+            details: { event: eventName, orderId, error: verifyError },
+            ip: getClientIp(req),
+          }).catch(() => {});
+          return res.status(401).json({
             success: false,
             received: true,
             verified: false,
@@ -10600,7 +10270,203 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        // One-time purchases only: fulfill strictly on transaction.completed (or transaction.paid).
+        // 1. Handle refunds & chargebacks cleanly (mark payment record status, downgrade to FREE or deduct pack credits)
+        const adjAction = String(dataObj?.action || '').trim().toLowerCase();
+        const adjStatus = String(dataObj?.status || '').trim().toLowerCase();
+        const isRefundOrChargebackEvent =
+          eventName === 'transaction.refunded' ||
+          ((eventName === 'adjustment.created' || eventName === 'adjustment.updated') &&
+            (adjAction === 'refund' || adjAction === 'chargeback') &&
+            adjStatus !== 'rejected');
+
+        if (isRefundOrChargebackEvent) {
+          const targetTxnId = normalizeOrderId(String(dataObj?.transaction_id || dataObj?.id || orderId));
+          const newStatus: 'refunded' | 'chargeback' =
+            adjAction === 'chargeback' ? 'chargeback' : 'refunded';
+
+          const existingPayment = await getPayment(targetTxnId);
+          await updatePaymentStatus(targetTxnId, {
+            status: newStatus,
+            refunded_at: Date.now(),
+            refund_reason: `${eventName}:${adjAction || 'refund'}`,
+          });
+
+          const matchedUsersByOrder = await findUsersByOrderId(targetTxnId);
+          const emailsToRevoke = new Set<string>();
+          if (existingPayment?.login_email) emailsToRevoke.add(normalizeEmail(existingPayment.login_email));
+          if (accountEmail && accountEmail.includes('@')) emailsToRevoke.add(accountEmail);
+          if (customerEmail && customerEmail.includes('@')) emailsToRevoke.add(customerEmail);
+          for (const uEmail of matchedUsersByOrder) {
+            if (uEmail) emailsToRevoke.add(normalizeEmail(uEmail));
+          }
+
+          const wasCreditPack =
+            existingPayment?.purchase_type === 'credit_pack' || isCreditPackPurchase;
+          const packCreditsToDeduct =
+            wasCreditPack && matchedCreditPack
+              ? matchedCreditPack.credits
+              : existingPayment?.purchase_type === 'credit_pack'
+              ? Number(existingPayment.analyses || 0)
+              : 0;
+
+          const revokedEmails: string[] = [];
+          for (const revokeEmail of emailsToRevoke) {
+            const { user: dbUser } = await readUserFromDbStatus(revokeEmail);
+            if (!dbUser) continue;
+            const updatedPayments = Array.isArray(dbUser.payments)
+              ? dbUser.payments.map((p: any) =>
+                  normalizeOrderId(p?.order_id) === targetTxnId
+                    ? { ...p, status: newStatus }
+                    : p
+                )
+              : [];
+
+            if (wasCreditPack) {
+              const nextExtraCredits = Math.max(0, (dbUser.extra_credits || 0) - packCreditsToDeduct);
+              await updateUserPartial(
+                revokeEmail,
+                {
+                  extra_credits: nextExtraCredits,
+                  payments: updatedPayments,
+                },
+                { syncCredits: false }
+              );
+            } else {
+              await updateUserPartial(
+                revokeEmail,
+                {
+                  plan: 'free',
+                  analyses_used: 0,
+                  analyses_left: PLAN_DEFINITIONS.free.analysesLimit,
+                  license_start: null,
+                  license_end: null,
+                  expired_from_plan: null,
+                  cancel_status: newStatus,
+                  refunded_at: Date.now(),
+                  refund_reason: `${eventName}:${adjAction || 'refund'}`,
+                  payments: updatedPayments,
+                },
+                { syncCredits: false }
+              );
+            }
+            revokedEmails.push(revokeEmail);
+          }
+
+          await logAdminAction({
+            adminEmail: 'paddle-webhook',
+            targetEmail: revokedEmails[0] || accountEmail || customerEmail || 'unknown',
+            action: newStatus === 'chargeback' ? 'PAYMENT_CHARGEBACK' : 'PAYMENT_REFUNDED',
+            details: {
+              transactionId: targetTxnId,
+              eventName,
+              status: newStatus,
+              purchaseType: wasCreditPack ? 'credit_pack' : 'plan',
+              revokedEmails,
+            },
+            ip: getClientIp(req),
+          }).catch(() => {});
+
+          return res.status(200).json({
+            success: true,
+            received: true,
+            verified: true,
+            event_type: eventName,
+            transaction_id: targetTxnId,
+            order_id: targetTxnId,
+            status: newStatus,
+            plan: wasCreditPack ? undefined : 'free',
+            revokedEmails,
+          });
+        }
+
+        // 2. Handle subscription.cancelled / canceled / expired cleanly
+        if (
+          eventName === 'subscription.cancelled' ||
+          eventName === 'subscription.canceled' ||
+          eventName === 'subscription.expired'
+        ) {
+          const targetEmail = accountEmail || customerEmail;
+          const rawEndsAt =
+            dataObj?.scheduled_change?.effective_at ||
+            dataObj?.current_billing_period?.ends_at ||
+            dataObj?.canceled_at ||
+            dataObj?.cancelled_at ||
+            '';
+          const parsedEndsAt = rawEndsAt ? Date.parse(String(rawEndsAt)) : NaN;
+          const nowTs = Date.now();
+          let updatedCancelledUser: ServerUserRecord | null = null;
+
+          if (targetEmail && targetEmail.includes('@')) {
+            const { user: dbUser } = await readUserFromDbStatus(targetEmail);
+            if (dbUser) {
+              const prevPlan = normalizePlanKey(dbUser.plan);
+              const effectiveExpiry = Number.isFinite(parsedEndsAt)
+                ? parsedEndsAt
+                : eventName === 'subscription.expired'
+                ? nowTs - 1000
+                : dbUser.license_end || nowTs;
+
+              const shouldExpireNow =
+                eventName === 'subscription.expired' ||
+                String(dataObj?.effective_from || '').toLowerCase() === 'immediately' ||
+                effectiveExpiry <= nowTs;
+
+              if (shouldExpireNow) {
+                updatedCancelledUser = (await updateUserPartial(
+                  targetEmail,
+                  {
+                    plan: 'free',
+                    license_end: effectiveExpiry,
+                    expired_from_plan: prevPlan !== 'free' ? prevPlan : dbUser.expired_from_plan || null,
+                    cancel_status: 'cancelled',
+                    cancelled_at: nowTs,
+                    analyses_used: 0,
+                    analyses_left: Math.max(0, dbUser.extra_credits || 0),
+                  },
+                  { syncCredits: false }
+                )) as unknown as ServerUserRecord;
+              } else {
+                updatedCancelledUser = (await updateUserPartial(
+                  targetEmail,
+                  {
+                    license_end: effectiveExpiry,
+                    cancel_status: 'cancelled',
+                    cancelled_at: nowTs,
+                  },
+                  { syncCredits: false }
+                )) as unknown as ServerUserRecord;
+              }
+            }
+          }
+
+          await logAdminAction({
+            adminEmail: 'paddle-webhook',
+            targetEmail: targetEmail || 'unknown',
+            action: eventName === 'subscription.expired' ? 'SUBSCRIPTION_EXPIRED' : 'SUBSCRIPTION_CANCELLED',
+            details: {
+              eventName,
+              orderId,
+              plan: updatedCancelledUser ? normalizePlanKey(updatedCancelledUser.plan) : 'free',
+              licenseEnd: updatedCancelledUser?.license_end || null,
+            },
+            ip: getClientIp(req),
+          }).catch(() => {});
+
+          return res.status(200).json({
+            success: true,
+            received: true,
+            verified: true,
+            event_type: eventName,
+            order_id: orderId,
+            plan: updatedCancelledUser ? normalizePlanKey(updatedCancelledUser.plan) : 'free',
+            cancel_status: 'cancelled',
+            expiry_date: updatedCancelledUser?.license_end
+              ? new Date(updatedCancelledUser.license_end).toISOString()
+              : null,
+          });
+        }
+
+        // 3. One-time purchases only: fulfill strictly on transaction.completed (or transaction.paid).
         const isOneTimeCompletedEvent =
           eventName === 'transaction.completed' || eventName === 'transaction.paid';
         if (!isOneTimeCompletedEvent) {
@@ -10624,7 +10490,7 @@ export default async function handler(req: any, res: any) {
         let switchMessage: string | null = null;
         const targetEmail = accountEmail || customerEmail;
 
-        // Rule E: Always check duplicate transaction_id globally before applying plans or credits
+        // Always check duplicate transaction_id globally before applying plans or credits
         const existingUsedGlobal = await getUsedOrderFromDb(orderId);
         if (existingUsedGlobal) {
           duplicateIgnored = true;
@@ -10655,8 +10521,21 @@ export default async function handler(req: any, res: any) {
               creditsAdded = 0;
             } else {
               creditsAdded = matchedCreditPack.credits;
+              await logAdminAction({
+                adminEmail: 'paddle-webhook',
+                targetEmail,
+                action: 'PAYMENT_COMPLETED',
+                details: {
+                  transactionId: orderId,
+                  purchaseType: 'credit_pack',
+                  packId: matchedCreditPack.id,
+                  creditsAdded,
+                  amount: matchedCreditPack.priceUSD,
+                },
+                ip: getClientIp(req),
+              }).catch(() => {});
             }
-          } else {
+          } else if (resolvedPlan !== 'free') {
             const purchaseNow = Date.now();
             const ruleCheck = evaluatePlanPurchaseRule(existingDb, resolvedPlan, purchaseNow);
             if (!ruleCheck.allowed) {
@@ -10698,12 +10577,25 @@ export default async function handler(req: any, res: any) {
                   paymentProvider: 'paddle',
                   paymentIntentId: orderId,
                 });
+                await logAdminAction({
+                  adminEmail: 'paddle-webhook',
+                  targetEmail,
+                  action: 'PAYMENT_COMPLETED',
+                  details: {
+                    transactionId: orderId,
+                    purchaseType: 'plan',
+                    plan: resolvedPlan,
+                    amount: amountUSD > 0 ? amountUSD : PLAN_DEFINITIONS[resolvedPlan].launchPrice,
+                  },
+                  ip: getClientIp(req),
+                }).catch(() => {});
               }
             }
           }
         }
 
         return res.status(200).json({
+          ok: true,
           success: true,
           received: true,
           verified: true,
@@ -13395,11 +13287,47 @@ Return JSON with:
             },
           });
           const pJson: any = await pRes.json().catch(() => null);
-          const pStatus = String(pJson?.data?.status || '').toLowerCase();
-          if (!pRes.ok || (pStatus !== 'completed' && pStatus !== 'paid')) {
+          const txnData = pJson?.data;
+          const pStatus = String(txnData?.status || '').toLowerCase();
+          if (!pRes.ok || (pStatus !== 'completed' && pStatus !== 'paid' && pStatus !== 'billed')) {
             return res.status(400).json({
               success: false,
               error: `Paddle transaction ${rawOrderId} is not completed/paid (status: ${pStatus || pRes.status}).`,
+            });
+          }
+          const txnOwnerEmail = normalizeEmail(
+            txnData?.custom_data?.login_email || txnData?.custom_data?.email || ''
+          );
+          if (txnOwnerEmail && txnOwnerEmail !== email) {
+            return res.status(403).json({
+              success: false,
+              error: 'This transaction belongs to another account.',
+            });
+          }
+          const prices = resolvePaddleConfiguredPrices(paddleEnv.isSandbox);
+          const firstItem = Array.isArray(txnData?.items) ? txnData.items[0] : null;
+          const itemPriceId = String(firstItem?.price?.id || firstItem?.price_id || '').trim();
+          const itemProductName = String(
+            firstItem?.price?.name || firstItem?.product?.name || firstItem?.price?.description || ''
+          ).trim();
+          const rawTotalField =
+            txnData?.details?.totals?.grand_total ??
+            txnData?.details?.totals?.total ??
+            txnData?.details?.totals?.subtotal ??
+            0;
+          const verifiedAmt = parsePaddleAmountUSD(rawTotalField, 0);
+          const matchedPackFromTxn = resolveCreditPackMatch({
+            itemPriceId,
+            customPackId: String(txnData?.custom_data?.packId || txnData?.custom_data?.pack_id || '').trim(),
+            purchaseType: String(txnData?.custom_data?.purchase_type || '').trim(),
+            productName: itemProductName,
+            amountUSD: verifiedAmt,
+            prices,
+          });
+          if (!matchedPackFromTxn || matchedPackFromTxn.id !== pack.id) {
+            return res.status(400).json({
+              success: false,
+              error: `Paddle transaction ${rawOrderId} does not match credit pack ${pack.id}.`,
             });
           }
         } catch (err: any) {
@@ -13422,6 +13350,21 @@ Return JSON with:
             return res.status(403).json({ success: false, error: packErr.message });
           }
           throw packErr;
+        }
+        if (!(updatedUser as any)._duplicateOrder) {
+          await logAdminAction({
+            adminEmail: 'paddle-buy-credits',
+            targetEmail: email,
+            action: 'PAYMENT_COMPLETED',
+            details: {
+              transactionId: rawOrderId,
+              purchaseType: 'credit_pack',
+              packId: pack.id,
+              creditsAdded: pack.credits,
+              amount: pack.priceUSD,
+            },
+            ip: getClientIp(req),
+          }).catch(() => {});
         }
         const nextLicense = await computeServerLicenseStatus(updatedUser);
 
@@ -14119,6 +14062,8 @@ Return JSON with:
             'health',
             'me',
             'pricing',
+            'createCheckout',
+            'checkPaymentStatus',
             'verify-checkout',
             'verify-payment',
             'debug-plan',
