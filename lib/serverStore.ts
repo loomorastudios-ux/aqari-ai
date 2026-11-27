@@ -1731,16 +1731,86 @@ export async function deleteSessionFromDb(sessionId: string): Promise<void> {
 export async function deleteServerUserFromDb(rawEmail: string): Promise<boolean> {
   const email = normalizeEmail(rawEmail);
   if (!email) return false;
+  const userId = getUserIdForEmail(email);
   const store = loadStore();
   const existed = Boolean(store.users[email]);
-  if (existed) {
+  let changed = false;
+
+  if (store.users[email]) {
     delete store.users[email];
+    changed = true;
+  }
+
+  const deletedSessionIds: string[] = [];
+  if (store.sessions && typeof store.sessions === 'object') {
+    for (const [sid, sess] of Object.entries(store.sessions)) {
+      if (normalizeEmail(sess?.email || '') === email || (userId && sess?.userId === userId)) {
+        deletedSessionIds.push(sid);
+        delete store.sessions[sid];
+        changed = true;
+      }
+    }
+  }
+
+  const deletedReportIds: string[] = [];
+  if (store.reports && typeof store.reports === 'object') {
+    for (const [rid, rep] of Object.entries(store.reports)) {
+      if (normalizeEmail((rep as any)?.ownerEmail || '') === email || (userId && (rep as any)?.ownerId === userId)) {
+        deletedReportIds.push(rid);
+        delete store.reports[rid];
+        changed = true;
+      }
+    }
+  }
+
+  const deletedApiTokens: string[] = [];
+  if (store.api_keys && typeof store.api_keys === 'object') {
+    for (const [tok, owner] of Object.entries(store.api_keys)) {
+      if (normalizeEmail(owner || '') === email) {
+        deletedApiTokens.push(tok);
+        delete store.api_keys[tok];
+        changed = true;
+      }
+    }
+  }
+
+  if (store.analyst_threads?.[email]) {
+    delete store.analyst_threads[email];
+    changed = true;
+  }
+
+  if (Array.isArray(store.whiteglove_requests)) {
+    const filteredWg = store.whiteglove_requests.filter((w) => normalizeEmail(w?.email || '') !== email);
+    if (filteredWg.length !== store.whiteglove_requests.length) {
+      store.whiteglove_requests = filteredWg;
+      changed = true;
+    }
+  }
+
+  if (store.user_orgs?.[email]) {
+    delete store.user_orgs[email];
+    changed = true;
+  }
+
+  if (changed) {
     persistStore(store);
   }
+
   try {
     const kv = getKvConfig();
     if (kv) {
       await kvCommand(['DEL', `aqari:user:${email}`]);
+      await kvCommand(['DEL', `aqari:analyst_thread:${email}`]);
+      await kvCommand(['DEL', `aqari:user_orgs:${email}`]);
+      for (const sid of deletedSessionIds) {
+        await kvCommand(['DEL', `aqari:session:${sid}`]);
+      }
+      for (const rid of deletedReportIds) {
+        await kvCommand(['DEL', `aqari:report:${rid}`]);
+      }
+      for (const tok of deletedApiTokens) {
+        await kvCommand(['DEL', `aqari:apikey:${tok}`]);
+      }
       const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
       const idx: string[] = Array.isArray(rawIdx)
         ? rawIdx.map(String)
@@ -1751,9 +1821,9 @@ export async function deleteServerUserFromDb(rawEmail: string): Promise<boolean>
       await kvCommand(['SET', 'aqari:users_index:v1', JSON.stringify(nextIdx)]);
     }
   } catch (err) {
-    console.error('[DB] Failed deleting user from KV:', err);
+    console.error('[DB] Failed deleting user data from KV:', err);
   }
-  return existed;
+  return existed || changed;
 }
 
 /**

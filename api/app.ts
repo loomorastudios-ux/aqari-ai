@@ -14,6 +14,8 @@ import {
 import {
   rateLimit as persistentRateLimit,
   getUserIdForEmail,
+  deleteServerUserFromDb,
+  logAdminAction,
 } from '../lib/serverStore';
 
 // =========================================================================
@@ -6582,6 +6584,7 @@ export default async function handler(req: any, res: any) {
             'macro-sync',
             'get-last-results',
             'clear-last-result',
+            'delete-my-account',
             'report-issue',
             'cancel-subscription',
             'google-callback',
@@ -6606,6 +6609,15 @@ export default async function handler(req: any, res: any) {
           });
         }
         const lookupEmail = sessionEmail;
+        const rl = await checkRateLimit(`read:${lookupEmail}`, 60, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            authenticated: false,
+            error: 'too many requests',
+            retryAfterSec: rl.retryAfterSec,
+          });
+        }
 
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(lookupEmail);
         if (kvError && !hydratedDb) {
@@ -7607,10 +7619,10 @@ export default async function handler(req: any, res: any) {
           return res.status(401).json({ error: 'Authentication required to run underwriting analysis' });
         }
 
-        const rl = await checkRateLimit(`analyze:${email}`, 30, 60 * 1000);
+        const rl = await checkRateLimit(`analyze:${email}`, 20, 60 * 1000);
         if (!rl.allowed) {
           return res.status(429).json({
-            error: 'Rate limit exceeded. Please wait briefly.',
+            error: 'too many requests',
             retryAfterSec: rl.retryAfterSec,
           });
         }
@@ -10189,6 +10201,14 @@ export default async function handler(req: any, res: any) {
         if (!email) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
+        const rl = await checkRateLimit(`read:${email}`, 60, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'too many requests',
+            retryAfterSec: rl.retryAfterSec,
+          });
+        }
         const idCheck = validateSafeId(
           getQueryParam(req, url, 'id') || parsedBody?.id || parsedBody?.reportId || '',
           'id'
@@ -10226,6 +10246,14 @@ export default async function handler(req: any, res: any) {
         const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ error: 'Authentication required for portfolio aggregation' });
+        }
+        const rl = await checkRateLimit(`read:${email}`, 60, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'too many requests',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
 
         const userRecord =
@@ -10812,7 +10840,7 @@ export default async function handler(req: any, res: any) {
           if (!rl.allowed) {
             return res.status(429).json({
               success: false,
-              error: 'Too many authentication attempts. Please wait 10 minutes.',
+              error: 'too many requests',
               retryAfterSec: rl.retryAfterSec,
             });
           }
@@ -10917,6 +10945,14 @@ export default async function handler(req: any, res: any) {
         const email = (await getSessionEmailFromReq(req)) || '';
         if (!email) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
+        }
+        const rl = await checkRateLimit(`read:${email}`, 60, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'too many requests',
+            retryAfterSec: rl.retryAfterSec,
+          });
         }
 
         const userRecord =
@@ -11678,6 +11714,15 @@ export default async function handler(req: any, res: any) {
       }
 
       case 'google-callback': {
+        const ip = getClientIp(req);
+        const rl = await checkRateLimit(`auth:${ip}`, 10, 10 * 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'too many requests',
+            retryAfterSec: rl.retryAfterSec,
+          });
+        }
         const code = url.searchParams.get('code');
         const error = url.searchParams.get('error');
 
@@ -12085,6 +12130,14 @@ export default async function handler(req: any, res: any) {
         if (!email) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
+        const rl = await checkRateLimit(`read:${email}`, 60, 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            error: 'too many requests',
+            retryAfterSec: rl.retryAfterSec,
+          });
+        }
         const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
         if (kvError && !hydratedDb) {
           return res.status(503).json({
@@ -12182,11 +12235,11 @@ export default async function handler(req: any, res: any) {
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
-        const rl = await checkRateLimit(`extract:${email}`, 20, 60 * 1000);
+        const rl = await checkRateLimit(`upload:${email}`, 10, 60 * 1000);
         if (!rl.allowed) {
           return res.status(429).json({
             success: false,
-            error: 'Rate limit exceeded. Please wait briefly.',
+            error: 'too many requests',
             retryAfterSec: rl.retryAfterSec,
           });
         }
@@ -12458,11 +12511,11 @@ export default async function handler(req: any, res: any) {
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
-        const rl = await checkRateLimit(`fa:${email}`, 30, 60 * 1000);
+        const rl = await checkRateLimit(`upload:${email}`, 10, 60 * 1000);
         if (!rl.allowed) {
           return res.status(429).json({
             success: false,
-            error: 'Rate limit exceeded. Please wait briefly.',
+            error: 'too many requests',
             retryAfterSec: rl.retryAfterSec,
           });
         }
@@ -13171,11 +13224,11 @@ STRICT GUARDRAILS:
         if (!email || !email.includes('@')) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
-        const rl = await checkRateLimit(`ddd:${email}`, 20, 60 * 1000);
+        const rl = await checkRateLimit(`upload:${email}`, 10, 60 * 1000);
         if (!rl.allowed) {
           return res.status(429).json({
             success: false,
-            error: 'Rate limit exceeded. Please wait briefly.',
+            error: 'too many requests',
             retryAfterSec: rl.retryAfterSec,
           });
         }
@@ -14639,6 +14692,124 @@ Return JSON with:
         });
       }
 
+      case 'deletemyaccount':
+      case 'delete-my-account': {
+        if (req.method !== 'POST' && req.method !== 'DELETE') {
+          return res.status(405).json({ success: false, ok: false, error: 'Method not allowed' });
+        }
+        const sessionEmail = await getSessionEmailFromReq(req);
+        if (!sessionEmail || !sessionEmail.includes('@')) {
+          return res.status(401).json({ success: false, ok: false, error: 'unauthorized' });
+        }
+        const rl = await checkRateLimit(`delacct:${sessionEmail}`, 5, 60 * 60 * 1000);
+        if (!rl.allowed) {
+          return res.status(429).json({
+            success: false,
+            ok: false,
+            error: 'too many requests',
+            retryAfterSec: rl.retryAfterSec,
+          });
+        }
+
+        const userId = getUserIdForEmail(sessionEmail);
+        const anonymizedEmail = `deleted_${userId}@deleted.local`;
+        const store = loadStore();
+
+        const userRec = store.users?.[sessionEmail];
+        const deletedApiTokens: string[] = [];
+        if (userRec?.api_key_token) {
+          deletedApiTokens.push(String(userRec.api_key_token));
+        }
+        if (store.api_keys && typeof store.api_keys === 'object') {
+          for (const [tok, owner] of Object.entries(store.api_keys)) {
+            if (normalizeEmail(owner || '') === sessionEmail) {
+              deletedApiTokens.push(tok);
+              delete store.api_keys[tok];
+            }
+          }
+        }
+        if (store.users?.[sessionEmail]) {
+          delete store.users[sessionEmail];
+        }
+
+        const deletedReportIds: string[] = [];
+        if (store.reports && typeof store.reports === 'object') {
+          for (const [rid, rep] of Object.entries(store.reports)) {
+            if (
+              normalizeEmail((rep as any)?.ownerEmail || '') === sessionEmail ||
+              (userId && (rep as any)?.ownerId === userId)
+            ) {
+              deletedReportIds.push(rid);
+              delete store.reports[rid];
+            }
+          }
+        }
+
+        if (store.analyst_threads?.[sessionEmail]) {
+          delete store.analyst_threads[sessionEmail];
+        }
+        if (Array.isArray(store.whiteglove_requests)) {
+          store.whiteglove_requests = store.whiteglove_requests.filter(
+            (w: any) => normalizeEmail(w?.email || '') !== sessionEmail
+          );
+        }
+        if (store.user_orgs?.[sessionEmail]) {
+          delete store.user_orgs[sessionEmail];
+        }
+        const deletedSessionIds: string[] = [];
+        if (store.sessions && typeof store.sessions === 'object') {
+          for (const [sid, sess] of Object.entries(store.sessions)) {
+            if (normalizeEmail((sess as any)?.email || '') === sessionEmail || (sess as any)?.userId === userId) {
+              deletedSessionIds.push(sid);
+              delete store.sessions[sid];
+            }
+          }
+        }
+        persistStore(store);
+
+        const kv = getKvConfig();
+        if (kv) {
+          try {
+            await kvCommand(['DEL', `aqari:user:${sessionEmail}`]);
+            await kvCommand(['DEL', `aqari:analyst_thread:${sessionEmail}`]);
+            await kvCommand(['DEL', `aqari:user_orgs:${sessionEmail}`]);
+            for (const rid of deletedReportIds) {
+              await kvCommand(['DEL', `aqari:report:${rid}`]);
+            }
+            for (const tok of deletedApiTokens) {
+              await kvCommand(['DEL', `aqari:apikey:${tok}`]);
+            }
+            for (const sid of deletedSessionIds) {
+              await kvCommand(['DEL', `aqari:session:${sid}`]);
+            }
+            const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
+            const idx: string[] = Array.isArray(rawIdx)
+              ? rawIdx.map(String)
+              : typeof rawIdx === 'string'
+              ? JSON.parse(rawIdx)
+              : [];
+            const nextIdx = idx.filter((em) => normalizeEmail(em) !== sessionEmail);
+            await kvCommand(['SET', 'aqari:users_index:v1', JSON.stringify(nextIdx)]);
+          } catch (kvErr) {
+            console.error('[PRIVACY] KV deletion warning:', kvErr);
+          }
+        }
+
+        await deleteServerUserFromDb(sessionEmail);
+        await destroySession(req, res);
+        clearEntitlementCookie(res);
+
+        await logAdminAction({
+          adminEmail: anonymizedEmail,
+          targetEmail: anonymizedEmail,
+          action: 'DELETE_MY_ACCOUNT',
+          details: { userId, deletedReports: deletedReportIds.length },
+          ip: getClientIp(req),
+        }).catch(() => {});
+
+        return res.status(200).json({ ok: true, success: true });
+      }
+
       default:
         return res.status(400).json({
           success: false,
@@ -14691,6 +14862,7 @@ Return JSON with:
             'news',
             'demo',
             'get-report-file',
+            'delete-my-account',
             'webhook-logs',
             'report-issue',
             'cancel-subscription',

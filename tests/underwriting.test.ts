@@ -2888,3 +2888,103 @@ test('Admin CORS & Cross-Domain Session: strict https://admin-aqari2.vercel.app 
   assert.equal(evilUsersRes.statusCode, 401);
   assert.equal(evilUsersRes.headers['Access-Control-Allow-Origin'], undefined);
 });
+
+test('Phase 4 Account Deletion & Endpoint Rate Limits: deleteMyAccount purges data/sessions -> 401 on me; 11th google-login -> 429', async () => {
+  // 1. Unauthenticated deleteMyAccount returns 401
+  const unauthDel = await invokeApi({
+    action: 'deleteMyAccount',
+    method: 'POST',
+  });
+  assert.equal(unauthDel.statusCode, 401);
+
+  // 2. Authenticated deleteMyAccount purges user data, invalidates session, logs audit, subsequent me -> 401
+  const delEmail = `del_user_${Date.now()}@aqari.test`;
+  const delCookie = await createTestSessionCookie(delEmail);
+
+  const meBefore = await invokeApi({
+    action: 'me',
+    method: 'GET',
+    headers: { cookie: delCookie },
+  });
+  assert.equal(meBefore.statusCode, 200);
+  assert.equal(meBefore.data.email, delEmail);
+
+  const saveRes = await invokeApi({
+    action: 'save-to-portfolio',
+    method: 'POST',
+    headers: { cookie: delCookie },
+    body: {
+      analysis: {
+        id: `del_item_${Date.now()}`,
+        property: 'Private Deleted Asset',
+        city: 'Muscat',
+        priceUSD: 400_000,
+      },
+    },
+  });
+  assert.equal(saveRes.statusCode, 200);
+
+  const delRes = await invokeApi({
+    action: 'deleteMyAccount',
+    method: 'POST',
+    headers: { cookie: delCookie },
+  });
+  assert.equal(delRes.statusCode, 200);
+  assert.equal(delRes.data.ok, true);
+
+  // Subsequent /api/app?action=me with the deleted session cookie MUST return 401
+  const meAfter = await invokeApi({
+    action: 'me',
+    method: 'GET',
+    headers: { cookie: delCookie },
+  });
+  assert.equal(meAfter.statusCode, 401);
+
+  // Verify audit log recorded DELETE_MY_ACCOUNT without keeping the plaintext deleted email
+  const { getAuditLogsFromDb } = await import('../lib/serverStore');
+  const auditRes = await getAuditLogsFromDb({ page: 1, limit: 20 });
+  const delAudit = auditRes.logs.find((l) => l.action === 'DELETE_MY_ACCOUNT');
+  assert.ok(delAudit);
+  assert.ok(delAudit.targetEmail.startsWith('deleted_') && delAudit.targetEmail.endsWith('@deleted.local'));
+
+  // 3. Rate limit: 11th google-login attempt from same IP within 10 min returns 429
+  const testIp = `203.0.113.${Math.floor(Math.random() * 200) + 10}`;
+  for (let i = 0; i < 10; i++) {
+    const attempt = await invokeApi({
+      action: 'session',
+      method: 'POST',
+      headers: { 'x-forwarded-for': testIp },
+      body: {},
+    });
+    assert.equal(attempt.statusCode, 401);
+  }
+  const eleventhLogin = await invokeApi({
+    action: 'session',
+    method: 'POST',
+    headers: { 'x-forwarded-for': testIp },
+    body: {},
+  });
+  assert.equal(eleventhLogin.statusCode, 429);
+  assert.equal(eleventhLogin.data.error, 'too many requests');
+
+  // 4. Rate limit on read (60/min), createAnalysis (20/min), and upload (10/min)
+  const rlEmail = `rl_phase4_${Date.now()}@aqari.test`;
+  const rlCookie = await createTestSessionCookie(rlEmail);
+
+  for (let i = 0; i < 10; i++) {
+    const up = await invokeApi({
+      action: 'extract-from-file',
+      method: 'POST',
+      headers: { cookie: rlCookie },
+      body: {},
+    });
+    assert.notEqual(up.statusCode, 429);
+  }
+  const eleventhUpload = await invokeApi({
+    action: 'extract-from-file',
+    method: 'POST',
+    headers: { cookie: rlCookie },
+    body: {},
+  });
+  assert.equal(eleventhUpload.statusCode, 429);
+});

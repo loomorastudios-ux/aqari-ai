@@ -1472,8 +1472,6 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({
-        email: user.email,
-        login_email: user.email,
         name: user.name,
         propertyTitle: property.title,
         city: property.city,
@@ -2241,8 +2239,6 @@ export default function App() {
               headers: { 'Content-Type': 'application/json' },
               credentials: 'include',
               body: JSON.stringify({
-                email: user.email,
-                login_email: user.email,
                 currentSavedCount: currentSaved.length,
                 analysis: newAnalysis,
               }),
