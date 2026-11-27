@@ -1,7 +1,5 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
 import { GoogleGenAI, Type } from '@google/genai';
 import {
   getSessionFromRequest,
@@ -12,8 +10,45 @@ import {
   applyAdminOnlyCors,
 } from '../lib/auth';
 import {
+  StorageUnavailableError,
+  healthCheckStorage,
   rateLimit as persistentRateLimit,
   getUserIdForEmail,
+  getUser as getUserCoreFromStore,
+  saveUser as saveUserCoreToStore,
+  getOrCreateUserInDb,
+  getAllServerUsersFromDb,
+  updateServerUserInDb,
+  decrementCredits,
+  saveAnalysis,
+  getPayment,
+  savePayment,
+  getAllPaymentsFromDb,
+  getPricingConfigFromDb,
+  saveApiKeyToDb as saveApiKeyStoreDb,
+  deleteApiKeyFromDb as deleteApiKeyStoreDb,
+  resolveApiKeyOwnerFromDb,
+  appendEmailLogToDb as appendEmailLogStoreDb,
+  getEmailLogsFromDb as getEmailLogsStoreDb,
+  appendCancellationLogToDb as appendCancellationLogStoreDb,
+  recordPendingCheckoutToDb,
+  getAnalystThreadFromDb as getAnalystThreadStoreDb,
+  saveAnalystThreadToDb as saveAnalystThreadStoreDb,
+  getAnalystThreadsMapFromDb,
+  getWhiteGloveRequestsFromDb as getWhiteGloveRequestsStoreDb,
+  saveWhiteGloveRequestsToDb as saveWhiteGloveRequestsStoreDb,
+  appendWebhookLogToDb as appendWebhookLogStoreDb,
+  getWebhookLogsFromDb as getWebhookLogsStoreDb,
+  appendAdminAuditLogToDb as appendAdminAuditLogStoreDb,
+  getAdminAuditLogsFromDb as getAdminAuditLogsStoreDb,
+  appendEnterpriseInquiryToDb as appendEnterpriseInquiryStoreDb,
+  getEnterpriseInquiriesFromDb as getEnterpriseInquiriesStoreDb,
+  readEnterpriseOrgFromDb as readEnterpriseOrgStoreDb,
+  saveEnterpriseOrgToDb as saveEnterpriseOrgStoreDb,
+  addOrgToUserIndexDb as addOrgToUserIndexStoreDb,
+  getUserOrgIdsDb as getUserOrgIdsStoreDb,
+  saveReportFileToDb as saveReportFileStoreDb,
+  readReportFileFromDb as readReportFileStoreDb,
   deleteServerUserFromDb,
   logAdminAction,
 } from '../lib/serverStore';
@@ -2044,7 +2079,7 @@ interface ServerUserRecord {
   payment_provider: string;
   payment_intent_id: string | null;
   payment_customer_email: string | null;
-  status: 'active' | 'expired' | 'exhausted';
+  status: 'active' | 'expired' | 'exhausted' | 'locked';
   has_reported_issue: boolean;
   issue_reported_at: number | null;
   issue_resolved_at: number | null;
@@ -2177,29 +2212,6 @@ interface StoredReportRecord {
   generatedAt: string;
 }
 
-interface StoreShape {
-  users: Record<string, ServerUserRecord>;
-  webhook_logs: WebhookLogEntry[];
-  failed_webhooks: any[];
-  email_logs: any[];
-  cancellation_logs: any[];
-  pricing_config: StoredPricingConfig;
-  pricing_logs: any[];
-  pending_checkouts: Record<string, PendingCheckoutEntry>;
-  used_orders: Record<string, UsedOrderRecord>;
-  analyst_threads: Record<string, any>;
-  whiteglove_requests: any[];
-  api_keys: Record<string, string>;
-  enterprise_inquiries?: any[];
-  admin_audit_logs?: any[];
-  orgs?: Record<string, any>;
-  user_orgs?: Record<string, string[]>;
-  reports?: Record<string, StoredReportRecord>;
-  sessions?: Record<string, any>;
-  auditLog?: any[];
-  rate_limits?: Record<string, any>;
-}
-
 function buildStoredPlanEntry(k: PlanKey): StoredPlanConfig {
   const def = PLAN_DEFINITIONS[k];
   return {
@@ -2241,49 +2253,6 @@ function createDefaultPricingConfig(): StoredPricingConfig {
       institutional: buildStoredPlanEntry('institutional'),
     },
   };
-}
-
-function getStoreFile(): string {
-  const override = cleanEnvValue(getEnv('AQARI_STORE_FILE'));
-  if (override) return override;
-  if (!cleanEnvValue(getEnv('VERCEL'))) {
-    try {
-      return path.join(process.cwd(), '.aqari-data', 'aqari_terminal_store_v1.json');
-    } catch {
-      return '/tmp/aqari_terminal_store_v1.json';
-    }
-  }
-  return '/tmp/aqari_terminal_store_v1.json';
-}
-
-let memoryStoreCache: StoreShape | null = null;
-
-function getMemoryStore(): StoreShape {
-  if (!memoryStoreCache) {
-    memoryStoreCache = {
-      users: {},
-      webhook_logs: [],
-      failed_webhooks: [],
-      email_logs: [],
-      cancellation_logs: [],
-      pricing_config: createDefaultPricingConfig(),
-      pricing_logs: [],
-      pending_checkouts: {},
-      used_orders: {},
-      analyst_threads: {},
-      whiteglove_requests: [],
-      api_keys: {},
-      enterprise_inquiries: [],
-      admin_audit_logs: [],
-      orgs: {},
-      user_orgs: {},
-      reports: {},
-      sessions: {},
-      auditLog: [],
-      rate_limits: {},
-    };
-  }
-  return memoryStoreCache;
 }
 
 function normalizeEmail(email: string): string {
@@ -2603,147 +2572,10 @@ function hydratePricingConfig(raw: any): StoredPricingConfig {
   };
 }
 
-function loadStore(): StoreShape {
-  try {
-    const storeFile = getStoreFile();
-    if (fs.existsSync(storeFile)) {
-      const raw = fs.readFileSync(storeFile, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
-        const users: Record<string, ServerUserRecord> = {};
-        if (parsed.users && typeof parsed.users === 'object') {
-          for (const [k, v] of Object.entries(parsed.users)) {
-            users[k] = hydrateUserRecord(v, k);
-          }
-        }
-        memoryStoreCache = {
-          users,
-          webhook_logs: Array.isArray(parsed.webhook_logs) ? parsed.webhook_logs : [],
-          failed_webhooks: Array.isArray(parsed.failed_webhooks) ? parsed.failed_webhooks : [],
-          email_logs: Array.isArray(parsed.email_logs) ? parsed.email_logs : [],
-          cancellation_logs: Array.isArray(parsed.cancellation_logs) ? parsed.cancellation_logs : [],
-          pricing_config: hydratePricingConfig(parsed.pricing_config),
-          pricing_logs: Array.isArray(parsed.pricing_logs) ? parsed.pricing_logs : [],
-          pending_checkouts:
-            parsed.pending_checkouts && typeof parsed.pending_checkouts === 'object'
-              ? parsed.pending_checkouts
-              : {},
-          used_orders:
-            parsed.used_orders &&
-            typeof parsed.used_orders === 'object' &&
-            !Array.isArray(parsed.used_orders)
-              ? parsed.used_orders
-              : {},
-          analyst_threads:
-            parsed.analyst_threads &&
-            typeof parsed.analyst_threads === 'object' &&
-            !Array.isArray(parsed.analyst_threads)
-              ? parsed.analyst_threads
-              : {},
-          whiteglove_requests: Array.isArray(parsed.whiteglove_requests)
-            ? parsed.whiteglove_requests
-            : [],
-          api_keys:
-            parsed.api_keys &&
-            typeof parsed.api_keys === 'object' &&
-            !Array.isArray(parsed.api_keys)
-              ? parsed.api_keys
-              : {},
-          enterprise_inquiries: Array.isArray(parsed.enterprise_inquiries)
-            ? parsed.enterprise_inquiries
-            : [],
-          admin_audit_logs: Array.isArray(parsed.admin_audit_logs)
-            ? parsed.admin_audit_logs
-            : [],
-          orgs:
-            parsed.orgs && typeof parsed.orgs === 'object' && !Array.isArray(parsed.orgs)
-              ? parsed.orgs
-              : {},
-          user_orgs:
-            parsed.user_orgs &&
-            typeof parsed.user_orgs === 'object' &&
-            !Array.isArray(parsed.user_orgs)
-              ? parsed.user_orgs
-              : {},
-          reports:
-            parsed.reports && typeof parsed.reports === 'object' && !Array.isArray(parsed.reports)
-              ? parsed.reports
-              : {},
-          sessions:
-            parsed.sessions && typeof parsed.sessions === 'object' && !Array.isArray(parsed.sessions)
-              ? parsed.sessions
-              : {},
-          auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
-          rate_limits:
-            parsed.rate_limits && typeof parsed.rate_limits === 'object' && !Array.isArray(parsed.rate_limits)
-              ? parsed.rate_limits
-              : {},
-        };
-      }
-    }
-  } catch {
-    // Fallback cleanly to memory cache
-  }
-  return getMemoryStore();
-}
-
-function persistStore(store: StoreShape): void {
-  memoryStoreCache = store;
-  try {
-    const storeFile = getStoreFile();
-    fs.mkdirSync(path.dirname(storeFile), { recursive: true });
-    fs.writeFileSync(storeFile, JSON.stringify(store, null, 2), 'utf8');
-  } catch {
-    // Ignore read-only filesystem errors
-  }
-}
-
-function getKvConfig(): { url: string; token: string } | null {
-  const url = cleanEnvValue(getEnv('KV_REST_API_URL') || getEnv('UPSTASH_REDIS_REST_URL'));
-  const token = cleanEnvValue(getEnv('KV_REST_API_TOKEN') || getEnv('UPSTASH_REDIS_REST_TOKEN'));
-  if (!url || !token) return null;
-  return { url: url.replace(/\/+$/, ''), token };
-}
-
-async function kvCommand(args: Array<string | number>): Promise<any> {
-  const cfg = getKvConfig();
-  if (!cfg) return null;
-  let lastErr: any = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
-    try {
-      const res = await fetch(cfg.url, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${cfg.token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(args),
-      });
-      if (!res.ok) {
-        throw new Error(`KV HTTP ${res.status}`);
-      }
-      const json = await res.json();
-      return json?.result ?? null;
-    } catch (err) {
-      lastErr = err;
-      if (attempt === 0) {
-        await new Promise((r) => setTimeout(r, 120));
-      }
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw lastErr || new Error('KV command failed');
-}
-
-function getPricingPublicPayload(): PricingPublicPayload {
-  const store = loadStore();
-  const rawCfg = store.pricing_config || createDefaultPricingConfig();
+async function getPricingPublicPayload(): Promise<PricingPublicPayload> {
+  const rawCfg = await getPricingConfigFromDb();
   const cfg =
-    Number(rawCfg.schemaVersion || 0) >= PRICING_SCHEMA_VERSION
+    Number(rawCfg?.schemaVersion || 0) >= PRICING_SCHEMA_VERSION
       ? rawCfg
       : createDefaultPricingConfig();
   const now = Date.now();
@@ -2998,14 +2830,14 @@ function ensureCreditsForAction(user: ServerUserRecord, cost: number) {
   if (cost > 0 && lock.analysesLeft < cost) {
     return {
       ok: false as const,
-      status: 403,
+      status: 402,
       payload: {
         success: false,
         locked: false,
         insufficientCredits: true,
         reason: 'insufficient_credits',
         status: lock.status,
-        error: `This action costs ${cost} credits, but only ${lock.analysesLeft} credit${lock.analysesLeft === 1 ? '' : 's'} remain. Buy Extra Credits or a 30-day plan.`,
+        error: 'insufficient credits',
         code: 'INSUFFICIENT_CREDITS',
         analyses_left: lock.analysesLeft,
         analysesLeft: lock.analysesLeft,
@@ -3019,6 +2851,46 @@ function ensureCreditsForAction(user: ServerUserRecord, cost: number) {
     };
   }
   return { ok: true as const, lock };
+}
+
+async function chargeCreditsAtomically(
+  userRecord: ServerUserRecord,
+  cost: number
+): Promise<
+  | { ok: true; remaining: number }
+  | { ok: false; status: number; payload: Record<string, any> }
+> {
+  if (cost <= 0) {
+    const lock = evaluateLockState(userRecord);
+    return { ok: true, remaining: lock.analysesLeft };
+  }
+  const uid = userRecord.userId || getUserIdForEmail(userRecord.email);
+  const dec = await decrementCredits(uid, cost);
+  if (!dec.ok) {
+    const lock = evaluateLockState(userRecord);
+    return {
+      ok: false,
+      status: 402,
+      payload: {
+        success: false,
+        locked: true,
+        insufficientCredits: true,
+        reason: 'insufficient_credits',
+        status: lock.status,
+        error: 'insufficient credits',
+        code: 'INSUFFICIENT_CREDITS',
+        analyses_left: dec.remaining,
+        analysesLeft: dec.remaining,
+        plan_analyses_left: 0,
+        credits_balance: lock.creditsBalance,
+        package_expired: lock.packageExpired,
+        credits_only_mode: lock.creditsOnlyMode,
+        requiredCredits: cost,
+        creditsRemaining: dec.remaining,
+      },
+    };
+  }
+  return { ok: true, remaining: dec.remaining };
 }
 
 function checkAndConsumeApiDailyQuota(user: ServerUserRecord) {
@@ -3070,10 +2942,12 @@ function checkAndConsumeApiDailyQuota(user: ServerUserRecord) {
   };
 }
 
-function enforceServerUserExpiry(rawEmail: string): ServerUserRecord {
-  const store = loadStore();
+async function enforceServerUserExpiry(
+  rawEmail: string,
+  preloaded?: ServerUserRecord | null
+): Promise<ServerUserRecord> {
   const email = normalizeEmail(rawEmail) || 'guest@aqari-ai-rho.vercel.app';
-  const user = store.users[email];
+  const user = (preloaded || (await getUserCoreFromStore(email))) as ServerUserRecord | null;
 
   if (!user) {
     return getOrCreateServerUser(email);
@@ -3082,71 +2956,42 @@ function enforceServerUserExpiry(rawEmail: string): ServerUserRecord {
   const lock = evaluateLockState(user);
   const targetLeft = lock.locked ? 0 : lock.analysesLeft;
   if (user.status !== lock.status || user.analyses_left !== targetLeft) {
-    user.status = lock.status;
-    user.analyses_left = targetLeft;
-    store.users[email] = user;
-    persistStore(store);
+    const nextUser: ServerUserRecord = {
+      ...user,
+      status: lock.status,
+      analyses_left: targetLeft,
+      updated_at: Date.now(),
+    };
+    return (await saveUserCoreToStore(nextUser as any, { syncCredits: true })) as unknown as ServerUserRecord;
   }
 
   return user;
 }
 
-function getOrCreateServerUser(
+async function getOrCreateServerUser(
   rawEmail: string,
   hints?: { name?: string; timezone?: string }
-): ServerUserRecord {
-  const store = loadStore();
+): Promise<ServerUserRecord> {
   const email = normalizeEmail(rawEmail) || 'guest@aqari-ai-rho.vercel.app';
-  let user = store.users[email];
-
-  if (!user) {
-    const now = Date.now();
-    user = hydrateUserRecord(
-      {
-        email,
-        name: hints?.name || email.split('@')[0],
-        plan: 'free',
-        license_start: now,
-        license_end: now + THIRTY_DAYS_MS,
-        analyses_used: 0,
-        timezone: hints?.timezone || 'Asia/Muscat',
-        last_login_at: now,
-      },
-      email
-    );
-    store.users[email] = user;
-    persistStore(store);
-  } else if (hints) {
-    let changed = false;
-    if (hints.timezone && hints.timezone !== user.timezone) {
-      user.timezone = hints.timezone;
-      changed = true;
-    }
-    if (hints.name && hints.name !== user.name) {
-      user.name = hints.name;
-      changed = true;
-    }
-    if (changed) {
-      user.updated_at = Date.now();
-      store.users[email] = user;
-      persistStore(store);
-    }
-  }
-
-  return enforceServerUserExpiry(email);
+  const existing = await getOrCreateUserInDb(email, hints);
+  return enforceServerUserExpiry(email, existing as any);
 }
 
-function getServerUserByEmail(rawEmail: string): ServerUserRecord | null {
-  const store = loadStore();
+async function getServerUserByEmail(rawEmail: string): Promise<ServerUserRecord | null> {
   const email = normalizeEmail(rawEmail);
-  if (!email || !store.users[email]) return null;
-  return enforceServerUserExpiry(email);
+  if (!email) return null;
+  const user = await getUserCoreFromStore(email);
+  if (!user) return null;
+  return enforceServerUserExpiry(email, user as any);
 }
 
-function updateServerUser(email: string, patch: Partial<ServerUserRecord>): ServerUserRecord {
-  const store = loadStore();
+async function updateServerUser(
+  email: string,
+  patch: Partial<ServerUserRecord>,
+  options?: { syncCredits?: boolean }
+): Promise<ServerUserRecord> {
   const norm = normalizeEmail(email);
-  const existing = getOrCreateServerUser(norm);
+  const existing = await getOrCreateServerUser(norm);
   const merged = {
     ...existing,
     ...patch,
@@ -3197,15 +3042,17 @@ function updateServerUser(email: string, patch: Partial<ServerUserRecord>): Serv
   const updated: ServerUserRecord = {
     ...nextDraft,
     status: lock.status,
-    analyses_left: lock.locked ? 0 : lock.analysesLeft,
+    analyses_left: options?.syncCredits === false && typeof patch.analyses_left === 'number'
+      ? Math.max(0, patch.analyses_left)
+      : lock.locked
+      ? 0
+      : lock.analysesLeft,
   };
-  store.users[norm] = updated;
-  persistStore(store);
-  return updated;
+  return (await saveUserCoreToStore(updated as any, options)) as any;
 }
 
-function recordUserLogin(email: string, name?: string): ServerUserRecord {
-  const user = getOrCreateServerUser(email, { name });
+async function recordUserLogin(email: string, name?: string): Promise<ServerUserRecord> {
+  const user = await getOrCreateServerUser(email, { name });
   const now = Date.now();
   const timeline = [
     {
@@ -3217,13 +3064,17 @@ function recordUserLogin(email: string, name?: string): ServerUserRecord {
     },
     ...user.timeline,
   ].slice(0, 200);
-  return updateServerUser(user.email, {
-    last_login_at: now,
-    timeline,
-  });
+  return updateServerUser(
+    user.email,
+    {
+      last_login_at: now,
+      timeline,
+    },
+    { syncCredits: false }
+  );
 }
 
-function activatePaidPlanOnServer(params: {
+async function activatePaidPlanOnServer(params: {
   email: string;
   name?: string;
   plan: PlanKey;
@@ -3237,12 +3088,12 @@ function activatePaidPlanOnServer(params: {
   paymentCustomerEmail?: string | null;
   paymentProvider?: string;
   paymentIntentId?: string | null;
-}): ServerUserRecord {
+}): Promise<ServerUserRecord> {
   const now = params.paymentTimestamp || Date.now();
   const licenseStart = now;
   const licenseEnd = now + THIRTY_DAYS_MS;
-  const existing = getOrCreateServerUser(params.email, { name: params.name });
-  const pricing = getPricingPublicPayload();
+  const existing = await getOrCreateServerUser(params.email, { name: params.name });
+  const pricing = await getPricingPublicPayload();
   const dynamicPlan = pricing.plansMap?.[params.plan];
   const planCfg = PLAN_DEFINITIONS[params.plan];
   const amount = params.amountUSD ?? (params.plan === 'free' ? 0 : dynamicPlan?.activePrice ?? planCfg.launchPrice);
@@ -3262,12 +3113,16 @@ function activatePaidPlanOnServer(params: {
 
   // CRITICAL: Do NOT reset analyses_used / analyses_left / successful_analyses if the same order is replayed
   if (alreadyRecorded && existing.cancel_status !== 'refunded') {
-    return updateServerUser(params.email, {
-      name: params.name || existing.name,
-      payment_customer_email: params.paymentCustomerEmail
-        ? normalizeEmail(params.paymentCustomerEmail)
-        : existing.payment_customer_email || null,
-    });
+    return updateServerUser(
+      params.email,
+      {
+        name: params.name || existing.name,
+        payment_customer_email: params.paymentCustomerEmail
+          ? normalizeEmail(params.paymentCustomerEmail)
+          : existing.payment_customer_email || null,
+      },
+      { syncCredits: false }
+    );
   }
 
   const payments = alreadyRecorded
@@ -3333,64 +3188,68 @@ function activatePaidPlanOnServer(params: {
   const keepApiLast4 = planCfg.apiDailyLimit > 0 ? existing.api_key_last4 : null;
   const keepBranding = planCfg.capabilities.customBrandingPdf ? existing.branding : null;
 
-  return updateServerUser(params.email, {
-    name: params.name || existing.name,
-    plan: params.plan,
-    status: 'active',
-    license_start: licenseStart,
-    license_end: licenseEnd,
-    analyses_used: 0,
-    analyses_left: baseLimit + preservedExtra,
-    analyses_total: baseLimit + preservedExtra,
-    max_saved: baseSaved,
-    extra_credits: preservedExtra,
-    image_pdf_used: 0,
-    ai_listings_used: 0,
-    pdfs_used: 0,
-    last_extraction_id: null,
-    successful_analyses: 0,
-    has_reported_issue: false,
-    issue_reported_at: null,
-    issue_resolved_at: null,
-    issue_description: '',
-    issue_status: 'none',
-    cancel_status: 'none',
-    last_order_id: orderId,
-    payment_provider: params.paymentProvider || 'paddle',
-    payment_intent_id: params.paymentIntentId || orderId,
-    day29_email_sent: false,
-    expired_email_sent: false,
-    ...(isSwitchingPlan && params.plan !== 'institutional'
-      ? {
-          custom_analyses_limit: null,
-          custom_image_pdf_limit: null,
-          custom_listings_limit: null,
-          custom_portfolio_limit: null,
-          custom_seats: null,
-          custom_storage_gb: null,
-          sla_level: null,
-          contract_end_date: null,
-          white_label_enabled: false,
-          custom_api_enabled: false,
-        }
-      : {}),
-    ...(isSwitchingPlan
-      ? {
-          api_key_token: keepApiKey ?? null,
-          api_key_last4: keepApiLast4 ?? null,
-          branding: keepBranding ?? null,
-        }
-      : {}),
-    total_paid_usd: alreadyRecorded ? existing.total_paid_usd : existing.total_paid_usd + amount,
-    refund_policy_accepted_at:
-      params.refundPolicyAcceptedAt || existing.refund_policy_accepted_at || iso,
-    locked_launch_price: resolvedLockedLaunch ?? null,
-    payment_customer_email: params.paymentCustomerEmail
-      ? normalizeEmail(params.paymentCustomerEmail)
-      : existing.payment_customer_email || null,
-    payments,
-    timeline: timeline.slice(0, 200),
-  });
+  return updateServerUser(
+    params.email,
+    {
+      name: params.name || existing.name,
+      plan: params.plan,
+      status: 'active',
+      license_start: licenseStart,
+      license_end: licenseEnd,
+      analyses_used: 0,
+      analyses_left: baseLimit + preservedExtra,
+      analyses_total: baseLimit + preservedExtra,
+      max_saved: baseSaved,
+      extra_credits: preservedExtra,
+      image_pdf_used: 0,
+      ai_listings_used: 0,
+      pdfs_used: 0,
+      last_extraction_id: null,
+      successful_analyses: 0,
+      has_reported_issue: false,
+      issue_reported_at: null,
+      issue_resolved_at: null,
+      issue_description: '',
+      issue_status: 'none',
+      cancel_status: 'none',
+      last_order_id: orderId,
+      payment_provider: params.paymentProvider || 'paddle',
+      payment_intent_id: params.paymentIntentId || orderId,
+      day29_email_sent: false,
+      expired_email_sent: false,
+      ...(isSwitchingPlan && params.plan !== 'institutional'
+        ? {
+            custom_analyses_limit: null,
+            custom_image_pdf_limit: null,
+            custom_listings_limit: null,
+            custom_portfolio_limit: null,
+            custom_seats: null,
+            custom_storage_gb: null,
+            sla_level: null,
+            contract_end_date: null,
+            white_label_enabled: false,
+            custom_api_enabled: false,
+          }
+        : {}),
+      ...(isSwitchingPlan
+        ? {
+            api_key_token: keepApiKey ?? null,
+            api_key_last4: keepApiLast4 ?? null,
+            branding: keepBranding ?? null,
+          }
+        : {}),
+      total_paid_usd: alreadyRecorded ? existing.total_paid_usd : existing.total_paid_usd + amount,
+      refund_policy_accepted_at:
+        params.refundPolicyAcceptedAt || existing.refund_policy_accepted_at || iso,
+      locked_launch_price: resolvedLockedLaunch ?? null,
+      payment_customer_email: params.paymentCustomerEmail
+        ? normalizeEmail(params.paymentCustomerEmail)
+        : existing.payment_customer_email || null,
+      payments,
+      timeline: timeline.slice(0, 200),
+    },
+    { syncCredits: true }
+  );
 }
 
 export async function activateLicense(
@@ -3400,8 +3259,8 @@ export async function activateLicense(
 ): Promise<ServerUserRecord> {
   const normEmail = normalizeEmail(email);
   const planKey = normalizePlanKey(plan);
-  await getUserFromDb(normEmail).catch(() => null);
-  const activated = activatePaidPlanOnServer({
+  await getUserFromDb(normEmail);
+  const activated = await activatePaidPlanOnServer({
     email: normEmail,
     plan: planKey,
     paymentTimestamp: Date.now(),
@@ -3410,7 +3269,6 @@ export async function activateLicense(
     paymentProvider: 'paddle',
     paymentCustomerEmail: normEmail,
   });
-  await saveUserToDb(activated);
   return activated;
 }
 
@@ -3419,51 +3277,14 @@ async function applyCreditPackToUser(params: {
   pack: (typeof EXTRA_CREDIT_PACKS)[number];
   orderId: string;
   isTestMode: boolean;
-}): Promise<ServerUserRecord> {
+}): Promise<ServerUserRecord & { _duplicateOrder?: boolean }> {
   const email = normalizeEmail(params.email);
   const { user: hydratedDb } = await readUserFromDbStatus(email);
-  const userRecord = hydratedDb || getOrCreateServerUser(email);
+  const userRecord = hydratedDb || (await getOrCreateServerUser(email));
   const now = Date.now();
-  const iso = new Date(now).toISOString();
-  const quotas = resolveEffectiveQuotas(userRecord, now);
-  const lockBefore = evaluateLockState(userRecord, now);
-  const baseLimit = quotas.isEnterprise ? (parseOptionalPositiveInt(userRecord.custom_analyses_limit) ?? 0) : PLAN_DEFINITIONS[quotas.planKey].analysesLimit;
-  const nextExtra = Math.max(0, Number(userRecord.extra_credits || 0)) + params.pack.credits;
-  const nextLeft = lockBefore.planAnalysesLeft + nextExtra;
-  const currentTotal = Number(userRecord.analyses_total || 0);
-  const nextTotal = Math.max(currentTotal, baseLimit) + params.pack.credits;
 
-  const updatedUser = updateServerUser(email, {
-    status: lockBefore.packageExpired ? 'expired' : 'active',
-    extra_credits: nextExtra,
-    analyses_left: nextLeft,
-    analyses_total: nextTotal,
-    total_paid_usd: Math.max(0, Number(userRecord.total_paid_usd || 0)) + params.pack.priceUSD,
-    payments: [
-      {
-        id: `pay_${now}_${Math.random().toString(36).slice(2, 6)}`,
-        timestamp: iso,
-        order_id: params.orderId,
-        plan: `${normalizePlanKey(userRecord.plan)}+${params.pack.id}`,
-        amount: params.pack.priceUSD,
-        currency: 'USD',
-        test_mode: params.isTestMode,
-      },
-      ...(userRecord.payments || []),
-    ],
-    timeline: [
-      {
-        id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-        timestamp: iso,
-        type: 'purchase' as const,
-        message: `Purchased ${params.pack.label} ($${params.pack.priceUSD}) -> +${params.pack.credits} non-expiring AI credits (Ref #${params.orderId})`,
-        actor: email,
-      },
-      ...(userRecord.timeline || []),
-    ].slice(0, 200),
-  });
-  await saveUserToDb(updatedUser);
-  await markOrderUsedInDb({
+  // Atomically claim orderId BEFORE crediting user (NX Lua)
+  const payRes = await savePayment(params.orderId, {
     order_id: params.orderId,
     login_email: email,
     payment_email: email,
@@ -3476,7 +3297,60 @@ async function applyCreditPackToUser(params: {
     amount: params.pack.priceUSD,
     test_mode: params.isTestMode,
     used_at: now,
-  }).catch(() => {});
+  });
+  if (!payRes.ok) {
+    if (payRes.existing && normalizeEmail(payRes.existing.login_email) !== email) {
+      const crossErr: any = new Error('This transaction ID has already been redeemed by another account.');
+      crossErr.statusCode = 403;
+      throw crossErr;
+    }
+    return Object.assign({ ...userRecord }, { _duplicateOrder: true });
+  }
+
+  const iso = new Date(now).toISOString();
+  const quotas = resolveEffectiveQuotas(userRecord, now);
+  const lockBefore = evaluateLockState(userRecord, now);
+  const baseLimit = quotas.isEnterprise
+    ? parseOptionalPositiveInt(userRecord.custom_analyses_limit) ?? 0
+    : PLAN_DEFINITIONS[quotas.planKey].analysesLimit;
+  const nextExtra = Math.max(0, Number(userRecord.extra_credits || 0)) + params.pack.credits;
+  const nextLeft = lockBefore.planAnalysesLeft + nextExtra;
+  const currentTotal = Number(userRecord.analyses_total || 0);
+  const nextTotal = Math.max(currentTotal, baseLimit) + params.pack.credits;
+
+  const updatedUser = await updateServerUser(
+    email,
+    {
+      status: lockBefore.packageExpired ? 'expired' : 'active',
+      extra_credits: nextExtra,
+      analyses_left: nextLeft,
+      analyses_total: nextTotal,
+      total_paid_usd: Math.max(0, Number(userRecord.total_paid_usd || 0)) + params.pack.priceUSD,
+      payments: [
+        {
+          id: `pay_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: iso,
+          order_id: params.orderId,
+          plan: `${normalizePlanKey(userRecord.plan)}+${params.pack.id}`,
+          amount: params.pack.priceUSD,
+          currency: 'USD',
+          test_mode: params.isTestMode,
+        },
+        ...(userRecord.payments || []),
+      ],
+      timeline: [
+        {
+          id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: iso,
+          type: 'purchase' as const,
+          message: `Purchased ${params.pack.label} ($${params.pack.priceUSD}) -> +${params.pack.credits} non-expiring AI credits (Ref #${params.orderId})`,
+          actor: email,
+        },
+        ...(userRecord.timeline || []),
+      ].slice(0, 200),
+    },
+    { syncCredits: true }
+  );
   return updatedUser;
 }
 
@@ -3636,22 +3510,15 @@ function evaluateCancelRefundEligibility(user: ServerUserRecord, now = Date.now(
   };
 }
 
-function recordUserAnalysis(
+async function recordUserAnalysis(
   userOrEmail: string | ServerUserRecord,
   entry: Omit<ForensicAnalysisEntry, 'id' | 'timestamp'>,
   extraPatch?: Partial<ServerUserRecord>,
-  creditCost = 1
-): ServerUserRecord {
-  const store = loadStore();
-  let user: ServerUserRecord;
-  if (typeof userOrEmail === 'string') {
-    user = getOrCreateServerUser(userOrEmail);
-  } else {
-    const norm = normalizeEmail(userOrEmail.email);
-    store.users[norm] = userOrEmail;
-    persistStore(store);
-    user = userOrEmail;
-  }
+  creditCost = 1,
+  options?: { preDecrementedRemaining?: number }
+): Promise<ServerUserRecord> {
+  const user: ServerUserRecord =
+    typeof userOrEmail === 'string' ? await getOrCreateServerUser(userOrEmail) : userOrEmail;
   const now = Date.now();
   const iso = new Date(now).toISOString();
   const quotas = resolveEffectiveQuotas(user, now);
@@ -3673,7 +3540,10 @@ function recordUserAnalysis(
   const nextExtraCredits = Math.max(0, currentExtraCredits - fromCredits);
   const nextPlanAnalysesLeft = Math.max(0, lockBefore.planAnalysesLeft - fromPlan);
   const nextUsed = currentUsed + cost;
-  const nextLeft = nextPlanAnalysesLeft + nextExtraCredits;
+  const nextLeft =
+    typeof options?.preDecrementedRemaining === 'number'
+      ? Math.max(0, options.preDecrementedRemaining)
+      : nextPlanAnalysesLeft + nextExtraCredits;
   const successfulNum = (user.successful_analyses || 0) + 1;
   const logEntry: ForensicAnalysisEntry = {
     id: `ana_${now}_${Math.random().toString(36).slice(2, 6)}`,
@@ -3688,23 +3558,34 @@ function recordUserAnalysis(
     actor: user.email,
   };
 
-  return updateServerUser(user.email, {
-    ...(extraPatch || {}),
-    analyses_used: nextUsed,
-    analyses_left: nextLeft,
-    analyses_total: analysesTotal,
-    extra_credits: nextExtraCredits,
-    successful_analyses: successfulNum,
-    analyses_log: [logEntry, ...user.analyses_log].slice(0, 500),
-    timeline: [timelineEntry, ...user.timeline].slice(0, 200),
+  const uid = user.userId || getUserIdForEmail(user.email);
+  await saveAnalysis(uid, {
+    ...logEntry,
+    email: user.email,
+    userId: uid,
   });
+
+  return updateServerUser(
+    user.email,
+    {
+      ...(extraPatch || {}),
+      analyses_used: nextUsed,
+      analyses_left: nextLeft,
+      analyses_total: analysesTotal,
+      extra_credits: nextExtraCredits,
+      successful_analyses: successfulNum,
+      analyses_log: [logEntry, ...user.analyses_log].slice(0, 500),
+      timeline: [timelineEntry, ...user.timeline].slice(0, 200),
+    },
+    { syncCredits: options?.preDecrementedRemaining === undefined }
+  );
 }
 
-function recordUserPdfDownload(
+async function recordUserPdfDownload(
   email: string,
   entry: Omit<ForensicPdfEntry, 'id' | 'timestamp'>
-): ServerUserRecord {
-  const user = getOrCreateServerUser(email);
+): Promise<ServerUserRecord> {
+  const user = await getOrCreateServerUser(email);
   const now = Date.now();
   const iso = new Date(now).toISOString();
   const pdfEntry: ForensicPdfEntry = {
@@ -3720,14 +3601,21 @@ function recordUserPdfDownload(
     actor: user.email,
   };
 
-  return updateServerUser(user.email, {
-    pdf_downloads: [pdfEntry, ...user.pdf_downloads].slice(0, 200),
-    timeline: [timelineEntry, ...user.timeline].slice(0, 200),
-  });
+  return updateServerUser(
+    user.email,
+    {
+      pdf_downloads: [pdfEntry, ...user.pdf_downloads].slice(0, 200),
+      timeline: [timelineEntry, ...user.timeline].slice(0, 200),
+    },
+    { syncCredits: false }
+  );
 }
 
-function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStatus {
-  const pricing = getPricingPublicPayload();
+async function computeServerLicenseStatus(
+  user: ServerUserRecord,
+  pricingPreloaded?: PricingPublicPayload
+): Promise<ComputedLicenseStatus> {
+  const pricing = pricingPreloaded || (await getPricingPublicPayload());
   const quotas = resolveEffectiveQuotas(user);
   const lock = evaluateLockState(user);
   const planKey = quotas.planKey;
@@ -3756,65 +3644,24 @@ function computeServerLicenseStatus(user: ServerUserRecord): ComputedLicenseStat
   });
 }
 
-async function saveUserToDb(user: ServerUserRecord): Promise<void> {
+async function saveUserToDb(
+  user: ServerUserRecord,
+  options?: { syncCredits?: boolean }
+): Promise<void> {
   const norm = normalizeEmail(user?.email);
   if (!norm) return;
-  const store = loadStore();
-  store.users[norm] = user;
-  persistStore(store);
-
-  const kv = getKvConfig();
-  if (kv) {
-    try {
-      await kvCommand(['SET', `aqari:user:${norm}`, JSON.stringify(user)]);
-    } catch (kvErr) {
-      console.error('[DB] CRITICAL failed saving user to KV store:', kvErr);
-      throw kvErr;
-    }
-    try {
-      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
-      let idx: string[] = [];
-      if (Array.isArray(rawIdx)) idx = rawIdx.map(String);
-      else if (typeof rawIdx === 'string') {
-        try {
-          const parsed = JSON.parse(rawIdx);
-          if (Array.isArray(parsed)) idx = parsed.map(String);
-        } catch {}
-      }
-      if (!idx.includes(norm)) {
-        idx.unshift(norm);
-        await kvCommand(['SET', 'aqari:users_index:v1', JSON.stringify(idx.slice(0, 5000))]);
-      }
-    } catch (idxErr) {
-      console.error('[DB] Non-fatal failed updating users_index:', idxErr);
-    }
-  }
+  await saveUserCoreToStore(user as any, options);
 }
 
-async function readUserFromDbStatus(rawEmail: string): Promise<{ user: ServerUserRecord | null; kvError: boolean }> {
+async function readUserFromDbStatus(
+  rawEmail: string
+): Promise<{ user: ServerUserRecord | null; kvError: boolean }> {
   const email = normalizeEmail(rawEmail);
   if (!email) return { user: null, kvError: false };
-  let kvError = false;
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', `aqari:user:${email}`]);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        const hydrated = hydrateUserRecord(parsed, email);
-        const store = loadStore();
-        store.users[email] = hydrated;
-        persistStore(store);
-        return { user: enforceServerUserExpiry(email), kvError: false };
-      }
-      return { user: null, kvError: false };
-    }
-  } catch (kvErr) {
-    kvError = true;
-    console.error('[DB] Failed reading user from KV store:', kvErr);
-  }
-  const diskUser = getServerUserByEmail(email);
-  return { user: diskUser, kvError };
+  const rawUser = await getUserCoreFromStore(email);
+  if (!rawUser) return { user: null, kvError: false };
+  const enforced = await enforceServerUserExpiry(email, rawUser as any);
+  return { user: enforced, kvError: false };
 }
 
 async function getUserFromDb(rawEmail: string): Promise<ServerUserRecord | null> {
@@ -3877,39 +3724,11 @@ function sanitizeUserForClient(user: ServerUserRecord, maskedApiKey?: string | n
 }
 
 async function deleteApiKeyFromDb(rawToken: string): Promise<void> {
-  const cleanToken = String(rawToken || '').trim();
-  if (!cleanToken) return;
-  const store = loadStore();
-  if (store.api_keys && store.api_keys[cleanToken]) {
-    delete store.api_keys[cleanToken];
-    persistStore(store);
-  }
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['DEL', `aqari:apikey:${cleanToken}`]);
-    }
-  } catch {}
+  await deleteApiKeyStoreDb(rawToken);
 }
 
 async function saveApiKeyToDb(token: string, rawEmail: string): Promise<void> {
-  const cleanToken = String(token || '').trim();
-  const email = normalizeEmail(rawEmail);
-  if (!cleanToken || !email) return;
-
-  const store = loadStore();
-  if (!store.api_keys || typeof store.api_keys !== 'object') store.api_keys = {};
-  store.api_keys[cleanToken] = email;
-  persistStore(store);
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', `aqari:apikey:${cleanToken}`, email]);
-    }
-  } catch (err) {
-    console.error('[DB] Failed saving API key:', err);
-  }
+  await saveApiKeyStoreDb(token, rawEmail);
 }
 
 async function resolveApiKeyEmail(rawToken: string): Promise<string | null> {
@@ -3923,52 +3742,22 @@ async function resolveApiKeyEmail(rawToken: string): Promise<string | null> {
     return false;
   };
 
-  const store = loadStore();
-  if (store.api_keys?.[cleanToken]) {
-    const norm = normalizeEmail(store.api_keys[cleanToken]);
-    const user = (await getUserFromDb(norm).catch(() => null)) || store.users?.[norm] || null;
+  const directEmail = await resolveApiKeyOwnerFromDb(cleanToken);
+  if (directEmail) {
+    const user = await getUserFromDb(directEmail);
     if (isLegacyOrMismatched(user)) return null;
-    return norm;
+    return directEmail;
   }
 
-  for (const email of Object.keys(store.users || {})) {
-    const u = store.users[email];
-    if (u?.api_key_token === cleanToken) return normalizeEmail(email);
-    if (!u?.api_key_revoked_legacy && !u?.api_key_token && buildApiKeyForEmail(email) === cleanToken) {
-      await saveApiKeyToDb(cleanToken, email).catch(() => {});
-      return normalizeEmail(email);
+  const allUsers = await getAllServerUsersFromDb();
+  for (const u of allUsers) {
+    if (u?.api_key_token === cleanToken) return normalizeEmail(u.email);
+    if (!u?.api_key_revoked_legacy && !u?.api_key_token && buildApiKeyForEmail(u.email) === cleanToken) {
+      const norm = normalizeEmail(u.email);
+      await saveApiKeyToDb(cleanToken, norm);
+      return norm;
     }
   }
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const direct = await kvCommand(['GET', `aqari:apikey:${cleanToken}`]);
-      if (direct && typeof direct === 'string' && direct.includes('@')) {
-        const norm = normalizeEmail(direct);
-        const user = await getUserFromDb(norm).catch(() => null);
-        if (isLegacyOrMismatched(user)) return null;
-        store.api_keys[cleanToken] = norm;
-        persistStore(store);
-        return norm;
-      }
-      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
-      const idx: string[] = Array.isArray(rawIdx)
-        ? rawIdx.map(String)
-        : typeof rawIdx === 'string'
-        ? JSON.parse(rawIdx)
-        : [];
-      for (const email of idx) {
-        const u = await getUserFromDb(email).catch(() => null);
-        if (u?.api_key_token === cleanToken) return normalizeEmail(email);
-        if (!u?.api_key_revoked_legacy && !u?.api_key_token && buildApiKeyForEmail(email) === cleanToken) {
-          const norm = normalizeEmail(email);
-          await saveApiKeyToDb(cleanToken, norm).catch(() => {});
-          return norm;
-        }
-      }
-    }
-  } catch {}
 
   return null;
 }
@@ -3980,71 +3769,15 @@ async function appendEmailLogToDb(entry: {
   event_type: string;
   error?: string;
 }): Promise<any> {
-  const log = {
-    id: `em_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    timestamp: new Date().toISOString(),
-    ...entry,
-  };
-  try {
-    const store = loadStore();
-    if (!Array.isArray(store.email_logs)) store.email_logs = [];
-    store.email_logs.unshift(log);
-    store.email_logs = store.email_logs.slice(0, 200);
-    persistStore(store);
-  } catch {}
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['LPUSH', 'aqari:email_logs:v1', JSON.stringify(log)]);
-      await kvCommand(['LTRIM', 'aqari:email_logs:v1', 0, 199]);
-    }
-  } catch {}
-  return log;
+  return appendEmailLogStoreDb(entry);
 }
 
 async function getEmailLogsFromDb(limit = 50): Promise<any[]> {
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawItems = await kvCommand(['LRANGE', 'aqari:email_logs:v1', 0, Math.max(0, limit - 1)]);
-      if (Array.isArray(rawItems) && rawItems.length > 0) {
-        const parsed = rawItems
-          .map((item) => {
-            try {
-              return typeof item === 'string' ? JSON.parse(item) : item;
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean);
-        if (parsed.length > 0) return parsed.slice(0, limit);
-      }
-    }
-  } catch {}
-  return (loadStore().email_logs || []).slice(0, limit);
+  return getEmailLogsStoreDb(limit);
 }
 
 async function appendCancellationLogToDb(entry: any): Promise<any> {
-  const log = {
-    id: `can_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    timestamp: new Date().toISOString(),
-    ...entry,
-  };
-  try {
-    const store = loadStore();
-    if (!Array.isArray(store.cancellation_logs)) store.cancellation_logs = [];
-    store.cancellation_logs.unshift(log);
-    store.cancellation_logs = store.cancellation_logs.slice(0, 200);
-    persistStore(store);
-  } catch {}
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['LPUSH', 'aqari:cancellation_logs:v1', JSON.stringify(log)]);
-      await kvCommand(['LTRIM', 'aqari:cancellation_logs:v1', 0, 199]);
-    }
-  } catch {}
-  return log;
+  return appendCancellationLogStoreDb(entry);
 }
 
 async function dispatchEmailAlert(params: {
@@ -4117,198 +3850,37 @@ async function dispatchEmailAlert(params: {
 }
 
 async function getAnalystThreadsMap(): Promise<Record<string, any>> {
-  const store = loadStore();
-  let merged: Record<string, any> = { ...(store.analyst_threads || {}) };
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', 'aqari:analyst_threads:v1']);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (parsed && typeof parsed === 'object') {
-          merged = { ...merged, ...parsed };
-          store.analyst_threads = merged;
-          persistStore(store);
-        }
-      }
-    }
-  } catch {}
-  return merged;
+  return getAnalystThreadsMapFromDb();
 }
 
 async function getAnalystThreadFromDb(rawEmail: string): Promise<any> {
-  const email = normalizeEmail(rawEmail);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', `aqari:analyst_thread:${email}`]);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (parsed && typeof parsed === 'object') {
-          const store = loadStore();
-          if (!store.analyst_threads) store.analyst_threads = {};
-          store.analyst_threads[email] = parsed;
-          persistStore(store);
-          return parsed;
-        }
-      }
-    }
-  } catch {}
-  const map = await getAnalystThreadsMap();
-  return (
-    map[email] || {
-      email,
-      plan: 'SOVEREIGN',
-      status: 'Open',
-      unreadForAdmin: 0,
-      unreadForClient: 0,
-      updatedAt: Date.now(),
-      messages: [],
-    }
-  );
+  return getAnalystThreadStoreDb(rawEmail);
 }
 
 async function saveAnalystThreadToDb(thread: any): Promise<any> {
-  const email = normalizeEmail(thread?.email);
-  if (!email) return thread;
-  const store = loadStore();
-  if (!store.analyst_threads) store.analyst_threads = {};
-  store.analyst_threads[email] = thread;
-  persistStore(store);
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', `aqari:analyst_thread:${email}`, JSON.stringify(thread)]);
-      const map = await getAnalystThreadsMap();
-      map[email] = thread;
-      await kvCommand(['SET', 'aqari:analyst_threads:v1', JSON.stringify(map)]);
-    }
-  } catch {}
-  return thread;
+  return saveAnalystThreadStoreDb(thread);
 }
 
 async function getWhiteGloveRequestsFromDb(): Promise<any[]> {
-  const store = loadStore();
-  let list: any[] = Array.isArray(store.whiteglove_requests) ? [...store.whiteglove_requests] : [];
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', 'aqari:whiteglove_requests:v1']);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (Array.isArray(parsed)) {
-          list = parsed;
-          store.whiteglove_requests = list;
-          persistStore(store);
-        }
-      }
-    }
-  } catch {}
-  return list;
+  return getWhiteGloveRequestsStoreDb();
 }
 
 async function saveWhiteGloveRequestsToDb(requests: any[]): Promise<any[]> {
-  const trimmed = requests.slice(0, 300);
-  const store = loadStore();
-  store.whiteglove_requests = trimmed;
-  persistStore(store);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', 'aqari:whiteglove_requests:v1', JSON.stringify(trimmed)]);
-    }
-  } catch {}
-  return trimmed;
+  return saveWhiteGloveRequestsStoreDb(requests);
 }
 
 async function appendWebhookLogToDb(
   entry: Omit<WebhookLogEntry, 'id' | 'timestamp'>
 ): Promise<WebhookLogEntry> {
-  const log: WebhookLogEntry = {
-    id: `wh_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    timestamp: new Date().toISOString(),
-    ...entry,
-    event: entry.event || entry.event_name,
-    event_name: entry.event_name || entry.event || 'unknown',
-    raw_error: entry.raw_error ?? entry.error,
-    error: entry.error ?? entry.raw_error,
-  };
-
-  try {
-    const store = loadStore();
-    store.webhook_logs.unshift(log);
-    if (store.webhook_logs.length > 200) {
-      store.webhook_logs = store.webhook_logs.slice(0, 200);
-    }
-    persistStore(store);
-  } catch (diskErr) {
-    console.error('[DB] Failed writing webhook log to disk store:', diskErr);
-  }
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['LPUSH', 'aqari:webhook_logs:v1', JSON.stringify(log)]);
-      await kvCommand(['LTRIM', 'aqari:webhook_logs:v1', 0, 199]);
-    }
-  } catch (kvErr) {
-    console.error('[DB] Failed writing webhook log to KV store:', kvErr);
-  }
-
-  return log;
+  return appendWebhookLogStoreDb(entry as any) as any;
 }
 
 async function getWebhookLogsFromDb(limit = 20): Promise<WebhookLogEntry[]> {
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawItems = await kvCommand(['LRANGE', 'aqari:webhook_logs:v1', 0, Math.max(0, limit - 1)]);
-      if (Array.isArray(rawItems) && rawItems.length > 0) {
-        const parsedLogs: WebhookLogEntry[] = rawItems
-          .map((item) => {
-            try {
-              return typeof item === 'string' ? JSON.parse(item) : item;
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean);
-        if (parsedLogs.length > 0) {
-          return parsedLogs.slice(0, limit);
-        }
-      }
-    }
-  } catch (kvErr) {
-    console.error('[DB] Failed reading webhook logs from KV store:', kvErr);
-  }
-
-  try {
-    const storeFile = getStoreFile();
-    if (fs.existsSync(storeFile)) {
-      const raw = fs.readFileSync(storeFile, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed?.webhook_logs)) {
-        return parsed.webhook_logs.slice(0, limit);
-      }
-    }
-  } catch (diskErr) {
-    console.error('[DB] Failed reading webhook logs from disk store:', diskErr);
-  }
-
-  return loadStore().webhook_logs.slice(0, limit);
+  return getWebhookLogsStoreDb(limit) as any;
 }
 
-function recordPendingCheckout(entry: PendingCheckoutEntry): void {
-  const store = loadStore();
-  const norm = normalizeEmail(entry.email);
-  if (norm) {
-    store.pending_checkouts[norm] = { ...entry, email: norm };
-  }
-  if (entry.checkoutId) {
-    store.pending_checkouts[`chk:${entry.checkoutId}`] = { ...entry, email: norm };
-  }
-  persistStore(store);
+async function recordPendingCheckout(entry: PendingCheckoutEntry): Promise<void> {
+  return recordPendingCheckoutToDb(entry);
 }
 
 function mapAmountOrPlanToOrderTier(
@@ -4381,85 +3953,12 @@ function mapAmountOrPlanToOrderTier(
 }
 
 async function getUsedOrderFromDb(rawOrderId: string): Promise<UsedOrderRecord | null> {
-  const orderKey = normalizeOrderId(rawOrderId);
-  if (!orderKey) return null;
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', `aqari:used_order:${orderKey}`]);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (parsed?.order_id) {
-          const store = loadStore();
-          if (!store.used_orders || typeof store.used_orders !== 'object' || Array.isArray(store.used_orders)) {
-            store.used_orders = {};
-          }
-          store.used_orders[orderKey] = parsed;
-          persistStore(store);
-          return parsed;
-        }
-      }
-      const rawMap = await kvCommand(['GET', 'aqari:used_orders_map:v1']);
-      const map = rawMap ? (typeof rawMap === 'string' ? JSON.parse(rawMap) : rawMap) : null;
-      if (map && typeof map === 'object' && map[orderKey]) {
-        const store = loadStore();
-        if (!store.used_orders || typeof store.used_orders !== 'object' || Array.isArray(store.used_orders)) {
-          store.used_orders = {};
-        }
-        store.used_orders[orderKey] = map[orderKey];
-        persistStore(store);
-        return map[orderKey];
-      }
-    }
-  } catch (err) {
-    console.error('[DB] Failed reading used_order from KV:', err);
-  }
-
-  const store = loadStore();
-  const table =
-    store.used_orders && typeof store.used_orders === 'object' && !Array.isArray(store.used_orders)
-      ? store.used_orders
-      : {};
-  return table[orderKey] || null;
+  return (await getPayment(rawOrderId)) as any;
 }
 
 async function markOrderUsedInDb(record: UsedOrderRecord): Promise<UsedOrderRecord> {
-  const orderKey = normalizeOrderId(record.order_id);
-  const normalizedRecord: UsedOrderRecord = {
-    ...record,
-    order_id: orderKey,
-    login_email: normalizeEmail(record.login_email),
-    payment_email: normalizeEmail(record.payment_email),
-    used_at: Number(record.used_at || Date.now()),
-  };
-
-  const store = loadStore();
-  if (!store.used_orders || typeof store.used_orders !== 'object' || Array.isArray(store.used_orders)) {
-    store.used_orders = {};
-  }
-  store.used_orders[orderKey] = normalizedRecord;
-  persistStore(store);
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', `aqari:used_order:${orderKey}`, JSON.stringify(normalizedRecord)]);
-      const rawMap = await kvCommand(['GET', 'aqari:used_orders_map:v1']);
-      const map: Record<string, UsedOrderRecord> =
-        rawMap && typeof rawMap === 'string'
-          ? JSON.parse(rawMap)
-          : rawMap && typeof rawMap === 'object'
-          ? rawMap
-          : {};
-      map[orderKey] = normalizedRecord;
-      await kvCommand(['SET', 'aqari:used_orders_map:v1', JSON.stringify(map)]);
-    }
-  } catch (err) {
-    console.error('[DB] Failed writing used_order to KV:', err);
-  }
-
-  return normalizedRecord;
+  const res = await savePayment(record.order_id, record as any);
+  return (res.ok ? res.record : res.existing || record) as UsedOrderRecord;
 }
 
 function verifyAdminToken(req: any): boolean {
@@ -4485,180 +3984,37 @@ async function appendAdminAuditLogToDb(entry: {
   details?: Record<string, any>;
   reason?: string;
 }): Promise<any> {
-  const log = {
-    id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    timestamp: new Date().toISOString(),
-    action: entry.action,
-    admin: 'admin-api',
-    targetEmail: entry.targetEmail ? normalizeEmail(entry.targetEmail) : null,
-    reason: entry.reason || '',
-    details: entry.details || {},
-  };
-
-  try {
-    const store = loadStore();
-    if (!Array.isArray(store.admin_audit_logs)) store.admin_audit_logs = [];
-    store.admin_audit_logs.unshift(log);
-    store.admin_audit_logs = store.admin_audit_logs.slice(0, 500);
-    persistStore(store);
-  } catch {}
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['LPUSH', 'aqari:admin_audit_logs:v1', JSON.stringify(log)]);
-      await kvCommand(['LTRIM', 'aqari:admin_audit_logs:v1', 0, 499]);
-    }
-  } catch {}
-
-  return log;
+  return appendAdminAuditLogStoreDb(entry);
 }
 
 async function getAdminAuditLogsFromDb(limit = 200): Promise<any[]> {
-  const byId = new Map<string, any>();
-  const addItems = (items: any[]) => {
-    for (const item of items) {
-      if (!item || typeof item !== 'object') continue;
-      const key = String(item.id || `${item.timestamp || ''}_${item.action || ''}`);
-      if (!byId.has(key)) byId.set(key, item);
-    }
-  };
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawItems = await kvCommand([
-        'LRANGE',
-        'aqari:admin_audit_logs:v1',
-        0,
-        Math.max(0, limit - 1),
-      ]);
-      if (Array.isArray(rawItems)) {
-        const parsed = rawItems
-          .map((item) => {
-            try {
-              return typeof item === 'string' ? JSON.parse(item) : item;
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean);
-        addItems(parsed);
-      }
-    }
-  } catch {}
-
-  addItems(loadStore().admin_audit_logs || []);
-  return Array.from(byId.values())
-    .sort((a, b) => Date.parse(b.timestamp || '') - Date.parse(a.timestamp || ''))
-    .slice(0, limit);
+  return getAdminAuditLogsStoreDb(limit);
 }
 
 async function getAllUsersFromAppDb(): Promise<ServerUserRecord[]> {
-  const map = new Map<string, ServerUserRecord>();
-  const store = loadStore();
-  for (const [k, v] of Object.entries(store.users || {})) {
-    const norm = normalizeEmail(k);
-    if (norm && v) {
-      map.set(norm, hydrateUserRecord(v, norm));
-    }
-  }
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
-      let idx: string[] = [];
-      if (Array.isArray(rawIdx)) {
-        idx = rawIdx.map(String);
-      } else if (typeof rawIdx === 'string') {
-        try {
-          const p = JSON.parse(rawIdx);
-          if (Array.isArray(p)) idx = p.map(String);
-        } catch {}
-      }
-      for (const rawEmail of idx) {
-        const norm = normalizeEmail(rawEmail);
-        if (!norm) continue;
-        const dbUser = await getUserFromDb(norm).catch(() => null);
-        if (dbUser) {
-          map.set(norm, dbUser);
-        }
-      }
-    }
-  } catch {}
-
-  return Array.from(map.values()).sort(
-    (a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0)
-  );
+  return (await getAllServerUsersFromDb()) as any;
 }
 
 async function getEnterpriseInquiriesFromDb(): Promise<any[]> {
-  const byId = new Map<string, any>();
-  const addItems = (items: any[]) => {
-    for (const item of items) {
-      if (!item || typeof item !== 'object') continue;
-      const key = String(item.id || `${item.email || ''}_${item.createdAt || ''}`);
-      if (!byId.has(key)) byId.set(key, item);
-    }
-  };
-
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', 'aqari:enterprise_inquiries:v1']);
-      let list: any[] = [];
-      if (Array.isArray(raw)) list = raw;
-      else if (typeof raw === 'string') {
-        try {
-          const p = JSON.parse(raw);
-          if (Array.isArray(p)) list = p;
-        } catch {}
-      }
-      addItems(list);
-    }
-  } catch {}
-
-  addItems(loadStore().enterprise_inquiries || []);
-  return Array.from(byId.values()).sort(
-    (a, b) => Date.parse(b.createdAt || '') - Date.parse(a.createdAt || '')
-  );
+  return getEnterpriseInquiriesStoreDb();
 }
 
 async function getAllOrdersFromDb(usersList?: ServerUserRecord[]): Promise<any[]> {
-  const byOrder = new Map<string, any>();
-  const store = loadStore();
+  const byOrder: Record<string, any> = Object.create(null);
 
   const mergeEntry = (entry: any) => {
     const id = normalizeOrderId(entry?.order_id);
     if (!id) return;
-    const prev = byOrder.get(id) || {};
-    byOrder.set(id, {
+    const prev = byOrder[id] || {};
+    byOrder[id] = {
       ...prev,
       ...entry,
       order_id: id,
-    });
+    };
   };
 
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawMap = await kvCommand(['GET', 'aqari:used_orders_map:v1']);
-      const map =
-        rawMap && typeof rawMap === 'string'
-          ? JSON.parse(rawMap)
-          : rawMap && typeof rawMap === 'object'
-          ? rawMap
-          : null;
-      if (map && typeof map === 'object') {
-        for (const rec of Object.values(map)) {
-          mergeEntry(rec);
-        }
-      }
-    }
-  } catch {}
-
-  for (const rec of Object.values(store.used_orders || {})) {
+  const payments = await getAllPaymentsFromDb();
+  for (const rec of payments) {
     mergeEntry(rec);
   }
 
@@ -4696,7 +4052,7 @@ async function getAllOrdersFromDb(usersList?: ServerUserRecord[]): Promise<any[]
     });
   }
 
-  return Array.from(byOrder.values()).sort((a, b) => {
+  return Object.values(byOrder).sort((a, b) => {
     const tA = Number(a.used_at || Date.parse(a.timestamp || '') || 0);
     const tB = Number(b.used_at || Date.parse(b.timestamp || '') || 0);
     return tB - tA;
@@ -4953,11 +4309,11 @@ function buildInlinedCityId(city: string, countryCode: string): string {
   return `${cc}-${slug || 'city'}`;
 }
 
-const INLINED_CITIES_MAP = new Map<string, InlinedCityEntry>();
-const INLINED_CITIES_BY_ID = new Map<string, InlinedCityEntry>();
+const INLINED_CITIES_MAP: Record<string, InlinedCityEntry> = Object.create(null);
+const INLINED_CITIES_BY_ID: Record<string, InlinedCityEntry> = Object.create(null);
 for (const [city, countryKey, avgCapRate] of CITY_RAW) {
   const norm = city.trim().toLowerCase();
-  if (INLINED_CITIES_MAP.has(norm)) continue;
+  if (INLINED_CITIES_MAP[norm]) continue;
   const spec = CITY_COUNTRIES[countryKey] || CITY_COUNTRIES.GL;
   const city_id = buildInlinedCityId(city, spec[1]);
   const entry: InlinedCityEntry = {
@@ -4970,22 +4326,22 @@ for (const [city, countryKey, avgCapRate] of CITY_RAW) {
     visaNote: spec[4],
     avgCapRate,
   };
-  INLINED_CITIES_MAP.set(norm, entry);
-  INLINED_CITIES_BY_ID.set(city_id, entry);
+  INLINED_CITIES_MAP[norm] = entry;
+  INLINED_CITIES_BY_ID[city_id] = entry;
 }
 
 function findInlinedCity(rawCity?: string | null, rawCityId?: string | null): InlinedCityEntry | null {
   const cid = String(rawCityId || '').trim().toLowerCase();
-  if (cid && INLINED_CITIES_BY_ID.has(cid)) return INLINED_CITIES_BY_ID.get(cid)!;
+  if (cid && INLINED_CITIES_BY_ID[cid]) return INLINED_CITIES_BY_ID[cid];
   const raw = String(rawCity || '').trim();
   if (!raw) return null;
   const lower = raw.toLowerCase();
-  if (INLINED_CITIES_BY_ID.has(lower)) return INLINED_CITIES_BY_ID.get(lower)!;
-  if (INLINED_CITIES_MAP.has(lower)) return INLINED_CITIES_MAP.get(lower)!;
+  if (INLINED_CITIES_BY_ID[lower]) return INLINED_CITIES_BY_ID[lower];
+  if (INLINED_CITIES_MAP[lower]) return INLINED_CITIES_MAP[lower];
   const strippedParen = raw.replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
-  if (INLINED_CITIES_MAP.has(strippedParen)) return INLINED_CITIES_MAP.get(strippedParen)!;
+  if (INLINED_CITIES_MAP[strippedParen]) return INLINED_CITIES_MAP[strippedParen];
   const beforeComma = raw.split(',')[0].trim().toLowerCase();
-  if (INLINED_CITIES_MAP.has(beforeComma)) return INLINED_CITIES_MAP.get(beforeComma)!;
+  if (INLINED_CITIES_MAP[beforeComma]) return INLINED_CITIES_MAP[beforeComma];
   return null;
 }
 
@@ -6361,121 +5717,29 @@ function getGlobalMarketIntelligenceData() {
   ];
 }
 
-// Enterprise Workspace & Report File Persistence (KV + Shared Store fallback)
+// Enterprise Workspace & Report File Persistence (Upstash Redis via lib/serverStore.ts)
 async function readEnterpriseOrgFromDb(orgId: string): Promise<any | null> {
-  const cleanId = String(orgId || '').trim();
-  if (!cleanId) return null;
-  const store = loadStore();
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', `aqari:org:${cleanId}`]);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (!store.orgs || typeof store.orgs !== 'object') store.orgs = {};
-        store.orgs[cleanId] = parsed;
-        persistStore(store);
-        return parsed;
-      }
-    }
-  } catch (err) {
-    console.error('[Workspace KV Read]', err);
-  }
-  return store.orgs?.[cleanId] || null;
+  return readEnterpriseOrgStoreDb(orgId);
 }
 
 async function saveEnterpriseOrgToDb(org: any): Promise<void> {
-  if (!org?.id) return;
-  const store = loadStore();
-  if (!store.orgs || typeof store.orgs !== 'object') store.orgs = {};
-  store.orgs[org.id] = org;
-  persistStore(store);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', `aqari:org:${org.id}`, JSON.stringify(org)]);
-    }
-  } catch {}
+  return saveEnterpriseOrgStoreDb(org);
 }
 
 async function addOrgToUserIndexDb(rawEmail: string, orgId: string): Promise<string[]> {
-  const email = normalizeEmail(rawEmail);
-  const store = loadStore();
-  if (!store.user_orgs || typeof store.user_orgs !== 'object') store.user_orgs = {};
-  let ids: string[] = [...(store.user_orgs[email] || [])];
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', `aqari:user_orgs:${email}`]);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (Array.isArray(parsed)) ids = parsed.map(String);
-      }
-      if (!ids.includes(orgId)) {
-        ids.unshift(orgId);
-        await kvCommand(['SET', `aqari:user_orgs:${email}`, JSON.stringify(ids.slice(0, 50))]);
-      }
-    }
-  } catch {}
-  if (!ids.includes(orgId)) ids.unshift(orgId);
-  store.user_orgs[email] = ids.slice(0, 50);
-  persistStore(store);
-  return store.user_orgs[email];
+  return addOrgToUserIndexStoreDb(rawEmail, orgId);
 }
 
 async function getUserOrgIdsDb(rawEmail: string): Promise<string[]> {
-  const email = normalizeEmail(rawEmail);
-  const store = loadStore();
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', `aqari:user_orgs:${email}`]);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (Array.isArray(parsed)) {
-          if (!store.user_orgs || typeof store.user_orgs !== 'object') store.user_orgs = {};
-          store.user_orgs[email] = parsed.map(String);
-          persistStore(store);
-          return store.user_orgs[email];
-        }
-      }
-    }
-  } catch {}
-  return store.user_orgs?.[email] || [];
+  return getUserOrgIdsStoreDb(rawEmail);
 }
 
 async function saveReportFileToDb(report: StoredReportRecord): Promise<void> {
-  if (!report?.id) return;
-  const store = loadStore();
-  if (!store.reports || typeof store.reports !== 'object') store.reports = {};
-  store.reports[report.id] = report;
-  persistStore(store);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', `aqari:report:${report.id}`, JSON.stringify(report)]);
-    }
-  } catch {}
+  return saveReportFileStoreDb(report as any);
 }
 
 async function readReportFileFromDb(reportId: string): Promise<StoredReportRecord | null> {
-  const cleanId = String(reportId || '').trim();
-  if (!cleanId) return null;
-  const store = loadStore();
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', `aqari:report:${cleanId}`]);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (!store.reports || typeof store.reports !== 'object') store.reports = {};
-        store.reports[cleanId] = parsed;
-        persistStore(store);
-        return parsed;
-      }
-    }
-  } catch {}
-  return store.reports?.[cleanId] || null;
+  return (await readReportFileStoreDb(reportId)) as any;
 }
 
 async function verifyAdminRequest(
@@ -6534,6 +5798,7 @@ export default async function handler(req: any, res: any) {
           status: 'ok',
           service: 'aqari-terminal-api',
           supportedActions: [
+            'health',
             'me',
             'pricing',
             'verify-checkout',
@@ -6599,6 +5864,15 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'health': {
+        res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const hc = await healthCheckStorage();
+        if (!hc.ok) {
+          return res.status(500).json({ ok: false, success: false, error: 'storage unavailable' });
+        }
+        return res.status(200).json({ ok: true, success: true, storage: 'upstash-redis', latencyMs: hc.latencyMs });
+      }
+
       case 'me': {
         res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate');
         const sessionEmail = await getSessionEmailFromReq(req);
@@ -6619,17 +5893,10 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(lookupEmail);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            authenticated: false,
-            error: 'Database temporarily unavailable. Please retry.',
-          });
-        }
+        const { user: hydratedDb } = await readUserFromDbStatus(lookupEmail);
 
-        const initialUser = hydratedDb || getOrCreateServerUser(lookupEmail);
-        let dbUser = enforceServerUserExpiry(initialUser.email);
+        const initialUser = hydratedDb || (await getOrCreateServerUser(lookupEmail));
+        let dbUser = await enforceServerUserExpiry(initialUser.email, initialUser);
 
         if (!hydratedDb) {
           await saveUserToDb(dbUser);
@@ -6654,7 +5921,7 @@ export default async function handler(req: any, res: any) {
         );
 
         if (ent && shouldApplyEntitlementCookie) {
-          dbUser = activatePaidPlanOnServer({
+          dbUser = await activatePaidPlanOnServer({
             email: dbUser.email,
             name: dbUser.name,
             plan: ent.plan,
@@ -6665,13 +5932,12 @@ export default async function handler(req: any, res: any) {
             paymentCustomerEmail: ent.paymentCustomerEmail || null,
             paymentIntentId: ent.orderId,
           });
-          await saveUserToDb(dbUser);
         }
 
         const lockState = evaluateLockState(dbUser);
-        const license = computeServerLicenseStatus(dbUser);
+        const license = await computeServerLicenseStatus(dbUser);
         const quotas = resolveEffectiveQuotas(dbUser);
-        const pricing = getPricingPublicPayload();
+        const pricing = await getPricingPublicPayload();
         const dynamicPlan = findPlanPricing(pricing, license.planKey);
         const features = dynamicPlan?.features || PLAN_DEFINITIONS[license.planKey].features;
         const planPrice =
@@ -6692,21 +5958,24 @@ export default async function handler(req: any, res: any) {
           const minted = getOrMintApiKeyForUser(dbUser);
           maskedApiKey = minted.masked;
           apiKeyLast4 = minted.last4;
-          await saveApiKeyToDb(minted.rawToken, dbUser.email).catch(() => {});
+          await saveApiKeyToDb(minted.rawToken, dbUser.email);
           if (minted.needsPersist) {
-            dbUser = updateServerUser(dbUser.email, {
-              api_key_token: minted.rawToken,
-              api_key_last4: minted.last4,
-            });
-            await saveUserToDb(dbUser).catch(() => {});
+            dbUser = await updateServerUser(
+              dbUser.email,
+              {
+                api_key_token: minted.rawToken,
+                api_key_last4: minted.last4,
+              },
+              { syncCredits: false }
+            );
           }
         }
         const featurePlanKey = getEffectiveFeaturePlanKey(dbUser);
         const analystThread = canUseFeature(featurePlanKey, 'analystDesk')
-          ? await getAnalystThreadFromDb(dbUser.email).catch(() => null)
+          ? await getAnalystThreadFromDb(dbUser.email)
           : null;
         const allWhiteGlove = canUseFeature(featurePlanKey, 'customUnderwriting')
-          ? await getWhiteGloveRequestsFromDb().catch(() => [])
+          ? await getWhiteGloveRequestsFromDb()
           : [];
         const userWhiteGlove = Array.isArray(allWhiteGlove)
           ? allWhiteGlove.filter((r: any) => normalizeEmail(r?.email) === dbUser.email)
@@ -6886,7 +6155,7 @@ export default async function handler(req: any, res: any) {
         res?.setHeader?.('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         res?.setHeader?.('Pragma', 'no-cache');
         res?.setHeader?.('Expires', '0');
-        return res.status(200).json(getPricingPublicPayload());
+        return res.status(200).json(await getPricingPublicPayload());
       }
 
       case 'verify-payment':
@@ -6972,141 +6241,7 @@ export default async function handler(req: any, res: any) {
             }
           }
 
-          const pricing = getPricingPublicPayload();
-
-          const completeActivation = async (params: {
-            resolvedOrderId: string;
-            amountUSD: number;
-            rawAmountCents?: number;
-            productName?: string;
-            variantId?: string;
-            productId?: string;
-            fallbackPlan?: PlanKey;
-            paymentEmail: string;
-            paymentProvider?: string;
-            testMode: boolean;
-            createdAtIso?: string;
-            skipWebhookLogAppend?: boolean;
-          }) => {
-            const tier = mapAmountOrPlanToOrderTier(params.amountUSD, params.fallbackPlan, {
-              productName: params.productName,
-              variantId: params.variantId,
-              productId: params.productId,
-              rawAmountCents: params.rawAmountCents,
-            });
-            const now = Date.now();
-            let dbUser =
-              (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
-
-            const ruleCheck = evaluatePlanPurchaseRule(dbUser, tier.plan, now);
-            const switchedFromPlan = ruleCheck.isSwitch ? ruleCheck.previousPlan : null;
-            const switchMessage = switchedFromPlan
-              ? `Switched to ${getShortPlanName(tier.plan)}. ${getShortPlanName(switchedFromPlan)} features closed.`
-              : null;
-
-            dbUser = activatePaidPlanOnServer({
-              email: loginEmail,
-              name: dbUser?.name,
-              plan: tier.plan,
-              paymentTimestamp: now,
-              orderId: params.resolvedOrderId,
-              amountUSD: params.amountUSD,
-              currency: 'USD',
-              testMode: params.testMode,
-              refundPolicyAcceptedAt: src?.refundAcceptedAt || new Date(now).toISOString(),
-              lockedLaunchPrice: pricing.launchDiscountActive ? params.amountUSD : null,
-              paymentCustomerEmail: params.paymentEmail || null,
-              paymentProvider: params.paymentProvider || 'paddle',
-              paymentIntentId: params.resolvedOrderId,
-            });
-            await saveUserToDb(dbUser).catch(() => {});
-
-            await markOrderUsedInDb({
-              order_id: params.resolvedOrderId,
-              login_email: loginEmail,
-              payment_email: params.paymentEmail || 'unknown',
-              plan: tier.plan,
-              plan_display: tier.planDisplay,
-              purchase_type: 'plan',
-              switched_from_plan: switchedFromPlan,
-              switched_message: switchMessage,
-              analyses: tier.analyses,
-              amount: params.amountUSD,
-              test_mode: params.testMode,
-              used_at: now,
-            });
-
-            if (!params.skipWebhookLogAppend) {
-              await appendWebhookLogToDb({
-                order_id: params.resolvedOrderId,
-                event: 'checkout_verify_api',
-                event_name: 'checkout_verify_api',
-                plan: tier.plan,
-                email: loginEmail,
-                payment_email: params.paymentEmail || 'unknown',
-                created_at: params.createdAtIso || new Date(now).toISOString(),
-                amount: params.amountUSD,
-                currency: 'USD',
-                test_mode: params.testMode,
-                signature_valid: true,
-              }).catch(() => {});
-            }
-
-            try {
-              setEntitlementCookie(res, {
-                email: dbUser.email,
-                plan: tier.plan,
-                orderId: params.resolvedOrderId,
-                licenseStart: dbUser.license_start || now,
-                licenseEnd: dbUser.license_end || now + THIRTY_DAYS_MS,
-                amountUSD: params.amountUSD,
-                testMode: params.testMode,
-                paymentCustomerEmail: params.paymentEmail || null,
-              });
-            } catch {}
-
-            const license = computeServerLicenseStatus(dbUser);
-            const features =
-              findPlanPricing(pricing, tier.plan)?.features || PLAN_DEFINITIONS[tier.plan].features;
-            const successMessage =
-              switchMessage ||
-              (tier.plan === 'pro'
-                ? 'One-time 30-day PRO access activated! Pro plan is now active.'
-                : `One-time 30-day access activated! ${tier.planDisplay} plan is now active.`);
-
-            return res.status(200).json({
-              success: true,
-              verified: true,
-              purchase_type: 'plan',
-              switched: Boolean(switchedFromPlan),
-              previousPlan: switchedFromPlan,
-              message: successMessage,
-              plan: tier.planDisplay,
-              plan_name: tier.planDisplay,
-              planKey: tier.plan,
-              price: PLAN_DEFINITIONS[tier.plan].priceUSD,
-              analyses_left: license.analysesLeft,
-              credits_balance: dbUser.extra_credits || 0,
-              extra_credits: dbUser.extra_credits || 0,
-              purchase_date: dbUser.license_start ? new Date(dbUser.license_start).toISOString() : null,
-              expiry_date: dbUser.license_end ? new Date(dbUser.license_end).toISOString() : null,
-              expiryDateFormatted: formatDateMMDDYYYY(dbUser.license_end),
-              payment_email_for_log_only: params.paymentEmail || null,
-              order_id: params.resolvedOrderId,
-              transaction_id: params.resolvedOrderId,
-              payment_intent_id: params.resolvedOrderId,
-              payment_provider: params.paymentProvider || 'paddle',
-              login_email: dbUser.email,
-              license_end: dbUser.license_end,
-              user: sanitizeUserForClient(dbUser),
-              license: {
-                ...license,
-                analysesLimit: tier.analyses,
-                analysesLeft: tier.analyses,
-              },
-              features,
-            });
-          };
+          const pricing = await getPricingPublicPayload();
 
           const returnExistingUsedOrder = async (existingUsedOrder: UsedOrderRecord) => {
             if (normalizeEmail(existingUsedOrder.login_email) !== loginEmail) {
@@ -7117,14 +6252,14 @@ export default async function handler(req: any, res: any) {
             }
 
             let existingUser =
-              (await getUserFromDb(loginEmail).catch(() => null)) || getOrCreateServerUser(loginEmail);
+              (await getUserFromDb(loginEmail)) || (await getOrCreateServerUser(loginEmail));
 
             if (existingUsedOrder.purchase_type === 'credit_pack') {
               const pack =
                 EXTRA_CREDIT_PACKS.find((p) => p.id === existingUsedOrder.pack_id) ||
                 EXTRA_CREDIT_PACKS.find((p) => p.priceUSD === Math.round(existingUsedOrder.amount || 0)) ||
                 EXTRA_CREDIT_PACKS[0];
-              const license = computeServerLicenseStatus(existingUser);
+              const license = await computeServerLicenseStatus(existingUser, pricing);
               const features =
                 findPlanPricing(pricing, license.planKey)?.features || PLAN_DEFINITIONS[license.planKey].features;
               return res.status(200).json({
@@ -7160,7 +6295,7 @@ export default async function handler(req: any, res: any) {
                 (existingUser.plan !== existingUsedOrder.plan &&
                   (existingUsedOrder.used_at || 0) >= (existingUser.license_start || 0)))
             ) {
-              existingUser = activatePaidPlanOnServer({
+              existingUser = await activatePaidPlanOnServer({
                 email: loginEmail,
                 name: existingUser.name,
                 plan: existingUsedOrder.plan,
@@ -7173,10 +6308,9 @@ export default async function handler(req: any, res: any) {
                 paymentProvider: existingUser.payment_provider || 'paddle',
                 paymentIntentId: existingUsedOrder.order_id,
               });
-              await saveUserToDb(existingUser).catch(() => {});
             }
             const usedPlanKey = normalizePlanKey(existingUser.plan || existingUsedOrder.plan);
-            const license = computeServerLicenseStatus(existingUser);
+            const license = await computeServerLicenseStatus(existingUser, pricing);
             const features =
               findPlanPricing(pricing, usedPlanKey)?.features || PLAN_DEFINITIONS[usedPlanKey].features;
             const switchedFromPlan = existingUsedOrder.switched_from_plan || null;
@@ -7234,6 +6368,143 @@ export default async function handler(req: any, res: any) {
             });
           };
 
+          const completeActivation = async (params: {
+            resolvedOrderId: string;
+            amountUSD: number;
+            rawAmountCents?: number;
+            productName?: string;
+            variantId?: string;
+            productId?: string;
+            fallbackPlan?: PlanKey;
+            paymentEmail: string;
+            paymentProvider?: string;
+            testMode: boolean;
+            createdAtIso?: string;
+            skipWebhookLogAppend?: boolean;
+          }) => {
+            const tier = mapAmountOrPlanToOrderTier(params.amountUSD, params.fallbackPlan, {
+              productName: params.productName,
+              variantId: params.variantId,
+              productId: params.productId,
+              rawAmountCents: params.rawAmountCents,
+            });
+            const now = Date.now();
+            let dbUser =
+              (await getUserFromDb(loginEmail)) || (await getOrCreateServerUser(loginEmail));
+
+            const ruleCheck = evaluatePlanPurchaseRule(dbUser, tier.plan, now);
+            const switchedFromPlan = ruleCheck.isSwitch ? ruleCheck.previousPlan : null;
+            const switchMessage = switchedFromPlan
+              ? `Switched to ${getShortPlanName(tier.plan)}. ${getShortPlanName(switchedFromPlan)} features closed.`
+              : null;
+
+            // Atomically claim payment order BEFORE activating plan (prevents replay / race)
+            const payRes = await savePayment(params.resolvedOrderId, {
+              order_id: params.resolvedOrderId,
+              login_email: loginEmail,
+              payment_email: params.paymentEmail || 'unknown',
+              plan: tier.plan,
+              plan_display: tier.planDisplay,
+              purchase_type: 'plan',
+              switched_from_plan: switchedFromPlan,
+              switched_message: switchMessage,
+              analyses: tier.analyses,
+              amount: params.amountUSD,
+              test_mode: params.testMode,
+              used_at: now,
+            });
+            if (!payRes.ok && payRes.existing) {
+              return await returnExistingUsedOrder(payRes.existing);
+            }
+
+            dbUser = await activatePaidPlanOnServer({
+              email: loginEmail,
+              name: dbUser?.name,
+              plan: tier.plan,
+              paymentTimestamp: now,
+              orderId: params.resolvedOrderId,
+              amountUSD: params.amountUSD,
+              currency: 'USD',
+              testMode: params.testMode,
+              refundPolicyAcceptedAt: src?.refundAcceptedAt || new Date(now).toISOString(),
+              lockedLaunchPrice: pricing.launchDiscountActive ? params.amountUSD : null,
+              paymentCustomerEmail: params.paymentEmail || null,
+              paymentProvider: params.paymentProvider || 'paddle',
+              paymentIntentId: params.resolvedOrderId,
+            });
+
+            if (!params.skipWebhookLogAppend) {
+              await appendWebhookLogToDb({
+                order_id: params.resolvedOrderId,
+                event: 'checkout_verify_api',
+                event_name: 'checkout_verify_api',
+                plan: tier.plan,
+                email: loginEmail,
+                payment_email: params.paymentEmail || 'unknown',
+                created_at: params.createdAtIso || new Date(now).toISOString(),
+                amount: params.amountUSD,
+                currency: 'USD',
+                test_mode: params.testMode,
+                signature_valid: true,
+              });
+            }
+
+            try {
+              setEntitlementCookie(res, {
+                email: dbUser.email,
+                plan: tier.plan,
+                orderId: params.resolvedOrderId,
+                licenseStart: dbUser.license_start || now,
+                licenseEnd: dbUser.license_end || now + THIRTY_DAYS_MS,
+                amountUSD: params.amountUSD,
+                testMode: params.testMode,
+                paymentCustomerEmail: params.paymentEmail || null,
+              });
+            } catch {}
+
+            const license = await computeServerLicenseStatus(dbUser, pricing);
+            const features =
+              findPlanPricing(pricing, tier.plan)?.features || PLAN_DEFINITIONS[tier.plan].features;
+            const successMessage =
+              switchMessage ||
+              (tier.plan === 'pro'
+                ? 'One-time 30-day PRO access activated! Pro plan is now active.'
+                : `One-time 30-day access activated! ${tier.planDisplay} plan is now active.`);
+
+            return res.status(200).json({
+              success: true,
+              verified: true,
+              purchase_type: 'plan',
+              switched: Boolean(switchedFromPlan),
+              previousPlan: switchedFromPlan,
+              message: successMessage,
+              plan: tier.planDisplay,
+              plan_name: tier.planDisplay,
+              planKey: tier.plan,
+              price: PLAN_DEFINITIONS[tier.plan].priceUSD,
+              analyses_left: license.analysesLeft,
+              credits_balance: dbUser.extra_credits || 0,
+              extra_credits: dbUser.extra_credits || 0,
+              purchase_date: dbUser.license_start ? new Date(dbUser.license_start).toISOString() : null,
+              expiry_date: dbUser.license_end ? new Date(dbUser.license_end).toISOString() : null,
+              expiryDateFormatted: formatDateMMDDYYYY(dbUser.license_end),
+              payment_email_for_log_only: params.paymentEmail || null,
+              order_id: params.resolvedOrderId,
+              transaction_id: params.resolvedOrderId,
+              payment_intent_id: params.resolvedOrderId,
+              payment_provider: params.paymentProvider || 'paddle',
+              login_email: dbUser.email,
+              license_end: dbUser.license_end,
+              user: sanitizeUserForClient(dbUser),
+              license: {
+                ...license,
+                analysesLimit: tier.analyses,
+                analysesLeft: tier.analyses,
+              },
+              features,
+            });
+          };
+
           if (isFallbackMode) {
             const isValidWebhookOrderEntry = (entry: any, allowVerifyEvent = false): string => {
               if (!entry || typeof entry !== 'object') return '';
@@ -7256,7 +6527,7 @@ export default async function handler(req: any, res: any) {
               return oid;
             };
 
-            const recentLogs = await getWebhookLogsFromDb(100).catch(() => []);
+            const recentLogs = await getWebhookLogsFromDb(100);
             const logsArr = Array.isArray(recentLogs) ? recentLogs : [];
 
             let unusedWebhookLog: any = null;
@@ -7266,7 +6537,7 @@ export default async function handler(req: any, res: any) {
             for (const entry of logsArr) {
               const oid = isValidWebhookOrderEntry(entry, false);
               if (!oid) continue;
-              const usedCheck = await getUsedOrderFromDb(oid).catch(() => null);
+              const usedCheck = await getUsedOrderFromDb(oid);
               if (!usedCheck) {
                 unusedWebhookLog = entry;
                 break;
@@ -7313,7 +6584,7 @@ export default async function handler(req: any, res: any) {
             for (const entry of logsArr) {
               const oid = isValidWebhookOrderEntry(entry, true);
               if (!oid) continue;
-              const usedCheck = await getUsedOrderFromDb(oid).catch(() => null);
+              const usedCheck = await getUsedOrderFromDb(oid);
               if (usedCheck && usedCheck.login_email === loginEmail) {
                 return await returnExistingUsedOrder(usedCheck);
               }
@@ -7335,7 +6606,7 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          const existingUsedOrder = await getUsedOrderFromDb(orderId).catch(() => null);
+          const existingUsedOrder = await getUsedOrderFromDb(orderId);
           if (existingUsedOrder) {
             return await returnExistingUsedOrder(existingUsedOrder);
           }
@@ -7445,12 +6716,29 @@ export default async function handler(req: any, res: any) {
 
           if (matchedCreditPack) {
             const targetCreditEmail = loginEmail;
-            const updatedCreditUser = await applyCreditPackToUser({
-              email: targetCreditEmail,
-              pack: matchedCreditPack,
-              orderId: String(txnData.id),
-              isTestMode: verifiedBaseUrl.includes('sandbox'),
-            });
+            let updatedCreditUser: ServerUserRecord & { _duplicateOrder?: boolean };
+            try {
+              updatedCreditUser = await applyCreditPackToUser({
+                email: targetCreditEmail,
+                pack: matchedCreditPack,
+                orderId: String(txnData.id),
+                isTestMode: verifiedBaseUrl.includes('sandbox'),
+              });
+            } catch (packErr: any) {
+              if (packErr?.statusCode === 403) {
+                return res.status(403).json({
+                  success: false,
+                  error: packErr.message,
+                });
+              }
+              throw packErr;
+            }
+            if ((updatedCreditUser as any)._duplicateOrder) {
+              const existingCreditOrder = await getPayment(String(txnData.id));
+              if (existingCreditOrder) {
+                return await returnExistingUsedOrder(existingCreditOrder);
+              }
+            }
             await appendWebhookLogToDb({
               order_id: String(txnData.id),
               event: 'checkout_verify_credit_pack',
@@ -7463,9 +6751,9 @@ export default async function handler(req: any, res: any) {
               currency: 'USD',
               test_mode: verifiedBaseUrl.includes('sandbox'),
               signature_valid: true,
-            }).catch(() => {});
+            });
 
-            const creditLicense = computeServerLicenseStatus(updatedCreditUser);
+            const creditLicense = await computeServerLicenseStatus(updatedCreditUser, pricing);
             const creditFeatures =
               findPlanPricing(pricing, creditLicense.planKey)?.features ||
               PLAN_DEFINITIONS[creditLicense.planKey].features;
@@ -7533,6 +6821,13 @@ export default async function handler(req: any, res: any) {
             createdAtIso: txnData.created_at || new Date().toISOString(),
           });
         } catch (err: any) {
+          if (err instanceof StorageUnavailableError || err?.name === 'StorageUnavailableError') {
+            return res.status(500).json({
+              success: false,
+              ok: false,
+              error: 'storage unavailable',
+            });
+          }
           console.error('[verify-checkout] Unhandled error:', err);
           return res.status(500).json({
             success: false,
@@ -7567,9 +6862,9 @@ export default async function handler(req: any, res: any) {
         }
 
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
-        const pricing = getPricingPublicPayload();
+          (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
+        const pricing = await getPricingPublicPayload();
+        const license = await computeServerLicenseStatus(userRecord, pricing);
 
         return res.status(200).json({
           userId: userRecord.userId || getUserIdForEmail(userRecord.email),
@@ -7765,15 +7060,9 @@ export default async function handler(req: any, res: any) {
           return res.status(400).json({ success: false, error: firstBadNum.error, code: 'INVALID_INPUTS' });
         }
 
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['run-analysis']);
 
         let apiDailyPatch: Partial<ServerUserRecord> = {};
@@ -7804,6 +7093,15 @@ export default async function handler(req: any, res: any) {
             error: 'City not found, please select from list',
             code: 'INVALID_CITY',
             city: rawCityInput,
+          });
+        }
+
+        const creditCharge = await chargeCreditsAtomically(userRecord, CREDIT_COSTS['run-analysis']);
+        if (!creditCharge.ok) {
+          return res.status(creditCharge.status).json({
+            ...creditCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -7918,7 +7216,7 @@ export default async function handler(req: any, res: any) {
           monteCarlo,
         };
 
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: propertyTitle,
@@ -7940,10 +7238,10 @@ export default async function handler(req: any, res: any) {
               },
             },
           },
-          CREDIT_COSTS['run-analysis']
+          CREDIT_COSTS['run-analysis'],
+          { preDecrementedRemaining: creditCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
         const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
@@ -8008,15 +7306,9 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email, { name: body.name }));
+        const license = await computeServerLicenseStatus(userRecord);
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['find-deals']);
 
         let apiDailyPatch: Partial<ServerUserRecord> = {};
@@ -8083,6 +7375,15 @@ export default async function handler(req: any, res: any) {
             success: false,
             error: 'Min Cap Rate (%) must be between 0.1 and 50.',
             code: 'INVALID_INPUTS',
+          });
+        }
+
+        const findDealsCharge = await chargeCreditsAtomically(userRecord, CREDIT_COSTS['find-deals']);
+        if (!findDealsCharge.ok) {
+          return res.status(findDealsCharge.status).json({
+            ...findDealsCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -8206,7 +7507,7 @@ export default async function handler(req: any, res: any) {
           ? `[GENERATED / SIMULATED — NOT LIVE MLS LISTINGS] Limited Deal Finder Preview (2 of ${deals.length} simulated deals for FREE tier) modeled from ${cityEntry.city} benchmark Cap Rate (${cityEntry.avgCapRate}%). Verify live inventory with a licensed broker.`
           : `[GENERATED / SIMULATED — NOT LIVE MLS LISTINGS] Modeled deals derived from ${cityEntry.city} benchmark avg cap rate (${cityEntry.avgCapRate}%) for screening illustration. Verify actual listings with a licensed broker.`;
 
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: `AI Deal Finder - ${cityEntry.city} (${propertyType})`,
@@ -8243,10 +7544,10 @@ export default async function handler(req: any, res: any) {
               },
             },
           },
-          CREDIT_COSTS['find-deals']
+          CREDIT_COSTS['find-deals'],
+          { preDecrementedRemaining: findDealsCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
         const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
         return res.status(200).json({
@@ -8307,15 +7608,9 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email, { name: body.name }));
+        const license = await computeServerLicenseStatus(userRecord);
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['get-forecast']);
 
         let apiDailyPatch: Partial<ServerUserRecord> = {};
@@ -8359,6 +7654,15 @@ export default async function handler(req: any, res: any) {
             error: 'City not found, please select from list',
             code: 'INVALID_CITY',
             city: rawCityInput,
+          });
+        }
+
+        const forecastCharge = await chargeCreditsAtomically(userRecord, CREDIT_COSTS['get-forecast']);
+        if (!forecastCharge.ok) {
+          return res.status(forecastCharge.status).json({
+            ...forecastCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -8511,7 +7815,7 @@ export default async function handler(req: any, res: any) {
           generatedAt: new Date().toISOString(),
         };
 
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: `AI Market Forecast - ${cityEntry.city} (${propertyType})`,
@@ -8537,11 +7841,11 @@ export default async function handler(req: any, res: any) {
               },
             },
           },
-          CREDIT_COSTS['get-forecast']
+          CREDIT_COSTS['get-forecast'],
+          { preDecrementedRemaining: forecastCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
         const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
         return res.status(200).json({
@@ -8593,15 +7897,9 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email, { name: body.name }));
+        const license = await computeServerLicenseStatus(userRecord);
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['run-due-diligence']);
 
         let apiDailyPatch: Partial<ServerUserRecord> = {};
@@ -8679,6 +7977,15 @@ export default async function handler(req: any, res: any) {
             success: false,
             error: 'Building Age (years) must be 0 or greater.',
             code: 'INVALID_INPUTS',
+          });
+        }
+
+        const ddCharge = await chargeCreditsAtomically(userRecord, CREDIT_COSTS['run-due-diligence']);
+        if (!ddCharge.ok) {
+          return res.status(ddCharge.status).json({
+            ...ddCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -8911,7 +8218,7 @@ export default async function handler(req: any, res: any) {
           generatedAt: ddCreatedAt,
         };
 
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: `AI Due Diligence - ${cityEntry.city} (${propertyType})`,
@@ -8940,11 +8247,11 @@ export default async function handler(req: any, res: any) {
               },
             },
           },
-          CREDIT_COSTS['run-due-diligence']
+          CREDIT_COSTS['run-due-diligence'],
+          { preDecrementedRemaining: ddCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
         const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
         return res.status(200).json({
@@ -8995,15 +8302,9 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email, { name: body.name }));
+        const license = await computeServerLicenseStatus(userRecord);
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['optimize-portfolio']);
 
         let apiDailyPatch: Partial<ServerUserRecord> = {};
@@ -9075,6 +8376,15 @@ export default async function handler(req: any, res: any) {
             success: false,
             error: 'Select 2 to 3 distinct target cities from list.',
             code: 'INVALID_CITIES_COUNT',
+          });
+        }
+
+        const optCharge = await chargeCreditsAtomically(userRecord, CREDIT_COSTS['optimize-portfolio']);
+        if (!optCharge.ok) {
+          return res.status(optCharge.status).json({
+            ...optCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -9172,7 +8482,7 @@ export default async function handler(req: any, res: any) {
           generatedAt: optCreatedAt,
         };
 
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: `Global Portfolio Optimizer (${resolvedCities.map((c) => c.city).join(' + ')})`,
@@ -9197,11 +8507,11 @@ export default async function handler(req: any, res: any) {
               },
             },
           },
-          CREDIT_COSTS['optimize-portfolio']
+          CREDIT_COSTS['optimize-portfolio'],
+          { preDecrementedRemaining: optCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
         const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
         return res.status(200).json({
@@ -9252,15 +8562,9 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. No credit deducted. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email, { name: body.name });
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email, { name: body.name }));
+        const license = await computeServerLicenseStatus(userRecord);
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['ask-advisor']);
 
         let apiDailyPatch: Partial<ServerUserRecord> = {};
@@ -9329,10 +8633,19 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        const advisorCharge = await chargeCreditsAtomically(userRecord, CREDIT_COSTS['ask-advisor']);
+        if (!advisorCharge.ok) {
+          return res.status(advisorCharge.status).json({
+            ...advisorCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
+          });
+        }
+
         const qLower = question.toLowerCase();
         // Detect if question mentions a second city for side-by-side yield comparison
         let secondaryCity: InlinedCityEntry | null = null;
-        for (const candidate of INLINED_CITIES_MAP.values()) {
+        for (const candidate of Object.values(INLINED_CITIES_MAP)) {
           if (candidate.city.toLowerCase() === cityEntry.city.toLowerCase()) continue;
           if (candidate.city.length < 4) continue;
           const escaped = candidate.city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -9420,7 +8733,7 @@ export default async function handler(req: any, res: any) {
           generatedAt: advisorCreatedAt,
         };
 
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: `Institutional AI Advisor - ${cityEntry.city}`,
@@ -9446,11 +8759,11 @@ export default async function handler(req: any, res: any) {
               },
             },
           },
-          CREDIT_COSTS['ask-advisor']
+          CREDIT_COSTS['ask-advisor'],
+          { preDecrementedRemaining: advisorCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
         const nextLock = evaluateLockState(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
         const cancellationEligibility = evaluateCancelRefundEligibility(updatedUser);
 
         return res.status(200).json({
@@ -9496,8 +8809,8 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+          (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const lockState = evaluateLockState(userRecord);
         if (lockState.locked) {
           return res.status(403).json({
@@ -9560,8 +8873,7 @@ export default async function handler(req: any, res: any) {
               },
             },
           };
-          const updated = updateServerUser(userRecord.email, { last_results: nextLast });
-          await saveUserToDb(updated).catch(() => {});
+          await updateServerUser(userRecord.email, { last_results: nextLast }, { syncCredits: false });
         }
         return res.status(200).json({
           success: true,
@@ -9592,10 +8904,10 @@ export default async function handler(req: any, res: any) {
         }
 
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email);
+          (await getUserFromDb(email)) ||
+          (await getOrCreateServerUser(email));
         const lockState = evaluateLockState(userRecord);
-        const license = computeServerLicenseStatus(userRecord);
+        const license = await computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
 
         if (lockState.locked) {
@@ -9692,12 +9004,15 @@ export default async function handler(req: any, res: any) {
         };
 
         const nextSaved = [newItem, ...userRecord.saved_analyses];
-        const updated = updateServerUser(email, {
-          saved_analyses: nextSaved,
-          saved_count: nextSaved.length,
-          max_saved: maxSaved,
-        });
-        await saveUserToDb(updated);
+        const updated = await updateServerUser(
+          email,
+          {
+            saved_analyses: nextSaved,
+            saved_count: nextSaved.length,
+            max_saved: maxSaved,
+          },
+          { syncCredits: false }
+        );
 
         return res.status(200).json({
           success: true,
@@ -9724,7 +9039,7 @@ export default async function handler(req: any, res: any) {
         }
         const targetId = idCheck.value;
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+          (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
         const callerId = getUserIdForEmail(email);
         const existingItem = userRecord.saved_analyses.find(
           (item: any) => String(item?.id) === targetId
@@ -9736,15 +9051,18 @@ export default async function handler(req: any, res: any) {
         ) {
           return res.status(404).json({ success: false, error: 'not found' });
         }
-        const license = computeServerLicenseStatus(userRecord);
+        const license = await computeServerLicenseStatus(userRecord);
         const maxSaved = PLAN_DEFINITIONS[license.planKey].savedLimit;
         const nextSaved = userRecord.saved_analyses.filter((item: any) => String(item?.id) !== targetId);
-        const updated = updateServerUser(email, {
-          saved_analyses: nextSaved,
-          saved_count: nextSaved.length,
-          max_saved: maxSaved,
-        });
-        await saveUserToDb(updated);
+        const updated = await updateServerUser(
+          email,
+          {
+            saved_analyses: nextSaved,
+            saved_count: nextSaved.length,
+            max_saved: maxSaved,
+          },
+          { syncCredits: false }
+        );
         return res.status(200).json({
           success: true,
           savedCount: updated.saved_analyses.length,
@@ -9770,8 +9088,8 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+          (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
         if (license.isExpired || !canUseFeature(featurePlanKey, 'analystDesk')) {
           return res.status(403).json({
@@ -9864,8 +9182,8 @@ export default async function handler(req: any, res: any) {
           });
         }
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+          (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
         if (license.isExpired || !canUseFeature(featurePlanKey, 'customUnderwriting')) {
           return res.status(403).json({
@@ -9958,8 +9276,8 @@ export default async function handler(req: any, res: any) {
           return res.status(401).json({ error: 'Authentication required' });
         }
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+          (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
         if (license.isExpired || !canUseFeature(featurePlanKey, 'analystDesk')) {
           return res.status(403).json({
@@ -9981,19 +9299,22 @@ export default async function handler(req: any, res: any) {
         const now = Date.now();
         const referenceId = `SOV-${now.toString(36).toUpperCase()}`;
         const notes = notesCheck.value;
-        const updated = updateServerUser(email, {
-          timeline: [
-            {
-              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: new Date(now).toISOString(),
-              type: 'analysis' as const,
-              message: `${reqType} submitted (${referenceId})${notes ? `: ${notes}` : ''}`,
-              actor: email,
-            },
-            ...userRecord.timeline,
-          ].slice(0, 200),
-        });
-        await saveUserToDb(updated).catch(() => {});
+        await updateServerUser(
+          email,
+          {
+            timeline: [
+              {
+                id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+                timestamp: new Date(now).toISOString(),
+                type: 'analysis' as const,
+                message: `${reqType} submitted (${referenceId})${notes ? `: ${notes}` : ''}`,
+                actor: email,
+              },
+              ...userRecord.timeline,
+            ].slice(0, 200),
+          },
+          { syncCredits: false }
+        );
 
         return res.status(200).json({
           success: true,
@@ -10039,9 +9360,9 @@ export default async function handler(req: any, res: any) {
         }
 
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+          (await getUserFromDb(email)) ||
+          (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
 
@@ -10116,6 +9437,14 @@ export default async function handler(req: any, res: any) {
             displayName: license.displayName,
           });
         }
+        const exportCharge = await chargeCreditsAtomically(userRecord, exportCost);
+        if (!exportCharge.ok) {
+          return res.status(exportCharge.status).json({
+            ...exportCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
+          });
+        }
 
         const propertyTitle = propCheck.value || 'AQARI_Institutional_Asset';
         const safeName = propertyTitle.replace(/[^a-z0-9_-]+/gi, '_');
@@ -10153,9 +9482,9 @@ export default async function handler(req: any, res: any) {
           isWatermarked,
           branding,
           generatedAt: pdfEntry.timestamp,
-        }).catch(() => {});
+        });
 
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: `${propertyTitle} (${format.toUpperCase()})`,
@@ -10169,10 +9498,10 @@ export default async function handler(req: any, res: any) {
             pdfs_used: nextPdfsUsed,
             pdf_downloads: [pdfEntry, ...(userRecord.pdf_downloads || [])].slice(0, 200),
           },
-          exportCost
+          exportCost,
+          { preDecrementedRemaining: exportCharge.remaining }
         );
-        await saveUserToDb(updatedUser).catch(() => {});
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
 
         return res.status(200).json({
           success: true,
@@ -10257,9 +9586,9 @@ export default async function handler(req: any, res: any) {
         }
 
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+          (await getUserFromDb(email)) ||
+          (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const featurePlanKey = getEffectiveFeaturePlanKey(userRecord);
 
         if (license.isExpired) {
@@ -10339,7 +9668,7 @@ export default async function handler(req: any, res: any) {
                 ? String(body.price_id).trim()
                 : '';
             const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
-            const pricing = getPricingPublicPayload();
+            const pricing = await getPricingPublicPayload();
             const isLaunchPrice = Boolean(pricing.launchDiscountActive);
             const validPlan: 'starter' | 'pro' | 'enterprise' | 'institutional' =
               rawPlan === 'starter' ||
@@ -10353,8 +9682,8 @@ export default async function handler(req: any, res: any) {
               : undefined;
 
             if (!resolvedPack && email) {
-              const { user: hydratedDb } = await readUserFromDbStatus(email).catch(() => ({ user: null }));
-              const existingUser = hydratedDb || getServerUserByEmail(email);
+              const { user: hydratedDb } = await readUserFromDbStatus(email);
+              const existingUser = hydratedDb || (await getServerUserByEmail(email));
               const ruleCheck = evaluatePlanPurchaseRule(existingUser, validPlan);
               if (!ruleCheck.allowed) {
                 return res.status(409).json({
@@ -10378,7 +9707,7 @@ export default async function handler(req: any, res: any) {
               : 0;
 
             if (email && !resolvedPack) {
-              recordPendingCheckout({
+              await recordPendingCheckout({
                 email,
                 plan: validPlan,
                 amountUSD: activePriceUSD,
@@ -10478,7 +9807,7 @@ export default async function handler(req: any, res: any) {
           const refundAcceptedAt = body.refundAcceptedAt || new Date().toISOString();
 
           const prices = resolvePaddleConfiguredPrices(isTestMode);
-          const pricing = getPricingPublicPayload();
+          const pricing = await getPricingPublicPayload();
           const isLaunchPrice = Boolean(pricing.launchDiscountActive);
 
           const allowedPlanPrices: Record<
@@ -10647,8 +9976,8 @@ export default async function handler(req: any, res: any) {
           }
 
           if (!isCreditPack && email) {
-            const { user: hydratedDb } = await readUserFromDbStatus(email).catch(() => ({ user: null }));
-            const existingUser = hydratedDb || getServerUserByEmail(email);
+            const { user: hydratedDb } = await readUserFromDbStatus(email);
+            const existingUser = hydratedDb || (await getServerUserByEmail(email));
             const ruleCheck = evaluatePlanPurchaseRule(existingUser, validPlan);
             if (!ruleCheck.allowed) {
               return res.status(409).json({
@@ -10663,7 +9992,7 @@ export default async function handler(req: any, res: any) {
           }
 
           if (email && !isCreditPack) {
-            recordPendingCheckout({
+            await recordPendingCheckout({
               email,
               plan: validPlan,
               amountUSD: activePriceUSD,
@@ -10791,6 +10120,13 @@ export default async function handler(req: any, res: any) {
             refundAcceptedAt,
           });
         } catch (error: any) {
+          if (error instanceof StorageUnavailableError || error?.name === 'StorageUnavailableError') {
+            return res.status(500).json({
+              success: false,
+              ok: false,
+              error: 'storage unavailable',
+            });
+          }
           console.error('CHECKOUT_ERROR', error);
           return res.status(500).json({
             success: false,
@@ -10811,16 +10147,9 @@ export default async function handler(req: any, res: any) {
           if (!sessionEmail) {
             return res.status(200).json({ authenticated: false, email: null, isAdmin: false });
           }
-          const { user: hydratedDb, kvError } = await readUserFromDbStatus(sessionEmail);
-          if (kvError && !hydratedDb) {
-            return res.status(503).json({
-              success: false,
-              authenticated: false,
-              error: 'Database temporarily unavailable. Please retry.',
-            });
-          }
-          const user = hydratedDb || getOrCreateServerUser(sessionEmail);
-          const license = computeServerLicenseStatus(user);
+          const { user: hydratedDb } = await readUserFromDbStatus(sessionEmail);
+          const user = hydratedDb || (await getOrCreateServerUser(sessionEmail));
+          const license = await computeServerLicenseStatus(user);
           const cancellationEligibility = evaluateCancelRefundEligibility(user);
           return res.status(200).json({
             authenticated: true,
@@ -10889,15 +10218,7 @@ export default async function handler(req: any, res: any) {
             });
           }
 
-          const { user: hydratedDb, kvError } = await readUserFromDbStatus(verifiedEmail);
-          if (kvError && !hydratedDb) {
-            return res.status(503).json({
-              success: false,
-              error: 'Database temporarily unavailable. Please retry.',
-            });
-          }
-          const user = recordUserLogin(verifiedEmail, verifiedName);
-          await saveUserToDb(user);
+          const user = await recordUserLogin(verifiedEmail, verifiedName);
           await createSession(
             res,
             {
@@ -10908,8 +10229,8 @@ export default async function handler(req: any, res: any) {
             },
             { req }
           );
-          const license = computeServerLicenseStatus(user);
-          const pricing = getPricingPublicPayload();
+          const pricing = await getPricingPublicPayload();
+          const license = await computeServerLicenseStatus(user, pricing);
           const cancellationEligibility = evaluateCancelRefundEligibility(user);
           const sessionQuotas = resolveEffectiveQuotas(user);
           const maxSaved = sessionQuotas.savedLimit ?? 0;
@@ -10956,9 +10277,9 @@ export default async function handler(req: any, res: any) {
         }
 
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
-        const pricing = getPricingPublicPayload();
+          (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
+        const pricing = await getPricingPublicPayload();
+        const license = await computeServerLicenseStatus(userRecord, pricing);
 
         return res.status(200).json({
           success: true,
@@ -11028,9 +10349,9 @@ export default async function handler(req: any, res: any) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
         const dbUser =
-          (await getUserFromDb(sessionEmail).catch(() => null)) || getOrCreateServerUser(sessionEmail);
+          (await getUserFromDb(sessionEmail)) || (await getOrCreateServerUser(sessionEmail));
         const lockState = evaluateLockState(dbUser);
-        const license = computeServerLicenseStatus(dbUser);
+        const license = await computeServerLicenseStatus(dbUser);
         const quotas = resolveEffectiveQuotas(dbUser);
         if (!quotas.customApiEnabled || lockState.locked) {
           return res.status(403).json({
@@ -11043,13 +10364,16 @@ export default async function handler(req: any, res: any) {
           });
         }
         const minted = getOrMintApiKeyForUser(dbUser);
-        await saveApiKeyToDb(minted.rawToken, dbUser.email).catch(() => {});
+        await saveApiKeyToDb(minted.rawToken, dbUser.email);
         if (minted.needsPersist) {
-          const updated = updateServerUser(dbUser.email, {
-            api_key_token: minted.rawToken,
-            api_key_last4: minted.last4,
-          });
-          await saveUserToDb(updated).catch(() => {});
+          await updateServerUser(
+            dbUser.email,
+            {
+              api_key_token: minted.rawToken,
+              api_key_last4: minted.last4,
+            },
+            { syncCredits: false }
+          );
         }
         return res.status(200).json({
           success: true,
@@ -11069,9 +10393,9 @@ export default async function handler(req: any, res: any) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
         const dbUser =
-          (await getUserFromDb(sessionEmail).catch(() => null)) || getOrCreateServerUser(sessionEmail);
+          (await getUserFromDb(sessionEmail)) || (await getOrCreateServerUser(sessionEmail));
         const lockState = evaluateLockState(dbUser);
-        const license = computeServerLicenseStatus(dbUser);
+        const license = await computeServerLicenseStatus(dbUser);
         const quotas = resolveEffectiveQuotas(dbUser);
         if (!quotas.customApiEnabled || lockState.locked) {
           return res.status(403).json({
@@ -11086,18 +10410,21 @@ export default async function handler(req: any, res: any) {
 
         const oldToken = dbUser.api_key_token || buildApiKeyForEmail(dbUser.email);
         if (oldToken) {
-          await deleteApiKeyFromDb(oldToken).catch(() => {});
+          await deleteApiKeyFromDb(oldToken);
         }
         const newToken = 'aqari_live_' + crypto.randomBytes(16).toString('hex');
         const newLast4 = newToken.slice(-4);
         const newMasked = `****${newLast4}`;
 
-        const updatedUser = updateServerUser(dbUser.email, {
-          api_key_token: newToken,
-          api_key_last4: newLast4,
-          api_key_revoked_legacy: true,
-        });
-        await saveUserToDb(updatedUser);
+        await updateServerUser(
+          dbUser.email,
+          {
+            api_key_token: newToken,
+            api_key_last4: newLast4,
+            api_key_revoked_legacy: true,
+          },
+          { syncCredits: false }
+        );
         await saveApiKeyToDb(newToken, dbUser.email);
 
         return res.status(200).json({
@@ -11247,7 +10574,12 @@ export default async function handler(req: any, res: any) {
           event: eventName,
           event_name: eventName,
           plan: isCreditPackPurchase
-            ? (normalizeEmail(dataObj?.custom_data?.currentPlan) as PlanKey) || resolvedPlan
+            ? (() => {
+                const cp = dataObj?.custom_data?.currentPlan
+                  ? normalizePlanKey(String(dataObj.custom_data.currentPlan))
+                  : 'free';
+                return cp !== 'free' ? cp : resolvedPlan;
+              })()
             : resolvedPlan,
           email: accountEmail || customerEmail || 'unassigned@paddle-webhook',
           payment_email: customerEmail || undefined,
@@ -11293,19 +10625,15 @@ export default async function handler(req: any, res: any) {
         const targetEmail = accountEmail || customerEmail;
 
         // Rule E: Always check duplicate transaction_id globally before applying plans or credits
-        const existingUsedGlobal = await getUsedOrderFromDb(orderId).catch(() => null);
+        const existingUsedGlobal = await getUsedOrderFromDb(orderId);
         if (existingUsedGlobal) {
           duplicateIgnored = true;
           if (targetEmail && targetEmail.includes('@')) {
-            const { user: existingDb } = await readUserFromDbStatus(targetEmail).catch(() => ({
-              user: null,
-            }));
-            finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
+            const { user: existingDb } = await readUserFromDbStatus(targetEmail);
+            finalUserRecord = existingDb || (await getOrCreateServerUser(targetEmail));
           }
         } else if (targetEmail && targetEmail.includes('@')) {
-          const { user: existingDb } = await readUserFromDbStatus(targetEmail).catch(() => ({
-            user: null,
-          }));
+          const { user: existingDb } = await readUserFromDbStatus(targetEmail);
           const alreadyInPayments = Boolean(
             existingDb?.payments?.some(
               (p: any) => normalizeOrderId(p?.order_id) === normalizeOrderId(orderId)
@@ -11313,40 +10641,35 @@ export default async function handler(req: any, res: any) {
           );
           if (alreadyInPayments) {
             duplicateIgnored = true;
-            finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
+            finalUserRecord = existingDb || (await getOrCreateServerUser(targetEmail));
           } else if (isCreditPackPurchase && matchedCreditPack) {
-            finalUserRecord = await applyCreditPackToUser({
+            const creditRes = await applyCreditPackToUser({
               email: targetEmail,
               pack: matchedCreditPack,
               orderId,
               isTestMode: isTestEnv,
             });
-            creditsAdded = matchedCreditPack.credits;
+            finalUserRecord = creditRes;
+            if ((creditRes as any)._duplicateOrder) {
+              duplicateIgnored = true;
+              creditsAdded = 0;
+            } else {
+              creditsAdded = matchedCreditPack.credits;
+            }
           } else {
             const purchaseNow = Date.now();
             const ruleCheck = evaluatePlanPurchaseRule(existingDb, resolvedPlan, purchaseNow);
             if (!ruleCheck.allowed) {
               samePlanBlocked = true;
               samePlanBlockedError = ruleCheck.error;
-              finalUserRecord = existingDb || getOrCreateServerUser(targetEmail);
+              finalUserRecord = existingDb || (await getOrCreateServerUser(targetEmail));
             } else {
               switchedFromPlan = ruleCheck.isSwitch ? ruleCheck.previousPlan : null;
               switchMessage = switchedFromPlan
                 ? `Switched to ${getShortPlanName(resolvedPlan)}. ${getShortPlanName(switchedFromPlan)} features closed.`
                 : null;
-              const activated = activatePaidPlanOnServer({
-                email: targetEmail,
-                plan: resolvedPlan,
-                paymentTimestamp: purchaseNow,
-                orderId,
-                amountUSD: amountUSD > 0 ? amountUSD : undefined,
-                testMode: isTestEnv,
-                paymentCustomerEmail: customerEmail || targetEmail,
-                paymentProvider: 'paddle',
-                paymentIntentId: orderId,
-              });
-              await saveUserToDb(activated).catch(() => {});
-              await markOrderUsedInDb({
+              // Atomically claim orderId BEFORE activating plan
+              const payRes = await savePayment(orderId, {
                 order_id: orderId,
                 login_email: targetEmail,
                 payment_email: customerEmail || targetEmail,
@@ -11359,8 +10682,23 @@ export default async function handler(req: any, res: any) {
                 amount: amountUSD > 0 ? amountUSD : PLAN_DEFINITIONS[resolvedPlan].launchPrice,
                 test_mode: isTestEnv,
                 used_at: purchaseNow,
-              }).catch(() => {});
-              finalUserRecord = activated;
+              });
+              if (!payRes.ok) {
+                duplicateIgnored = true;
+                finalUserRecord = existingDb || (await getOrCreateServerUser(targetEmail));
+              } else {
+                finalUserRecord = await activatePaidPlanOnServer({
+                  email: targetEmail,
+                  plan: resolvedPlan,
+                  paymentTimestamp: purchaseNow,
+                  orderId,
+                  amountUSD: amountUSD > 0 ? amountUSD : undefined,
+                  testMode: isTestEnv,
+                  paymentCustomerEmail: customerEmail || targetEmail,
+                  paymentProvider: 'paddle',
+                  paymentIntentId: orderId,
+                });
+              }
             }
           }
         }
@@ -11520,19 +10858,16 @@ export default async function handler(req: any, res: any) {
         const rawCity = cityTextCheck.value;
 
         const userRecord =
-          (await getUserFromDb(email).catch(() => null)) ||
-          getOrCreateServerUser(email);
+          (await getUserFromDb(email)) ||
+          (await getOrCreateServerUser(email));
         const lockState = evaluateLockState(userRecord);
-        const license = computeServerLicenseStatus(userRecord);
-        if (lockState.locked) {
-          return res.status(403).json({
-            success: false,
-            locked: true,
-            reason: lockState.reason,
-            status: lockState.status,
-            error: lockState.error,
-            analyses_left: 0,
-            code: 'LICENSE_EXPIRED_OR_LIMIT_REACHED',
+        const license = await computeServerLicenseStatus(userRecord);
+        const creditCheck = ensureCreditsForAction(userRecord, 1);
+        if (!creditCheck.ok) {
+          return res.status(creditCheck.status).json({
+            ...creditCheck.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -11650,14 +10985,29 @@ export default async function handler(req: any, res: any) {
           addedAt: Date.now(),
         };
 
-        const afterCreditUser = recordUserAnalysis(email, {
-          property: `${resolvedCity} Prime Residential`,
-          city: resolvedCity,
-          priceUSD,
-          capRate: Number((grossYield * 0.85).toFixed(2)),
-          cashOnCash: Number((grossYield * 0.92).toFixed(2)),
-          resultSummary: `Custom City Benchmark: ${grossYield}% Gross`,
-        });
+        const cityCharge = await chargeCreditsAtomically(userRecord, 1);
+        if (!cityCharge.ok) {
+          return res.status(cityCharge.status).json({
+            ...cityCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
+          });
+        }
+
+        const afterCreditUser = await recordUserAnalysis(
+          userRecord,
+          {
+            property: `${resolvedCity} Prime Residential`,
+            city: resolvedCity,
+            priceUSD,
+            capRate: Number((grossYield * 0.85).toFixed(2)),
+            cashOnCash: Number((grossYield * 0.92).toFixed(2)),
+            resultSummary: `Custom City Benchmark: ${grossYield}% Gross`,
+          },
+          undefined,
+          1,
+          { preDecrementedRemaining: cityCharge.remaining }
+        );
 
         const existingCities = Array.isArray(afterCreditUser.custom_cities)
           ? afterCreditUser.custom_cities
@@ -11667,9 +11017,12 @@ export default async function handler(req: any, res: any) {
           ...existingCities.filter((c) => c.city.toLowerCase() !== resolvedCity.toLowerCase()),
         ].slice(0, 20);
 
-        const savedUser = updateServerUser(email, { custom_cities: dedupedCities });
-        await saveUserToDb(savedUser).catch(() => {});
-        const nextLicense = computeServerLicenseStatus(savedUser);
+        const savedUser = await updateServerUser(
+          email,
+          { custom_cities: dedupedCities },
+          { syncCredits: false }
+        );
+        const nextLicense = await computeServerLicenseStatus(savedUser);
 
         return res.status(200).json({
           success: true,
@@ -11783,8 +11136,7 @@ export default async function handler(req: any, res: any) {
             const userData = await userRes.json();
             const verifiedEmail = normalizeEmail(userData?.email || '');
             if (verifiedEmail && userData?.email_verified !== false) {
-              const loggedUser = recordUserLogin(verifiedEmail, userData?.name);
-              await saveUserToDb(loggedUser).catch(() => {});
+              const loggedUser = await recordUserLogin(verifiedEmail, userData?.name);
               await createSession(
                 res,
                 {
@@ -11887,7 +11239,7 @@ export default async function handler(req: any, res: any) {
         const description = descCheck.value;
 
         const existing =
-          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+          (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
         const now = Date.now();
         const iso = new Date(now).toISOString();
         const timelineEntry: ForensicTimelineEntry = {
@@ -11898,15 +11250,18 @@ export default async function handler(req: any, res: any) {
           actor: email,
         };
 
-        const updatedUser = updateServerUser(email, {
-          has_reported_issue: true,
-          issue_reported_at: now,
-          issue_resolved_at: null,
-          issue_description: description,
-          issue_status: 'open',
-          timeline: [timelineEntry, ...existing.timeline].slice(0, 200),
-        });
-        await saveUserToDb(updatedUser).catch(() => {});
+        const updatedUser = await updateServerUser(
+          email,
+          {
+            has_reported_issue: true,
+            issue_reported_at: now,
+            issue_resolved_at: null,
+            issue_description: description,
+            issue_status: 'open',
+            timeline: [timelineEntry, ...existing.timeline].slice(0, 200),
+          },
+          { syncCredits: false }
+        );
 
         const planName = PLAN_DEFINITIONS[normalizePlanKey(updatedUser.plan)].displayName;
         await dispatchEmailAlert({
@@ -11946,7 +11301,7 @@ export default async function handler(req: any, res: any) {
         }
 
         const user =
-          (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
+          (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
         const now = Date.now();
         const planKey = normalizePlanKey(user.plan);
         if (planKey === 'free') {
@@ -11965,7 +11320,6 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const store = loadStore();
         let orderId = normalizeOrderId(
           body.order_id ||
             user.payment_intent_id ||
@@ -11974,7 +11328,8 @@ export default async function handler(req: any, res: any) {
             ''
         );
         if (!orderId) {
-          const matchingUsed = Object.values(store.used_orders || {})
+          const allPayments = await getAllPaymentsFromDb();
+          const matchingUsed = Object.values(allPayments || {})
             .filter((o: any) => normalizeEmail(o?.login_email) === email && o?.order_id)
             .sort((a: any, b: any) => Number(b.used_at || 0) - Number(a.used_at || 0));
           if (matchingUsed[0]?.order_id) {
@@ -12068,23 +11423,26 @@ export default async function handler(req: any, res: any) {
           actor: email,
         };
 
-        const updatedUser = updateServerUser(email, {
-          plan: 'free',
-          status: 'active',
-          analyses_used: 0,
-          analyses_left: PLAN_DEFINITIONS.free.analysesLimit,
-          analyses_total: PLAN_DEFINITIONS.free.analysesLimit,
-          max_saved: PLAN_DEFINITIONS.free.savedLimit,
-          successful_analyses: 0,
-          license_start: now,
-          license_end: now + THIRTY_DAYS_MS,
-          cancel_status: 'refunded',
-          refund_requested: true,
-          refund_status: 'approved',
-          refund_notes: `Cancelled + Paddle refund Ref #${orderId} ($${refundedAmountUSD}) via ${eligibility.eligibleRule}`,
-          timeline: [timelineEntry, ...user.timeline].slice(0, 200),
-        });
-        await saveUserToDb(updatedUser).catch(() => {});
+        const updatedUser = await updateServerUser(
+          email,
+          {
+            plan: 'free',
+            status: 'active',
+            analyses_used: 0,
+            analyses_left: PLAN_DEFINITIONS.free.analysesLimit,
+            analyses_total: PLAN_DEFINITIONS.free.analysesLimit,
+            max_saved: PLAN_DEFINITIONS.free.savedLimit,
+            successful_analyses: 0,
+            license_start: now,
+            license_end: now + THIRTY_DAYS_MS,
+            cancel_status: 'refunded',
+            refund_requested: true,
+            refund_status: 'approved',
+            refund_notes: `Cancelled + Paddle refund Ref #${orderId} ($${refundedAmountUSD}) via ${eligibility.eligibleRule}`,
+            timeline: [timelineEntry, ...user.timeline].slice(0, 200),
+          },
+          { syncCredits: true }
+        );
         appendSetCookieHeader(
           res,
           `${ENTITLEMENT_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
@@ -12138,14 +11496,8 @@ export default async function handler(req: any, res: any) {
             retryAfterSec: rl.retryAfterSec,
           });
         }
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
         return res.status(200).json({
           success: true,
           email: userRecord.email,
@@ -12163,14 +11515,8 @@ export default async function handler(req: any, res: any) {
           return res.status(401).json({ success: false, error: 'Authentication required' });
         }
         const rawTool = String(body.tool || '').trim().toLowerCase();
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
         const nextLastResults: PersistedLastResults = { ...(userRecord.last_results || {}) };
         if (rawTool === 'analysis' || rawTool === 'analyze') {
           nextLastResults.analysis = null;
@@ -12214,11 +11560,11 @@ export default async function handler(req: any, res: any) {
               "Specify tool: 'analysis', 'deal_finder', 'forecast', 'due_diligence', 'portfolio_optimizer', 'advisor', 'file_analysis', 'property_studio', 'due_diligence_docs', 'scenario_comparison', or 'all'.",
           });
         }
-        const store = loadStore();
-        store.users[email] = userRecord;
-        persistStore(store);
-        const updatedUser = updateServerUser(email, { last_results: nextLastResults });
-        await saveUserToDb(updatedUser);
+        const updatedUser = await updateServerUser(
+          email,
+          { last_results: nextLastResults },
+          { syncCredits: false }
+        );
         return res.status(200).json({
           success: true,
           tool: rawTool,
@@ -12243,15 +11589,9 @@ export default async function handler(req: any, res: any) {
             retryAfterSec: rl.retryAfterSec,
           });
         }
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. Please retry.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
         if (quotas.isEnterprise && (quotas.imagePdfLimit === null || quotas.imagePdfLimit <= 0)) {
@@ -12306,6 +11646,15 @@ export default async function handler(req: any, res: any) {
           return res.status(400).json({
             success: false,
             error: 'Please upload an image (PNG/JPG/WEBP) or PDF file.',
+          });
+        }
+
+        const extractCharge = await chargeCreditsAtomically(userRecord, CREDIT_COSTS['extract-from-file']);
+        if (!extractCharge.ok) {
+          return res.status(extractCharge.status).json({
+            ...extractCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -12471,7 +11820,7 @@ export default async function handler(req: any, res: any) {
 
         const extractionId = `ext_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const nextImagePdfUsed = currentImagePdfUsed + 1;
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: draft.propertyTitle,
@@ -12485,10 +11834,10 @@ export default async function handler(req: any, res: any) {
             image_pdf_used: nextImagePdfUsed,
             last_extraction_id: extractionId,
           },
-          CREDIT_COSTS['extract-from-file']
+          CREDIT_COSTS['extract-from-file'],
+          { preDecrementedRemaining: extractCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
 
         return res.status(200).json({
           success: true,
@@ -12519,15 +11868,9 @@ export default async function handler(req: any, res: any) {
             retryAfterSec: rl.retryAfterSec,
           });
         }
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({
-            success: false,
-            error: 'Database temporarily unavailable. No credit deducted.',
-          });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
         if (quotas.isEnterprise && (quotas.imagePdfLimit === null || quotas.imagePdfLimit <= 0)) {
@@ -12599,6 +11942,14 @@ export default async function handler(req: any, res: any) {
             success: false,
             error: 'Confirmed Property Price ($) and Monthly Rent ($) must be within valid positive limits.',
             code: 'INVALID_INPUTS',
+          });
+        }
+        const fileCharge = await chargeCreditsAtomically(userRecord, CREDIT_COSTS['run-file-analysis']);
+        if (!fileCharge.ok) {
+          return res.status(fileCharge.status).json({
+            ...fileCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
           });
         }
 
@@ -12713,7 +12064,7 @@ export default async function handler(req: any, res: any) {
         };
 
         const nextImagePdfUsed = alreadyCountedExtraction ? currentImagePdfUsed : currentImagePdfUsed + 1;
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: report.inputs.propertyTitle,
@@ -12731,10 +12082,10 @@ export default async function handler(req: any, res: any) {
               file_analysis: report,
             },
           },
-          CREDIT_COSTS['run-file-analysis']
+          CREDIT_COSTS['run-file-analysis'],
+          { preDecrementedRemaining: fileCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
 
         return res.status(200).json({
           success: true,
@@ -12765,12 +12116,9 @@ export default async function handler(req: any, res: any) {
             retryAfterSec: rl.retryAfterSec,
           });
         }
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({ success: false, error: 'Database temporarily unavailable.' });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
 
@@ -12868,6 +12216,22 @@ export default async function handler(req: any, res: any) {
           ? `Indicative Gross Yield (${impliedYield}%) derived strictly from user-supplied rent ($${expectedMonthlyRentUSD.toLocaleString('en-US')}/mo) & budget ($${budgetUSD.toLocaleString('en-US')}). Not guaranteed.`
           : 'Monthly rent or yield is unverified/out-of-bounds and excluded from formal projections.';
 
+        const studioAi = body.useAiEnhance !== false ? getServerGeminiClient() : null;
+        if (body.useAiEnhance !== false && !studioAi) {
+          return res.status(503).json({
+            success: false,
+            error: publicError('Property studio AI service unavailable.', 'GEMINI_API_KEY is not configured in server Secrets (Settings > Secrets).'),
+          });
+        }
+        const studioCharge = await chargeCreditsAtomically(userRecord, studioCreditCost);
+        if (!studioCharge.ok) {
+          return res.status(studioCharge.status).json({
+            ...studioCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
+          });
+        }
+
         let aiCopy = {
           description: '',
           locationNarrative: '',
@@ -12875,15 +12239,8 @@ export default async function handler(req: any, res: any) {
           riskNotes: [] as string[],
         };
 
-        if (body.useAiEnhance !== false) {
-          const ai = getServerGeminiClient();
-          if (!ai) {
-            return res.status(503).json({
-              success: false,
-              error: publicError('Property studio AI service unavailable.', 'GEMINI_API_KEY is not configured in server Secrets (Settings > Secrets).'),
-            });
-          }
-          const resp = await ai.models.generateContent({
+        if (studioAi) {
+          const resp = await studioAi.models.generateContent({
             model: 'gemini-4-hydrogen',
             contents: `Write institutional real estate marketing & underwriting prose in English for:
 - Title: ${title}
@@ -12981,7 +12338,7 @@ STRICT GUARDRAILS:
         };
 
         const nextAiListingsUsed = currentAiListingsUsed + 1;
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: draft.title,
@@ -12998,10 +12355,10 @@ STRICT GUARDRAILS:
               property_studio: draft,
             },
           },
-          studioCreditCost
+          studioCreditCost,
+          { preDecrementedRemaining: studioCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
 
         return res.status(200).json({
           success: true,
@@ -13029,12 +12386,9 @@ STRICT GUARDRAILS:
             retryAfterSec: rl.retryAfterSec,
           });
         }
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({ success: false, error: 'Database temporarily unavailable.' });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
         let assets: any[] = Array.isArray(userRecord.portfolio_assets)
@@ -13134,13 +12488,13 @@ STRICT GUARDRAILS:
           }
 
           const sliceCap = quotas.portfolioAssetsLimit ?? assets.length;
-          const store = loadStore();
-          store.users[email] = userRecord;
-          persistStore(store);
-          const updated = updateServerUser(email, {
-            portfolio_assets: assets.slice(0, sliceCap),
-          });
-          await saveUserToDb(updated);
+          const updated = await updateServerUser(
+            email,
+            {
+              portfolio_assets: assets.slice(0, sliceCap),
+            },
+            { syncCredits: false }
+          );
           assets = updated.portfolio_assets || [];
         }
 
@@ -13232,12 +12586,9 @@ STRICT GUARDRAILS:
             retryAfterSec: rl.retryAfterSec,
           });
         }
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({ success: false, error: 'Database temporarily unavailable. No credit deducted.' });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const creditCheck = ensureCreditsForAction(userRecord, CREDIT_COSTS['due-diligence-docs']);
         if (!creditCheck.ok) {
           return res.status(creditCheck.status).json({
@@ -13286,6 +12637,14 @@ STRICT GUARDRAILS:
         const modelHoa = modelHoaCheck.value;
         const modelOwnership = String(finModel.ownershipType || 'Freehold');
         const modelCity = modelCityCheck.value || 'Muscat';
+        const ddDocsCharge = await chargeCreditsAtomically(userRecord, CREDIT_COSTS['due-diligence-docs']);
+        if (!ddDocsCharge.ok) {
+          return res.status(ddDocsCharge.status).json({
+            ...ddDocsCharge.payload,
+            plan: license.planKey,
+            displayName: license.displayName,
+          });
+        }
 
         const parts: any[] = [];
         const docListDesc: string[] = [];
@@ -13405,7 +12764,7 @@ Return JSON with:
           generatedAt: new Date().toISOString(),
         };
 
-        const updatedUser = recordUserAnalysis(
+        const updatedUser = await recordUserAnalysis(
           userRecord,
           {
             property: `Document DD (${documents.length} docs)`,
@@ -13421,10 +12780,10 @@ Return JSON with:
               due_diligence_docs: result,
             },
           },
-          CREDIT_COSTS['due-diligence-docs']
+          CREDIT_COSTS['due-diligence-docs'],
+          { preDecrementedRemaining: ddDocsCharge.remaining }
         );
-        await saveUserToDb(updatedUser);
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
 
         return res.status(200).json({
           success: true,
@@ -13454,8 +12813,8 @@ Return JSON with:
           });
         }
         const { user: hydratedDb } = await readUserFromDbStatus(email);
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
         const planCfg = PLAN_DEFINITIONS[license.planKey];
         const effectiveCompareLimit = quotas.compareLimit ?? planCfg.compareLimit;
@@ -13544,13 +12903,16 @@ Return JSON with:
           scenarios: computed,
           created_at: new Date().toISOString(),
         };
-        const updated = updateServerUser(email, {
-          last_results: {
-            ...(userRecord.last_results || {}),
-            scenario_comparison: payload,
+        const updated = await updateServerUser(
+          email,
+          {
+            last_results: {
+              ...(userRecord.last_results || {}),
+              scenario_comparison: payload,
+            },
           },
-        });
-        await saveUserToDb(updated).catch(() => {});
+          { syncCredits: false }
+        );
 
         return res.status(200).json({
           success: true,
@@ -13575,8 +12937,8 @@ Return JSON with:
           });
         }
         const { user: hydratedDb } = await readUserFromDbStatus(email);
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
 
         let orgIds = await getUserOrgIdsDb(email);
@@ -13912,9 +13274,9 @@ Return JSON with:
         const sessionEmail = await getSessionEmailFromReq(req);
         let planKey: PlanKey = 'free';
         if (sessionEmail && sessionEmail.includes('@')) {
-          const userRec = (await getUserFromDb(sessionEmail).catch(() => null)) || getServerUserByEmail(sessionEmail);
+          const userRec = (await getUserFromDb(sessionEmail)) || (await getServerUserByEmail(sessionEmail));
           if (userRec) {
-            planKey = computeServerLicenseStatus(userRec).planKey;
+            planKey = (await computeServerLicenseStatus(userRec)).planKey;
           }
         }
         const isBasicMarket = planKey === 'free';
@@ -14006,8 +13368,8 @@ Return JSON with:
             });
           }
           const existingUser =
-            (await getUserFromDb(email).catch(() => null)) || getOrCreateServerUser(email);
-          const existingLic = computeServerLicenseStatus(existingUser);
+            (await getUserFromDb(email)) || (await getOrCreateServerUser(email));
+          const existingLic = await computeServerLicenseStatus(existingUser);
           return res.status(200).json({
             success: true,
             alreadyApplied: true,
@@ -14047,17 +13409,28 @@ Return JSON with:
           });
         }
 
-        const updatedUser = await applyCreditPackToUser({
-          email,
-          pack,
-          orderId: rawOrderId,
-          isTestMode: paddleEnv.isSandbox,
-        });
-        const nextLicense = computeServerLicenseStatus(updatedUser);
+        let updatedUser: ServerUserRecord;
+        try {
+          updatedUser = await applyCreditPackToUser({
+            email,
+            pack,
+            orderId: rawOrderId,
+            isTestMode: paddleEnv.isSandbox,
+          });
+        } catch (packErr: any) {
+          if (packErr?.statusCode === 403) {
+            return res.status(403).json({ success: false, error: packErr.message });
+          }
+          throw packErr;
+        }
+        const nextLicense = await computeServerLicenseStatus(updatedUser);
 
         return res.status(200).json({
           success: true,
-          message: `Added +${pack.credits} non-expiring AI credits (${pack.label}) to your balance.`,
+          alreadyApplied: Boolean((updatedUser as any)._duplicateOrder),
+          message: (updatedUser as any)._duplicateOrder
+            ? 'Credits already applied for this transaction.'
+            : `Added +${pack.credits} non-expiring AI credits (${pack.label}) to your balance.`,
           pack,
           transaction_id: rawOrderId,
           analyses_left: nextLicense.analysesLeft,
@@ -14085,12 +13458,9 @@ Return JSON with:
             retryAfterSec: rl.retryAfterSec,
           });
         }
-        const { user: hydratedDb, kvError } = await readUserFromDbStatus(email);
-        if (kvError && !hydratedDb) {
-          return res.status(503).json({ success: false, error: 'Database temporarily unavailable.' });
-        }
-        const userRecord = hydratedDb || getOrCreateServerUser(email);
-        const license = computeServerLicenseStatus(userRecord);
+        const { user: hydratedDb } = await readUserFromDbStatus(email);
+        const userRecord = hydratedDb || (await getOrCreateServerUser(email));
+        const license = await computeServerLicenseStatus(userRecord);
         const quotas = resolveEffectiveQuotas(userRecord);
         if (license.isExpired || !quotas.whiteLabelEnabled) {
           return res.status(403).json({
@@ -14138,20 +13508,23 @@ Return JSON with:
           accentColor,
         };
         const now = Date.now();
-        const updatedUser = updateServerUser(email, {
-          branding,
-          timeline: [
-            {
-              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: new Date(now).toISOString(),
-              type: 'branding_update' as const,
-              message: `Updated White-Label PDF Branding (${branding.firmName}, ${branding.accentColor})`,
-              actor: email,
-            },
-            ...(userRecord.timeline || []),
-          ].slice(0, 200),
-        });
-        await saveUserToDb(updatedUser);
+        await updateServerUser(
+          email,
+          {
+            branding,
+            timeline: [
+              {
+                id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+                timestamp: new Date(now).toISOString(),
+                type: 'branding_update' as const,
+                message: `Updated White-Label PDF Branding (${branding.firmName}, ${branding.accentColor})`,
+                actor: email,
+              },
+              ...(userRecord.timeline || []),
+            ].slice(0, 200),
+          },
+          { syncCredits: false }
+        );
         return res.status(200).json({
           success: true,
           branding,
@@ -14207,29 +13580,7 @@ Return JSON with:
           createdAt: new Date(now).toISOString(),
         };
 
-        const store = loadStore();
-        store.enterprise_inquiries = [inquiry, ...(store.enterprise_inquiries || [])].slice(0, 200);
-        persistStore(store);
-
-        const kv = getKvConfig();
-        if (kv) {
-          try {
-            const raw = await kvCommand(['GET', 'aqari:enterprise_inquiries:v1']);
-            let list: any[] = [];
-            if (Array.isArray(raw)) list = raw;
-            else if (typeof raw === 'string') {
-              try {
-                const p = JSON.parse(raw);
-                if (Array.isArray(p)) list = p;
-              } catch {}
-            }
-            await kvCommand([
-              'SET',
-              'aqari:enterprise_inquiries:v1',
-              JSON.stringify([inquiry, ...list].slice(0, 200)),
-            ]);
-          } catch {}
-        }
+        await appendEnterpriseInquiryStoreDb(inquiry);
 
         await dispatchEmailAlert({
           to: 'loomorastudios@gmail.com',
@@ -14263,40 +13614,42 @@ Return JSON with:
 
         if (section === 'users') {
           const allUsers = await getAllUsersFromAppDb();
-          const users = allUsers.map((u) => {
-            const planKey = normalizePlanKey(u.plan);
-            const planDef = PLAN_DEFINITIONS[planKey];
-            const license = computeServerLicenseStatus(u);
-            const lock = evaluateLockState(u);
-            return {
-              email: u.email,
-              name: u.name,
-              plan: planKey,
-              planDisplay: planDef.displayName,
-              status: lock.status,
-              admin_locked: Boolean(u.admin_locked),
-              admin_lock_reason: u.admin_lock_reason || null,
-              purchase_date: u.license_start ? new Date(u.license_start).toISOString() : null,
-              expiry_date:
-                planKey === 'free'
-                  ? null
-                  : u.license_end
-                  ? new Date(u.license_end).toISOString()
-                  : null,
-              license_start: u.license_start,
-              license_end: u.license_end,
-              days_left: license.daysLeft,
-              is_expired: license.isExpired,
-              credits_balance: Math.max(0, Number(u.extra_credits || 0)),
-              extra_credits: Math.max(0, Number(u.extra_credits || 0)),
-              analyses_used: Number(u.analyses_used || 0),
-              analyses_left: Number(lock.analysesLeft || 0),
-              analyses_total: Number(u.analyses_total || 0),
-              total_paid_usd: Number(u.total_paid_usd || 0),
-              last_order_id: u.last_order_id || null,
-              updated_at: u.updated_at || null,
-            };
-          });
+          const users = await Promise.all(
+            allUsers.map(async (u) => {
+              const planKey = normalizePlanKey(u.plan);
+              const planDef = PLAN_DEFINITIONS[planKey];
+              const license = await computeServerLicenseStatus(u);
+              const lock = evaluateLockState(u);
+              return {
+                email: u.email,
+                name: u.name,
+                plan: planKey,
+                planDisplay: planDef.displayName,
+                status: lock.status,
+                admin_locked: Boolean(u.admin_locked),
+                admin_lock_reason: u.admin_lock_reason || null,
+                purchase_date: u.license_start ? new Date(u.license_start).toISOString() : null,
+                expiry_date:
+                  planKey === 'free'
+                    ? null
+                    : u.license_end
+                    ? new Date(u.license_end).toISOString()
+                    : null,
+                license_start: u.license_start,
+                license_end: u.license_end,
+                days_left: license.daysLeft,
+                is_expired: license.isExpired,
+                credits_balance: Math.max(0, Number(u.extra_credits || 0)),
+                extra_credits: Math.max(0, Number(u.extra_credits || 0)),
+                analyses_used: Number(u.analyses_used || 0),
+                analyses_left: Number(lock.analysesLeft || 0),
+                analyses_total: Number(u.analyses_total || 0),
+                total_paid_usd: Number(u.total_paid_usd || 0),
+                last_order_id: u.last_order_id || null,
+                updated_at: u.updated_at || null,
+              };
+            })
+          );
           return res.status(200).json({
             success: true,
             section: 'users',
@@ -14435,7 +13788,7 @@ Return JSON with:
           });
         }
 
-        await getUserFromDb(targetEmail).catch(() => null);
+        await getUserFromDb(targetEmail);
         const rawPackId = String(body.packId || body.pack_id || '').trim();
         let updatedUser: ServerUserRecord;
         let appliedLabel = '';
@@ -14448,36 +13801,37 @@ Return JSON with:
               error: 'Invalid credit pack ID. Use pack_25, pack_100, or pack_500.',
             });
           }
-          updatedUser = await applyCreditPackToUser({
-            email: targetEmail,
-            pack,
-            orderId,
-            isTestMode: false,
-          });
+          try {
+            updatedUser = await applyCreditPackToUser({
+              email: targetEmail,
+              pack,
+              orderId,
+              isTestMode: false,
+            });
+          } catch (packErr: any) {
+            if (packErr?.statusCode === 403) {
+              return res.status(403).json({ success: false, error: packErr.message });
+            }
+            throw packErr;
+          }
+          if ((updatedUser as any)._duplicateOrder) {
+            return res.status(409).json({
+              success: false,
+              error: 'duplicate transaction_id',
+              code: 'DUPLICATE_ORDER',
+            });
+          }
           appliedLabel = pack.label;
         } else {
           const requestedPlan = normalizePlanKey(body.plan || 'pro');
           const planKey: PlanKey = requestedPlan === 'free' ? 'pro' : requestedPlan;
-          const pricing = getPricingPublicPayload();
+          const pricing = await getPricingPublicPayload();
           const planPricing = findPlanPricing(pricing, planKey);
           const amountUSD =
             body.amount !== undefined && Number.isFinite(Number(body.amount))
               ? Number(body.amount)
               : planPricing?.activePrice ?? PLAN_DEFINITIONS[planKey].launchPrice;
-          updatedUser = activatePaidPlanOnServer({
-            email: targetEmail,
-            plan: planKey,
-            paymentTimestamp: Date.now(),
-            orderId,
-            amountUSD,
-            currency: 'USD',
-            testMode: false,
-            paymentCustomerEmail: targetEmail,
-            paymentProvider: 'paddle',
-            paymentIntentId: orderId,
-          });
-          await saveUserToDb(updatedUser);
-          await markOrderUsedInDb({
+          const payRes = await savePayment(orderId, {
             order_id: orderId,
             login_email: targetEmail,
             payment_email: targetEmail,
@@ -14488,6 +13842,25 @@ Return JSON with:
             amount: amountUSD,
             test_mode: false,
             used_at: Date.now(),
+          });
+          if (!payRes.ok) {
+            return res.status(409).json({
+              success: false,
+              error: 'duplicate transaction_id',
+              code: 'DUPLICATE_ORDER',
+            });
+          }
+          updatedUser = await activatePaidPlanOnServer({
+            email: targetEmail,
+            plan: planKey,
+            paymentTimestamp: Date.now(),
+            orderId,
+            amountUSD,
+            currency: 'USD',
+            testMode: false,
+            paymentCustomerEmail: targetEmail,
+            paymentProvider: 'paddle',
+            paymentIntentId: orderId,
           });
           appliedLabel = PLAN_DEFINITIONS[planKey].displayName;
         }
@@ -14529,31 +13902,34 @@ Return JSON with:
         }
 
         const existing =
-          (await getUserFromDb(targetEmail).catch(() => null)) ||
-          getOrCreateServerUser(targetEmail);
+          (await getUserFromDb(targetEmail)) ||
+          (await getOrCreateServerUser(targetEmail));
         const now = Date.now();
         const baseEnd = Math.max(now, Number(existing.license_end || 0));
         const nextEnd = baseEnd + days * 24 * 60 * 60 * 1000;
         const iso = new Date(now).toISOString();
         const nextEndIso = new Date(nextEnd).toISOString();
 
-        const updated = updateServerUser(targetEmail, {
-          license_end: nextEnd,
-          status: 'active',
-          day29_email_sent: false,
-          expired_email_sent: false,
-          timeline: [
-            {
-              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: iso,
-              type: 'admin_plan_change' as const,
-              message: `Admin extended 30-day access by +${days} days (new expiry: ${nextEndIso})`,
-              actor: 'admin-api',
-            },
-            ...(existing.timeline || []),
-          ].slice(0, 200),
-        });
-        await saveUserToDb(updated);
+        const updated = await updateServerUser(
+          targetEmail,
+          {
+            license_end: nextEnd,
+            status: 'active',
+            day29_email_sent: false,
+            expired_email_sent: false,
+            timeline: [
+              {
+                id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+                timestamp: iso,
+                type: 'admin_plan_change' as const,
+                message: `Admin extended 30-day access by +${days} days (new expiry: ${nextEndIso})`,
+                actor: 'admin-api',
+              },
+              ...(existing.timeline || []),
+            ].slice(0, 200),
+          },
+          { syncCredits: false }
+        );
 
         await appendAdminAuditLogToDb({
           action: 'admin-extend',
@@ -14592,8 +13968,8 @@ Return JSON with:
         }
 
         const existing =
-          (await getUserFromDb(targetEmail).catch(() => null)) ||
-          getOrCreateServerUser(targetEmail);
+          (await getUserFromDb(targetEmail)) ||
+          (await getOrCreateServerUser(targetEmail));
         const now = Date.now();
         const iso = new Date(now).toISOString();
         const nextExtra = Math.max(0, Number(existing.extra_credits || 0)) + credits;
@@ -14601,22 +13977,25 @@ Return JSON with:
         const nextLeft = lockBefore.planAnalysesLeft + nextExtra;
         const nextTotal = Math.max(0, Number(existing.analyses_total || 0)) + credits;
 
-        const updated = updateServerUser(targetEmail, {
-          extra_credits: nextExtra,
-          analyses_left: nextLeft,
-          analyses_total: nextTotal,
-          timeline: [
-            {
-              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: iso,
-              type: 'admin_plan_change' as const,
-              message: `Admin added +${credits} non-expiring credits (new balance: ${nextExtra})`,
-              actor: 'admin-api',
-            },
-            ...(existing.timeline || []),
-          ].slice(0, 200),
-        });
-        await saveUserToDb(updated);
+        const updated = await updateServerUser(
+          targetEmail,
+          {
+            extra_credits: nextExtra,
+            analyses_left: nextLeft,
+            analyses_total: nextTotal,
+            timeline: [
+              {
+                id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+                timestamp: iso,
+                type: 'admin_plan_change' as const,
+                message: `Admin added +${credits} non-expiring credits (new balance: ${nextExtra})`,
+                actor: 'admin-api',
+              },
+              ...(existing.timeline || []),
+            ].slice(0, 200),
+          },
+          { syncCredits: true }
+        );
 
         await appendAdminAuditLogToDb({
           action: 'admin-add-credits',
@@ -14653,28 +14032,31 @@ Return JSON with:
           });
         }
         const existing =
-          (await getUserFromDb(targetEmail).catch(() => null)) ||
-          getOrCreateServerUser(targetEmail);
+          (await getUserFromDb(targetEmail)) ||
+          (await getOrCreateServerUser(targetEmail));
         const locked = body.locked !== undefined ? Boolean(body.locked) : true;
         const reason = String(body.reason || (locked ? 'Locked by Admin' : 'Unlocked by Admin')).trim();
         const now = Date.now();
         const iso = new Date(now).toISOString();
 
-        const updated = updateServerUser(targetEmail, {
-          admin_locked: locked,
-          admin_lock_reason: locked ? reason : null,
-          timeline: [
-            {
-              id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: iso,
-              type: 'admin_plan_change' as const,
-              message: `Admin ${locked ? 'LOCKED' : 'UNLOCKED'} account (${reason})`,
-              actor: 'admin-api',
-            },
-            ...(existing.timeline || []),
-          ].slice(0, 200),
-        });
-        await saveUserToDb(updated);
+        const updated = await updateServerUser(
+          targetEmail,
+          {
+            admin_locked: locked,
+            admin_lock_reason: locked ? reason : null,
+            timeline: [
+              {
+                id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
+                timestamp: iso,
+                type: 'admin_plan_change' as const,
+                message: `Admin ${locked ? 'LOCKED' : 'UNLOCKED'} account (${reason})`,
+                actor: 'admin-api',
+              },
+              ...(existing.timeline || []),
+            ].slice(0, 200),
+          },
+          { syncCredits: false }
+        );
 
         await appendAdminAuditLogToDb({
           action: 'admin-lock',
@@ -14713,87 +14095,6 @@ Return JSON with:
 
         const userId = getUserIdForEmail(sessionEmail);
         const anonymizedEmail = `deleted_${userId}@deleted.local`;
-        const store = loadStore();
-
-        const userRec = store.users?.[sessionEmail];
-        const deletedApiTokens: string[] = [];
-        if (userRec?.api_key_token) {
-          deletedApiTokens.push(String(userRec.api_key_token));
-        }
-        if (store.api_keys && typeof store.api_keys === 'object') {
-          for (const [tok, owner] of Object.entries(store.api_keys)) {
-            if (normalizeEmail(owner || '') === sessionEmail) {
-              deletedApiTokens.push(tok);
-              delete store.api_keys[tok];
-            }
-          }
-        }
-        if (store.users?.[sessionEmail]) {
-          delete store.users[sessionEmail];
-        }
-
-        const deletedReportIds: string[] = [];
-        if (store.reports && typeof store.reports === 'object') {
-          for (const [rid, rep] of Object.entries(store.reports)) {
-            if (
-              normalizeEmail((rep as any)?.ownerEmail || '') === sessionEmail ||
-              (userId && (rep as any)?.ownerId === userId)
-            ) {
-              deletedReportIds.push(rid);
-              delete store.reports[rid];
-            }
-          }
-        }
-
-        if (store.analyst_threads?.[sessionEmail]) {
-          delete store.analyst_threads[sessionEmail];
-        }
-        if (Array.isArray(store.whiteglove_requests)) {
-          store.whiteglove_requests = store.whiteglove_requests.filter(
-            (w: any) => normalizeEmail(w?.email || '') !== sessionEmail
-          );
-        }
-        if (store.user_orgs?.[sessionEmail]) {
-          delete store.user_orgs[sessionEmail];
-        }
-        const deletedSessionIds: string[] = [];
-        if (store.sessions && typeof store.sessions === 'object') {
-          for (const [sid, sess] of Object.entries(store.sessions)) {
-            if (normalizeEmail((sess as any)?.email || '') === sessionEmail || (sess as any)?.userId === userId) {
-              deletedSessionIds.push(sid);
-              delete store.sessions[sid];
-            }
-          }
-        }
-        persistStore(store);
-
-        const kv = getKvConfig();
-        if (kv) {
-          try {
-            await kvCommand(['DEL', `aqari:user:${sessionEmail}`]);
-            await kvCommand(['DEL', `aqari:analyst_thread:${sessionEmail}`]);
-            await kvCommand(['DEL', `aqari:user_orgs:${sessionEmail}`]);
-            for (const rid of deletedReportIds) {
-              await kvCommand(['DEL', `aqari:report:${rid}`]);
-            }
-            for (const tok of deletedApiTokens) {
-              await kvCommand(['DEL', `aqari:apikey:${tok}`]);
-            }
-            for (const sid of deletedSessionIds) {
-              await kvCommand(['DEL', `aqari:session:${sid}`]);
-            }
-            const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
-            const idx: string[] = Array.isArray(rawIdx)
-              ? rawIdx.map(String)
-              : typeof rawIdx === 'string'
-              ? JSON.parse(rawIdx)
-              : [];
-            const nextIdx = idx.filter((em) => normalizeEmail(em) !== sessionEmail);
-            await kvCommand(['SET', 'aqari:users_index:v1', JSON.stringify(nextIdx)]);
-          } catch (kvErr) {
-            console.error('[PRIVACY] KV deletion warning:', kvErr);
-          }
-        }
 
         await deleteServerUserFromDb(sessionEmail);
         await destroySession(req, res);
@@ -14803,7 +14104,7 @@ Return JSON with:
           adminEmail: anonymizedEmail,
           targetEmail: anonymizedEmail,
           action: 'DELETE_MY_ACCOUNT',
-          details: { userId, deletedReports: deletedReportIds.length },
+          details: { userId },
           ip: getClientIp(req),
         }).catch(() => {});
 
@@ -14815,6 +14116,7 @@ Return JSON with:
           success: false,
           error: `Unknown action '${action}'.`,
           supportedActions: [
+            'health',
             'me',
             'pricing',
             'verify-checkout',
@@ -14877,6 +14179,13 @@ Return JSON with:
         });
     }
   } catch (err: any) {
+    if (err instanceof StorageUnavailableError || err?.name === 'StorageUnavailableError') {
+      return res.status(500).json({
+        success: false,
+        ok: false,
+        error: 'storage unavailable',
+      });
+    }
     console.error(`/api/app?action=${action} error:`, err);
     return res.status(500).json({
       success: false,

@@ -1,10 +1,345 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import {
   calculateUnderwriting,
   computePortfolioAggregation,
   runMonteCarloSimulation,
 } from '../lib/underwriting';
+
+// In-process Upstash Redis REST server for deterministic persistent-storage tests
+interface MockRedisState {
+  kv: Map<string, string>;
+  expiresAt: Map<string, number>;
+  lists: Map<string, string[]>;
+  sets: Map<string, Set<string>>;
+}
+
+const mockRedisState: MockRedisState = {
+  kv: new Map(),
+  expiresAt: new Map(),
+  lists: new Map(),
+  sets: new Map(),
+};
+
+function pruneIfExpired(key: string): void {
+  const exp = mockRedisState.expiresAt.get(key);
+  if (exp !== undefined && Date.now() >= exp) {
+    mockRedisState.expiresAt.delete(key);
+    mockRedisState.kv.delete(key);
+    mockRedisState.lists.delete(key);
+    mockRedisState.sets.delete(key);
+  }
+}
+
+function keyExistsInMock(key: string): boolean {
+  pruneIfExpired(key);
+  return (
+    mockRedisState.kv.has(key) ||
+    mockRedisState.lists.has(key) ||
+    mockRedisState.sets.has(key)
+  );
+}
+
+function execMockRedisCommand(cmdArr: any[]): any {
+  if (!Array.isArray(cmdArr) || cmdArr.length === 0) return null;
+  const cmd = String(cmdArr[0] || '').toUpperCase();
+  const args = cmdArr.slice(1);
+
+  switch (cmd) {
+    case 'PING':
+      return 'PONG';
+    case 'MULTI':
+      return 'OK';
+    case 'EXEC':
+      return [];
+    case 'GET': {
+      const k = String(args[0]);
+      pruneIfExpired(k);
+      return mockRedisState.kv.has(k) ? mockRedisState.kv.get(k)! : null;
+    }
+    case 'MGET': {
+      return args.map((rawK) => {
+        const k = String(rawK);
+        pruneIfExpired(k);
+        return mockRedisState.kv.has(k) ? mockRedisState.kv.get(k)! : null;
+      });
+    }
+    case 'SET': {
+      const k = String(args[0]);
+      const v = String(args[1] ?? '');
+      pruneIfExpired(k);
+      let nx = false;
+      let ttlMs: number | null = null;
+      for (let i = 2; i < args.length; i++) {
+        const flag = String(args[i]).toUpperCase();
+        if (flag === 'NX') nx = true;
+        else if (flag === 'EX' && args[i + 1] !== undefined) {
+          ttlMs = Math.max(1, Number(args[++i])) * 1000;
+        } else if (flag === 'PX' && args[i + 1] !== undefined) {
+          ttlMs = Math.max(1, Number(args[++i]));
+        }
+      }
+      if (nx && keyExistsInMock(k)) {
+        return null;
+      }
+      mockRedisState.kv.set(k, v);
+      if (ttlMs !== null && Number.isFinite(ttlMs)) {
+        mockRedisState.expiresAt.set(k, Date.now() + ttlMs);
+      } else {
+        mockRedisState.expiresAt.delete(k);
+      }
+      return 'OK';
+    }
+    case 'DEL': {
+      let count = 0;
+      for (const rawK of args) {
+        const k = String(rawK);
+        if (keyExistsInMock(k)) count++;
+        mockRedisState.kv.delete(k);
+        mockRedisState.lists.delete(k);
+        mockRedisState.sets.delete(k);
+        mockRedisState.expiresAt.delete(k);
+      }
+      return count;
+    }
+    case 'EXISTS': {
+      let count = 0;
+      for (const rawK of args) {
+        if (keyExistsInMock(String(rawK))) count++;
+      }
+      return count;
+    }
+    case 'INCR': {
+      const k = String(args[0]);
+      pruneIfExpired(k);
+      const cur = Number(mockRedisState.kv.get(k) ?? '0');
+      const next = (Number.isFinite(cur) ? Math.trunc(cur) : 0) + 1;
+      mockRedisState.kv.set(k, String(next));
+      return next;
+    }
+    case 'INCRBY': {
+      const k = String(args[0]);
+      const delta = Math.trunc(Number(args[1] || 0));
+      pruneIfExpired(k);
+      const cur = Number(mockRedisState.kv.get(k) ?? '0');
+      const next = (Number.isFinite(cur) ? Math.trunc(cur) : 0) + delta;
+      mockRedisState.kv.set(k, String(next));
+      return next;
+    }
+    case 'DECRBY': {
+      const k = String(args[0]);
+      const delta = Math.trunc(Number(args[1] || 0));
+      pruneIfExpired(k);
+      const cur = Number(mockRedisState.kv.get(k) ?? '0');
+      const next = (Number.isFinite(cur) ? Math.trunc(cur) : 0) - delta;
+      mockRedisState.kv.set(k, String(next));
+      return next;
+    }
+    case 'PEXPIRE': {
+      const k = String(args[0]);
+      const ms = Math.trunc(Number(args[1] || 0));
+      if (!keyExistsInMock(k)) return 0;
+      mockRedisState.expiresAt.set(k, Date.now() + ms);
+      return 1;
+    }
+    case 'EXPIRE': {
+      const k = String(args[0]);
+      const sec = Math.trunc(Number(args[1] || 0));
+      if (!keyExistsInMock(k)) return 0;
+      mockRedisState.expiresAt.set(k, Date.now() + sec * 1000);
+      return 1;
+    }
+    case 'PTTL': {
+      const k = String(args[0]);
+      pruneIfExpired(k);
+      if (!keyExistsInMock(k)) return -2;
+      const exp = mockRedisState.expiresAt.get(k);
+      if (exp === undefined) return -1;
+      return Math.max(0, exp - Date.now());
+    }
+    case 'SADD': {
+      const k = String(args[0]);
+      pruneIfExpired(k);
+      let s = mockRedisState.sets.get(k);
+      if (!s) {
+        s = new Set();
+        mockRedisState.sets.set(k, s);
+      }
+      let added = 0;
+      for (const m of args.slice(1)) {
+        const val = String(m);
+        if (!s.has(val)) {
+          s.add(val);
+          added++;
+        }
+      }
+      return added;
+    }
+    case 'SREM': {
+      const k = String(args[0]);
+      pruneIfExpired(k);
+      const s = mockRedisState.sets.get(k);
+      if (!s) return 0;
+      let removed = 0;
+      for (const m of args.slice(1)) {
+        if (s.delete(String(m))) removed++;
+      }
+      return removed;
+    }
+    case 'SMEMBERS': {
+      const k = String(args[0]);
+      pruneIfExpired(k);
+      const s = mockRedisState.sets.get(k);
+      return s ? Array.from(s) : [];
+    }
+    case 'LPUSH': {
+      const k = String(args[0]);
+      pruneIfExpired(k);
+      let arr = mockRedisState.lists.get(k);
+      if (!arr) {
+        arr = [];
+        mockRedisState.lists.set(k, arr);
+      }
+      for (const v of args.slice(1)) {
+        arr.unshift(String(v));
+      }
+      return arr.length;
+    }
+    case 'LLEN': {
+      const k = String(args[0]);
+      pruneIfExpired(k);
+      return (mockRedisState.lists.get(k) || []).length;
+    }
+    case 'LSET': {
+      const k = String(args[0]);
+      const idx = Math.trunc(Number(args[1]));
+      const val = String(args[2] ?? '');
+      const arr = mockRedisState.lists.get(k);
+      if (!arr || idx < 0 || idx >= arr.length) return null;
+      arr[idx] = val;
+      return 'OK';
+    }
+    case 'LTRIM': {
+      const k = String(args[0]);
+      const arr = mockRedisState.lists.get(k);
+      if (!arr) return 'OK';
+      let start = Math.trunc(Number(args[1]));
+      let stop = Math.trunc(Number(args[2]));
+      if (start < 0) start = Math.max(0, arr.length + start);
+      if (stop < 0) stop = arr.length + stop;
+      if (start > stop || start >= arr.length) {
+        mockRedisState.lists.set(k, []);
+      } else {
+        mockRedisState.lists.set(k, arr.slice(start, stop + 1));
+      }
+      return 'OK';
+    }
+    case 'LRANGE': {
+      const k = String(args[0]);
+      pruneIfExpired(k);
+      const arr = mockRedisState.lists.get(k) || [];
+      let start = Math.trunc(Number(args[1]));
+      let stop = Math.trunc(Number(args[2]));
+      if (start < 0) start = Math.max(0, arr.length + start);
+      if (stop < 0) stop = arr.length + stop;
+      if (start > stop || start >= arr.length) return [];
+      return arr.slice(start, stop + 1);
+    }
+    case 'EVAL': {
+      const script = String(args[0] || '');
+      const numKeys = Math.max(0, Math.trunc(Number(args[1] || 0)));
+      const keys = args.slice(2, 2 + numKeys).map(String);
+      const argv = args.slice(2 + numKeys).map(String);
+
+      if (script.includes('DECRBY')) {
+        const key = keys[0];
+        pruneIfExpired(key);
+        const raw = mockRedisState.kv.get(key);
+        if (raw === undefined) return [-1, 0];
+        const cur = Number(raw);
+        const amt = Number(argv[0]);
+        if (!Number.isFinite(amt) || amt < 0) return [-2, Number.isFinite(cur) ? cur : 0];
+        if (amt === 0) return [1, Number.isFinite(cur) ? cur : 0];
+        if (!Number.isFinite(cur) || cur < amt) return [0, Number.isFinite(cur) ? cur : 0];
+        const nextVal = cur - amt;
+        mockRedisState.kv.set(key, String(nextVal));
+        return [1, nextVal];
+      }
+
+      if (script.includes('SADD') && script.includes('EXISTS')) {
+        const payKey = keys[0];
+        const legKey = keys[1];
+        const idxKey = keys[2];
+        if (keyExistsInMock(payKey) || keyExistsInMock(legKey)) {
+          return 0;
+        }
+        mockRedisState.kv.set(payKey, argv[0]);
+        let s = mockRedisState.sets.get(idxKey);
+        if (!s) {
+          s = new Set();
+          mockRedisState.sets.set(idxKey, s);
+        }
+        s.add(argv[1]);
+        return 1;
+      }
+
+      if (script.includes('PTTL') && script.includes('INCR')) {
+        const key = keys[0];
+        const win = Math.max(1000, Math.trunc(Number(argv[0] || 60000)));
+        pruneIfExpired(key);
+        const cur = Number(mockRedisState.kv.get(key) ?? '0');
+        const count = (Number.isFinite(cur) ? Math.trunc(cur) : 0) + 1;
+        mockRedisState.kv.set(key, String(count));
+        let pttl = execMockRedisCommand(['PTTL', key]);
+        if (count === 1 || pttl <= 0) {
+          mockRedisState.expiresAt.set(key, Date.now() + win);
+          pttl = win;
+        }
+        return [count, pttl];
+      }
+
+      return null;
+    }
+    default:
+      throw new Error(`Unsupported mock Redis command: ${cmd}`);
+  }
+}
+
+const mockRedisServer = http.createServer((req, res) => {
+  const chunks: Buffer[] = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => {
+    try {
+      const bodyStr = Buffer.concat(chunks).toString('utf8');
+      const parsed = bodyStr ? JSON.parse(bodyStr) : [];
+      const reqPath = (req.url || '/').split('?')[0];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (reqPath.endsWith('/pipeline') || reqPath.endsWith('/multi-exec')) {
+        const results = (Array.isArray(parsed) ? parsed : []).map((c) => ({
+          result: execMockRedisCommand(c),
+        }));
+        res.end(JSON.stringify(results));
+      } else {
+        const result = execMockRedisCommand(parsed);
+        res.end(JSON.stringify({ result }));
+      }
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err?.message || 'mock redis error' }));
+    }
+  });
+});
+
+await new Promise<void>((resolve) => {
+  mockRedisServer.listen(0, '127.0.0.1', () => {
+    const addr = mockRedisServer.address() as { port: number };
+    process.env.UPSTASH_REDIS_REST_URL = `http://127.0.0.1:${addr.port}`;
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'test_upstash_token';
+    resolve();
+  });
+});
+mockRedisServer.unref();
 
 test('NOI exact breakdown: Rent $193,200/yr ($16,100/mo), Expenses 15% => NOI $164,220 with no hidden deductions', () => {
   const res = calculateUnderwriting({
@@ -254,27 +589,21 @@ test('Institutional PDF output matches underwriting metrics & financing figures 
   }
 });
 
-// Helpers to resolve aligned store path and mint verified test sessions via lib/auth.ts
-async function getTestStorePath(): Promise<string> {
-  const path = await import('node:path');
-  const override = process.env.AQARI_STORE_FILE;
-  if (override && override.trim()) return override.trim();
-  if (!process.env.VERCEL) {
-    return path.join(process.cwd(), '.aqari-data', 'aqari_terminal_store_v1.json');
-  }
-  return '/tmp/aqari_terminal_store_v1.json';
+// Helpers to seed/clean persistent Redis test users and mint verified test sessions via lib/auth.ts
+async function seedTestStoreUser(email: string, record: Record<string, any>): Promise<void> {
+  const { saveUser, createDefaultUserRecord } = await import('../lib/serverStore');
+  const norm = email.trim().toLowerCase();
+  const base = createDefaultUserRecord(norm, String(record.name || norm.split('@')[0]));
+  await saveUser({ ...base, ...record, email: norm } as any, { syncCredits: true });
 }
 
-async function seedTestStoreUser(email: string, record: Record<string, any>): Promise<void> {
-  const fs = await import('node:fs');
-  const path = await import('node:path');
-  const storePath = await getTestStorePath();
-  const dir = path.dirname(storePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const existing = fs.existsSync(storePath) ? JSON.parse(fs.readFileSync(storePath, 'utf8')) : { users: {} };
-  existing.users = existing.users || {};
-  existing.users[email.trim().toLowerCase()] = record;
-  fs.writeFileSync(storePath, JSON.stringify(existing, null, 2), 'utf8');
+async function deleteTestUsers(...emails: string[]): Promise<void> {
+  const { deleteServerUserFromDb } = await import('../lib/serverStore');
+  for (const e of emails) {
+    if (e && e.includes('@')) {
+      await deleteServerUserFromDb(e).catch(() => {});
+    }
+  }
 }
 
 async function createTestSessionCookie(email: string, name?: string): Promise<string> {
@@ -532,8 +861,6 @@ test('Deal Finder labels generated/simulated output and Forecast exposes modelSp
 });
 
 test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise Workspace enforces Admin/Manager/Analyst RBAC on server', async (t) => {
-  const fs = await import('node:fs');
-  const storePath = await getTestStorePath();
   const instAdminEmail = `inst_admin_${Date.now()}@aqari.test`;
   const mgrEmail = `inst_mgr_${Date.now()}@aqari.test`;
   const analystEmail = `inst_analyst_${Date.now()}@aqari.test`;
@@ -562,20 +889,8 @@ test('Forecast exposes documented modelSpec + historicalBaseline and Enterprise 
     });
   };
 
-  t.after(() => {
-    try {
-      if (fs.existsSync(storePath)) {
-        const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-        if (parsed?.users) {
-          for (const k of Object.keys(parsed.users)) {
-            if (k.endsWith('@aqari.test')) delete parsed.users[k];
-          }
-          fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-        }
-      }
-    } catch {
-      // ignore cleanup failures
-    }
+  t.after(async () => {
+    await deleteTestUsers(instAdminEmail, mgrEmail, analystEmail);
   });
 
   await seedInstitutionalUser(instAdminEmail);
@@ -760,8 +1075,6 @@ async function invokeAdminApi(params: {
 }
 
 test('Enterprise null limits lock by default and unlock only after Admin override', async (t) => {
-  const fs = await import('node:fs');
-  const storePath = await getTestStorePath();
   const entEmail = `ent_unset_${Date.now()}@aqari.test`;
 
   await seedTestStoreUser(entEmail, {
@@ -789,16 +1102,10 @@ test('Enterprise null limits lock by default and unlock only after Admin overrid
   const prevAdminEmail = process.env.ADMIN_EMAIL;
   process.env.ADMIN_EMAIL = 'loomorastudios@gmail.com';
 
-  t.after(() => {
+  t.after(async () => {
     if (prevAdminEmail === undefined) delete process.env.ADMIN_EMAIL;
     else process.env.ADMIN_EMAIL = prevAdminEmail;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      if (parsed?.users?.[entEmail]) {
-        delete parsed.users[entEmail];
-        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-      }
-    } catch {}
+    await deleteTestUsers(entEmail);
   });
 
   // 1. Unconfigured Enterprise user MUST be blocked with ENTERPRISE_CONTRACT_LIMIT_UNSET
@@ -858,8 +1165,6 @@ test('Enterprise null limits lock by default and unlock only after Admin overrid
 });
 
 test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async (t) => {
-  const fs = await import('node:fs');
-  const storePath = await getTestStorePath();
   const freeOldEmail = `free_60d_${Date.now()}@aqari.test`;
 
   const sixtyDaysAgo = Date.now() - 60 * 24 * 60 * 60 * 1000;
@@ -877,14 +1182,8 @@ test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async 
   });
   const freeOldCookie = await createTestSessionCookie(freeOldEmail, 'Old Free User');
 
-  t.after(() => {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      if (parsed?.users?.[freeOldEmail]) {
-        delete parsed.users[freeOldEmail];
-        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-      }
-    } catch {}
+  t.after(async () => {
+    await deleteTestUsers(freeOldEmail);
   });
 
   // Check /api/app?action=me confirms active & not expired
@@ -929,8 +1228,6 @@ test('Free plan NEVER expires by days and locks ONLY at 3 free analyses', async 
 });
 
 test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring credits, and deducts package before credits', async (t) => {
-  const fs = await import('node:fs');
-  const storePath = await getTestStorePath();
   const expiredNoCredsEmail = `exp_nocreds_${Date.now()}@aqari.test`;
   const expiredWithCredsEmail = `exp_creds_${Date.now()}@aqari.test`;
   const pkgFirstEmail = `pkg_first_${Date.now()}@aqari.test`;
@@ -976,14 +1273,8 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
   const cookieB = await createTestSessionCookie(expiredWithCredsEmail);
   const cookieC = await createTestSessionCookie(pkgFirstEmail);
 
-  t.after(() => {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      for (const k of [expiredNoCredsEmail, expiredWithCredsEmail, pkgFirstEmail]) {
-        if (parsed?.users?.[k]) delete parsed.users[k];
-      }
-      fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-    } catch {}
+  t.after(async () => {
+    await deleteTestUsers(expiredNoCredsEmail, expiredWithCredsEmail, pkgFirstEmail);
   });
 
   // Check User A: locked cleanly with exact no-auto-charge message
@@ -1069,9 +1360,7 @@ test('Paid 30-day expiry locks zero-credit accounts, preserves non-expiring cred
 });
 
 test('One-time credit pack webhook credits account once and stays idempotent on replay', async (t) => {
-  const fs = await import('node:fs');
   const crypto = await import('node:crypto');
-  const storePath = await getTestStorePath();
   const buyerEmail = `pack_buyer_${Date.now()}@aqari.test`;
   const buyerCookie = await createTestSessionCookie(buyerEmail);
   const txnId = `txn_pack_${Date.now()}`;
@@ -1079,16 +1368,10 @@ test('One-time credit pack webhook credits account once and stays idempotent on 
   const testSecret = 'pdl_ntfset_test_secret_unit';
   process.env.PADDLE_WEBHOOK_SECRET = testSecret;
 
-  t.after(() => {
+  t.after(async () => {
     if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
     else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      if (parsed?.users?.[buyerEmail]) {
-        delete parsed.users[buyerEmail];
-        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-      }
-    } catch {}
+    await deleteTestUsers(buyerEmail);
   });
 
   const payload = {
@@ -1271,8 +1554,6 @@ test('City autocomplete triggers at 1 character, resolves city_id, and rejects i
   assert.equal(getCityId(muscat!), 'om-muscat');
   assert.equal(findCityEntry('', 'om-muscat')?.city, 'Muscat');
 
-  const fs = await import('node:fs');
-  const storePath = await getTestStorePath();
   const sovEmail = `city_val_${Date.now()}@aqari.test`;
   await seedTestStoreUser(sovEmail, {
     email: sovEmail,
@@ -1287,14 +1568,8 @@ test('City autocomplete triggers at 1 character, resolves city_id, and rejects i
   });
   const sovCookie = await createTestSessionCookie(sovEmail, 'City Validation Test');
 
-  t.after(() => {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      if (parsed?.users?.[sovEmail]) {
-        delete parsed.users[sovEmail];
-        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-      }
-    } catch {}
+  t.after(async () => {
+    await deleteTestUsers(sovEmail);
   });
 
   // Invalid city must return 400 with exact message on run-analysis, find-deals, get-forecast, run-file-analysis, studio-generate
@@ -1351,8 +1626,6 @@ test('City autocomplete triggers at 1 character, resolves city_id, and rejects i
 });
 
 test('Analyst message endpoint stores client message with replyByDate for admin and targets loomorastudios@gmail.com', async (t) => {
-  const fs = await import('node:fs');
-  const storePath = await getTestStorePath();
   const clientEmail = `analyst_client_${Date.now()}@aqari.test`;
   await seedTestStoreUser(clientEmail, {
     email: clientEmail,
@@ -1367,14 +1640,8 @@ test('Analyst message endpoint stores client message with replyByDate for admin 
   });
   const clientCookie = await createTestSessionCookie(clientEmail, 'Sovereign Client');
 
-  t.after(() => {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      if (parsed?.users?.[clientEmail]) {
-        delete parsed.users[clientEmail];
-        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-      }
-    } catch {}
+  t.after(async () => {
+    await deleteTestUsers(clientEmail);
   });
 
   const postRes = await invokeApi({
@@ -1411,9 +1678,7 @@ test('Server pricing & quota single source enforces 100 for PROFESSIONAL and 300
 });
 
 test('One-time transaction.completed webhook sets purchase_date + 30d expiry_date for Plans, fulfills $19 Credits, and ignores subscription events', async (t) => {
-  const fs = await import('node:fs');
   const crypto = await import('node:crypto');
-  const storePath = await getTestStorePath();
   const buyerEmail = `wh_plan_${Date.now()}@aqari.test`;
   const buyerCookie = await createTestSessionCookie(buyerEmail);
   const txnPlanId = `txn_plan_${Date.now()}`;
@@ -1429,7 +1694,7 @@ test('One-time transaction.completed webhook sets purchase_date + 30d expiry_dat
   process.env.PADDLE_CREDIT_25_PRICE = 'pri_test_credit25_live';
   process.env.PADDLE_ENTERPRISE_PRICE = 'pri_test_ent1499_live';
 
-  t.after(() => {
+  t.after(async () => {
     if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
     else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
     if (prevEnv === undefined) delete process.env.PADDLE_ENVIRONMENT;
@@ -1438,15 +1703,7 @@ test('One-time transaction.completed webhook sets purchase_date + 30d expiry_dat
     else process.env.PADDLE_CREDIT_25_PRICE = prevCredit25;
     if (prevEnt === undefined) delete process.env.PADDLE_ENTERPRISE_PRICE;
     else process.env.PADDLE_ENTERPRISE_PRICE = prevEnt;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      if (parsed?.users?.[buyerEmail]) {
-        delete parsed.users[buyerEmail];
-      }
-      if (parsed?.used_orders?.[txnPlanId]) delete parsed.used_orders[txnPlanId];
-      if (parsed?.used_orders?.[txnCred19Id]) delete parsed.used_orders[txnCred19Id];
-      fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-    } catch {}
+    await deleteTestUsers(buyerEmail);
   });
 
   const sign = (body: string) => {
@@ -1539,8 +1796,6 @@ test('One-time transaction.completed webhook sets purchase_date + 30d expiry_dat
 });
 
 test('verify-payment handles direct $19 Credit Pack transaction_id via Paddle API without overwriting existing plan', async (t) => {
-  const fs = await import('node:fs');
-  const storePath = await getTestStorePath();
   const buyerEmail = `verify_c19_${Date.now()}@aqari.test`;
   const buyerCookie = await createTestSessionCookie(buyerEmail, 'Starter Buyer');
   const txnDirectId = `txn_direct19_${Date.now()}`;
@@ -1587,7 +1842,7 @@ test('verify-payment handles direct $19 Credit Pack transaction_id via Paddle AP
     return prevFetch(url, opts);
   }) as typeof fetch;
 
-  t.after(() => {
+  t.after(async () => {
     globalThis.fetch = prevFetch;
     if (prevApiKey === undefined) delete process.env.PADDLE_API_KEY;
     else process.env.PADDLE_API_KEY = prevApiKey;
@@ -1595,12 +1850,7 @@ test('verify-payment handles direct $19 Credit Pack transaction_id via Paddle AP
     else process.env.PADDLE_ENVIRONMENT = prevEnv;
     if (prevCredit25 === undefined) delete process.env.PADDLE_CREDIT_25_PRICE;
     else process.env.PADDLE_CREDIT_25_PRICE = prevCredit25;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      if (parsed?.users?.[buyerEmail]) delete parsed.users[buyerEmail];
-      if (parsed?.used_orders?.[txnDirectId]) delete parsed.used_orders[txnDirectId];
-      fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-    } catch {}
+    await deleteTestUsers(buyerEmail);
   });
 
   const verifyRes = await invokeApi({
@@ -2105,9 +2355,7 @@ test('Admin API enforces x-admin-token === ADMIN_TOKEN and returns real stored d
 });
 
 test('Server enforces single active plan (Rule A block, Rule B switch & feature close, Rule C expired re-buy, Rule D independent credits, Rule E duplicate txn_id, and Credit 25 fallback)', async (t) => {
-  const fs = await import('node:fs');
   const crypto = await import('node:crypto');
-  const storePath = await getTestStorePath();
   const buyerEmail = `entitle_${Date.now()}@aqari.test`;
   const buyerCookie = await createTestSessionCookie(buyerEmail);
   const txnPro = `txn_rule_pro_${Date.now()}`;
@@ -2126,7 +2374,7 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   process.env.PADDLE_ENVIRONMENT = 'live';
   process.env.PADDLE_CREDIT_25_PRICE = 'pri_backend_c25_19';
 
-  t.after(() => {
+  t.after(async () => {
     if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
     else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
     if (prevEnv === undefined) delete process.env.PADDLE_ENVIRONMENT;
@@ -2137,14 +2385,7 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
     else process.env.VITE_PADDLE_CREDIT_25 = prevViteC25;
     if (prevNextC25 === undefined) delete process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE;
     else process.env.NEXT_PUBLIC_PADDLE_CREDIT_25_PRICE = prevNextC25;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      if (parsed?.users?.[buyerEmail]) delete parsed.users[buyerEmail];
-      for (const oid of [txnPro, txnDupPro, txnCred, txnSov, txnStarter]) {
-        if (parsed?.used_orders?.[oid]) delete parsed.used_orders[oid];
-      }
-      fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-    } catch {}
+    await deleteTestUsers(buyerEmail);
   });
 
   const sign = (body: string) => {
@@ -2351,9 +2592,8 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   assert.equal(blockedOpt.statusCode, 403);
 
   // Rule C: Expired plan can re-buy SAME plan (STARTER)
-  const parsedStore = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-  parsedStore.users[buyerEmail].license_end = Date.now() - 60_000;
-  fs.writeFileSync(storePath, JSON.stringify(parsedStore, null, 2), 'utf8');
+  const { updateUserPartial } = await import('../lib/serverStore');
+  await updateUserPartial(buyerEmail, { license_end: Date.now() - 60_000 }, { syncCredits: false });
 
   const expiredRebuyRes = await invokeApi({
     action: 'checkout',
@@ -2391,6 +2631,7 @@ test('Server enforces single active plan (Rule A block, Rule B switch & feature 
   process.env.VITE_PADDLE_CREDIT_25 = 'pri_vite_short_c25';
   assert.equal(getPaddleCreditPriceId('pack_25'), 'pri_vite_short_c25');
 
+  const fs = await import('node:fs');
   const path = await import('node:path');
   const paddleClientSrc = fs.readFileSync(path.resolve('src/utils/paddleClient.ts'), 'utf8');
   assert.match(paddleClientSrc, /items:\s*\[\{\s*priceId,\s*quantity:\s*1\s*\}\]/);
@@ -2702,17 +2943,7 @@ test('Phase 4 Input Validation, Branding Logo Safety, Persistent Rate Limiting, 
       else process.env.ADMIN_TOKEN = prevAdminToken;
     }
 
-    const fs = await import('node:fs');
-    const storePath = await getTestStorePath();
-    if (fs.existsSync(storePath)) {
-      const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'));
-      if (parsed?.users) {
-        for (const k of Object.keys(parsed.users)) {
-          if (k.endsWith('@aqari.test')) delete parsed.users[k];
-        }
-        fs.writeFileSync(storePath, JSON.stringify(parsed, null, 2), 'utf8');
-      }
-    }
+    await deleteTestUsers(userEmail);
   } finally {
     if (prevVercelEnv === undefined) delete process.env.VERCEL_ENV;
     else process.env.VERCEL_ENV = prevVercelEnv;
@@ -2988,3 +3219,353 @@ test('Phase 4 Account Deletion & Endpoint Rate Limits: deleteMyAccount purges da
   });
   assert.equal(eleventhUpload.statusCode, 429);
 });
+
+test('Phase 5 Persistent Storage: atomic decrementCredits prevents negative balance under concurrency (1 credit left -> 200 vs 402)', async (t) => {
+  const {
+    decrementCredits,
+    getCredits,
+    getUserIdForEmail,
+  } = await import('../lib/serverStore');
+
+  const unitEmail = `race_unit_${Date.now()}@aqari.test`;
+  const unitUserId = getUserIdForEmail(unitEmail);
+  await seedTestStoreUser(unitEmail, {
+    email: unitEmail,
+    userId: unitUserId,
+    name: 'Race Unit User',
+    plan: 'starter',
+    analyses_total: 30,
+    analyses_left: 1,
+    analyses_used: 29,
+    extra_credits: 0,
+    license_start: Date.now() - 86_400_000,
+    license_end: Date.now() + 29 * 86_400_000,
+    status: 'active',
+  });
+
+  const apiEmail = `race_api_${Date.now()}@aqari.test`;
+  await seedTestStoreUser(apiEmail, {
+    email: apiEmail,
+    name: 'Race API User',
+    plan: 'starter',
+    analyses_total: 30,
+    analyses_left: 1,
+    analyses_used: 29,
+    extra_credits: 0,
+    license_start: Date.now() - 86_400_000,
+    license_end: Date.now() + 29 * 86_400_000,
+    status: 'active',
+  });
+  const apiCookie = await createTestSessionCookie(apiEmail, 'Race API User');
+
+  t.after(async () => {
+    await deleteTestUsers(unitEmail, apiEmail);
+  });
+
+  // 1. Direct Lua decrementCredits concurrency with 1 credit left -> exactly 1 succeeds, 2 get insufficient, balance === 0
+  const unitResults = await Promise.all([
+    decrementCredits(unitUserId, 1),
+    decrementCredits(unitUserId, 1),
+    decrementCredits(unitUserId, 1),
+  ]);
+  const unitOkCount = unitResults.filter((r) => r.ok).length;
+  const unitFailCount = unitResults.filter((r) => !r.ok && r.error === 'insufficient').length;
+  assert.equal(unitOkCount, 1);
+  assert.equal(unitFailCount, 2);
+  assert.equal(await getCredits(unitUserId), 0);
+
+  // Also check Redis key schema directly: credits:{userId} exists in mock Redis
+  assert.equal(mockRedisState.kv.get(`credits:${unitUserId}`), '0');
+
+  // 2. Concurrent POST /api/app?action=run-analysis with 1 credit left -> one 200, one 402 { error: 'insufficient credits' }
+  const apiResults = await Promise.all([
+    invokeApi({
+      action: 'run-analysis',
+      method: 'POST',
+      headers: { cookie: apiCookie },
+      body: { propertyTitle: 'Concurrent Deal A', city: 'Muscat', priceUSD: 500_000, rentUSD: 3_500 },
+    }),
+    invokeApi({
+      action: 'run-analysis',
+      method: 'POST',
+      headers: { cookie: apiCookie },
+      body: { propertyTitle: 'Concurrent Deal B', city: 'Muscat', priceUSD: 500_000, rentUSD: 3_500 },
+    }),
+  ]);
+  const statuses = apiResults.map((r) => r.statusCode).sort((a, b) => a - b);
+  assert.deepEqual(statuses, [200, 402]);
+  const failedResp = apiResults.find((r) => r.statusCode === 402)!;
+  assert.equal(failedResp.data.error, 'insufficient credits');
+  assert.equal(await getCredits(getUserIdForEmail(apiEmail)), 0);
+});
+
+test('Phase 5 Persistent Storage: atomic savePayment NX + concurrent paddle-webhook apply payment once only', async (t) => {
+  const crypto = await import('node:crypto');
+  const { savePayment, getPayment, getUser } = await import('../lib/serverStore');
+
+  const nxOrderId = `txn_nx_unit_${Date.now()}`;
+  const [p1, p2, p3] = await Promise.all([
+    savePayment(nxOrderId, {
+      login_email: 'nx_user@aqari.test',
+      payment_email: 'nx_user@aqari.test',
+      plan: 'free',
+      plan_display: '+25 AI Credits',
+      purchase_type: 'credit_pack',
+      pack_id: 'pack_25',
+      analyses: 25,
+      amount: 19,
+      test_mode: true,
+      used_at: Date.now(),
+    }),
+    savePayment(nxOrderId, {
+      login_email: 'nx_user@aqari.test',
+      payment_email: 'nx_user@aqari.test',
+      plan: 'free',
+      plan_display: '+25 AI Credits',
+      purchase_type: 'credit_pack',
+      pack_id: 'pack_25',
+      analyses: 25,
+      amount: 19,
+      test_mode: true,
+      used_at: Date.now(),
+    }),
+    savePayment(nxOrderId, {
+      login_email: 'nx_user@aqari.test',
+      payment_email: 'nx_user@aqari.test',
+      plan: 'free',
+      plan_display: '+25 AI Credits',
+      purchase_type: 'credit_pack',
+      pack_id: 'pack_25',
+      analyses: 25,
+      amount: 19,
+      test_mode: true,
+      used_at: Date.now(),
+    }),
+  ]);
+  assert.equal([p1.ok, p2.ok, p3.ok].filter(Boolean).length, 1);
+  assert.ok(await getPayment(nxOrderId));
+  assert.ok(mockRedisState.kv.has(`payment:${nxOrderId.toUpperCase()}`) || mockRedisState.kv.has(`payment:${nxOrderId}`));
+
+  // Concurrent Paddle webhook calls for same transaction_id must credit ONCE only
+  const whEmail = `wh_conc_${Date.now()}@aqari.test`;
+  const whTxn = `txn_wh_conc_${Date.now()}`;
+  const prevSecret = process.env.PADDLE_WEBHOOK_SECRET;
+  const testSecret = 'pdl_ntfset_phase5_conc';
+  process.env.PADDLE_WEBHOOK_SECRET = testSecret;
+
+  t.after(async () => {
+    if (prevSecret === undefined) delete process.env.PADDLE_WEBHOOK_SECRET;
+    else process.env.PADDLE_WEBHOOK_SECRET = prevSecret;
+    await deleteTestUsers(whEmail);
+  });
+
+  const whPayload = JSON.stringify({
+    event_type: 'transaction.completed',
+    data: {
+      id: whTxn,
+      currency_code: 'USD',
+      customer: { email: whEmail },
+      details: { totals: { total: '1900' } },
+      custom_data: {
+        email: whEmail,
+        login_email: whEmail,
+        purchase_type: 'credit_pack',
+        packId: 'pack_25',
+      },
+    },
+  });
+  const ts = String(Math.floor(Date.now() / 1000));
+  const h1 = crypto.createHmac('sha256', testSecret).update(`${ts}:${whPayload}`).digest('hex');
+  const sig = `ts=${ts};h1=${h1}`;
+
+  const [w1, w2] = await Promise.all([
+    invokeApi({ action: 'paddle-webhook', method: 'POST', headers: { 'paddle-signature': sig }, body: whPayload }),
+    invokeApi({ action: 'paddle-webhook', method: 'POST', headers: { 'paddle-signature': sig }, body: whPayload }),
+  ]);
+  assert.equal(w1.statusCode, 200);
+  assert.equal(w2.statusCode, 200);
+  const creditsAddedTotal = Number(w1.data.creditsAdded || 0) + Number(w2.data.creditsAdded || 0);
+  assert.equal(creditsAddedTotal, 25);
+
+  const savedUser = await getUser(whEmail);
+  assert.equal(savedUser?.extra_credits, 25);
+});
+
+test('Phase 5 Persistent Storage: transactional updatePlan, schema keys (user/credits/session/analysis/payment/audit), and cross-read persistence', async (t) => {
+  const {
+    saveUser,
+    getUser,
+    updatePlan,
+    saveAnalysis,
+    getAnalyses,
+    createSessionRecord,
+    getSessionRecord,
+    getAuditLogsFromDb,
+    getUserIdForEmail,
+  } = await import('../lib/serverStore');
+
+  const email = `persist_schema_${Date.now()}@aqari.test`;
+  const userId = getUserIdForEmail(email);
+
+  t.after(async () => {
+    await deleteTestUsers(email);
+  });
+
+  await seedTestStoreUser(email, {
+    email,
+    userId,
+    name: 'Schema Test User',
+    plan: 'free',
+    analyses_total: 3,
+    analyses_left: 3,
+    extra_credits: 10,
+  });
+
+  // Transactional updatePlan via Redis MULTI/EXEC
+  const { user: upgraded } = await updatePlan({
+    emailOrUserId: email,
+    newPlan: 'pro',
+    adminEmail: 'admin_test@aqari.test',
+    reason: 'Phase 5 multi-key transaction test',
+    actionName: 'plan_update',
+  });
+  assert.equal(upgraded.plan, 'pro');
+  assert.equal(upgraded.analyses_left, 110); // 100 plan + 10 extra credits
+
+  // Save analysis & session
+  const anaRec = await saveAnalysis(userId, {
+    id: `ana_p5_${Date.now()}`,
+    property: 'Corniche Office Tower',
+    city: 'Muscat',
+    priceUSD: 1_500_000,
+    capRate: 8.1,
+  });
+  const sessId = `sess_p5_${Date.now()}`;
+  await createSessionRecord({
+    sessionId: sessId,
+    userId,
+    email,
+    name: 'Schema Test User',
+    verifiedViaGoogle: true,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + 3600_000,
+  });
+
+  // Verify exact key schema in Redis
+  assert.ok(mockRedisState.kv.has(`user:${email}`), 'user:{email} key must exist');
+  assert.equal(mockRedisState.kv.get(`credits:${userId}`), '110', 'credits:{userId} key must match');
+  assert.ok(mockRedisState.kv.has(`session:${sessId}`), 'session:{sessionId} key must exist');
+  assert.ok(mockRedisState.kv.has(`analysis:${userId}:${anaRec.id}`), 'analysis:{userId}:{analysisId} key must exist');
+
+  // Read back cleanly
+  const fetchedUser = await getUser(email);
+  assert.equal(fetchedUser?.plan, 'pro');
+  const fetchedAnalyses = await getAnalyses(userId);
+  assert.ok(fetchedAnalyses.some((a) => a.id === anaRec.id && a.payload.property === 'Corniche Office Tower'));
+  const fetchedSession = await getSessionRecord(sessId);
+  assert.equal(fetchedSession?.email, email);
+  const audits = await getAuditLogsFromDb({ page: 1, limit: 20 });
+  assert.ok(audits.logs.some((l) => l.targetEmail === email && l.action === 'plan_update'));
+});
+
+test('Phase 5 Persistent Storage: fails loud with HTTP 500 storage unavailable when Redis is unconfigured/down', async () => {
+  const { healthCheckStorage } = await import('../lib/serverStore');
+
+  const prevUrl = process.env.UPSTASH_REDIS_REST_URL;
+  const prevTok = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const prevKvUrl = process.env.KV_REST_API_URL;
+  const prevKvTok = process.env.KV_REST_API_TOKEN;
+  const cookie = await createTestSessionCookie(`outage_${Date.now()}@aqari.test`);
+
+  delete process.env.UPSTASH_REDIS_REST_URL;
+  delete process.env.UPSTASH_REDIS_REST_TOKEN;
+  delete process.env.KV_REST_API_URL;
+  delete process.env.KV_REST_API_TOKEN;
+
+  try {
+    const health = await healthCheckStorage();
+    assert.deepEqual(health, { ok: false, error: 'storage unavailable' });
+
+    const healthApi = await invokeApi({ method: 'GET', action: 'health' });
+    assert.equal(healthApi.statusCode, 500);
+    assert.equal(healthApi.data.ok, false);
+    assert.equal(healthApi.data.error, 'storage unavailable');
+
+    const meOutage = await invokeApi({
+      method: 'GET',
+      action: 'me',
+      headers: { cookie },
+    });
+    assert.equal(meOutage.statusCode, 500);
+    assert.equal(meOutage.data.error, 'storage unavailable');
+
+    const adminOutage = await invokeAdminApi({
+      method: 'GET',
+      action: 'users',
+      headers: { cookie },
+    });
+    assert.equal(adminOutage.statusCode, 500);
+    assert.equal(adminOutage.data.error, 'storage unavailable');
+  } finally {
+    if (prevUrl !== undefined) process.env.UPSTASH_REDIS_REST_URL = prevUrl;
+    if (prevTok !== undefined) process.env.UPSTASH_REDIS_REST_TOKEN = prevTok;
+    if (prevKvUrl !== undefined) process.env.KV_REST_API_URL = prevKvUrl;
+    if (prevKvTok !== undefined) process.env.KV_REST_API_TOKEN = prevKvTok;
+  }
+
+  // After restore, ?action=health returns 200 { ok: true }
+  const recovered = await invokeApi({ method: 'GET', action: 'health' });
+  assert.equal(recovered.statusCode, 200);
+  assert.equal(recovered.data.ok, true);
+});
+
+test('Phase 5 Backup Utility: exportAllData & /api/admin?action=backup allow Admin only and scrub secret tokens', async (t) => {
+  const { exportAllData } = await import('../lib/backup');
+  const prevAdminEmail = process.env.ADMIN_EMAIL;
+  const adminEmail = 'backup_admin@aqari.test';
+  const normalEmail = `backup_normal_${Date.now()}@aqari.test`;
+  process.env.ADMIN_EMAIL = adminEmail;
+
+  await seedTestStoreUser(normalEmail, {
+    email: normalEmail,
+    name: 'Normal Backup Subject',
+    plan: 'pro',
+    api_key_token: 'secret_live_api_key_should_not_leak',
+  });
+
+  t.after(async () => {
+    if (prevAdminEmail === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = prevAdminEmail;
+    await deleteTestUsers(normalEmail);
+  });
+
+  // 1. Direct exportAllData rejects non-admin caller
+  await assert.rejects(
+    () => exportAllData({ email: normalEmail, name: 'Normal User' }),
+    /Admin authentication required/i
+  );
+
+  // 2. Non-admin HTTP call to /api/admin?action=backup gets 403
+  const normalCookie = await createTestSessionCookie(normalEmail);
+  const forbiddenBackup = await invokeAdminApi({
+    action: 'backup',
+    method: 'GET',
+    headers: { cookie: normalCookie },
+  });
+  assert.equal(forbiddenBackup.statusCode, 403);
+
+  // 3. Admin HTTP call to /api/admin?action=backup returns 200 scrubbed snapshot
+  const adminCookie = await createTestSessionCookie(adminEmail);
+  const adminBackupRes = await invokeAdminApi({
+    action: 'backup',
+    method: 'GET',
+    headers: { cookie: adminCookie },
+  });
+  assert.equal(adminBackupRes.statusCode, 200);
+  assert.equal(adminBackupRes.data.exportedBy, adminEmail);
+  assert.equal(adminBackupRes.data.storageProvider, 'upstash-redis');
+  const backedUser = adminBackupRes.data.users.find((u: any) => u.email === normalEmail);
+  assert.ok(backedUser);
+  assert.equal(backedUser.api_key_token, undefined);
+});
+

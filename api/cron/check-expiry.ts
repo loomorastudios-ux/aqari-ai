@@ -1,8 +1,11 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
 import { requireAdmin } from '../../lib/auth';
+import {
+  getAllServerUsersFromDb,
+  saveUserToDb,
+  appendEmailLogToDb,
+} from '../../lib/serverStore';
 
 // =========================================================================
 // 1. INLINED PLANS & EMAIL TEMPLATES
@@ -11,7 +14,6 @@ import { requireAdmin } from '../../lib/auth';
 type PlanKey = 'free' | 'starter' | 'pro' | 'enterprise';
 
 const PRODUCTION_URL = 'https://aqari-ai-rho.vercel.app';
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const EMAIL_FROM = 'AQARI Terminal <onboarding@resend.dev>';
 const EMAIL_FROM_ADDRESS = 'onboarding@resend.dev';
 
@@ -49,92 +51,10 @@ function cleanEnvValue(value?: string | null): string {
   return (value || '').replace(/^["']|["']$/g, '').trim();
 }
 
-function getStoreFile(): string {
-  const override = getEnv('AQARI_STORE_FILE');
-  if (override) return override;
-  if (!getEnv('VERCEL')) {
-    try {
-      return path.join(process.cwd(), '.aqari-data', 'aqari_terminal_store_v1.json');
-    } catch {}
-  }
-  try {
-    return path.join('/tmp', 'aqari_terminal_store_v1.json');
-  } catch {
-    return '/tmp/aqari_terminal_store_v1.json';
-  }
-}
-
-function getKvConfig(): { url: string; token: string } | null {
-  const url = cleanEnvValue(getEnv('KV_REST_API_URL') || getEnv('UPSTASH_REDIS_REST_URL'));
-  const token = cleanEnvValue(getEnv('KV_REST_API_TOKEN') || getEnv('UPSTASH_REDIS_REST_TOKEN'));
-  if (!url || !token) return null;
-  return { url: url.replace(/\/+$/, ''), token };
-}
-
-async function kvCommand(args: Array<string | number>): Promise<any> {
-  const cfg = getKvConfig();
-  if (!cfg) return null;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
-  try {
-    const res = await fetch(cfg.url, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${cfg.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(args),
-    });
-    if (!res.ok) throw new Error(`KV HTTP ${res.status}`);
-    const json = await res.json();
-    return json?.result ?? null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function loadRawStore(): any {
-  try {
-    const storeFile = getStoreFile();
-    if (fs.existsSync(storeFile)) {
-      return JSON.parse(fs.readFileSync(storeFile, 'utf8'));
-    }
-  } catch {}
-  return {
-    users: {},
-    webhook_logs: [],
-    failed_webhooks: [],
-    email_logs: [],
-    pricing_logs: [],
-    pending_checkouts: {},
-    used_orders: {},
-  };
-}
-
-function persistRawStore(store: any): void {
-  try {
-    fs.writeFileSync(getStoreFile(), JSON.stringify(store, null, 2), 'utf8');
-  } catch {}
-}
-
-function appendEmailLog(entry: any) {
-  const store = loadRawStore();
-  if (!Array.isArray(store.email_logs)) store.email_logs = [];
-  const log = {
-    id: `mail_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    timestamp: new Date().toISOString(),
-    ...entry,
-  };
-  store.email_logs.unshift(log);
-  store.email_logs = store.email_logs.slice(0, 200);
-  persistRawStore(store);
-  const kv = getKvConfig();
-  if (kv) {
-    kvCommand(['LPUSH', 'aqari:email_logs:v1', JSON.stringify(log)])
-      .then(() => kvCommand(['LTRIM', 'aqari:email_logs:v1', 0, 199]))
-      .catch(() => {});
-  }
+async function appendEmailLog(entry: any) {
+  await appendEmailLogToDb(entry).catch((err) => {
+    console.error('[CRON] Failed persisting email log:', err);
+  });
 }
 
 function buildDay29RenewalEmail(params: {
@@ -208,7 +128,7 @@ async function dispatchEmail(params: {
   const hasResendKey = Boolean(resendKey);
 
   if (!hasResendKey) {
-    appendEmailLog({
+    await appendEmailLog({
       to: params.to,
       from: EMAIL_FROM_ADDRESS,
       subject: params.subject,
@@ -245,7 +165,7 @@ async function dispatchEmail(params: {
     } finally {
       clearTimeout(timer);
     }
-    appendEmailLog({
+    await appendEmailLog({
       to: params.to,
       from: EMAIL_FROM_ADDRESS,
       subject: params.subject,
@@ -257,7 +177,7 @@ async function dispatchEmail(params: {
     });
     return { success: res.ok };
   } catch {
-    appendEmailLog({
+    await appendEmailLog({
       to: params.to,
       from: EMAIL_FROM_ADDRESS,
       subject: params.subject,
@@ -309,8 +229,7 @@ export default async function handler(req: any, res: any) {
 
     const now = Date.now();
     const force = req?.query?.force === 'true' || req?.body?.force === true;
-    const store = loadRawStore();
-    const users = Object.values(store.users || {}) as any[];
+    const users = await getAllServerUsersFromDb();
 
     let downgradedToFree = 0;
     let expiredEmailsSent = 0;
@@ -330,8 +249,7 @@ export default async function handler(req: any, res: any) {
         u.analyses_left = preservedCredits;
         u.expired_email_sent = true;
         u.updated_at = now;
-        store.users[u.email] = u;
-        persistRawStore(store);
+        await saveUserToDb(u);
         downgradedToFree++;
 
         if (shouldSendExpired) {
@@ -393,8 +311,7 @@ export default async function handler(req: any, res: any) {
 
         u.day29_email_sent = true;
         u.updated_at = now;
-        store.users[u.email] = u;
-        persistRawStore(store);
+        await saveUserToDb(u);
         day29EmailsSent++;
       }
     }
@@ -409,6 +326,9 @@ export default async function handler(req: any, res: any) {
     });
   } catch (error: any) {
     console.error('/api/cron/check-expiry error:', error);
+    if (error?.name === 'StorageUnavailableError') {
+      return res.status(500).json({ success: false, error: 'storage unavailable' });
+    }
     const isProd = getEnv('VERCEL_ENV') === 'production' || getEnv('NODE_ENV') === 'production';
     return res.status(500).json({
       success: false,

@@ -1,13 +1,36 @@
 // © 2026 Loomora Studios - AQARI TERMINAL - All rights reserved. Unauthorized copying prohibited.
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
 import { requireAdmin, applyAdminOnlyCors } from '../lib/auth';
 import {
+  StorageUnavailableError,
+  getUserFromDb,
+  saveUserToDb,
+  getOrCreateUserInDb,
+  updateServerUserInDb,
+  getAllServerUsersFromDb,
+  updatePlan,
+  savePayment,
+  getPricingConfigFromDb,
+  savePricingConfigToDb,
+  getPricingLogsFromDb,
+  getPricingPublicPayloadFromDb,
+  getWebhookLogsFromDb,
+  getFailedWebhooksFromDb,
+  getEmailLogsFromDb,
+  appendEmailLogToDb,
+  getCancellationLogsFromDb,
+  getAnalystThreadFromDb,
+  saveAnalystThreadToDb,
+  getAnalystThreadsMapFromDb,
+  getWhiteGloveRequestsFromDb,
+  saveWhiteGloveRequestsToDb,
+  deleteServerUserFromDb,
   logAdminAction,
   getAuditLogsFromDb,
-  deleteServerUserFromDb,
+  normalizeEmail,
+  hydratePricingConfig,
 } from '../lib/serverStore';
+import { exportAllData } from '../lib/backup';
 
 // =========================================================================
 // 1. INLINED PLANS, SECURITY & ENV HELPERS (Zero external ../lib imports)
@@ -225,70 +248,8 @@ function parseStrictAmount(raw: any, opts?: { allowZero?: boolean }): number | n
 }
 
 // =========================================================================
-// 2. INLINED SERVER STORE HELPERS
+// 2. SERVER LICENSE & PRICING HELPERS (Backed by Upstash Redis serverStore)
 // =========================================================================
-
-function getStoreFile(): string {
-  const override = process.env.AQARI_STORE_FILE;
-  if (override && override.trim()) {
-    return override.trim();
-  }
-  if (!process.env.VERCEL) {
-    try {
-      return path.join(process.cwd(), '.aqari-data', 'aqari_terminal_store_v1.json');
-    } catch {}
-  }
-  try {
-    return path.join('/tmp', 'aqari_terminal_store_v1.json');
-  } catch {
-    return '/tmp/aqari_terminal_store_v1.json';
-  }
-}
-
-function createDefaultPricingConfig() {
-  const now = Date.now();
-  return {
-    launchDiscountActive: true,
-    launchBadgeText: DEFAULT_LAUNCH_BADGE,
-    launchEndsAt: DEFAULT_LAUNCH_END_DATE_MS,
-    updatedAt: now,
-    plans: {
-      free: { ...PLANS.free },
-      starter: { ...PLANS.starter },
-      pro: { ...PLANS.pro },
-      enterprise: { ...PLANS.enterprise },
-      institutional: { ...PLANS.institutional },
-    },
-  };
-}
-
-let memoryStoreCache: any = null;
-
-function getMemoryStore() {
-  if (!memoryStoreCache) {
-    memoryStoreCache = {
-      users: {},
-      sessions: {},
-      auditLog: [],
-      webhook_logs: [],
-      failed_webhooks: [],
-      email_logs: [],
-      cancellation_logs: [],
-      pricing_config: createDefaultPricingConfig(),
-      pricing_logs: [],
-      pending_checkouts: {},
-      used_orders: {},
-      analyst_threads: {},
-      whiteglove_requests: [],
-      api_keys: {},
-    };
-  }
-  return memoryStoreCache;
-}
-
-function normalizeEmail(email: string): string {
-  return (email || '').trim().toLowerCase();
-}
 
 function parseOptionalPositiveInt(value: any): number | null {
   if (value === null || value === undefined || value === '') return null;
@@ -309,655 +270,7 @@ function normalizeIsoDateOrNull(value: any): string | null {
   return str;
 }
 
-function hydrateUserRecord(raw: any, email: string) {
-  const now = Date.now();
-  const plan = normalizePlanKey(raw?.plan);
-  const planCfg = PLANS[plan];
-  const extraCredits = Math.max(0, Number(raw?.extra_credits || 0));
-  const customAnalysesLimit = parseOptionalPositiveInt(raw?.custom_analyses_limit);
-  const customImagePdfLimit = parseOptionalPositiveInt(raw?.custom_image_pdf_limit);
-  const customListingsLimit = parseOptionalPositiveInt(raw?.custom_listings_limit);
-  const customPortfolioLimit = parseOptionalPositiveInt(raw?.custom_portfolio_limit);
-  const customSeats = parseOptionalPositiveInt(raw?.custom_seats);
-  const customStorageGb = parseOptionalPositiveInt(raw?.custom_storage_gb);
-  const slaLevel = typeof raw?.sla_level === 'string' && raw.sla_level.trim() ? raw.sla_level.trim().slice(0, 120) : null;
-  const contractEndDate = normalizeIsoDateOrNull(raw?.contract_end_date);
-  const whiteLabelEnabled = Boolean(raw?.white_label_enabled);
-  const customApiEnabled = Boolean(raw?.custom_api_enabled);
-
-  const basePlanAnalyses = plan === 'institutional' ? (customAnalysesLimit ?? 0) : planCfg.analysesLimit;
-  const analysesTotal =
-    plan === 'institutional'
-      ? Math.max(0, Number(raw?.analyses_total ?? basePlanAnalyses + extraCredits))
-      : Math.max(1, Number(raw?.analyses_total ?? basePlanAnalyses + extraCredits));
-  const analysesUsed = Math.max(0, Number(raw?.analyses_used ?? 0));
-  const rawLeft = raw?.analyses_left !== undefined && raw?.analyses_left !== null ? Number(raw.analyses_left) : NaN;
-  const analysesLeft = Number.isFinite(rawLeft)
-    ? Math.max(0, rawLeft)
-    : Math.max(0, analysesTotal - analysesUsed);
-  const savedList = Array.isArray(raw?.saved_analyses) ? raw.saved_analyses : [];
-  return {
-    email,
-    name: raw?.name || email.split('@')[0],
-    plan,
-    license_start: raw?.license_start ?? now,
-    license_end: raw?.license_end ?? now + THIRTY_DAYS_MS,
-    analyses_used: analysesUsed,
-    analyses_left: analysesLeft,
-    analyses_total: analysesTotal,
-    extra_credits: extraCredits,
-    custom_analyses_limit: customAnalysesLimit,
-    custom_image_pdf_limit: customImagePdfLimit,
-    custom_listings_limit: customListingsLimit,
-    custom_portfolio_limit: customPortfolioLimit,
-    custom_seats: customSeats,
-    custom_storage_gb: customStorageGb,
-    sla_level: slaLevel,
-    contract_end_date: contractEndDate,
-    white_label_enabled: whiteLabelEnabled,
-    custom_api_enabled: customApiEnabled,
-    successful_analyses: Math.max(0, Number(raw?.successful_analyses ?? 0)),
-    saved_analyses: savedList,
-    saved_count: savedList.length > 0 ? savedList.length : Math.max(0, Number(raw?.saved_count ?? 0)),
-    max_saved:
-      plan === 'institutional'
-        ? (customPortfolioLimit ?? 0)
-        : Number.isFinite(Number(raw?.max_saved)) && Number(raw?.max_saved) > 0
-        ? Number(raw?.max_saved)
-        : planCfg.savedLimit,
-    custom_cities: Array.isArray(raw?.custom_cities) ? raw.custom_cities : [],
-    timezone: raw?.timezone || 'Asia/Muscat',
-    day29_email_sent: Boolean(raw?.day29_email_sent),
-    expired_email_sent: Boolean(raw?.expired_email_sent),
-    updated_at: Number(raw?.updated_at || now),
-    last_login_at: raw?.last_login_at ?? null,
-    total_paid_usd: Number(raw?.total_paid_usd || 0),
-    analyses_log: Array.isArray(raw?.analyses_log) ? raw.analyses_log : [],
-    pdf_downloads: Array.isArray(raw?.pdf_downloads) ? raw.pdf_downloads : [],
-    payments: Array.isArray(raw?.payments) ? raw.payments : [],
-    timeline: Array.isArray(raw?.timeline) ? raw.timeline : [],
-    refund_requested: Boolean(raw?.refund_requested),
-    refund_status: raw?.refund_status || 'none',
-    refund_notes: raw?.refund_notes || '',
-    refund_policy_accepted_at: raw?.refund_policy_accepted_at || null,
-    locked_launch_price: typeof raw?.locked_launch_price === 'number' ? raw.locked_launch_price : null,
-    payment_provider: String(raw?.payment_provider || 'paddle'),
-    payment_intent_id: raw?.payment_intent_id ? String(raw.payment_intent_id) : null,
-    payment_customer_email: raw?.payment_customer_email ? String(raw.payment_customer_email).toLowerCase() : null,
-    status: raw?.status || (analysesLeft <= 0 ? 'exhausted' : 'active'),
-    locked: Boolean(raw?.locked),
-    locked_reason: raw?.locked_reason ?? null,
-    locked_at: typeof raw?.locked_at === 'number' ? raw.locked_at : null,
-    has_reported_issue: Boolean(raw?.has_reported_issue),
-    issue_reported_at: typeof raw?.issue_reported_at === 'number' ? raw.issue_reported_at : null,
-    issue_resolved_at: typeof raw?.issue_resolved_at === 'number' ? raw.issue_resolved_at : null,
-    issue_description: typeof raw?.issue_description === 'string' ? raw.issue_description : '',
-    issue_status:
-      raw?.issue_status === 'open' || raw?.issue_status === 'resolved'
-        ? raw.issue_status
-        : raw?.has_reported_issue
-        ? raw?.issue_resolved_at
-          ? 'resolved'
-          : 'open'
-        : 'none',
-    cancel_status: raw?.cancel_status === 'refunded' ? 'refunded' : 'none',
-    last_order_id:
-      typeof raw?.last_order_id === 'string' && raw.last_order_id.trim()
-        ? raw.last_order_id.trim()
-        : Array.isArray(raw?.payments) && raw.payments[0]?.order_id
-        ? String(raw.payments[0].order_id)
-        : null,
-    last_results:
-      raw?.last_results && typeof raw.last_results === 'object'
-        ? {
-            analysis: raw.last_results.analysis || null,
-            deal_finder: raw.last_results.deal_finder || null,
-            forecast: raw.last_results.forecast || null,
-          }
-        : { analysis: null, deal_finder: null, forecast: null },
-  };
-}
-
-function hydratePricingConfig(raw: any) {
-  const def = createDefaultPricingConfig();
-  if (!raw || typeof raw !== 'object' || Number(raw.schemaVersion || 0) < 5) return def;
-  const schemaCurrent = Number(raw.schemaVersion || 0) >= 5;
-  const plans: any = { ...def.plans };
-  for (const k of ['free', 'starter', 'pro', 'enterprise', 'institutional'] as PlanKey[]) {
-    const r = raw.plans?.[k];
-    if (r && typeof r === 'object') {
-      const analysesLimit =
-        k === 'institutional'
-          ? 0
-          : Number.isFinite(Number(r.analysesLimit)) && Number(r.analysesLimit) > 0
-          ? Number(r.analysesLimit)
-          : def.plans[k].analysesLimit;
-      const rawFeatures: string[] =
-        schemaCurrent && Array.isArray(r.features) && r.features.length > 0
-          ? r.features.map(String)
-          : def.plans[k].features;
-      const normalizedFeatures = rawFeatures
-        .filter((f) => !(k === 'free' && f.startsWith('No Monte Carlo')))
-        .map((f) => {
-          const trimmed = f.trim();
-          if (/^unlimited\s+saved$/i.test(trimmed)) return `Save ${def.plans[k].savedLimit}`;
-          if (/^save\s+\d+$/i.test(trimmed)) return `Save ${def.plans[k].savedLimit}`;
-          return f;
-        });
-      plans[k] = {
-        key: k,
-        displayName: def.plans[k].displayName,
-        originalPrice: Number.isFinite(Number(r.originalPrice)) ? Number(r.originalPrice) : def.plans[k].originalPrice,
-        launchPrice: Number.isFinite(Number(r.launchPrice)) ? Number(r.launchPrice) : def.plans[k].launchPrice,
-        analysesLimit,
-        savedLimit: k === 'institutional' ? 0 : def.plans[k].savedLimit,
-        features: normalizedFeatures.length > 0 ? normalizedFeatures : def.plans[k].features,
-      };
-    }
-  }
-  return {
-    schemaVersion: 5,
-    launchDiscountActive: typeof raw.launchDiscountActive === 'boolean' ? raw.launchDiscountActive : def.launchDiscountActive,
-    launchBadgeText: typeof raw.launchBadgeText === 'string' && raw.launchBadgeText.trim() ? raw.launchBadgeText : def.launchBadgeText,
-    launchEndsAt: Number.isFinite(Number(raw.launchEndsAt)) ? Number(raw.launchEndsAt) : def.launchEndsAt,
-    updatedAt: Number.isFinite(Number(raw.updatedAt)) ? Number(raw.updatedAt) : def.updatedAt,
-    plans,
-  };
-}
-
-function loadStore() {
-  try {
-    const storeFile = getStoreFile();
-    if (fs.existsSync(storeFile)) {
-      const parsed = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
-      if (parsed && typeof parsed === 'object') {
-        const users: Record<string, any> = {};
-        if (parsed.users && typeof parsed.users === 'object') {
-          for (const [k, v] of Object.entries(parsed.users)) {
-            users[k] = hydrateUserRecord(v, k);
-          }
-        }
-        memoryStoreCache = {
-          users,
-          sessions:
-            parsed.sessions && typeof parsed.sessions === 'object' && !Array.isArray(parsed.sessions)
-              ? parsed.sessions
-              : {},
-          auditLog: Array.isArray(parsed.auditLog) ? parsed.auditLog : [],
-          webhook_logs: Array.isArray(parsed.webhook_logs) ? parsed.webhook_logs : [],
-          failed_webhooks: Array.isArray(parsed.failed_webhooks) ? parsed.failed_webhooks : [],
-          email_logs: Array.isArray(parsed.email_logs) ? parsed.email_logs : [],
-          cancellation_logs: Array.isArray(parsed.cancellation_logs) ? parsed.cancellation_logs : [],
-          pricing_config: hydratePricingConfig(parsed.pricing_config),
-          pricing_logs: Array.isArray(parsed.pricing_logs) ? parsed.pricing_logs : [],
-          pending_checkouts: parsed.pending_checkouts || {},
-          used_orders: parsed.used_orders || {},
-          analyst_threads: parsed.analyst_threads || {},
-          whiteglove_requests: Array.isArray(parsed.whiteglove_requests) ? parsed.whiteglove_requests : [],
-          api_keys: parsed.api_keys || {},
-        };
-      }
-    }
-  } catch {}
-  return getMemoryStore();
-}
-
-function persistStore(store: any): void {
-  memoryStoreCache = store;
-  try {
-    const filePath = getStoreFile();
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(filePath, JSON.stringify(store, null, 2), 'utf8');
-  } catch {}
-}
-
-function enforceServerUserExpiry(rawEmail: string): any {
-  const store = loadStore();
-  const email = normalizeEmail(rawEmail) || 'guest@aqari-ai-rho.vercel.app';
-  const user = store.users[email];
-  const now = Date.now();
-  if (!user) return getOrCreateServerUser(email);
-
-  const planKey = normalizePlanKey(user.plan);
-  if (planKey === 'free') {
-    const used = Math.max(0, Number(user.analyses_used || 0));
-    const extraCredits = Math.max(0, Number(user.extra_credits || 0));
-    const targetLeft = Math.max(0, PLANS.free.analysesLimit + extraCredits - used);
-    const targetStatus = targetLeft <= 0 ? 'exhausted' : 'active';
-    if (user.status !== targetStatus) {
-      user.status = targetStatus;
-      store.users[email] = user;
-      persistStore(store);
-    }
-    return user;
-  }
-
-  const contractEndMs = user.contract_end_date ? Date.parse(String(user.contract_end_date)) : NaN;
-  const contractExpired =
-    planKey === 'institutional' && Number.isFinite(contractEndMs) && now > contractEndMs;
-
-  if ((user.license_end && now >= user.license_end) || contractExpired) {
-    const prevPlan = PLANS[planKey].displayName;
-    const extraCredits = Math.max(0, Number(user.extra_credits || 0));
-    const alreadyExpired = user.status === 'expired' && user.analyses_left === extraCredits;
-    user.status = 'expired';
-    user.analyses_left = extraCredits;
-    if (!alreadyExpired) {
-      user.updated_at = now;
-      user.timeline.unshift({
-        id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-        timestamp: new Date(now).toISOString(),
-        type: 'expired',
-        message: `30-day ${prevPlan} plan expired (No auto-charge). Package features locked; extra credits preserved: ${extraCredits}`,
-        actor: 'system',
-      });
-      store.users[email] = user;
-      persistStore(store);
-    }
-  }
-  return user;
-}
-
-function getOrCreateServerUser(rawEmail: string): any {
-  const store = loadStore();
-  const email = normalizeEmail(rawEmail) || 'guest@aqari-ai-rho.vercel.app';
-  let user = store.users[email];
-  if (!user) {
-    const now = Date.now();
-    user = hydrateUserRecord(
-      {
-        email,
-        name: email.split('@')[0],
-        plan: 'free',
-        license_start: now,
-        license_end: now + THIRTY_DAYS_MS,
-        analyses_used: 0,
-        last_login_at: now,
-      },
-      email
-    );
-    store.users[email] = user;
-    persistStore(store);
-  }
-  return enforceServerUserExpiry(email);
-}
-
-function updateServerUser(email: string, patch: any) {
-  const store = loadStore();
-  const norm = normalizeEmail(email);
-  const existing = getOrCreateServerUser(norm);
-  const updated = {
-    ...existing,
-    ...patch,
-    email: norm,
-    updated_at: Date.now(),
-  };
-  store.users[norm] = updated;
-  persistStore(store);
-  return updated;
-}
-
-function getAllServerUsers() {
-  const store = loadStore();
-  return Object.keys(store.users).map((email) => enforceServerUserExpiry(email));
-}
-
-function getKvConfig(): { url: string; token: string } | null {
-  const url = cleanEnvValue(getEnv('KV_REST_API_URL') || getEnv('UPSTASH_REDIS_REST_URL'));
-  const token = cleanEnvValue(getEnv('KV_REST_API_TOKEN') || getEnv('UPSTASH_REDIS_REST_TOKEN'));
-  if (!url || !token) return null;
-  return { url: url.replace(/\/+$/, ''), token };
-}
-
-async function kvCommand(args: Array<string | number>): Promise<any> {
-  const cfg = getKvConfig();
-  if (!cfg) return null;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1500);
-  try {
-    const res = await fetch(cfg.url, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${cfg.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(args),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json?.result ?? null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function getServerUserFromDb(rawEmail: string): Promise<any> {
-  const norm = normalizeEmail(rawEmail);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', `aqari:user:${norm}`]);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        const hydrated = hydrateUserRecord(parsed, norm);
-        const store = loadStore();
-        store.users[norm] = hydrated;
-        persistStore(store);
-      }
-    }
-  } catch {}
-  return getOrCreateServerUser(norm);
-}
-
-async function saveServerUserToDb(user: any): Promise<void> {
-  const norm = normalizeEmail(user?.email);
-  if (!norm) return;
-  const store = loadStore();
-  store.users[norm] = user;
-  persistStore(store);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', `aqari:user:${norm}`, JSON.stringify(user)]);
-    }
-  } catch {}
-}
-
-async function getAllServerUsersFromDb(): Promise<any[]> {
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawIdx = await kvCommand(['GET', 'aqari:users_index:v1']);
-      const idx: string[] = Array.isArray(rawIdx)
-        ? rawIdx.map(String)
-        : typeof rawIdx === 'string'
-        ? JSON.parse(rawIdx)
-        : [];
-      const store = loadStore();
-      for (const em of idx.slice(0, 200)) {
-        const norm = normalizeEmail(em);
-        if (!norm) continue;
-        const raw = await kvCommand(['GET', `aqari:user:${norm}`]);
-        if (raw) {
-          const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-          store.users[norm] = hydrateUserRecord(parsed, norm);
-        }
-      }
-      persistStore(store);
-    }
-  } catch {}
-  return getAllServerUsers();
-}
-
-async function appendEmailLogToDb(entry: {
-  to: string;
-  subject: string;
-  status: string;
-  event_type: string;
-  error?: string;
-}): Promise<any> {
-  const log = {
-    id: `em_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    timestamp: new Date().toISOString(),
-    ...entry,
-  };
-  try {
-    const store = loadStore();
-    if (!Array.isArray(store.email_logs)) store.email_logs = [];
-    store.email_logs.unshift(log);
-    store.email_logs = store.email_logs.slice(0, 200);
-    persistStore(store);
-  } catch {}
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['LPUSH', 'aqari:email_logs:v1', JSON.stringify(log)]);
-      await kvCommand(['LTRIM', 'aqari:email_logs:v1', 0, 199]);
-    }
-  } catch {}
-  return log;
-}
-
-async function getCancellationLogsFromDb(limit = 100): Promise<any[]> {
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawItems = await kvCommand(['LRANGE', 'aqari:cancellation_logs:v1', 0, Math.max(0, limit - 1)]);
-      if (Array.isArray(rawItems) && rawItems.length > 0) {
-        const parsed = rawItems
-          .map((item) => {
-            try {
-              return typeof item === 'string' ? JSON.parse(item) : item;
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean);
-        if (parsed.length > 0) return parsed.slice(0, limit);
-      }
-    }
-  } catch {}
-  return (loadStore().cancellation_logs || []).slice(0, limit);
-}
-
-async function getEmailLogsFromDb(limit = 50): Promise<any[]> {
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawItems = await kvCommand(['LRANGE', 'aqari:email_logs:v1', 0, Math.max(0, limit - 1)]);
-      if (Array.isArray(rawItems) && rawItems.length > 0) {
-        const parsed = rawItems
-          .map((item) => {
-            try {
-              return typeof item === 'string' ? JSON.parse(item) : item;
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean);
-        if (parsed.length > 0) return parsed.slice(0, limit);
-      }
-    }
-  } catch {}
-  return (loadStore().email_logs || []).slice(0, limit);
-}
-
-async function getWebhookLogsFromDb(limit = 50): Promise<any[]> {
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawItems = await kvCommand(['LRANGE', 'aqari:webhook_logs:v1', 0, Math.max(0, limit - 1)]);
-      if (Array.isArray(rawItems) && rawItems.length > 0) {
-        const parsed = rawItems
-          .map((item) => {
-            try {
-              return typeof item === 'string' ? JSON.parse(item) : item;
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean);
-        if (parsed.length > 0) return parsed.slice(0, limit);
-      }
-    }
-  } catch {}
-  return (loadStore().webhook_logs || []).slice(0, limit);
-}
-
-async function getFailedWebhooksFromDb(limit = 50): Promise<any[]> {
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const rawItems = await kvCommand(['LRANGE', 'aqari:failed_webhooks:v1', 0, Math.max(0, limit - 1)]);
-      if (Array.isArray(rawItems) && rawItems.length > 0) {
-        const parsed = rawItems
-          .map((item) => {
-            try {
-              return typeof item === 'string' ? JSON.parse(item) : item;
-            } catch {
-              return null;
-            }
-          })
-          .filter(Boolean);
-        if (parsed.length > 0) return parsed.slice(0, limit);
-      }
-    }
-  } catch {}
-  return (loadStore().failed_webhooks || []).slice(0, limit);
-}
-
-async function getAnalystThreadsMap(): Promise<Record<string, any>> {
-  const store = loadStore();
-  let merged: Record<string, any> = { ...(store.analyst_threads || {}) };
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', 'aqari:analyst_threads:v1']);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (parsed && typeof parsed === 'object') {
-          merged = { ...merged, ...parsed };
-          store.analyst_threads = merged;
-          persistStore(store);
-        }
-      }
-    }
-  } catch {}
-  return merged;
-}
-
-async function getAnalystThreadFromDb(rawEmail: string): Promise<any> {
-  const email = normalizeEmail(rawEmail);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', `aqari:analyst_thread:${email}`]);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (parsed && typeof parsed === 'object') {
-          const store = loadStore();
-          if (!store.analyst_threads) store.analyst_threads = {};
-          store.analyst_threads[email] = parsed;
-          persistStore(store);
-          return parsed;
-        }
-      }
-    }
-  } catch {}
-  const map = await getAnalystThreadsMap();
-  return (
-    map[email] || {
-      email,
-      plan: 'SOVEREIGN',
-      status: 'Open',
-      unreadForAdmin: 0,
-      unreadForClient: 0,
-      updatedAt: Date.now(),
-      messages: [],
-    }
-  );
-}
-
-async function saveAnalystThreadToDb(thread: any): Promise<any> {
-  const email = normalizeEmail(thread?.email);
-  if (!email) return thread;
-  const store = loadStore();
-  if (!store.analyst_threads) store.analyst_threads = {};
-  store.analyst_threads[email] = thread;
-  persistStore(store);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', `aqari:analyst_thread:${email}`, JSON.stringify(thread)]);
-      const map = await getAnalystThreadsMap();
-      map[email] = thread;
-      await kvCommand(['SET', 'aqari:analyst_threads:v1', JSON.stringify(map)]);
-    }
-  } catch {}
-  return thread;
-}
-
-async function getWhiteGloveRequestsFromDb(): Promise<any[]> {
-  const store = loadStore();
-  let list: any[] = Array.isArray(store.whiteglove_requests) ? [...store.whiteglove_requests] : [];
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      const raw = await kvCommand(['GET', 'aqari:whiteglove_requests:v1']);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (Array.isArray(parsed)) {
-          list = parsed;
-          store.whiteglove_requests = list;
-          persistStore(store);
-        }
-      }
-    }
-  } catch {}
-  return list;
-}
-
-async function saveWhiteGloveRequestsToDb(requests: any[]): Promise<any[]> {
-  const trimmed = requests.slice(0, 300);
-  const store = loadStore();
-  store.whiteglove_requests = trimmed;
-  persistStore(store);
-  try {
-    const kv = getKvConfig();
-    if (kv) {
-      await kvCommand(['SET', 'aqari:whiteglove_requests:v1', JSON.stringify(trimmed)]);
-    }
-  } catch {}
-  return trimmed;
-}
-
-function getPricingPublicPayload() {
-  const store = loadStore();
-  const cfg = store.pricing_config || createDefaultPricingConfig();
-  const now = Date.now();
-  const daysRemaining = Math.max(0, Math.ceil((cfg.launchEndsAt - now) / (24 * 60 * 60 * 1000)));
-  const plansMap: Record<PlanKey, any> = {} as any;
-  const plansList: any[] = [];
-
-  for (const k of ['free', 'starter', 'pro', 'enterprise', 'institutional'] as PlanKey[]) {
-    const p = cfg.plans[k];
-    const entry = {
-      id: k,
-      key: k,
-      displayName: p.displayName,
-      originalPrice: p.originalPrice,
-      launchPrice: p.launchPrice,
-      activePrice: k === 'free' ? 0 : cfg.launchDiscountActive ? p.launchPrice : p.originalPrice,
-      analyses: p.analysesLimit,
-      analysesLimit: p.analysesLimit,
-      saved: p.savedLimit,
-      savedLimit: p.savedLimit,
-      features: [...p.features],
-      launchDiscountActive: cfg.launchDiscountActive,
-    };
-    plansMap[k] = entry;
-    plansList.push(entry);
-  }
-  return {
-    success: true,
-    launchDiscountActive: cfg.launchDiscountActive,
-    launchBadgeText: cfg.launchBadgeText,
-    launchEndsAt: cfg.launchEndsAt,
-    daysRemaining,
-    updatedAt: cfg.updatedAt,
-    plans: plansList,
-    plansMap,
-  };
-}
-
-function computeServerLicenseStatus(user: any) {
-  const pricing = getPricingPublicPayload();
+function computeServerLicenseStatus(user: any, pricing: any) {
   const rawPlanKey = normalizePlanKey(user.plan);
   const isFree = rawPlanKey === 'free';
   const now = Date.now();
@@ -967,7 +280,7 @@ function computeServerLicenseStatus(user: any) {
   const hasPaidEnd = Boolean(!isFree && user.license_end);
   const isExpired = Boolean(!isFree && ((hasPaidEnd && user.license_end <= now) || contractExpired));
   const effectivePlanKey: PlanKey = rawPlanKey;
-  const dynamicPlan = pricing.plansMap?.[effectivePlanKey];
+  const dynamicPlan = pricing?.plansMap?.[effectivePlanKey];
   const planCfg = PLANS[effectivePlanKey];
   const extraCredits = Math.max(0, Number(user.extra_credits || 0));
   const baseAnalysesLimit =
@@ -1085,49 +398,13 @@ function evaluateRefundEligibility(user: any) {
   };
 }
 
-function adminChangeUserPlan(params: { email: string; newPlan: PlanKey; reason: string; adminEmail: string }) {
-  const user = getOrCreateServerUser(params.email);
-  const now = Date.now();
-  const iso = new Date(now).toISOString();
-  const prevPlanDisplay = PLANS[normalizePlanKey(user.plan)].displayName;
-  const nextPlanDisplay = PLANS[params.newPlan].displayName;
-  const extraCredits = Math.max(0, Number(user.extra_credits || 0));
-  const baseLimit =
-    params.newPlan === 'institutional'
-      ? Math.max(0, Number(user.custom_analyses_limit || 0))
-      : PLANS[params.newPlan].analysesLimit;
-  const totalLimit = baseLimit + extraCredits;
-  const maxSaved =
-    params.newPlan === 'institutional'
-      ? Math.max(0, Number(user.custom_portfolio_limit || 0))
-      : PLANS[params.newPlan].savedLimit;
-
-  const timelineEntry = {
-    id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
-    timestamp: iso,
-    type: 'admin_plan_change',
-    message: `Admin changed plan from ${prevPlanDisplay} to ${nextPlanDisplay} - Reason: ${params.reason} - By: ${params.adminEmail} - At: ${iso}`,
-    actor: params.adminEmail,
-  };
-  return updateServerUser(user.email, {
-    plan: params.newPlan,
-    license_start: now,
-    license_end: now + THIRTY_DAYS_MS,
-    analyses_used: 0,
-    analyses_total: totalLimit,
-    analyses_left: totalLimit,
-    max_saved: maxSaved,
-    timeline: [timelineEntry, ...user.timeline].slice(0, 200),
-  });
-}
-
-function adminUpdateEnterpriseLimits(params: {
+async function adminUpdateEnterpriseLimits(params: {
   email: string;
   body: any;
   reason: string;
   adminEmail: string;
 }) {
-  const user = getOrCreateServerUser(params.email);
+  const user = await getOrCreateUserInDb(params.email);
   const now = Date.now();
   const iso = new Date(now).toISOString();
   const b = params.body || {};
@@ -1198,12 +475,12 @@ function adminUpdateEnterpriseLimits(params: {
   const timelineEntry = {
     id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
     timestamp: iso,
-    type: 'admin_enterprise_override',
+    type: 'admin_plan_change' as const,
     message: `Admin updated Enterprise Contract / Credit Overrides (${summaryBits}) - Reason: ${params.reason} - By: ${params.adminEmail}`,
     actor: params.adminEmail,
   };
 
-  return updateServerUser(user.email, {
+  return updateServerUserInDb(user.email, {
     custom_analyses_limit: nextAnalysesLimit,
     custom_image_pdf_limit: nextImgPdfLimit,
     custom_listings_limit: nextListingsLimit,
@@ -1224,32 +501,39 @@ function adminUpdateEnterpriseLimits(params: {
   });
 }
 
-function recordRefundDecision(params: {
+async function recordRefundDecision(params: {
   email: string;
   status: 'pending' | 'approved' | 'denied';
   notes: string;
   actorEmail: string;
+  resetToFree?: boolean;
 }) {
-  const user = getOrCreateServerUser(params.email);
+  const user = await getOrCreateUserInDb(params.email);
   const now = Date.now();
   const iso = new Date(now).toISOString();
   const evalResult = evaluateRefundEligibility(user);
   const timelineEntry = {
     id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
     timestamp: iso,
-    type: 'refund_request',
+    type: 'refund_request' as const,
     message: `Refund ${params.status.toUpperCase()} - ${params.notes || evalResult.verdict}`,
     actor: params.actorEmail,
   };
-  return updateServerUser(user.email, {
+  return updateServerUserInDb(user.email, {
     refund_requested: true,
     refund_status: params.status,
     refund_notes: params.notes || evalResult.verdict,
+    ...(params.resetToFree
+      ? {
+          plan: 'free',
+          license_end: now,
+        }
+      : {}),
     timeline: [timelineEntry, ...user.timeline].slice(0, 200),
   });
 }
 
-function updateServerPlanPricing(params: {
+async function updateServerPlanPricing(params: {
   planKey: PlanKey;
   originalPrice?: number;
   launchPrice?: number;
@@ -1257,8 +541,7 @@ function updateServerPlanPricing(params: {
   features?: string[];
   adminEmail: string;
 }) {
-  const store = loadStore();
-  const cfg = hydratePricingConfig(store.pricing_config);
+  const cfg = hydratePricingConfig(await getPricingConfigFromDb());
   const current = cfg.plans[params.planKey];
   const now = Date.now();
   const iso = new Date(now).toISOString();
@@ -1312,21 +595,19 @@ function updateServerPlanPricing(params: {
     message: `Admin changed ${planTitle} from ${prevPrice}$ / ${prevAnalyses} analyses to ${nextPrice}$ / ${nextAnalyses} analyses - At: ${iso}`,
   };
 
-  store.pricing_config = cfg;
-  store.pricing_logs = [log, ...(store.pricing_logs || [])].slice(0, 200);
-  persistStore(store);
-
-  return { pricing: getPricingPublicPayload(), log };
+  await savePricingConfigToDb(cfg, log);
+  const pricing = await getPricingPublicPayloadFromDb();
+  const logs = await getPricingLogsFromDb(50);
+  return { pricing, log, logs };
 }
 
-function updateLaunchDiscountSettings(params: {
+async function updateLaunchDiscountSettings(params: {
   launchDiscountActive?: boolean;
   launchBadgeText?: string;
   countdownDays?: number;
   adminEmail: string;
 }) {
-  const store = loadStore();
-  const cfg = hydratePricingConfig(store.pricing_config);
+  const cfg = hydratePricingConfig(await getPricingConfigFromDb());
   const now = Date.now();
   const iso = new Date(now).toISOString();
 
@@ -1345,15 +626,14 @@ function updateLaunchDiscountSettings(params: {
     id: `plog_${now}_${Math.random().toString(36).slice(2, 6)}`,
     timestamp: iso,
     adminEmail: params.adminEmail,
-    planKey: 'global',
+    planKey: 'global' as const,
     message: `Admin toggled Launch Discount ${cfg.launchDiscountActive ? 'ON (checkout uses launchPrice)' : 'OFF (checkout uses originalPrice)'} - Badge: "${cfg.launchBadgeText}" - At: ${iso}`,
   };
 
-  store.pricing_config = cfg;
-  store.pricing_logs = [log, ...(store.pricing_logs || [])].slice(0, 200);
-  persistStore(store);
-
-  return { pricing: getPricingPublicPayload(), log };
+  await savePricingConfigToDb(cfg, log);
+  const pricing = await getPricingPublicPayloadFromDb();
+  const logs = await getPricingLogsFromDb(50);
+  return { pricing, log, logs };
 }
 
 // =========================================================================
@@ -1688,10 +968,11 @@ export default async function handler(req: any, res: any) {
         const refundOnly = getQueryParam(req, url, 'refundRequested') === 'true';
         const allUsers = await getAllServerUsersFromDb();
         const failedWebhooks = await getFailedWebhooksFromDb(50);
+        const pricing = await getPricingPublicPayloadFromDb();
 
         const users = allUsers
           .map((u: any) => {
-            const license = computeServerLicenseStatus(u);
+            const license = computeServerLicenseStatus(u, pricing);
             const refundEval = evaluateRefundEligibility(u);
             return {
               ...u,
@@ -1730,13 +1011,14 @@ export default async function handler(req: any, res: any) {
       }
 
       case 'stats': {
-        const store = loadStore();
         const allUsers = await getAllServerUsersFromDb();
         const webhookLogs = await getWebhookLogsFromDb(100);
         const failedWebhooks = await getFailedWebhooksFromDb(100);
         const emailLogs = await getEmailLogsFromDb(100);
-        const threadsMap = await getAnalystThreadsMap();
+        const pricingLogs = await getPricingLogsFromDb(200);
+        const threadsMap = await getAnalystThreadsMapFromDb();
         const wgList = await getWhiteGloveRequestsFromDb();
+        const pricing = await getPricingPublicPayloadFromDb();
 
         let paidUsers = 0;
         let starterCount = 0;
@@ -1748,7 +1030,7 @@ export default async function handler(req: any, res: any) {
         let totalAnalysesUsed = 0;
 
         for (const u of allUsers) {
-          const lic = computeServerLicenseStatus(u);
+          const lic = computeServerLicenseStatus(u, pricing);
           totalAnalysesUsed += Number(u.analyses_used || 0);
           totalRevenueUSD += Number(u.total_paid_usd || 0);
           if (lic.planKey === 'starter') {
@@ -1768,7 +1050,6 @@ export default async function handler(req: any, res: any) {
           }
         }
 
-        const pricing = getPricingPublicPayload();
         const starterPrice = findPlanPricing(pricing, 'starter')?.activePrice || 75;
         const proPrice = findPlanPricing(pricing, 'pro')?.activePrice || 199;
         const entPrice = findPlanPricing(pricing, 'enterprise')?.activePrice || 599;
@@ -1804,7 +1085,7 @@ export default async function handler(req: any, res: any) {
             webhookLogsCount: webhookLogs.length,
             failedWebhooksCount: failedWebhooks.length,
             emailLogsCount: emailLogs.length,
-            pricingChangesCount: (store.pricing_logs || []).length,
+            pricingChangesCount: pricingLogs.length,
             analystOpenCount,
             whiteGlovePendingCount,
           },
@@ -1813,11 +1094,10 @@ export default async function handler(req: any, res: any) {
 
       case 'pricing':
       case 'pricing-get': {
-        const store = loadStore();
         return res.status(200).json({
           success: true,
-          pricing: getPricingPublicPayload(),
-          logs: store.pricing_logs || [],
+          pricing: await getPricingPublicPayloadFromDb(),
+          logs: await getPricingLogsFromDb(50),
         });
       }
 
@@ -1869,7 +1149,7 @@ export default async function handler(req: any, res: any) {
           validatedAnalysesLimit = num;
         }
 
-        const prevPricing = findPlanPricing(getPricingPublicPayload(), planKey);
+        const prevPricing = findPlanPricing(await getPricingPublicPayloadFromDb(), planKey);
         const features = Array.isArray(body.features)
           ? body.features.map((s: any) => String(s))
           : typeof body.features === 'string'
@@ -1879,7 +1159,7 @@ export default async function handler(req: any, res: any) {
               .filter(Boolean)
           : undefined;
 
-        const result = updateServerPlanPricing({
+        const result = await updateServerPlanPricing({
           planKey,
           originalPrice: validatedOriginalPrice,
           launchPrice: validatedLaunchPrice,
@@ -1901,7 +1181,7 @@ export default async function handler(req: any, res: any) {
           success: true,
           pricing: result.pricing,
           log: result.log,
-          logs: loadStore().pricing_logs || [],
+          logs: result.logs,
         });
       }
 
@@ -1919,8 +1199,8 @@ export default async function handler(req: any, res: any) {
           }
           validatedCountdownDays = num;
         }
-        const prevDiscount = getPricingPublicPayload().launchDiscountActive;
-        const result = updateLaunchDiscountSettings({
+        const prevDiscount = (await getPricingPublicPayloadFromDb()).launchDiscountActive;
+        const result = await updateLaunchDiscountSettings({
           launchDiscountActive:
             typeof body.launchDiscountActive === 'boolean' ? body.launchDiscountActive : undefined,
           launchBadgeText: typeof body.launchBadgeText === 'string' ? body.launchBadgeText : undefined,
@@ -1940,7 +1220,7 @@ export default async function handler(req: any, res: any) {
           success: true,
           pricing: result.pricing,
           log: result.log,
-          logs: loadStore().pricing_logs || [],
+          logs: result.logs,
         });
       }
 
@@ -1968,8 +1248,9 @@ export default async function handler(req: any, res: any) {
         }
 
         if (req.method === 'GET' && action === 'user') {
-          const user = await getServerUserFromDb(targetEmail);
-          const license = computeServerLicenseStatus(user);
+          const user = await getOrCreateUserInDb(targetEmail);
+          const pricing = await getPricingPublicPayloadFromDb();
+          const license = computeServerLicenseStatus(user, pricing);
           const refundEvaluation = evaluateRefundEligibility(user);
           return res.status(200).json({
             success: true,
@@ -1997,7 +1278,6 @@ export default async function handler(req: any, res: any) {
             .trim();
 
           if (op === 'change_plan') {
-            const existingUser = await getServerUserFromDb(targetEmail);
             const reason = (body.reason || (action === 'updateplan' ? 'Admin plan update' : '')).toString().trim();
             if (!reason) {
               return res.status(400).json({
@@ -2010,26 +1290,19 @@ export default async function handler(req: any, res: any) {
                 error: 'Invalid plan. Allowed plans: FREE, STARTER, PRO, SOVEREIGN, ENTERPRISE',
               });
             }
-            const prevPlan = existingUser.plan;
-            const updated = adminChangeUserPlan({
-              email: targetEmail,
+            const { user: updated } = await updatePlan({
+              emailOrUserId: targetEmail,
               newPlan: parsedPlan,
               reason,
               adminEmail: sessionEmail,
-            });
-            await saveServerUserToDb(updated);
-            await logAdminAction({
-              adminEmail: sessionEmail,
-              targetEmail,
-              action: 'updatePlan',
-              details: `plan: ${prevPlan} -> ${updated.plan} (reason: ${reason})`,
               ip: clientIp,
+              actionName: 'updatePlan',
             });
             return res.status(200).json({ success: true, user: updated });
           }
 
           if (op === 'update_enterprise_limits') {
-            const existingUser = await getServerUserFromDb(targetEmail);
+            const existingUser = await getOrCreateUserInDb(targetEmail);
             const reason = (body.reason || '').toString().trim();
             if (!reason) {
               return res.status(400).json({
@@ -2045,13 +1318,12 @@ export default async function handler(req: any, res: any) {
               }
             }
             const prevCredits = Math.max(0, Number(existingUser.extra_credits || 0));
-            const updated = adminUpdateEnterpriseLimits({
+            const updated = await adminUpdateEnterpriseLimits({
               email: targetEmail,
               body,
               reason,
               adminEmail: sessionEmail,
             });
-            await saveServerUserToDb(updated);
             await logAdminAction({
               adminEmail: sessionEmail,
               targetEmail,
@@ -2059,7 +1331,8 @@ export default async function handler(req: any, res: any) {
               details: `extra_credits: ${prevCredits} -> ${updated.extra_credits ?? 0}, analyses_limit=${updated.custom_analyses_limit ?? 'unset'} (reason: ${reason})`,
               ip: clientIp,
             });
-            const license = computeServerLicenseStatus(updated);
+            const pricing = await getPricingPublicPayloadFromDb();
+            const license = computeServerLicenseStatus(updated, pricing);
             return res.status(200).json({
               success: true,
               user: {
@@ -2073,7 +1346,7 @@ export default async function handler(req: any, res: any) {
           }
 
           if (op === 'refund_decision') {
-            const existingUser = await getServerUserFromDb(targetEmail);
+            const existingUser = await getOrCreateUserInDb(targetEmail);
             const rawStatus = body.status !== undefined ? String(body.status).trim().toLowerCase() : (action === 'refund' ? 'approved' : 'denied');
             if (!['pending', 'approved', 'denied'].includes(rawStatus)) {
               return res.status(400).json({ error: 'Invalid refund status. Allowed: pending, approved, denied' });
@@ -2087,17 +1360,13 @@ export default async function handler(req: any, res: any) {
             const status = rawStatus as 'pending' | 'approved' | 'denied';
             const prevStatus = existingUser.refund_status || 'none';
             const prevPlan = existingUser.plan;
-            const updated = recordRefundDecision({
+            const updated = await recordRefundDecision({
               email: targetEmail,
               status,
               notes: (body.notes || body.reason || '').toString().trim(),
               actorEmail: sessionEmail,
+              resetToFree: action === 'refund' && status === 'approved',
             });
-            if (action === 'refund' && status === 'approved') {
-              updated.plan = 'free';
-              updated.license_end = Date.now();
-            }
-            await saveServerUserToDb(updated);
             await logAdminAction({
               adminEmail: sessionEmail,
               targetEmail,
@@ -2127,7 +1396,7 @@ export default async function handler(req: any, res: any) {
         if (!Number.isFinite(rawDays) || !Number.isInteger(rawDays) || rawDays < 1 || rawDays > 3650) {
           return res.status(400).json({ error: 'days must be an integer between 1 and 3650' });
         }
-        const existingUser = await getServerUserFromDb(targetEmail);
+        const existingUser = await getOrCreateUserInDb(targetEmail);
         const now = Date.now();
         const prevEnd = existingUser.license_end || now;
         const baseEnd = Math.max(now, prevEnd);
@@ -2135,18 +1404,17 @@ export default async function handler(req: any, res: any) {
         const timelineEntry = {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: new Date(now).toISOString(),
-          type: 'admin_plan_change',
+          type: 'admin_plan_change' as const,
           message: `Admin extended license by ${rawDays} days (${new Date(prevEnd).toISOString()} -> ${new Date(nextEnd).toISOString()}) - By: ${sessionEmail}`,
           actor: sessionEmail,
         };
-        const updated = updateServerUser(targetEmail, {
+        const updated = await updateServerUserInDb(targetEmail, {
           license_end: nextEnd,
           status: existingUser.locked ? 'locked' : 'active',
           day29_email_sent: false,
           expired_email_sent: false,
           timeline: [timelineEntry, ...(existingUser.timeline || [])].slice(0, 200),
         });
-        await saveServerUserToDb(updated);
         await logAdminAction({
           adminEmail: sessionEmail,
           targetEmail,
@@ -2171,7 +1439,7 @@ export default async function handler(req: any, res: any) {
         if (delta === null) {
           return res.status(400).json({ error: 'credits must be an integer between 1 and 10000' });
         }
-        const existingUser = await getServerUserFromDb(targetEmail);
+        const existingUser = await getOrCreateUserInDb(targetEmail);
         const prevCredits = Math.max(0, Number(existingUser.extra_credits || 0));
         const nextCredits = action === 'addcredits' ? prevCredits + delta : Math.max(0, prevCredits - delta);
         const planKey = normalizePlanKey(existingUser.plan);
@@ -2186,17 +1454,16 @@ export default async function handler(req: any, res: any) {
         const timelineEntry = {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: new Date(now).toISOString(),
-          type: 'admin_enterprise_override',
+          type: 'admin_plan_change' as const,
           message: `Admin ${action === 'addcredits' ? 'added' : 'removed'} ${delta} extra credits (${prevCredits} -> ${nextCredits}) - By: ${sessionEmail}`,
           actor: sessionEmail,
         };
-        const updated = updateServerUser(targetEmail, {
+        const updated = await updateServerUserInDb(targetEmail, {
           extra_credits: nextCredits,
           analyses_total: nextTotal,
           analyses_left: nextLeft,
           timeline: [timelineEntry, ...(existingUser.timeline || [])].slice(0, 200),
         });
-        await saveServerUserToDb(updated);
         await logAdminAction({
           adminEmail: sessionEmail,
           targetEmail,
@@ -2221,25 +1488,24 @@ export default async function handler(req: any, res: any) {
         if (locking && targetEmail === sessionEmail) {
           return res.status(400).json({ error: 'Admin cannot lock their own active admin account' });
         }
-        const existingUser = await getServerUserFromDb(targetEmail);
+        const existingUser = await getOrCreateUserInDb(targetEmail);
         const prevLocked = Boolean(existingUser.locked);
         const now = Date.now();
         const reason = String(body.reason || (locking ? 'Locked by admin' : 'Unlocked by admin')).trim();
         const timelineEntry = {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: new Date(now).toISOString(),
-          type: 'admin_plan_change',
+          type: 'admin_plan_change' as const,
           message: `Admin ${locking ? 'LOCKED' : 'UNLOCKED'} account - Reason: ${reason} - By: ${sessionEmail}`,
           actor: sessionEmail,
         };
-        const updated = updateServerUser(targetEmail, {
+        const updated = await updateServerUserInDb(targetEmail, {
           locked: locking,
           locked_reason: locking ? reason : null,
           locked_at: locking ? now : null,
           status: locking ? 'locked' : 'active',
           timeline: [timelineEntry, ...(existingUser.timeline || [])].slice(0, 200),
         });
-        await saveServerUserToDb(updated);
         await logAdminAction({
           adminEmail: sessionEmail,
           targetEmail,
@@ -2262,16 +1528,9 @@ export default async function handler(req: any, res: any) {
         if (targetEmail === sessionEmail) {
           return res.status(400).json({ error: 'Admin cannot delete their own account' });
         }
-        const existingUser = await getServerUserFromDb(targetEmail);
-        const prevPlan = existingUser.plan;
-        const localStore = loadStore();
-        const existedLocally = Boolean(localStore.users?.[targetEmail]);
-        if (existedLocally) {
-          delete localStore.users[targetEmail];
-          persistStore(localStore);
-        }
-        const deletedDb = await deleteServerUserFromDb(targetEmail);
-        const deleted = existedLocally || deletedDb;
+        const existingUser = await getUserFromDb(targetEmail);
+        const prevPlan = existingUser?.plan || 'free';
+        const deleted = await deleteServerUserFromDb(targetEmail);
         await logAdminAction({
           adminEmail: sessionEmail,
           targetEmail,
@@ -2304,11 +1563,32 @@ export default async function handler(req: any, res: any) {
           return res.status(400).json({ error: 'amountUSD must be a valid positive number > 0' });
         }
 
-        const existingUser = await getServerUserFromDb(targetEmail);
-        const prevPlan = existingUser.plan;
         const now = Date.now();
-        const iso = new Date(now).toISOString();
         const planCfg = PLANS[planKey];
+        const paymentResult = await savePayment(orderId, {
+          login_email: targetEmail,
+          payment_email: targetEmail,
+          plan: planKey,
+          plan_display: planCfg.displayName,
+          purchase_type: 'plan',
+          analyses: planCfg.analysesLimit,
+          amount: amountUSD,
+          currency: 'USD',
+          test_mode: false,
+          used_at: now,
+        });
+        if (!paymentResult.ok) {
+          return res.status(409).json({
+            success: false,
+            error: `Duplicate payment: order ${orderId} has already been processed`,
+            code: 'DUPLICATE_PAYMENT',
+            duplicate: true,
+          });
+        }
+
+        const existingUser = await getOrCreateUserInDb(targetEmail);
+        const prevPlan = existingUser.plan;
+        const iso = new Date(now).toISOString();
         const paymentEntry = {
           id: `pay_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: iso,
@@ -2322,11 +1602,11 @@ export default async function handler(req: any, res: any) {
         const timelineEntry = {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: iso,
-          type: 'purchase',
+          type: 'purchase' as const,
           message: `Admin verified Order #${orderId} (${planCfg.displayName} $${amountUSD}) - By: ${sessionEmail}`,
           actor: sessionEmail,
         };
-        const updated = updateServerUser(targetEmail, {
+        const updated = await updateServerUserInDb(targetEmail, {
           plan: planKey,
           license_start: now,
           license_end: now + THIRTY_DAYS_MS,
@@ -2337,7 +1617,6 @@ export default async function handler(req: any, res: any) {
           payments: [paymentEntry, ...(existingUser.payments || [])],
           timeline: [timelineEntry, ...(existingUser.timeline || [])].slice(0, 200),
         });
-        await saveServerUserToDb(updated);
         await logAdminAction({
           adminEmail: sessionEmail,
           targetEmail,
@@ -2411,8 +1690,9 @@ export default async function handler(req: any, res: any) {
           return res.status(400).json({ error: 'Valid target email is required' });
         }
 
-        const user = getOrCreateServerUser(targetEmail);
-        const license = computeServerLicenseStatus(user);
+        const user = await getOrCreateUserInDb(targetEmail);
+        const pricing = await getPricingPublicPayloadFromDb();
+        const license = computeServerLicenseStatus(user, pricing);
         const refundEval = evaluateRefundEligibility(user);
         const nowIso = new Date().toISOString();
         const latestPayment = user.payments?.[0];
@@ -2502,7 +1782,7 @@ export default async function handler(req: any, res: any) {
           .trim()
           .toLowerCase();
 
-        const userRecord = getOrCreateServerUser(email);
+        const userRecord = await getOrCreateUserInDb(email);
         const planKey = normalizePlanKey(
           (
             getQueryParam(req, url, 'plan') ||
@@ -2565,7 +1845,7 @@ export default async function handler(req: any, res: any) {
         if (req.method !== 'GET') {
           return res.status(405).json({ error: 'Method not allowed' });
         }
-        const map = await getAnalystThreadsMap();
+        const map = await getAnalystThreadsMapFromDb();
         const threads = Object.values(map)
           .filter((t: any) => t && t.email)
           .sort((a: any, b: any) => (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -2588,7 +1868,7 @@ export default async function handler(req: any, res: any) {
           thread.unreadForAdmin = 0;
           await saveAnalystThreadToDb(thread);
         }
-        const clientUser = await getServerUserFromDb(targetEmail);
+        const clientUser = await getOrCreateUserInDb(targetEmail);
         return res.status(200).json({
           success: true,
           thread,
@@ -2612,7 +1892,7 @@ export default async function handler(req: any, res: any) {
         const now = Date.now();
         const msg = {
           id: `msg_${now}_${Math.random().toString(36).slice(2, 6)}`,
-          sender: 'admin',
+          sender: 'admin' as const,
           senderEmail: sessionEmail,
           text,
           timestamp: new Date(now).toISOString(),
@@ -2780,7 +2060,7 @@ export default async function handler(req: any, res: any) {
 
         const updatedRequest = {
           ...reqItem,
-          status: 'Done',
+          status: 'Done' as const,
           deliveredAt: deliverable.deliveredAt,
           deliverable,
         };
@@ -2864,22 +2144,21 @@ export default async function handler(req: any, res: any) {
         if (!targetEmail || !targetEmail.includes('@')) {
           return res.status(400).json({ success: false, error: 'Valid client email is required' });
         }
-        const targetUser = await getServerUserFromDb(targetEmail);
+        const targetUser = await getOrCreateUserInDb(targetEmail);
         const now = Date.now();
         const iso = new Date(now).toISOString();
         const timelineEntry = {
           id: `tl_${now}_${Math.random().toString(36).slice(2, 6)}`,
           timestamp: iso,
-          type: 'issue_resolved',
+          type: 'admin_plan_change' as const,
           message: `Tool issue marked RESOLVED by admin (${sessionEmail}) at ${iso}`,
           actor: sessionEmail,
         };
-        const updated = updateServerUser(targetEmail, {
+        const updated = await updateServerUserInDb(targetEmail, {
           issue_resolved_at: now,
           issue_status: 'resolved',
           timeline: [timelineEntry, ...(targetUser.timeline || [])].slice(0, 200),
         });
-        await saveServerUserToDb(updated);
         await logAdminAction({
           adminEmail: sessionEmail,
           targetEmail,
@@ -2916,6 +2195,22 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      case 'backup':
+      case 'export-backup': {
+        if (req.method !== 'GET') {
+          return res.status(405).json({ error: 'Method not allowed' });
+        }
+        const snapshot = await exportAllData(adminAuth.user);
+        await logAdminAction({
+          adminEmail: sessionEmail,
+          targetEmail: 'system:backup',
+          action: 'exportBackup',
+          details: `Exported backup snapshot (users=${snapshot.counts.users}, payments=${snapshot.counts.payments}, analyses=${snapshot.counts.analyses}, auditLogs=${snapshot.counts.auditLogs})`,
+          ip: clientIp,
+        });
+        return res.status(200).json(snapshot);
+      }
+
       default:
         return res.status(400).json({
           error: `Unknown admin action '${action}'`,
@@ -2943,6 +2238,7 @@ export default async function handler(req: any, res: any) {
             'getPayments',
             'auditLog',
             'export',
+            'backup',
             'test-email-day29',
             'analyst-inbox',
             'analyst-thread',
@@ -2959,6 +2255,12 @@ export default async function handler(req: any, res: any) {
     }
   } catch (err: any) {
     console.error(`/api/admin?action=${action} error:`, err);
+    if (err instanceof StorageUnavailableError) {
+      return res.status(500).json({
+        success: false,
+        error: 'storage unavailable',
+      });
+    }
     const isProd = getEnv('VERCEL_ENV') === 'production' || getEnv('NODE_ENV') === 'production';
     return res.status(500).json({
       success: false,
